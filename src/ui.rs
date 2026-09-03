@@ -168,3 +168,39 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
         area,
     );
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::Commit;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn commit(subject: &str, graph_rows: usize) -> Commit {
+        Commit {
+            hash: subject.repeat(40).chars().take(40).collect(),
+            short_hash: subject.to_owned(),
+            decorations: String::new(),
+            subject: subject.to_owned(),
+            graph: vec!["* ".to_owned(); graph_rows],
+        }
+    }
+
+    #[test]
+    fn selected_commit_stays_visible_with_multiline_graph_rows() {
+        let backend = TestBackend::new(40, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(vec![
+            commit("merge", 3),
+            commit("middle", 1),
+            commit("selected", 1),
+        ]);
+        app.selected = 2;
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        assert!(
+            app.log_offset > 0,
+            "viewport did not reveal selected commit"
+        );
+    }
+}
