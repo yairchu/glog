@@ -17,6 +17,25 @@ cargo build --release
 
 Or install from a checkout with `cargo install --path .`.
 
+### Zsh completion
+
+The included completion adapter reuses Zsh's `git log` completer, including branches, tags, revisions, paths, and Git log options. From a checkout, install it with:
+
+```zsh
+mkdir -p ~/.cargo/share/zsh/site-functions
+cp completions/_glog ~/.cargo/share/zsh/site-functions/_glog
+```
+
+Add the completion directory before `compinit` in `~/.zshrc`:
+
+```zsh
+fpath=(~/.cargo/share/zsh/site-functions $fpath)
+autoload -Uz compinit
+compinit
+```
+
+Restart Zsh or run those three lines in the current shell. `glog ma<Tab>` should then complete branch names just like `git log ma<Tab>`.
+
 Arguments are passed through to `git log`, including revision ranges, traversal options, filters, and pathspecs:
 
 ```bash

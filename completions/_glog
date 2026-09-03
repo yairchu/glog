@@ -1,0 +1,5 @@
+#compdef glog
+
+autoload -Uz _git
+local service=git-log
+_git
