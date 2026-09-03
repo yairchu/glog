@@ -1,5 +1,11 @@
-use crate::app::App;
-use crossterm::event::{Event, KeyCode, KeyEventKind, MouseEventKind};
+use crate::app::{App, Mode};
+use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
+
+const LOG_TAB_START: u16 = 7;
+const LOG_TAB_END: u16 = 12;
+const SHOW_TAB_START: u16 = 13;
+const SHOW_TAB_END: u16 = 19;
+const HELP_HINT_WIDTH: u16 = 8;
 
 pub fn handle(event: Event, app: &mut App) {
     if let Event::Key(key) = event {
@@ -18,25 +24,106 @@ pub fn handle(event: Event, app: &mut App) {
             }
             return;
         }
+        if app.show_help {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('h') | KeyCode::Char('q') => app.show_help = false,
+                _ => {}
+            }
+            return;
+        }
         match key.code {
             KeyCode::Char('q') => app.quit = true,
             KeyCode::Tab => app.switch_mode(),
+            KeyCode::Enter if app.mode == Mode::Log => app.switch_mode(),
+            KeyCode::Esc if app.mode == Mode::Show => app.switch_mode(),
             KeyCode::Up | KeyCode::Char('k') => app.move_by(-1, 1),
             KeyCode::Down | KeyCode::Char('j') => app.move_by(1, 1),
             KeyCode::PageUp | KeyCode::Char('b') => app.move_by(-2, 20),
             KeyCode::PageDown | KeyCode::Char(' ') => app.move_by(2, 20),
             KeyCode::Char('g') | KeyCode::Home => app.top(),
             KeyCode::Char('G') | KeyCode::End => app.bottom(),
-            KeyCode::Char('/') => app.begin_search(),
-            KeyCode::Char('n') => app.next_match(false),
-            KeyCode::Char('N') => app.next_match(true),
+            KeyCode::Char('/') => app.begin_search(false),
+            KeyCode::Char('?') => app.begin_search(true),
+            KeyCode::Char('n') => app.repeat_search(false),
+            KeyCode::Char('N') => app.repeat_search(true),
+            KeyCode::Char('h') => app.show_help = true,
             _ => {}
         }
     } else if let Event::Mouse(mouse) = event {
         match mouse.kind {
             MouseEventKind::ScrollUp => app.move_by(-1, 3),
             MouseEventKind::ScrollDown => app.move_by(1, 3),
+            MouseEventKind::Down(MouseButton::Left) if mouse.row == 0 => {
+                if (LOG_TAB_START..LOG_TAB_END).contains(&mouse.column) {
+                    app.mode = Mode::Log;
+                    app.show_help = false;
+                } else if (SHOW_TAB_START..SHOW_TAB_END).contains(&mouse.column) {
+                    if app.mode != Mode::Show {
+                        app.switch_mode();
+                    }
+                    app.show_help = false;
+                } else if crossterm::terminal::size()
+                    .is_ok_and(|(width, _)| mouse.column >= width.saturating_sub(HELP_HINT_WIDTH))
+                {
+                    app.show_help = !app.show_help;
+                }
+            }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyEvent, KeyModifiers, MouseEvent};
+
+    fn key(code: KeyCode) -> Event {
+        Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn enter_opens_show_and_escape_returns_to_log() {
+        let mut app = App::new(Vec::new());
+        handle(key(KeyCode::Enter), &mut app);
+        assert_eq!(app.mode, Mode::Show);
+        handle(key(KeyCode::Esc), &mut app);
+        assert_eq!(app.mode, Mode::Log);
+        handle(key(KeyCode::Esc), &mut app);
+        assert!(!app.quit);
+    }
+
+    #[test]
+    fn question_mark_starts_reverse_search() {
+        let mut app = App::new(Vec::new());
+        handle(key(KeyCode::Char('?')), &mut app);
+        assert_eq!(app.search_input.as_deref(), Some(""));
+        assert!(app.search_reverse);
+    }
+
+    #[test]
+    fn help_captures_escape() {
+        let mut app = App::new(Vec::new());
+        handle(key(KeyCode::Char('h')), &mut app);
+        assert!(app.show_help);
+        handle(key(KeyCode::Esc), &mut app);
+        assert!(!app.show_help);
+    }
+
+    #[test]
+    fn header_tabs_are_clickable() {
+        let mut app = App::new(Vec::new());
+        let click = |column| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        handle(click(SHOW_TAB_START), &mut app);
+        assert_eq!(app.mode, Mode::Show);
+        handle(click(LOG_TAB_START), &mut app);
+        assert_eq!(app.mode, Mode::Log);
     }
 }

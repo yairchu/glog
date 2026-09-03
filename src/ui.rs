@@ -3,10 +3,10 @@ use crate::{
     app::{App, Mode},
 };
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Span, Text},
-    widgets::{Block, Borders, Paragraph, Tabs, Wrap},
+    widgets::{Block, Clear, Paragraph, Tabs, Wrap},
     Frame,
 };
 
@@ -14,36 +14,94 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),
+            Constraint::Length(1),
             Constraint::Min(1),
             Constraint::Length(1),
         ])
         .split(frame.area());
     let selected = if app.mode == Mode::Log { 0 } else { 1 };
-    let tabs = Tabs::new([" Log ", " Show "])
+    let header_style = Style::default().fg(Color::White).bg(Color::DarkGray);
+    let tabs = Tabs::new(["Log", "Show"])
         .select(selected)
-        .block(Block::default().title(" glog ").borders(Borders::ALL))
+        .style(header_style)
         .highlight_style(
             Style::default()
                 .fg(Color::Black)
                 .bg(Color::Cyan)
                 .add_modifier(Modifier::BOLD),
         );
-    frame.render_widget(tabs, chunks[0]);
+    frame.render_widget(Block::default().style(header_style), chunks[0]);
+    let header = Layout::horizontal([
+        Constraint::Length(7),
+        Constraint::Length(13),
+        Constraint::Min(0),
+        Constraint::Length(8),
+    ])
+    .split(chunks[0]);
+    frame.render_widget(
+        Paragraph::new(" glog ").style(header_style.add_modifier(Modifier::BOLD)),
+        header[0],
+    );
+    frame.render_widget(tabs, header[1]);
+    frame.render_widget(
+        Paragraph::new("h help  ")
+            .alignment(Alignment::Right)
+            .style(header_style),
+        header[3],
+    );
     match app.mode {
         Mode::Log => draw_log(frame, app, chunks[1]),
         Mode::Show => draw_show(frame, app, chunks[1]),
     }
     let help = if let Some(input) = &app.search_input {
-        format!("/{input}█")
+        let prefix = if app.search_reverse { '?' } else { '/' };
+        format!("{prefix}{input}█")
     } else if let Some(status) = &app.status {
         status.clone()
     } else {
-        "↑/k ↓/j  PgUp/b PgDn/Space  / search  Tab view  q quit".to_owned()
+        "↑/k ↓/j  PgUp/b PgDn/Space  / ? search  Enter/Tab view  h help  q quit".to_owned()
     };
     frame.render_widget(
         Paragraph::new(help).style(Style::default().fg(Color::DarkGray)),
         chunks[2],
+    );
+    if app.show_help {
+        draw_help(frame);
+    }
+}
+
+fn draw_help(frame: &mut Frame) {
+    let screen = frame.area();
+    let width = screen.width.saturating_sub(4).min(68);
+    let height = screen.height.saturating_sub(2).min(17);
+    let area = Rect::new(
+        screen.x + screen.width.saturating_sub(width) / 2,
+        screen.y + screen.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let text = [
+        "Navigation",
+        "  ↑/k, ↓/j          previous / next; scroll Show",
+        "  Page Up/b         page up",
+        "  Page Down/Space   page down",
+        "  g, G              top / bottom",
+        "",
+        "Views and search",
+        "  Enter             open selected commit",
+        "  Escape            return to Log / cancel",
+        "  Tab               switch Log / Show",
+        "  /, ?              search forward / backward",
+        "  n, N              repeat / reverse search",
+        "",
+        "  h                 close help",
+        "  q                 quit (or close help)",
+    ]
+    .join("\n");
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(text).block(Block::bordered().title(" Help ")),
+        area,
     );
 }
 

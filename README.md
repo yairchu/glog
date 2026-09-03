@@ -33,10 +33,13 @@ Output-format options such as `--format`, `--pretty`, and `--oneline` are reserv
 | Key | Log | Show |
 | --- | --- | --- |
 | `Tab` | switch to Show | switch to Log |
+| `Enter`, `Escape` | open selected commit; Escape does nothing | Enter does nothing; return to Log |
 | `↑` / `k`, `↓` / `j` | select commit | scroll patch |
 | `Page Up` / `b`, `Page Down` / `Space` | move by page | scroll by page |
 | `g`, `G` | first/last commit | top/bottom |
-| `/`, `n`, `N` | search; next; previous | search; next; previous |
+| `/`, `?`, `n`, `N` | search forward/backward; repeat/opposite | search forward/backward; repeat/opposite |
+| `h` | toggle key help | toggle key help |
+| header click | switch tabs or open help | switch tabs or open help |
 | mouse wheel | move selection | scroll patch |
 | `q` | quit | quit |
 

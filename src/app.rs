@@ -18,6 +18,8 @@ pub struct App {
     pub status: Option<String>,
     pub search: Option<String>,
     pub search_input: Option<String>,
+    pub search_reverse: bool,
+    pub show_help: bool,
     pub quit: bool,
     cache: HashMap<String, String>,
     cache_order: VecDeque<String>,
@@ -35,6 +37,8 @@ impl App {
             status: None,
             search: None,
             search_input: None,
+            search_reverse: false,
+            show_help: false,
             quit: false,
             cache: HashMap::new(),
             cache_order: VecDeque::new(),
@@ -126,16 +130,20 @@ impl App {
         self.cache.insert(hash, text);
     }
 
-    pub fn begin_search(&mut self) {
+    pub fn begin_search(&mut self, reverse: bool) {
         self.search_input = Some(String::new());
+        self.search_reverse = reverse;
     }
     pub fn submit_search(&mut self) {
         if let Some(query) = self.search_input.take() {
             if !query.is_empty() {
                 self.search = Some(query);
-                self.next_match(false);
+                self.next_match(self.search_reverse);
             }
         }
+    }
+    pub fn repeat_search(&mut self, opposite: bool) {
+        self.next_match(self.search_reverse ^ opposite);
     }
     pub fn next_match(&mut self, reverse: bool) {
         let Some(query) = self.search.as_ref().map(|s| s.to_lowercase()) else {
