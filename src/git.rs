@@ -9,11 +9,19 @@ const FIELD: char = '\x1f';
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
+    pub kind: CommitKind,
     pub hash: String,
     pub short_hash: String,
     pub decorations: String,
     pub subject: String,
     pub graph: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CommitKind {
+    Revision,
+    Staged,
+    Unstaged,
 }
 
 pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
@@ -40,16 +48,24 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
             format!("could not run git log: {error}")
         }
     })?;
-    if !output.status.success() {
+    let mut commits = if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("does not have any commits yet")
             || stderr.contains("your current branch appears to be broken")
         {
-            return Ok(Vec::new());
+            Vec::new()
+        } else {
+            return Err(stderr_message("git log failed", &output.stderr));
         }
-        return Err(stderr_message("git log failed", &output.stderr));
+    } else {
+        parse_log(&String::from_utf8_lossy(&output.stdout))
+    };
+    if user_args.is_empty() {
+        let mut working_tree = working_tree_entries()?;
+        working_tree.append(&mut commits);
+        commits = working_tree;
     }
-    Ok(parse_log(&String::from_utf8_lossy(&output.stdout)))
+    Ok(commits)
 }
 
 fn parse_log(output: &str) -> Vec<Commit> {
@@ -61,6 +77,7 @@ fn parse_log(output: &str) -> Vec<Commit> {
             if fields.len() == 4 {
                 pending_graph.push(line[..marker].to_owned());
                 commits.push(Commit {
+                    kind: CommitKind::Revision,
                     hash: fields[0].to_owned(),
                     short_hash: fields[1].to_owned(),
                     decorations: fields[2].to_owned(),
@@ -75,7 +92,56 @@ fn parse_log(output: &str) -> Vec<Commit> {
     commits
 }
 
-pub fn show(hash: &str) -> Result<String, String> {
+fn working_tree_entries() -> Result<Vec<Commit>, String> {
+    let unstaged =
+        has_diff(&["diff", "--quiet", "--no-ext-diff"])? || !untracked_files()?.is_empty();
+    let staged = has_diff(&["diff", "--cached", "--quiet", "--no-ext-diff"])?;
+    let mut entries = Vec::new();
+    if unstaged {
+        entries.push(pseudo_commit(
+            CommitKind::Unstaged,
+            "worktree",
+            "Unstaged changes",
+        ));
+    }
+    if staged {
+        entries.push(pseudo_commit(CommitKind::Staged, "index", "Staged changes"));
+    }
+    Ok(entries)
+}
+
+fn pseudo_commit(kind: CommitKind, short_hash: &str, subject: &str) -> Commit {
+    Commit {
+        kind,
+        hash: format!("[{short_hash}]"),
+        short_hash: short_hash.to_owned(),
+        decorations: String::new(),
+        subject: subject.to_owned(),
+        graph: vec!["* ".to_owned()],
+    }
+}
+
+fn has_diff(args: &[&str]) -> Result<bool, String> {
+    let status = Command::new("git")
+        .args(args)
+        .status()
+        .map_err(|error| format!("could not inspect working tree: {error}"))?;
+    match status.code() {
+        Some(0) => Ok(false),
+        Some(1) => Ok(true),
+        _ => Err("git diff failed while inspecting working tree".to_owned()),
+    }
+}
+
+pub fn show(commit: &Commit) -> Result<String, String> {
+    match commit.kind {
+        CommitKind::Revision => show_revision(&commit.hash),
+        CommitKind::Staged => show_diff(&["diff", "--cached", "--color=always", "--no-ext-diff"]),
+        CommitKind::Unstaged => show_unstaged(),
+    }
+}
+
+fn show_revision(hash: &str) -> Result<String, String> {
     let output = Command::new("git")
         .args([
             "--no-pager",
@@ -90,9 +156,71 @@ pub fn show(hash: &str) -> Result<String, String> {
     if !output.status.success() {
         return Err(stderr_message("git show failed", &output.stderr));
     }
-    let plain = String::from_utf8_lossy(&output.stdout).into_owned();
+    format_output(output.stdout)
+}
+
+fn show_diff(args: &[&str]) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(args)
+        .env("GIT_PAGER", "cat")
+        .output()
+        .map_err(|error| format!("could not run git diff: {error}"))?;
+    if !output.status.success() {
+        return Err(stderr_message("git diff failed", &output.stderr));
+    }
+    format_output(output.stdout)
+}
+
+fn show_unstaged() -> Result<String, String> {
+    let mut output = Command::new("git")
+        .args(["diff", "--color=always", "--no-ext-diff"])
+        .output()
+        .map_err(|error| format!("could not run git diff: {error}"))?;
+    if !output.status.success() {
+        return Err(stderr_message("git diff failed", &output.stderr));
+    }
+    for path in untracked_files()? {
+        let untracked = Command::new("git")
+            .args([
+                "--no-pager",
+                "diff",
+                "--no-index",
+                "--color=always",
+                "--no-ext-diff",
+                "--",
+                "/dev/null",
+                &path,
+            ])
+            .output()
+            .map_err(|error| format!("could not diff untracked file {path}: {error}"))?;
+        if !matches!(untracked.status.code(), Some(0 | 1)) {
+            return Err(stderr_message("git diff failed", &untracked.stderr));
+        }
+        output.stdout.extend_from_slice(&untracked.stdout);
+    }
+    format_output(output.stdout)
+}
+
+fn untracked_files() -> Result<Vec<String>, String> {
+    let output = Command::new("git")
+        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .output()
+        .map_err(|error| format!("could not list untracked files: {error}"))?;
+    if !output.status.success() {
+        return Err(stderr_message("git ls-files failed", &output.stderr));
+    }
+    Ok(output
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter(|path| !path.is_empty())
+        .map(|path| String::from_utf8_lossy(path).into_owned())
+        .collect())
+}
+
+fn format_output(output: Vec<u8>) -> Result<String, String> {
+    let plain = String::from_utf8_lossy(&output).into_owned();
     if delta_enabled() {
-        if let Some(formatted) = run_delta(&output.stdout) {
+        if let Some(formatted) = run_delta(&output) {
             return Ok(formatted);
         }
     }
@@ -173,7 +301,7 @@ mod tests {
         let old_directory = env::current_dir().unwrap();
         env::set_current_dir(repository.path()).unwrap();
         let commits = load_log(&[]).unwrap();
-        let shown = show(&commits[0].hash).unwrap();
+        let shown = show(&commits[0]).unwrap();
         env::set_current_dir(old_directory).unwrap();
 
         assert_eq!(commits.len(), 1);
@@ -181,5 +309,24 @@ mod tests {
         assert_eq!(commits[0].hash.len(), 40);
         assert!(shown.contains("note.txt"));
         assert!(shown.contains("hello"));
+
+        fs::write(repository.path().join("note.txt"), "staged\n").unwrap();
+        git(&["add", "note.txt"]);
+        fs::write(repository.path().join("note.txt"), "unstaged\n").unwrap();
+        fs::write(repository.path().join("new.txt"), "untracked\n").unwrap();
+
+        let old_directory = env::current_dir().unwrap();
+        env::set_current_dir(repository.path()).unwrap();
+        let commits = load_log(&[]).unwrap();
+        assert_eq!(commits[0].kind, CommitKind::Unstaged);
+        assert_eq!(commits[1].kind, CommitKind::Staged);
+        assert_eq!(commits[2].kind, CommitKind::Revision);
+        assert!(show(&commits[0]).unwrap().contains("untracked"));
+        assert!(show(&commits[1]).unwrap().contains("staged"));
+
+        let explicit = load_log(&["HEAD".to_owned()]).unwrap();
+        env::set_current_dir(old_directory).unwrap();
+        assert_eq!(explicit.len(), 1);
+        assert_eq!(explicit[0].kind, CommitKind::Revision);
     }
 }

@@ -73,7 +73,7 @@ pub fn handle(event: Event, app: &mut App) {
                 if app.mode == Mode::Log && mouse.row >= app.log_row_origin =>
             {
                 let row = usize::from(mouse.row - app.log_row_origin);
-                if let Some(&selected) = app.visible_log_rows.get(row) {
+                if let Some(Some(selected)) = app.visible_log_rows.get(row).copied() {
                     if app.selected == selected {
                         app.switch_mode();
                     } else {
@@ -144,7 +144,7 @@ mod tests {
     fn clicking_a_log_row_selects_then_opens_its_commit() {
         let mut app = App::new(Vec::new());
         app.log_row_origin = 1;
-        app.visible_log_rows = vec![4, 5, 6];
+        app.visible_log_rows = vec![Some(4), Some(5), Some(6)];
         handle(
             Event::Mouse(MouseEvent {
                 kind: MouseEventKind::Down(MouseButton::Left),

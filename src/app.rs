@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 
-use crate::git::{self, Commit};
+use crate::git::{self, Commit, CommitKind};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
@@ -21,7 +21,7 @@ pub struct App {
     pub search_reverse: bool,
     pub show_help: bool,
     pub log_row_origin: u16,
-    pub visible_log_rows: Vec<usize>,
+    pub visible_log_rows: Vec<Option<usize>>,
     pub quit: bool,
     cache: HashMap<String, String>,
     cache_order: VecDeque<String>,
@@ -98,23 +98,23 @@ impl App {
     }
 
     pub fn load_show(&mut self) {
-        let Some(hash) = self
-            .commits
-            .get(self.selected)
-            .map(|commit| commit.hash.clone())
-        else {
+        let Some(commit) = self.commits.get(self.selected).cloned() else {
             self.show_text = "No commits matched the supplied arguments.".to_owned();
             return;
         };
-        if let Some(text) = self.cache.get(&hash) {
-            self.show_text = text.clone();
-            return;
+        if commit.kind == CommitKind::Revision {
+            if let Some(text) = self.cache.get(&commit.hash) {
+                self.show_text = text.clone();
+                return;
+            }
         }
         self.show_offset = 0;
-        match git::show(&hash) {
+        match git::show(&commit) {
             Ok(text) => {
                 self.show_text = text.clone();
-                self.insert_cache(hash, text);
+                if commit.kind == CommitKind::Revision {
+                    self.insert_cache(commit.hash, text);
+                }
                 self.status = None;
             }
             Err(error) => {
@@ -200,6 +200,7 @@ mod tests {
 
     fn commit(subject: &str) -> Commit {
         Commit {
+            kind: CommitKind::Revision,
             hash: subject.repeat(40).chars().take(40).collect(),
             short_hash: subject.to_owned(),
             decorations: String::new(),

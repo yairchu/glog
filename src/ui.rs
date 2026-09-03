@@ -116,12 +116,18 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
         );
         return;
     }
+    let separator_before = app
+        .commits
+        .iter()
+        .position(|commit| commit.kind == crate::git::CommitKind::Revision)
+        .filter(|index| *index > 0);
     let selected_start_row: usize = app
         .commits
         .iter()
         .take(app.selected)
         .map(|commit| commit.graph.len())
-        .sum();
+        .sum::<usize>()
+        + usize::from(separator_before.is_some_and(|index| app.selected >= index));
     let selected_subject_row =
         selected_start_row + app.commits[app.selected].graph.len().saturating_sub(1);
     if selected_subject_row < app.log_offset {
@@ -132,6 +138,21 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut lines = Vec::new();
     let mut graph_row = 0;
     'commits: for (index, commit) in app.commits.iter().enumerate() {
+        if separator_before == Some(index) {
+            if graph_row >= app.log_offset {
+                if lines.len() >= height {
+                    break;
+                }
+                let label = " committed history ";
+                let suffix = "─".repeat((area.width as usize).saturating_sub(label.len() + 2));
+                lines.push(
+                    ratatui::text::Line::from(format!("──{label}{suffix}"))
+                        .style(Style::default().fg(Color::DarkGray)),
+                );
+                app.visible_log_rows.push(None);
+            }
+            graph_row += 1;
+        }
         for (part, graph) in commit.graph.iter().enumerate() {
             if graph_row < app.log_offset {
                 graph_row += 1;
@@ -160,7 +181,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                     .add_modifier(Modifier::BOLD);
             }
             lines.push(line);
-            app.visible_log_rows.push(index);
+            app.visible_log_rows.push(Some(index));
             graph_row += 1;
         }
     }
@@ -182,11 +203,12 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::Commit;
+    use crate::git::{Commit, CommitKind};
     use ratatui::{backend::TestBackend, Terminal};
 
     fn commit(subject: &str, graph_rows: usize) -> Commit {
         Commit {
+            kind: CommitKind::Revision,
             hash: subject.repeat(40).chars().take(40).collect(),
             short_hash: subject.to_owned(),
             decorations: String::new(),
@@ -212,5 +234,18 @@ mod tests {
             app.log_offset > 0,
             "viewport did not reveal selected commit"
         );
+    }
+
+    #[test]
+    fn working_tree_entries_are_separated_from_committed_history() {
+        let backend = TestBackend::new(40, 8);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut worktree = commit("Unstaged changes", 1);
+        worktree.kind = CommitKind::Unstaged;
+        let mut app = App::new(vec![worktree, commit("first commit", 1)]);
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        assert_eq!(app.visible_log_rows, [Some(0), None, Some(1)]);
     }
 }

@@ -4,6 +4,8 @@
 
 It is a small, strictly read-only terminal UI for exploring Git history. Git remains responsible for revision parsing, pathspecs, traversal, decorations, and patch generation; `glog` adds selection, scrolling, search, and Log/Show tabs.
 
+With no arguments, dirty working-tree state appears ahead of `HEAD` as separate `Unstaged changes` and `Staged changes` entries, divided from committed history by a labeled separator. Untracked files are included in the unstaged diff. These synthetic entries are omitted when empty and whenever explicit `git log` arguments are supplied.
+
 ## Install and run
 
 Requires Rust 1.80+ and an installed `git` executable.
