@@ -66,6 +66,17 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
         terminal.draw(|frame| ui::draw(frame, app))?;
         if event::poll(Duration::from_millis(250))? {
             input::handle(event::read()?, app);
+            // Terminals report a fast trackpad/wheel gesture as a burst of discrete
+            // events. Apply the whole queued burst before drawing another frame.
+            for _ in 0..1024 {
+                if !event::poll(Duration::ZERO)? {
+                    break;
+                }
+                input::handle(event::read()?, app);
+                if app.quit {
+                    break;
+                }
+            }
         }
     }
     Ok(())
