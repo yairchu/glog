@@ -17,6 +17,13 @@ cargo build --release
 
 Or install from a checkout with `cargo install --path .`.
 
+When published on crates.io, install the `glog-tui` package; the executable
+is still named `glog`:
+
+```bash
+cargo install glog-tui
+```
+
 ### Zsh completion
 
 The included completion adapter reuses Zsh's `git log` completer, including branches, tags, revisions, paths, and Git log options. From a checkout, install it with:
