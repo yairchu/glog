@@ -341,11 +341,33 @@ mod tests {
     use super::*;
     use std::{
         fs,
-        path::Path,
-        sync::{Mutex, MutexGuard},
+        path::{Path, PathBuf},
+        sync::{atomic::AtomicUsize, atomic::Ordering, Mutex, MutexGuard},
     };
 
     static CURRENT_DIR_LOCK: Mutex<()> = Mutex::new(());
+    static NEXT_TEST_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let sequence = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
+            let path = env::temp_dir().join(format!("glog-test-{}-{sequence}", std::process::id()));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     struct CurrentDirGuard {
         original: std::path::PathBuf,
@@ -387,7 +409,7 @@ mod tests {
 
     #[test]
     fn loads_log_and_show_from_a_repository() {
-        let repository = tempfile::tempdir().unwrap();
+        let repository = TestDirectory::new();
         let git = |args: &[&str]| {
             let status = Command::new("git")
                 .args(args)
