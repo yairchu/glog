@@ -116,20 +116,29 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
         );
         return;
     }
-    if app.selected < app.log_offset {
-        app.log_offset = app.selected;
-    }
-    if app.selected >= app.log_offset + height.max(1) {
-        app.log_offset = app.selected + 1 - height.max(1);
+    let selected_start_row: usize = app
+        .commits
+        .iter()
+        .take(app.selected)
+        .map(|commit| commit.graph.len())
+        .sum();
+    let selected_subject_row =
+        selected_start_row + app.commits[app.selected].graph.len().saturating_sub(1);
+    if selected_subject_row < app.log_offset {
+        app.log_offset = selected_start_row;
+    } else if selected_subject_row >= app.log_offset + height.max(1) {
+        app.log_offset = selected_subject_row + 1 - height.max(1);
     }
     let mut lines = Vec::new();
-    for (index, commit) in app.commits.iter().enumerate().skip(app.log_offset) {
-        if lines.len() >= height {
-            break;
-        }
+    let mut graph_row = 0;
+    'commits: for (index, commit) in app.commits.iter().enumerate() {
         for (part, graph) in commit.graph.iter().enumerate() {
+            if graph_row < app.log_offset {
+                graph_row += 1;
+                continue;
+            }
             if lines.len() >= height {
-                break;
+                break 'commits;
             }
             let mut line = ansi::parse_line(graph);
             if part + 1 == commit.graph.len() {
@@ -152,6 +161,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             lines.push(line);
             app.visible_log_rows.push(index);
+            graph_row += 1;
         }
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
