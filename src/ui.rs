@@ -107,6 +107,8 @@ fn draw_help(frame: &mut Frame) {
 
 fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     let height = area.height as usize;
+    app.log_row_origin = area.y;
+    app.visible_log_rows.clear();
     if app.commits.is_empty() {
         frame.render_widget(
             Paragraph::new("No commits matched the supplied arguments."),
@@ -149,6 +151,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                     .add_modifier(Modifier::BOLD);
             }
             lines.push(line);
+            app.visible_log_rows.push(index);
         }
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);

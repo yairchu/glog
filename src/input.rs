@@ -68,6 +68,18 @@ pub fn handle(event: Event, app: &mut App) {
                     app.show_help = !app.show_help;
                 }
             }
+            MouseEventKind::Down(MouseButton::Left)
+                if app.mode == Mode::Log && mouse.row >= app.log_row_origin =>
+            {
+                let row = usize::from(mouse.row - app.log_row_origin);
+                if let Some(&selected) = app.visible_log_rows.get(row) {
+                    if app.selected == selected {
+                        app.switch_mode();
+                    } else {
+                        app.selected = selected;
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -125,5 +137,33 @@ mod tests {
         assert_eq!(app.mode, Mode::Show);
         handle(click(LOG_TAB_START), &mut app);
         assert_eq!(app.mode, Mode::Log);
+    }
+
+    #[test]
+    fn clicking_a_log_row_selects_then_opens_its_commit() {
+        let mut app = App::new(Vec::new());
+        app.log_row_origin = 1;
+        app.visible_log_rows = vec![4, 5, 6];
+        handle(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 20,
+                row: 2,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut app,
+        );
+        assert_eq!(app.selected, 5);
+        assert_eq!(app.mode, Mode::Log);
+        handle(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 20,
+                row: 2,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut app,
+        );
+        assert_eq!(app.mode, Mode::Show);
     }
 }
