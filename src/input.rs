@@ -1,9 +1,13 @@
 use crate::app::{App, Mode};
-use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
+use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 
 pub fn handle(event: Event, app: &mut App) {
     if let Event::Key(key) = event {
         if key.kind != KeyEventKind::Press {
+            return;
+        }
+        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            app.quit = true;
             return;
         }
         if app.search_input.is_some() {
@@ -173,5 +177,16 @@ mod tests {
         app.mode = Mode::Show;
         handle(key(KeyCode::Char('f')), &mut app);
         assert_eq!(app.show_offset, 20);
+    }
+
+    #[test]
+    fn control_c_quits_even_during_search() {
+        let mut app = App::new(Vec::new());
+        app.begin_search(false);
+        handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            &mut app,
+        );
+        assert!(app.quit);
     }
 }

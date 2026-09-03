@@ -9,6 +9,7 @@ repository = "https://github.com/yairchu/glog"
 readme = "README.md"
 keywords = ["git", "tui", "git-log", "pager", "terminal"]
 categories = ["command-line-utilities", "development-tools"]
+exclude = ["AGENTS.md"]
 
 [[bin]]
 name = "glog"

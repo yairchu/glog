@@ -20,6 +20,10 @@ use ratatui::Terminal;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
+    if let Some(information) = parse_information(&args) {
+        println!("{information}");
+        return ExitCode::SUCCESS;
+    }
     let watch = match parse_watch(&args) {
         Ok(watch) => watch,
         Err(error) => {
@@ -60,6 +64,29 @@ fn main() -> ExitCode {
         ExitCode::SUCCESS
     }
 }
+
+fn parse_information(args: &[String]) -> Option<&'static str> {
+    match args {
+        [flag] if flag == "--help" || flag == "-h" => Some(HELP),
+        [flag] if flag == "--version" || flag == "-V" => {
+            Some(concat!("glog ", env!("CARGO_PKG_VERSION")))
+        }
+        _ => None,
+    }
+}
+
+const HELP: &str = "glog — an interactive git log and git show browser
+
+Usage: glog [--watch]
+       glog [git log arguments] [--] [pathspec...]
+
+Options:
+  --watch       Refresh the default HEAD view when the repository changes
+  -h, --help    Print help
+  -V, --version Print version
+
+All other arguments are passed through to git log. Inside the TUI, press h for
+key help, Tab to switch between Log and Show, and q or Ctrl-C to quit.";
 
 fn start_terminal() -> io::Result<Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
@@ -171,5 +198,17 @@ mod tests {
         assert!(!should_start_tui(false, 0));
         assert!(should_start_tui(false, 1));
         assert!(should_start_tui(true, 0));
+    }
+
+    #[test]
+    fn recognizes_only_standalone_information_flags() {
+        assert_eq!(parse_information(&["--help".to_owned()]), Some(HELP));
+        assert!(parse_information(&["--version".to_owned()])
+            .is_some_and(|version| version.starts_with("glog ")));
+        assert_eq!(parse_information(&["--all".to_owned()]), None);
+        assert_eq!(
+            parse_information(&["--help".to_owned(), "main".to_owned()]),
+            None
+        );
     }
 }

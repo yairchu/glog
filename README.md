@@ -24,6 +24,9 @@ is still named `glog`:
 cargo install glog-tui
 ```
 
+Use `glog --help` for command-line help and `glog --version` to print the
+installed version.
+
 ### Zsh completion
 
 The included completion adapter reuses Zsh's `git log` completer, including branches, tags, revisions, paths, and Git log options. From a checkout, install it with:
@@ -80,7 +83,7 @@ Output-format options such as `--format`, `--pretty`, and `--oneline` are reserv
 | header click | switch tabs | switch tabs |
 | log-row click | select; click again or double-click to open | — |
 | mouse wheel | move selection | scroll patch |
-| `q` | quit | quit |
+| `q`, `Ctrl-C` | quit | quit |
 
 The selected Log commit is the one displayed by Show. Show output is loaded lazily and a small cache keeps recently viewed patches.
 

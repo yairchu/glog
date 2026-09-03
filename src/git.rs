@@ -9,6 +9,11 @@ use std::{
 const RECORD: char = '\x1e';
 const FIELD: char = '\x1f';
 
+#[cfg(windows)]
+const NULL_DEVICE: &str = "NUL";
+#[cfg(not(windows))]
+const NULL_DEVICE: &str = "/dev/null";
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
     pub kind: CommitKind,
@@ -254,7 +259,7 @@ fn show_unstaged() -> Result<String, String> {
                 "--color=always",
                 "--no-ext-diff",
                 "--",
-                "/dev/null",
+                NULL_DEVICE,
                 &path,
             ])
             .output()
@@ -329,7 +334,36 @@ fn stderr_message(prefix: &str, stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::{
+        fs,
+        path::Path,
+        sync::{Mutex, MutexGuard},
+    };
+
+    static CURRENT_DIR_LOCK: Mutex<()> = Mutex::new(());
+
+    struct CurrentDirGuard {
+        original: std::path::PathBuf,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl CurrentDirGuard {
+        fn enter(path: &Path) -> Self {
+            let lock = CURRENT_DIR_LOCK.lock().unwrap();
+            let original = env::current_dir().unwrap();
+            env::set_current_dir(path).unwrap();
+            Self {
+                original,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for CurrentDirGuard {
+        fn drop(&mut self) {
+            env::set_current_dir(&self.original).unwrap();
+        }
+    }
 
     #[test]
     fn parses_full_identity_and_graph_lines() {
@@ -364,12 +398,10 @@ mod tests {
         git(&["add", "note.txt"]);
         git(&["commit", "-qm", "first subject"]);
 
-        let old_directory = env::current_dir().unwrap();
-        env::set_current_dir(repository.path()).unwrap();
+        let _current_dir = CurrentDirGuard::enter(repository.path());
         let commits = load_log(&[]).unwrap();
         let shown = show(&commits[0]).unwrap();
         let clean_fingerprint = watch_fingerprint().unwrap();
-        env::set_current_dir(old_directory).unwrap();
 
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].subject, "first subject");
@@ -382,8 +414,6 @@ mod tests {
         fs::write(repository.path().join("note.txt"), "unstaged\n").unwrap();
         fs::write(repository.path().join("new.txt"), "untracked\n").unwrap();
 
-        let old_directory = env::current_dir().unwrap();
-        env::set_current_dir(repository.path()).unwrap();
         let dirty_fingerprint = watch_fingerprint().unwrap();
         assert_ne!(clean_fingerprint, dirty_fingerprint);
         fs::write(repository.path().join("new.txt"), "UNTRACKED\n").unwrap();
@@ -396,7 +426,6 @@ mod tests {
         assert!(show(&commits[1]).unwrap().contains("staged"));
 
         let explicit = load_log(&["HEAD".to_owned()]).unwrap();
-        env::set_current_dir(old_directory).unwrap();
         assert_eq!(explicit.len(), 1);
         assert_eq!(explicit[0].kind, CommitKind::Revision);
     }
