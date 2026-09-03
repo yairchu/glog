@@ -41,6 +41,8 @@ pub fn handle(event: Event, app: &mut App) {
             KeyCode::PageUp | KeyCode::Char('b') => app.move_by(-2, 20),
             KeyCode::PageDown | KeyCode::Char(' ') => app.move_by(2, 20),
             KeyCode::Char('f') if app.mode == Mode::Show => app.move_by(2, 20),
+            KeyCode::Left if app.mode == Mode::Show => show_adjacent(app, -1),
+            KeyCode::Right if app.mode == Mode::Show => show_adjacent(app, 1),
             KeyCode::Char('g') | KeyCode::Home => app.top(),
             KeyCode::Char('G') | KeyCode::End => app.bottom(),
             KeyCode::Char('/') => app.begin_search(false),
@@ -83,6 +85,13 @@ pub fn handle(event: Event, app: &mut App) {
             }
             _ => {}
         }
+    }
+}
+
+fn show_adjacent(app: &mut App, delta: isize) {
+    if app.move_selection(delta) {
+        app.show_offset = 0;
+        app.load_show();
     }
 }
 

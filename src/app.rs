@@ -84,6 +84,22 @@ impl App {
         }
     }
 
+    pub fn move_selection(&mut self, delta: isize) -> bool {
+        if self.commits.is_empty() {
+            return false;
+        }
+        let selected = if delta < 0 {
+            self.selected.saturating_sub(1)
+        } else {
+            (self.selected + 1).min(self.commits.len() - 1)
+        };
+        if selected == self.selected {
+            return false;
+        }
+        self.selected = selected;
+        true
+    }
+
     pub fn top(&mut self) {
         match self.mode {
             Mode::Log => self.selected = 0,
@@ -225,5 +241,16 @@ mod tests {
         app.search = Some("needle".to_owned());
         app.next_match(false);
         assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn adjacent_selection_stops_at_history_boundaries() {
+        let mut app = App::new(vec![commit("newer"), commit("older")]);
+        assert!(!app.move_selection(-1));
+        assert!(app.move_selection(1));
+        assert_eq!(app.selected, 1);
+        assert!(!app.move_selection(1));
+        assert!(app.move_selection(-1));
+        assert_eq!(app.selected, 0);
     }
 }

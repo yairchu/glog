@@ -59,7 +59,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if let Some(status) = &app.status {
         status.clone()
     } else {
-        "↑/k ↓/j  PgUp/b PgDn/Space/f  / ? search  Enter/Tab view  h help  q quit".to_owned()
+        "↑/k ↓/j  ←/→ commit  PgUp/b PgDn/Space/f  / ? search  Enter/Tab  h help  q quit".to_owned()
     };
     frame.render_widget(
         Paragraph::new(help).style(Style::default().fg(Color::DarkGray)),
@@ -73,7 +73,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_help(frame: &mut Frame) {
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(68);
-    let height = screen.height.saturating_sub(2).min(17);
+    let height = screen.height.saturating_sub(2).min(18);
     let area = Rect::new(
         screen.x + screen.width.saturating_sub(width) / 2,
         screen.y + screen.height.saturating_sub(height) / 2,
@@ -85,6 +85,7 @@ fn draw_help(frame: &mut Frame) {
         "  ↑/k, ↓/j          previous / next; scroll Show",
         "  Page Up/b         page up",
         "  Page Down/Space/f page down (f in Show)",
+        "  ←/→                previous / next commit (Show)",
         "  g, G              top / bottom",
         "",
         "Views and search",
