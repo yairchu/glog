@@ -35,6 +35,10 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    if !should_start_tui(watch, commits.len()) {
+        eprintln!("glog: no commits matched");
+        return ExitCode::SUCCESS;
+    }
 
     let mut terminal = match start_terminal() {
         Ok(terminal) => terminal,
@@ -127,6 +131,10 @@ fn parse_watch(args: &[String]) -> Result<bool, String> {
     }
 }
 
+fn should_start_tui(watch: bool, commit_count: usize) -> bool {
+    watch || commit_count > 0
+}
+
 struct TerminalGuard(bool);
 
 impl TerminalGuard {
@@ -156,5 +164,12 @@ mod tests {
         assert!(parse_watch(&["--watch".to_owned()]).is_ok_and(|watch| watch));
         assert!(parse_watch(&["--watch".to_owned(), "--all".to_owned()]).is_err());
         assert!(parse_watch(&["main".to_owned(), "--watch".to_owned()]).is_err());
+    }
+
+    #[test]
+    fn empty_results_skip_tui_except_when_watching() {
+        assert!(!should_start_tui(false, 0));
+        assert!(should_start_tui(false, 1));
+        assert!(should_start_tui(true, 0));
     }
 }
