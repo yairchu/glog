@@ -1,0 +1,185 @@
+use std::{
+    env,
+    io::Write,
+    process::{Command, Stdio},
+};
+
+const RECORD: char = '\x1e';
+const FIELD: char = '\x1f';
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Commit {
+    pub hash: String,
+    pub short_hash: String,
+    pub decorations: String,
+    pub subject: String,
+    pub graph: Vec<String>,
+}
+
+pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
+    let mut command = Command::new("git");
+    command.env("LC_ALL", "C");
+    command.args(["--no-pager", "log"]);
+    let separator = user_args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(user_args.len());
+    command.args(&user_args[..separator]);
+    command.args([
+        "--graph",
+        "--decorate=short",
+        "--color=always",
+        "--no-abbrev-commit",
+        "--pretty=format:%x1e%H%x1f%h%x1f%D%x1f%s",
+    ]);
+    command.args(&user_args[separator..]);
+    let output = command.output().map_err(|error| {
+        if error.kind() == std::io::ErrorKind::NotFound {
+            "git executable not found".to_owned()
+        } else {
+            format!("could not run git log: {error}")
+        }
+    })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.contains("does not have any commits yet")
+            || stderr.contains("your current branch appears to be broken")
+        {
+            return Ok(Vec::new());
+        }
+        return Err(stderr_message("git log failed", &output.stderr));
+    }
+    Ok(parse_log(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn parse_log(output: &str) -> Vec<Commit> {
+    let mut pending_graph = Vec::new();
+    let mut commits = Vec::new();
+    for line in output.lines() {
+        if let Some(marker) = line.find(RECORD) {
+            let fields: Vec<_> = line[marker + 1..].splitn(4, FIELD).collect();
+            if fields.len() == 4 {
+                pending_graph.push(line[..marker].to_owned());
+                commits.push(Commit {
+                    hash: fields[0].to_owned(),
+                    short_hash: fields[1].to_owned(),
+                    decorations: fields[2].to_owned(),
+                    subject: fields[3].to_owned(),
+                    graph: std::mem::take(&mut pending_graph),
+                });
+            }
+        } else if !line.is_empty() {
+            pending_graph.push(line.to_owned());
+        }
+    }
+    commits
+}
+
+pub fn show(hash: &str) -> Result<String, String> {
+    let output = Command::new("git")
+        .args([
+            "--no-pager",
+            "show",
+            "--color=always",
+            "--no-ext-diff",
+            hash,
+        ])
+        .env("GIT_PAGER", "cat")
+        .output()
+        .map_err(|error| format!("could not run git show: {error}"))?;
+    if !output.status.success() {
+        return Err(stderr_message("git show failed", &output.stderr));
+    }
+    let plain = String::from_utf8_lossy(&output.stdout).into_owned();
+    if delta_enabled() {
+        if let Some(formatted) = run_delta(&output.stdout) {
+            return Ok(formatted);
+        }
+    }
+    Ok(plain)
+}
+
+fn delta_enabled() -> bool {
+    !matches!(
+        env::var("GLOG_DELTA").as_deref(),
+        Ok("0" | "false" | "no" | "off")
+    )
+}
+
+fn run_delta(input: &[u8]) -> Option<String> {
+    let mut child = Command::new("delta")
+        .args(["--paging=never", "--color-only"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    child.stdin.take()?.write_all(input).ok()?;
+    let output = child.wait_with_output().ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn stderr_message(prefix: &str, stderr: &[u8]) -> String {
+    let detail = String::from_utf8_lossy(stderr);
+    let detail = detail.trim();
+    if detail.is_empty() {
+        prefix.to_owned()
+    } else {
+        format!("{prefix}: {detail}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn parses_full_identity_and_graph_lines() {
+        let input = "|\\\n* \u{1e}abcdef\u{1f}abcdef0\u{1f}HEAD -> main\u{1f}hello\n| * \u{1e}123456\u{1f}1234567\u{1f}\u{1f}world\n";
+        let commits = parse_log(input);
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].hash, "abcdef");
+        assert_eq!(commits[0].graph, ["|\\", "* "]);
+        assert_eq!(commits[1].subject, "world");
+    }
+
+    #[test]
+    fn parses_empty_output() {
+        assert!(parse_log("").is_empty());
+    }
+
+    #[test]
+    fn loads_log_and_show_from_a_repository() {
+        let repository = tempfile::tempdir().unwrap();
+        let git = |args: &[&str]| {
+            let status = Command::new("git")
+                .args(args)
+                .current_dir(repository.path())
+                .status()
+                .unwrap();
+            assert!(status.success());
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        fs::write(repository.path().join("note.txt"), "hello\n").unwrap();
+        git(&["add", "note.txt"]);
+        git(&["commit", "-qm", "first subject"]);
+
+        let old_directory = env::current_dir().unwrap();
+        env::set_current_dir(repository.path()).unwrap();
+        let commits = load_log(&[]).unwrap();
+        let shown = show(&commits[0].hash).unwrap();
+        env::set_current_dir(old_directory).unwrap();
+
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].subject, "first subject");
+        assert_eq!(commits[0].hash.len(), 40);
+        assert!(shown.contains("note.txt"));
+        assert!(shown.contains("hello"));
+    }
+}
