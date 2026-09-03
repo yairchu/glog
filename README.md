@@ -36,6 +36,7 @@ Output-format options such as `--format`, `--pretty`, and `--oneline` are reserv
 | `Enter`, `Escape` | open selected commit; Escape does nothing | Enter does nothing; return to Log |
 | `↑` / `k`, `↓` / `j` | select commit | scroll patch |
 | `Page Up` / `b`, `Page Down` / `Space` | move by page | scroll by page |
+| `f` | — | page forward |
 | `g`, `G` | first/last commit | top/bottom |
 | `/`, `?`, `n`, `N` | search forward/backward; repeat/opposite | search forward/backward; repeat/opposite |
 | `h` | toggle key help | toggle key help |

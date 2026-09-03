@@ -40,6 +40,7 @@ pub fn handle(event: Event, app: &mut App) {
             KeyCode::Down | KeyCode::Char('j') => app.move_by(1, 1),
             KeyCode::PageUp | KeyCode::Char('b') => app.move_by(-2, 20),
             KeyCode::PageDown | KeyCode::Char(' ') => app.move_by(2, 20),
+            KeyCode::Char('f') if app.mode == Mode::Show => app.move_by(2, 20),
             KeyCode::Char('g') | KeyCode::Home => app.top(),
             KeyCode::Char('G') | KeyCode::End => app.bottom(),
             KeyCode::Char('/') => app.begin_search(false),
@@ -165,5 +166,13 @@ mod tests {
             &mut app,
         );
         assert_eq!(app.mode, Mode::Show);
+    }
+
+    #[test]
+    fn f_pages_forward_in_show() {
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        handle(key(KeyCode::Char('f')), &mut app);
+        assert_eq!(app.show_offset, 20);
     }
 }
