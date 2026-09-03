@@ -75,7 +75,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if let Some(status) = &app.status {
         status.clone()
     } else {
-        "↑/k ↓/j  ←/→ commit  PgUp/b PgDn/Space/f  / ? search  Enter/Tab  h help  q quit".to_owned()
+        "↑/k ↓/j  ←/→ commit  [/ ] file  Enter/z fold  L lockfiles  / ? search  h help  q quit"
+            .to_owned()
     };
     frame.render_widget(
         Paragraph::new(help).style(Style::default().fg(Color::Gray)),
@@ -89,7 +90,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_help(frame: &mut Frame) {
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(68);
-    let height = screen.height.saturating_sub(2).min(18);
+    let height = screen.height.saturating_sub(2).min(21);
     let area = Rect::new(
         screen.x + screen.width.saturating_sub(width) / 2,
         screen.y + screen.height.saturating_sub(height) / 2,
@@ -102,10 +103,13 @@ fn draw_help(frame: &mut Frame) {
         "  Page Up/b         page up",
         "  Page Down/Space/f page down (f in Show)",
         "  ←/→                previous / next commit (Show)",
+        "  [, ]              previous / next changed file (Show)",
         "  g, G              top / bottom",
         "",
         "Views and search",
-        "  Enter             open selected commit",
+        "  Enter             open commit / toggle folded lockfile",
+        "  z                 toggle current lockfile fold (Show)",
+        "  L                 expand / fold all lockfiles (Show)",
         "  Escape            return to Log / cancel",
         "  Tab               switch Log / Show",
         "  /, ?              search forward / backward",
@@ -210,7 +214,29 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
-    let mut lines = ansi::lines(&app.show_text);
+    app.ensure_show_rows();
+    app.show_row_origin = area.y;
+    app.visible_show_rows = area.height as usize;
+    let mut lines: Vec<_> = app
+        .show_rows
+        .iter()
+        .map(|row| {
+            let mut line = if row.fold_separator {
+                Line::from("━".repeat(area.width as usize))
+            } else {
+                ansi::normalized_line(&row.text)
+            };
+            if row.folded {
+                line.style = Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::LightYellow)
+                    .add_modifier(Modifier::BOLD);
+            } else if row.fold_separator {
+                line.style = Style::default().fg(Color::Yellow);
+            }
+            line
+        })
+        .collect();
     if let Some(query) = &app.search {
         lines = lines
             .into_iter()

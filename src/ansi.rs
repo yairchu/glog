@@ -3,22 +3,17 @@ use ratatui::{
     text::{Line, Span},
 };
 
-pub fn lines(input: &str) -> Vec<Line<'static>> {
-    input
-        .lines()
-        .map(|line| {
-            let parsed = parse_line(line);
-            if parsed
-                .spans
-                .iter()
-                .all(|span| span.content.chars().all(char::is_whitespace))
-            {
-                Line::default()
-            } else {
-                parsed
-            }
-        })
-        .collect()
+pub fn normalized_line(input: &str) -> Line<'static> {
+    let parsed = parse_line(input);
+    if parsed
+        .spans
+        .iter()
+        .all(|span| span.content.chars().all(char::is_whitespace))
+    {
+        Line::default()
+    } else {
+        parsed
+    }
 }
 
 pub fn parse_line(input: &str) -> Line<'static> {
@@ -42,6 +37,14 @@ pub fn parse_line(input: &str) -> Line<'static> {
         spans.push(Span::styled(rest.to_owned(), style));
     }
     Line::from(spans)
+}
+
+pub fn plain(input: &str) -> String {
+    parse_line(input)
+        .spans
+        .into_iter()
+        .map(|span| span.content.into_owned())
+        .collect()
 }
 
 fn apply_sgr(style: &mut Style, params: &str) {
@@ -136,7 +139,7 @@ mod tests {
 
     #[test]
     fn normalizes_whitespace_only_lines() {
-        let parsed = lines("message\n    \nbody");
+        let parsed: Vec<_> = "message\n    \nbody".lines().map(normalized_line).collect();
         assert_eq!(parsed.len(), 3);
         assert!(parsed[1].spans.is_empty());
     }

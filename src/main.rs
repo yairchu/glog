@@ -1,5 +1,6 @@
 mod ansi;
 mod app;
+mod diff;
 mod git;
 mod input;
 mod ui;

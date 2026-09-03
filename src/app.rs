@@ -1,11 +1,23 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet, VecDeque};
 
-use crate::git::{self, Commit, CommitKind};
+use crate::{
+    diff::{self, FileSection},
+    git::{self, Commit, CommitKind},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Log,
     Show,
+}
+
+#[derive(Clone, Debug)]
+pub struct ShowRow {
+    pub text: String,
+    pub source: usize,
+    pub file: Option<usize>,
+    pub folded: bool,
+    pub fold_separator: bool,
 }
 
 pub struct App {
@@ -15,6 +27,7 @@ pub struct App {
     pub log_offset: usize,
     pub show_offset: usize,
     pub show_text: String,
+    pub show_rows: Vec<ShowRow>,
     pub status: Option<String>,
     pub search: Option<String>,
     pub search_input: Option<String>,
@@ -23,6 +36,8 @@ pub struct App {
     pub show_help: bool,
     pub log_row_origin: u16,
     pub visible_log_rows: Vec<Option<usize>>,
+    pub show_row_origin: u16,
+    pub visible_show_rows: usize,
     pub watch: bool,
     pub context: String,
     pub log_tab_start: u16,
@@ -32,6 +47,8 @@ pub struct App {
     pub quit: bool,
     cache: HashMap<String, String>,
     cache_order: VecDeque<String>,
+    show_files: Vec<FileSection>,
+    expanded_lockfiles: HashSet<String>,
 }
 
 impl App {
@@ -43,6 +60,7 @@ impl App {
             log_offset: 0,
             show_offset: 0,
             show_text: String::new(),
+            show_rows: Vec::new(),
             status: None,
             search: None,
             search_input: None,
@@ -51,6 +69,8 @@ impl App {
             show_help: false,
             log_row_origin: 0,
             visible_log_rows: Vec::new(),
+            show_row_origin: 0,
+            visible_show_rows: 0,
             watch: false,
             context: String::new(),
             log_tab_start: 7,
@@ -60,6 +80,8 @@ impl App {
             quit: false,
             cache: HashMap::new(),
             cache_order: VecDeque::new(),
+            show_files: Vec::new(),
+            expanded_lockfiles: HashSet::new(),
         }
     }
 
@@ -143,7 +165,7 @@ impl App {
     pub fn bottom(&mut self) {
         match self.mode {
             Mode::Log => self.selected = self.commits.len().saturating_sub(1),
-            Mode::Show => self.show_offset = self.show_text.lines().count().saturating_sub(1),
+            Mode::Show => self.show_offset = self.show_rows.len().saturating_sub(1),
         }
     }
 
@@ -154,7 +176,11 @@ impl App {
         };
         if commit.kind == CommitKind::Revision {
             if let Some(text) = self.cache.get(&commit.hash) {
+                let changed = self.show_text != *text;
                 self.show_text = text.clone();
+                if changed {
+                    self.reset_show_folds();
+                }
                 return;
             }
         }
@@ -162,6 +188,7 @@ impl App {
         match git::show(&commit) {
             Ok(text) => {
                 self.show_text = text.clone();
+                self.reset_show_folds();
                 if commit.kind == CommitKind::Revision {
                     self.insert_cache(commit.hash, text);
                 }
@@ -169,8 +196,171 @@ impl App {
             }
             Err(error) => {
                 self.show_text = error.clone();
+                self.reset_show_folds();
                 self.status = Some(error);
             }
+        }
+    }
+
+    fn reset_show_folds(&mut self) {
+        self.show_files = diff::file_sections(&self.show_text);
+        self.expanded_lockfiles.clear();
+        self.rebuild_show_rows();
+    }
+
+    pub fn ensure_show_rows(&mut self) {
+        if self.show_rows.is_empty() && !self.show_text.is_empty() {
+            self.reset_show_folds();
+        }
+    }
+
+    fn rebuild_show_rows(&mut self) {
+        let lines: Vec<_> = self.show_text.lines().collect();
+        let mut rows = Vec::new();
+        let mut source = 0;
+        for (file_index, file) in self.show_files.iter().enumerate() {
+            for (index, line) in lines[source..file.start].iter().enumerate() {
+                rows.push(ShowRow {
+                    text: (*line).to_owned(),
+                    source: source + index,
+                    file: None,
+                    folded: false,
+                    fold_separator: false,
+                });
+            }
+            if file.lockfile && !self.expanded_lockfiles.contains(&file.path) {
+                rows.push(ShowRow {
+                    text: String::new(),
+                    source: file.start,
+                    file: Some(file_index),
+                    folded: false,
+                    fold_separator: true,
+                });
+                rows.push(ShowRow {
+                    text: format!(
+                        "▶ {} — +{} −{} (lockfile folded; Enter/z to expand)",
+                        file.path, file.additions, file.deletions
+                    ),
+                    source: file.start,
+                    file: Some(file_index),
+                    folded: true,
+                    fold_separator: false,
+                });
+                rows.push(ShowRow {
+                    text: String::new(),
+                    source: file.start,
+                    file: Some(file_index),
+                    folded: false,
+                    fold_separator: true,
+                });
+            } else {
+                for (index, line) in lines[file.start..file.end].iter().enumerate() {
+                    rows.push(ShowRow {
+                        text: (*line).to_owned(),
+                        source: file.start + index,
+                        file: Some(file_index),
+                        folded: false,
+                        fold_separator: false,
+                    });
+                }
+            }
+            source = file.end;
+        }
+        for (index, line) in lines[source..].iter().enumerate() {
+            rows.push(ShowRow {
+                text: (*line).to_owned(),
+                source: source + index,
+                file: None,
+                folded: false,
+                fold_separator: false,
+            });
+        }
+        self.show_rows = rows;
+        self.show_offset = self.show_offset.min(self.show_rows.len().saturating_sub(1));
+    }
+
+    pub fn toggle_show_file(&mut self) {
+        let Some(file_index) = self
+            .show_rows
+            .get(self.show_offset)
+            .and_then(|row| row.file)
+        else {
+            return;
+        };
+        let file = &self.show_files[file_index];
+        if !file.lockfile {
+            return;
+        }
+        let path = file.path.clone();
+        let source = file.start;
+        if !self.expanded_lockfiles.remove(&path) {
+            self.expanded_lockfiles.insert(path);
+        }
+        self.search_match = None;
+        self.rebuild_show_rows();
+        self.show_offset = self
+            .show_rows
+            .iter()
+            .position(|row| row.source == source)
+            .unwrap_or(self.show_offset);
+    }
+
+    pub fn toggle_all_lockfiles(&mut self) {
+        let current_source = self.show_rows.get(self.show_offset).map(|row| row.source);
+        let lockfiles: Vec<_> = self
+            .show_files
+            .iter()
+            .filter(|file| file.lockfile)
+            .map(|file| file.path.clone())
+            .collect();
+        if lockfiles
+            .iter()
+            .any(|path| !self.expanded_lockfiles.contains(path))
+        {
+            self.expanded_lockfiles.extend(lockfiles);
+        } else {
+            self.expanded_lockfiles.clear();
+        }
+        self.search_match = None;
+        self.rebuild_show_rows();
+        if let Some(source) = current_source {
+            self.show_offset = self
+                .show_rows
+                .iter()
+                .rposition(|row| row.source <= source)
+                .unwrap_or(0);
+        }
+    }
+
+    pub fn jump_show_file(&mut self, delta: isize) {
+        let Some(current_source) = self.show_rows.get(self.show_offset).map(|row| row.source)
+        else {
+            return;
+        };
+        let target = if delta < 0 {
+            self.show_files
+                .iter()
+                .rev()
+                .find(|file| file.start < current_source)
+        } else {
+            self.show_files
+                .iter()
+                .find(|file| file.start > current_source)
+        };
+        if let Some(target) = target {
+            self.show_offset = self
+                .show_rows
+                .iter()
+                .position(|row| row.source == target.start)
+                .unwrap_or(self.show_offset);
+        }
+    }
+
+    pub fn click_show_row(&mut self, visible_row: usize) {
+        let clicked = self.show_offset.saturating_add(visible_row);
+        if self.show_rows.get(clicked).is_some_and(|row| row.folded) {
+            self.show_offset = clicked;
+            self.toggle_show_file();
         }
     }
 
@@ -235,7 +425,9 @@ impl App {
                 let start = self
                     .search_match
                     .filter(|(mode, _)| *mode == Mode::Show)
-                    .map_or(self.show_offset, |(_, index)| index);
+                    .and_then(|(_, index)| self.show_rows.get(index))
+                    .or_else(|| self.show_rows.get(self.show_offset))
+                    .map_or(0, |row| row.source);
                 for step in 1..=n {
                     let i = if reverse {
                         (start + n - step % n) % n
@@ -243,8 +435,19 @@ impl App {
                         (start + step) % n
                     };
                     if lines[i].to_lowercase().contains(&query) {
-                        self.show_offset = i;
-                        self.search_match = Some((Mode::Show, i));
+                        if let Some(file) = self
+                            .show_files
+                            .iter()
+                            .find(|file| file.lockfile && (file.start..file.end).contains(&i))
+                        {
+                            self.expanded_lockfiles.insert(file.path.clone());
+                            self.rebuild_show_rows();
+                        }
+                        if let Some(visible) = self.show_rows.iter().position(|row| row.source == i)
+                        {
+                            self.show_offset = visible;
+                            self.search_match = Some((Mode::Show, visible));
+                        }
                         self.status = None;
                         return;
                     }
@@ -308,5 +511,42 @@ mod tests {
 
         assert_eq!(app.selected, 2);
         assert_eq!(app.commits[app.selected].subject, "selected");
+    }
+
+    #[test]
+    fn lockfiles_start_folded_and_can_be_expanded() {
+        let mut app = App::new(Vec::new());
+        app.show_text = "commit metadata\ndiff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n-old\n+new\ndiff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n-old dep\n+new dep\n"
+            .to_owned();
+        app.reset_show_folds();
+
+        assert!(app.show_rows.iter().any(|row| row.folded));
+        assert_eq!(
+            app.show_rows
+                .iter()
+                .filter(|row| row.fold_separator)
+                .count(),
+            2
+        );
+        assert!(!app.show_rows.iter().any(|row| row.text == "+new dep"));
+
+        app.show_offset = app.show_rows.iter().position(|row| row.folded).unwrap();
+        app.toggle_show_file();
+        assert!(app.show_rows.iter().any(|row| row.text == "+new dep"));
+    }
+
+    #[test]
+    fn search_reveals_a_match_inside_a_folded_lockfile() {
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = "diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n+hidden-needle\n"
+            .to_owned();
+        app.reset_show_folds();
+        app.search = Some("hidden-needle".to_owned());
+
+        app.next_match(false);
+
+        assert_eq!(app.show_rows[app.show_offset].text, "+hidden-needle");
+        assert_eq!(app.search_match, Some((Mode::Show, app.show_offset)));
     }
 }

@@ -33,6 +33,10 @@ pub fn handle(event: Event, app: &mut App) {
             KeyCode::Char('q') => app.quit = true,
             KeyCode::Tab => app.switch_mode(),
             KeyCode::Enter if app.mode == Mode::Log => app.switch_mode(),
+            KeyCode::Enter | KeyCode::Char('z') if app.mode == Mode::Show => app.toggle_show_file(),
+            KeyCode::Char('L') if app.mode == Mode::Show => app.toggle_all_lockfiles(),
+            KeyCode::Char('[') if app.mode == Mode::Show => app.jump_show_file(-1),
+            KeyCode::Char(']') if app.mode == Mode::Show => app.jump_show_file(1),
             KeyCode::Esc if app.mode == Mode::Show => app.switch_mode(),
             KeyCode::Up | KeyCode::Char('k') => app.move_by(-1, 1),
             KeyCode::Down | KeyCode::Char('j') => app.move_by(1, 1),
@@ -75,6 +79,14 @@ pub fn handle(event: Event, app: &mut App) {
                     } else {
                         app.selected = selected;
                     }
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left)
+                if app.mode == Mode::Show && mouse.row >= app.show_row_origin =>
+            {
+                let row = usize::from(mouse.row - app.show_row_origin);
+                if row < app.visible_show_rows {
+                    app.click_show_row(row);
                 }
             }
             _ => {}
