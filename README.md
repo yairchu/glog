@@ -57,7 +57,9 @@ glog --since="2 weeks ago"
 glog main -- src/
 ```
 
-Use watch mode to refresh the default `HEAD` view when commits, staged changes, unstaged changes, or untracked files change:
+Use watch mode to refresh the default `HEAD` view when commits, branches, tags,
+remote-tracking refs, staged changes, unstaged changes, or untracked files
+change:
 
 ```bash
 glog --watch

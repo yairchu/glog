@@ -93,6 +93,11 @@ pub fn watch_fingerprint() -> Result<u64, String> {
         false,
     )?;
     hash_command(&mut fingerprint, &["rev-parse", "--verify", "HEAD"], true)?;
+    hash_command(
+        &mut fingerprint,
+        &["show-ref", "--head", "--dereference"],
+        true,
+    )?;
     for path in untracked_files()? {
         fingerprint.write(path.as_bytes());
         let metadata = fs::symlink_metadata(&path)
@@ -403,6 +408,10 @@ mod tests {
         let shown = show(&commits[0]).unwrap();
         let clean_fingerprint = watch_fingerprint().unwrap();
 
+        git(&["branch", "watch-test"]);
+        let ref_fingerprint = watch_fingerprint().unwrap();
+        assert_ne!(clean_fingerprint, ref_fingerprint);
+
         assert_eq!(commits.len(), 1);
         assert_eq!(commits[0].subject, "first subject");
         assert_eq!(commits[0].hash.len(), 40);
@@ -415,7 +424,7 @@ mod tests {
         fs::write(repository.path().join("new.txt"), "untracked\n").unwrap();
 
         let dirty_fingerprint = watch_fingerprint().unwrap();
-        assert_ne!(clean_fingerprint, dirty_fingerprint);
+        assert_ne!(ref_fingerprint, dirty_fingerprint);
         fs::write(repository.path().join("new.txt"), "UNTRACKED\n").unwrap();
         assert_ne!(dirty_fingerprint, watch_fingerprint().unwrap());
         let commits = load_log(&[]).unwrap();
