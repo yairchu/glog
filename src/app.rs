@@ -19,6 +19,7 @@ pub struct App {
     pub search: Option<String>,
     pub search_input: Option<String>,
     pub search_reverse: bool,
+    pub search_match: Option<(Mode, usize)>,
     pub show_help: bool,
     pub log_row_origin: u16,
     pub visible_log_rows: Vec<Option<usize>>,
@@ -40,6 +41,7 @@ impl App {
             search: None,
             search_input: None,
             search_reverse: false,
+            search_match: None,
             show_help: false,
             log_row_origin: 0,
             visible_log_rows: Vec::new(),
@@ -158,6 +160,7 @@ impl App {
         if let Some(query) = self.search_input.take() {
             if !query.is_empty() {
                 self.search = Some(query);
+                self.search_match = None;
                 self.next_match(self.search_reverse);
             }
         }
@@ -172,11 +175,15 @@ impl App {
         match self.mode {
             Mode::Log => {
                 let n = self.commits.len();
+                let start = self
+                    .search_match
+                    .filter(|(mode, _)| *mode == Mode::Log)
+                    .map_or(self.selected, |(_, index)| index);
                 for step in 1..=n {
                     let i = if reverse {
-                        (self.selected + n - step % n) % n
+                        (start + n - step % n) % n
                     } else {
-                        (self.selected + step) % n
+                        (start + step) % n
                     };
                     let c = &self.commits[i];
                     if format!("{} {} {}", c.short_hash, c.decorations, c.subject)
@@ -184,6 +191,7 @@ impl App {
                         .contains(&query)
                     {
                         self.selected = i;
+                        self.search_match = Some((Mode::Log, i));
                         self.status = None;
                         return;
                     }
@@ -192,14 +200,19 @@ impl App {
             Mode::Show => {
                 let lines: Vec<_> = self.show_text.lines().collect();
                 let n = lines.len();
+                let start = self
+                    .search_match
+                    .filter(|(mode, _)| *mode == Mode::Show)
+                    .map_or(self.show_offset, |(_, index)| index);
                 for step in 1..=n {
                     let i = if reverse {
-                        (self.show_offset + n - step % n) % n
+                        (start + n - step % n) % n
                     } else {
-                        (self.show_offset + step) % n
+                        (start + step) % n
                     };
                     if lines[i].to_lowercase().contains(&query) {
                         self.show_offset = i;
+                        self.search_match = Some((Mode::Show, i));
                         self.status = None;
                         return;
                     }
@@ -241,6 +254,7 @@ mod tests {
         app.search = Some("needle".to_owned());
         app.next_match(false);
         assert_eq!(app.selected, 1);
+        assert_eq!(app.search_match, Some((Mode::Log, 1)));
     }
 
     #[test]

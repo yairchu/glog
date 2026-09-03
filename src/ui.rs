@@ -5,7 +5,7 @@ use crate::{
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Span, Text},
+    text::{Line, Span, Text},
     widgets::{Block, Clear, Paragraph, Tabs, Wrap},
     Frame,
 };
@@ -169,6 +169,10 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
                 line.spans.push(Span::raw(commit.subject.clone()));
             }
+            if let Some(query) = &app.search {
+                let current = app.search_match == Some((Mode::Log, index));
+                line = highlight_matches(line, query, current);
+            }
             if index == app.selected {
                 line.style = Style::default()
                     .bg(Color::DarkGray)
@@ -183,7 +187,17 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
-    let lines = ansi::lines(&app.show_text);
+    let mut lines = ansi::lines(&app.show_text);
+    if let Some(query) = &app.search {
+        lines = lines
+            .into_iter()
+            .enumerate()
+            .map(|(index, line)| {
+                let current = app.search_match == Some((Mode::Show, index));
+                highlight_matches(line, query, current)
+            })
+            .collect();
+    }
     let max = lines.len().saturating_sub(area.height as usize);
     app.show_offset = app.show_offset.min(max);
     frame.render_widget(
@@ -192,6 +206,73 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             .wrap(Wrap { trim: false }),
         area,
     );
+}
+
+fn highlight_matches(mut line: Line<'static>, query: &str, current: bool) -> Line<'static> {
+    if query.is_empty() {
+        return line;
+    }
+    let visible = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+    let folded_visible = visible.to_lowercase();
+    let folded_query = query.to_lowercase();
+    let ranges: Vec<_> =
+        if folded_visible.len() == visible.len() && folded_query.len() == query.len() {
+            folded_visible
+                .match_indices(&folded_query)
+                .map(|(start, matched)| start..start + matched.len())
+                .collect()
+        } else {
+            visible
+                .match_indices(query)
+                .map(|(start, matched)| start..start + matched.len())
+                .collect()
+        };
+    if ranges.is_empty() {
+        return line;
+    }
+
+    let highlight = if current {
+        Style::default()
+            .fg(Color::Black)
+            .bg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::LightYellow)
+            .add_modifier(Modifier::UNDERLINED)
+    };
+    let mut highlighted = Vec::new();
+    let mut span_start = 0;
+    for span in line.spans {
+        let content = span.content.into_owned();
+        let span_end = span_start + content.len();
+        let mut cursor = 0;
+        for range in ranges
+            .iter()
+            .filter(|range| range.start < span_end && range.end > span_start)
+        {
+            let start = range.start.max(span_start) - span_start;
+            let end = range.end.min(span_end) - span_start;
+            if cursor < start {
+                highlighted.push(Span::styled(content[cursor..start].to_owned(), span.style));
+            }
+            highlighted.push(Span::styled(
+                content[start..end].to_owned(),
+                span.style.patch(highlight),
+            ));
+            cursor = end;
+        }
+        if cursor < content.len() {
+            highlighted.push(Span::styled(content[cursor..].to_owned(), span.style));
+        }
+        span_start = span_end;
+    }
+    line.spans = highlighted;
+    line
 }
 
 #[cfg(test)]
@@ -258,5 +339,35 @@ mod tests {
             .collect::<Vec<_>>()
             .concat();
         assert_eq!(body, "body");
+    }
+
+    #[test]
+    fn search_highlight_crosses_ansi_style_spans() {
+        let line = Line::from(vec![
+            Span::styled("Nee", Style::default().fg(Color::Red)),
+            Span::styled("dle", Style::default().fg(Color::Blue)),
+        ]);
+
+        let highlighted = highlight_matches(line, "needle", true);
+
+        assert_eq!(highlighted.spans.len(), 2);
+        assert!(highlighted
+            .spans
+            .iter()
+            .all(|span| span.style.bg == Some(Color::Yellow)));
+        assert_eq!(highlighted.spans[0].style.fg, Some(Color::Black));
+        assert_eq!(highlighted.spans[1].style.fg, Some(Color::Black));
+    }
+
+    #[test]
+    fn non_current_search_matches_are_secondary() {
+        let highlighted = highlight_matches(Line::from("needle"), "needle", false);
+
+        assert_eq!(highlighted.spans[0].style.fg, Some(Color::LightYellow));
+        assert_eq!(highlighted.spans[0].style.bg, None);
+        assert!(highlighted.spans[0]
+            .style
+            .add_modifier
+            .contains(Modifier::UNDERLINED));
     }
 }
