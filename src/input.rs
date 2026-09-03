@@ -1,11 +1,6 @@
 use crate::app::{App, Mode};
 use crossterm::event::{Event, KeyCode, KeyEventKind, MouseButton, MouseEventKind};
 
-const LOG_TAB_START: u16 = 7;
-const LOG_TAB_END: u16 = 12;
-const SHOW_TAB_START: u16 = 13;
-const SHOW_TAB_END: u16 = 19;
-
 pub fn handle(event: Event, app: &mut App) {
     if let Event::Key(key) = event {
         if key.kind != KeyEventKind::Press {
@@ -56,10 +51,10 @@ pub fn handle(event: Event, app: &mut App) {
             MouseEventKind::ScrollUp => app.move_by(-1, 3),
             MouseEventKind::ScrollDown => app.move_by(1, 3),
             MouseEventKind::Down(MouseButton::Left) if mouse.row == 0 => {
-                if (LOG_TAB_START..LOG_TAB_END).contains(&mouse.column) {
+                if (app.log_tab_start..app.log_tab_end).contains(&mouse.column) {
                     app.mode = Mode::Log;
                     app.show_help = false;
-                } else if (SHOW_TAB_START..SHOW_TAB_END).contains(&mouse.column) {
+                } else if (app.show_tab_start..app.show_tab_end).contains(&mouse.column) {
                     if app.mode != Mode::Show {
                         app.switch_mode();
                     }
@@ -138,9 +133,9 @@ mod tests {
                 modifiers: KeyModifiers::NONE,
             })
         };
-        handle(click(SHOW_TAB_START), &mut app);
+        handle(click(app.show_tab_start), &mut app);
         assert_eq!(app.mode, Mode::Show);
-        handle(click(LOG_TAB_START), &mut app);
+        handle(click(app.log_tab_start), &mut app);
         assert_eq!(app.mode, Mode::Log);
     }
 

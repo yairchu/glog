@@ -4,7 +4,11 @@ mod git;
 mod input;
 mod ui;
 
-use std::{env, io, process::ExitCode, time::Duration};
+use std::{
+    env, io,
+    process::ExitCode,
+    time::{Duration, Instant},
+};
 
 use app::App;
 use crossterm::{
@@ -16,7 +20,15 @@ use ratatui::Terminal;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    let commits = match git::load_log(&args) {
+    let watch = match parse_watch(&args) {
+        Ok(watch) => watch,
+        Err(error) => {
+            eprintln!("glog: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    let git_args = if watch { &[][..] } else { args.as_slice() };
+    let commits = match git::load_log(git_args) {
         Ok(commits) => commits,
         Err(error) => {
             eprintln!("glog: {error}");
@@ -33,6 +45,8 @@ fn main() -> ExitCode {
     };
     let mut guard = TerminalGuard(true);
     let mut app = App::new(commits);
+    app.watch = watch;
+    app.context = args.join(" ");
     let result = run(&mut terminal, &mut app);
     let _ = guard.restore();
     if let Err(error) = result {
@@ -62,6 +76,12 @@ fn start_terminal() -> io::Result<Terminal<ratatui::backend::CrosstermBackend<io
 }
 
 fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+    let mut last_watch = Instant::now();
+    let mut fingerprint = app
+        .watch
+        .then(git::watch_fingerprint)
+        .transpose()
+        .map_err(io::Error::other)?;
     while !app.quit {
         terminal.draw(|frame| ui::draw(frame, app))?;
         if event::poll(Duration::from_millis(250))? {
@@ -78,8 +98,33 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
                 }
             }
         }
+        if app.watch && last_watch.elapsed() >= Duration::from_secs(1) {
+            match git::watch_fingerprint() {
+                Ok(current) if fingerprint != Some(current) => match git::load_log(&[]) {
+                    Ok(commits) => {
+                        app.replace_commits(commits);
+                        fingerprint = Some(current);
+                        app.status = None;
+                    }
+                    Err(error) => app.status = Some(format!("Watch refresh failed: {error}")),
+                },
+                Ok(_) => {}
+                Err(error) => app.status = Some(format!("Watch refresh failed: {error}")),
+            }
+            last_watch = Instant::now();
+        }
     }
     Ok(())
+}
+
+fn parse_watch(args: &[String]) -> Result<bool, String> {
+    match args {
+        [flag] if flag == "--watch" => Ok(true),
+        _ if args.iter().any(|arg| arg == "--watch") => {
+            Err("--watch currently supports only the default HEAD view".to_owned())
+        }
+        _ => Ok(false),
+    }
 }
 
 struct TerminalGuard(bool);
@@ -98,5 +143,18 @@ impl TerminalGuard {
 impl Drop for TerminalGuard {
     fn drop(&mut self) {
         let _ = self.restore();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn watch_must_be_the_only_argument() {
+        assert!(parse_watch(&[]).is_ok_and(|watch| !watch));
+        assert!(parse_watch(&["--watch".to_owned()]).is_ok_and(|watch| watch));
+        assert!(parse_watch(&["--watch".to_owned(), "--all".to_owned()]).is_err());
+        assert!(parse_watch(&["main".to_owned(), "--watch".to_owned()]).is_err());
     }
 }

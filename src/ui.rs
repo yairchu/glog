@@ -31,17 +31,40 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         );
     frame.render_widget(Block::default().style(header_style), chunks[0]);
+    let command = if app.context.is_empty() {
+        " glog ".to_owned()
+    } else {
+        format!(" glog {} ", app.context)
+    };
+    let reserved = 13 + if app.watch { 8 } else { 0 };
+    let command_width =
+        (command.chars().count() as u16).min(chunks[0].width.saturating_sub(reserved));
     let header = Layout::horizontal([
-        Constraint::Length(7),
+        Constraint::Length(command_width),
         Constraint::Length(13),
         Constraint::Min(0),
+        Constraint::Length(if app.watch { 8 } else { 0 }),
     ])
     .split(chunks[0]);
+    app.log_tab_start = header[1].x;
+    app.log_tab_end = header[1].x.saturating_add(5);
+    app.show_tab_start = header[1].x.saturating_add(6);
+    app.show_tab_end = header[1].x.saturating_add(12);
     frame.render_widget(
-        Paragraph::new(" glog ").style(header_style.add_modifier(Modifier::BOLD)),
+        Paragraph::new(command).style(header_style.add_modifier(Modifier::BOLD)),
         header[0],
     );
     frame.render_widget(tabs, header[1]);
+    if app.watch {
+        frame.render_widget(
+            Paragraph::new(" WATCH  ").style(
+                header_style
+                    .fg(Color::LightGreen)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            header[3],
+        );
+    }
     match app.mode {
         Mode::Log => draw_log(frame, app, chunks[1]),
         Mode::Show => draw_show(frame, app, chunks[1]),
@@ -369,5 +392,22 @@ mod tests {
             .style
             .add_modifier
             .contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn header_shows_the_git_log_context() {
+        let backend = TestBackend::new(50, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(Vec::new());
+        app.context = "origin/main.. -- src/".to_owned();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let header = (0..50)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+            .collect::<Vec<_>>()
+            .concat();
+        assert!(header.contains("origin/main.. -- src/"));
+        assert!(app.log_tab_start > 7);
     }
 }

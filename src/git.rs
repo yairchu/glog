@@ -1,6 +1,8 @@
 use std::{
-    env,
-    io::Write,
+    collections::hash_map::DefaultHasher,
+    env, fs,
+    hash::Hasher,
+    io::{Read, Write},
     process::{Command, Stdio},
 };
 
@@ -66,6 +68,70 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
         commits = working_tree;
     }
     Ok(commits)
+}
+
+pub fn watch_fingerprint() -> Result<u64, String> {
+    let mut fingerprint = DefaultHasher::new();
+    hash_command(
+        &mut fingerprint,
+        &["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        false,
+    )?;
+    hash_command(
+        &mut fingerprint,
+        &["diff", "--binary", "--no-ext-diff"],
+        false,
+    )?;
+    hash_command(
+        &mut fingerprint,
+        &["diff", "--cached", "--binary", "--no-ext-diff"],
+        false,
+    )?;
+    hash_command(&mut fingerprint, &["rev-parse", "--verify", "HEAD"], true)?;
+    for path in untracked_files()? {
+        fingerprint.write(path.as_bytes());
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("could not inspect untracked file {path}: {error}"))?;
+        if metadata.file_type().is_symlink() {
+            let target = fs::read_link(&path)
+                .map_err(|error| format!("could not read untracked symlink {path}: {error}"))?;
+            fingerprint.write(target.to_string_lossy().as_bytes());
+        } else {
+            let mut file = fs::File::open(&path)
+                .map_err(|error| format!("could not read untracked file {path}: {error}"))?;
+            let mut buffer = [0; 16 * 1024];
+            loop {
+                let read = file
+                    .read(&mut buffer)
+                    .map_err(|error| format!("could not read untracked file {path}: {error}"))?;
+                if read == 0 {
+                    break;
+                }
+                fingerprint.write(&buffer[..read]);
+            }
+        }
+    }
+    Ok(fingerprint.finish())
+}
+
+fn hash_command(
+    fingerprint: &mut impl Hasher,
+    args: &[&str],
+    allow_failure: bool,
+) -> Result<(), String> {
+    let output = Command::new("git")
+        .args(args)
+        .output()
+        .map_err(|error| format!("could not inspect repository: {error}"))?;
+    if !output.status.success() && !allow_failure {
+        return Err(stderr_message(
+            "git repository inspection failed",
+            &output.stderr,
+        ));
+    }
+    fingerprint.write(&output.stdout);
+    fingerprint.write(&output.stderr);
+    Ok(())
 }
 
 fn parse_log(output: &str) -> Vec<Commit> {
@@ -302,6 +368,7 @@ mod tests {
         env::set_current_dir(repository.path()).unwrap();
         let commits = load_log(&[]).unwrap();
         let shown = show(&commits[0]).unwrap();
+        let clean_fingerprint = watch_fingerprint().unwrap();
         env::set_current_dir(old_directory).unwrap();
 
         assert_eq!(commits.len(), 1);
@@ -317,11 +384,15 @@ mod tests {
 
         let old_directory = env::current_dir().unwrap();
         env::set_current_dir(repository.path()).unwrap();
+        let dirty_fingerprint = watch_fingerprint().unwrap();
+        assert_ne!(clean_fingerprint, dirty_fingerprint);
+        fs::write(repository.path().join("new.txt"), "UNTRACKED\n").unwrap();
+        assert_ne!(dirty_fingerprint, watch_fingerprint().unwrap());
         let commits = load_log(&[]).unwrap();
         assert_eq!(commits[0].kind, CommitKind::Unstaged);
         assert_eq!(commits[1].kind, CommitKind::Staged);
         assert_eq!(commits[2].kind, CommitKind::Revision);
-        assert!(show(&commits[0]).unwrap().contains("untracked"));
+        assert!(show(&commits[0]).unwrap().contains("UNTRACKED"));
         assert!(show(&commits[1]).unwrap().contains("staged"));
 
         let explicit = load_log(&["HEAD".to_owned()]).unwrap();

@@ -23,6 +23,12 @@ pub struct App {
     pub show_help: bool,
     pub log_row_origin: u16,
     pub visible_log_rows: Vec<Option<usize>>,
+    pub watch: bool,
+    pub context: String,
+    pub log_tab_start: u16,
+    pub log_tab_end: u16,
+    pub show_tab_start: u16,
+    pub show_tab_end: u16,
     pub quit: bool,
     cache: HashMap<String, String>,
     cache_order: VecDeque<String>,
@@ -45,6 +51,12 @@ impl App {
             show_help: false,
             log_row_origin: 0,
             visible_log_rows: Vec::new(),
+            watch: false,
+            context: String::new(),
+            log_tab_start: 7,
+            log_tab_end: 12,
+            show_tab_start: 13,
+            show_tab_end: 19,
             quit: false,
             cache: HashMap::new(),
             cache_order: VecDeque::new(),
@@ -100,6 +112,26 @@ impl App {
         }
         self.selected = selected;
         true
+    }
+
+    pub fn replace_commits(&mut self, commits: Vec<Commit>) {
+        let selected = self
+            .commits
+            .get(self.selected)
+            .map(|commit| (commit.kind, commit.hash.clone()));
+        self.commits = commits;
+        self.selected = selected
+            .and_then(|key| {
+                self.commits
+                    .iter()
+                    .position(|commit| commit.kind == key.0 && commit.hash == key.1)
+            })
+            .unwrap_or_else(|| self.selected.min(self.commits.len().saturating_sub(1)));
+        self.log_offset = 0;
+        if self.mode == Mode::Show {
+            self.show_offset = 0;
+            self.load_show();
+        }
     }
 
     pub fn top(&mut self) {
@@ -237,7 +269,6 @@ mod tests {
             graph: vec!["* ".to_owned()],
         }
     }
-
     #[test]
     fn selection_is_bounded() {
         let mut app = App::new(vec![commit("a"), commit("b")]);
@@ -266,5 +297,16 @@ mod tests {
         assert!(!app.move_selection(1));
         assert!(app.move_selection(-1));
         assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn refresh_preserves_selected_commit_identity() {
+        let mut app = App::new(vec![commit("head"), commit("selected")]);
+        app.selected = 1;
+
+        app.replace_commits(vec![commit("new-head"), commit("head"), commit("selected")]);
+
+        assert_eq!(app.selected, 2);
+        assert_eq!(app.commits[app.selected].subject, "selected");
     }
 }

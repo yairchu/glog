@@ -47,6 +47,14 @@ glog --since="2 weeks ago"
 glog main -- src/
 ```
 
+Use watch mode to refresh the default `HEAD` view when commits, staged changes, unstaged changes, or untracked files change:
+
+```bash
+glog --watch
+```
+
+For its initial implementation, `--watch` must be the only argument. Combinations such as `glog --watch --all` fail with a concise error rather than providing partial watch semantics.
+
 Output-format options such as `--format`, `--pretty`, and `--oneline` are reserved by `glog`, since its parser requires a machine-readable format.
 
 ## Keys
