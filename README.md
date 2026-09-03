@@ -62,7 +62,7 @@ Output-format options such as `--format`, `--pretty`, and `--oneline` are reserv
 | `g`, `G` | first/last commit | top/bottom |
 | `/`, `?`, `n`, `N` | search forward/backward; repeat/opposite | search forward/backward; repeat/opposite |
 | `h` | toggle key help | toggle key help |
-| header click | switch tabs or open help | switch tabs or open help |
+| header click | switch tabs | switch tabs |
 | log-row click | select; click again or double-click to open | — |
 | mouse wheel | move selection | scroll patch |
 | `q` | quit | quit |

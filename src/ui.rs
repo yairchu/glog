@@ -3,7 +3,7 @@ use crate::{
     app::{App, Mode},
 };
 use ratatui::{
-    layout::{Alignment, Constraint, Direction, Layout, Rect},
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Span, Text},
     widgets::{Block, Clear, Paragraph, Tabs, Wrap},
@@ -35,7 +35,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Constraint::Length(7),
         Constraint::Length(13),
         Constraint::Min(0),
-        Constraint::Length(8),
     ])
     .split(chunks[0]);
     frame.render_widget(
@@ -43,12 +42,6 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         header[0],
     );
     frame.render_widget(tabs, header[1]);
-    frame.render_widget(
-        Paragraph::new("h help  ")
-            .alignment(Alignment::Right)
-            .style(header_style),
-        header[3],
-    );
     match app.mode {
         Mode::Log => draw_log(frame, app, chunks[1]),
         Mode::Show => draw_show(frame, app, chunks[1]),
@@ -62,7 +55,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         "↑/k ↓/j  ←/→ commit  PgUp/b PgDn/Space/f  / ? search  Enter/Tab  h help  q quit".to_owned()
     };
     frame.render_widget(
-        Paragraph::new(help).style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(help).style(Style::default().fg(Color::Gray)),
         chunks[2],
     );
     if app.show_help {

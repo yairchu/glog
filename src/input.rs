@@ -5,7 +5,6 @@ const LOG_TAB_START: u16 = 7;
 const LOG_TAB_END: u16 = 12;
 const SHOW_TAB_START: u16 = 13;
 const SHOW_TAB_END: u16 = 19;
-const HELP_HINT_WIDTH: u16 = 8;
 
 pub fn handle(event: Event, app: &mut App) {
     if let Event::Key(key) = event {
@@ -65,10 +64,6 @@ pub fn handle(event: Event, app: &mut App) {
                         app.switch_mode();
                     }
                     app.show_help = false;
-                } else if crossterm::terminal::size()
-                    .is_ok_and(|(width, _)| mouse.column >= width.saturating_sub(HELP_HINT_WIDTH))
-                {
-                    app.show_help = !app.show_help;
                 }
             }
             MouseEventKind::Down(MouseButton::Left)
