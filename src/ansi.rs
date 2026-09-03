@@ -4,7 +4,21 @@ use ratatui::{
 };
 
 pub fn lines(input: &str) -> Vec<Line<'static>> {
-    input.lines().map(parse_line).collect()
+    input
+        .lines()
+        .map(|line| {
+            let parsed = parse_line(line);
+            if parsed
+                .spans
+                .iter()
+                .all(|span| span.content.chars().all(char::is_whitespace))
+            {
+                Line::default()
+            } else {
+                parsed
+            }
+        })
+        .collect()
 }
 
 pub fn parse_line(input: &str) -> Line<'static> {
@@ -118,5 +132,12 @@ mod tests {
             "aredz"
         );
         assert_eq!(line.spans[1].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn normalizes_whitespace_only_lines() {
+        let parsed = lines("message\n    \nbody");
+        assert_eq!(parsed.len(), 3);
+        assert!(parsed[1].spans.is_empty());
     }
 }

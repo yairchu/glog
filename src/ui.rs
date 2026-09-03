@@ -248,4 +248,21 @@ mod tests {
 
         assert_eq!(app.visible_log_rows, [Some(0), None, Some(1)]);
     }
+
+    #[test]
+    fn show_renders_indented_blank_message_line_once() {
+        let backend = TestBackend::new(40, 6);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = "title\n    \nbody".to_owned();
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let body = (0..4)
+            .map(|x| terminal.backend().buffer()[(x, 3)].symbol())
+            .collect::<Vec<_>>()
+            .concat();
+        assert_eq!(body, "body");
+    }
 }
