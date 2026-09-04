@@ -200,6 +200,7 @@ to case, and the primary author is excluded. Full credits remain in Show.
 | `g`, `G` | first/last commit | top/bottom |
 | `/`, `?`, `n`, `N` | search forward/backward; repeat/opposite | search forward/backward; repeat/opposite |
 | `h` | toggle key help | toggle key help |
+| `Ctrl-L` | redraw the screen | redraw the screen |
 | header click | switch tabs | switch tabs |
 | log-row click | select; click again or double-click to open | — |
 | mouse wheel | move selection | scroll patch |

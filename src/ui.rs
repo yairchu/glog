@@ -92,7 +92,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_help(frame: &mut Frame) {
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(68);
-    let height = screen.height.saturating_sub(2).min(24);
+    let height = screen.height.saturating_sub(2).min(25);
     let area = Rect::new(
         screen.x + screen.width.saturating_sub(width) / 2,
         screen.y + screen.height.saturating_sub(height) / 2,
@@ -118,6 +118,7 @@ fn draw_help(frame: &mut Frame) {
         "  Tab               switch Log / Show",
         "  /, ?              search forward / backward",
         "  n, N              repeat / reverse search",
+        "  Ctrl-L            redraw the screen",
         "",
         "  h                 close help",
         "  q                 quit (or close help)",
