@@ -10,6 +10,10 @@ pub fn handle(event: Event, app: &mut App) {
             app.quit = true;
             return;
         }
+        if key.code == KeyCode::Char('l') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            app.redraw = true;
+            return;
+        }
         if app.search_input.is_some() {
             match key.code {
                 KeyCode::Esc => app.search_input = None,
@@ -200,5 +204,17 @@ mod tests {
             &mut app,
         );
         assert!(app.quit);
+    }
+
+    #[test]
+    fn control_l_requests_a_redraw_even_during_search() {
+        let mut app = App::new(Vec::new());
+        app.begin_search(false);
+        handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('l'), KeyModifiers::CONTROL)),
+            &mut app,
+        );
+        assert!(app.redraw);
+        assert_eq!(app.search_input.as_deref(), Some(""));
     }
 }
