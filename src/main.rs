@@ -140,7 +140,8 @@ Diff opens unstaged changes (including untracked files), or staged changes
 with --cached, and exits if empty.
 Use glog log show (or glog log diff) to browse a branch named after a command.
 Log arguments are passed through to git log. Inside the TUI, press h for
-key help, Tab to switch between Log and Show, and q or Ctrl-C to quit.";
+key help, Tab to switch between Log and Show, Ctrl-L to redraw the screen, and q
+or Ctrl-C to quit.";
 
 fn start_terminal() -> io::Result<Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
@@ -168,6 +169,10 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
         .transpose()
         .map_err(io::Error::other)?;
     while !app.quit {
+        if app.redraw {
+            terminal.clear()?;
+            app.redraw = false;
+        }
         terminal.draw(|frame| ui::draw(frame, app))?;
         if event::poll(Duration::from_millis(250))? {
             input::handle(event::read()?, app);

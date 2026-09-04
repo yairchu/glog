@@ -5,6 +5,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Added `Ctrl-L` to redraw the screen, including while searching or viewing help.
+
 ## 0.2.0 - 2026-09-14
 
 ### Added
