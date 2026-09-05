@@ -324,8 +324,13 @@ fn pipe_through(command: &mut Command, input: &[u8]) -> Option<String> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    child.stdin.take()?.write_all(input).ok()?;
-    let output = child.wait_with_output().ok()?;
+    let mut stdin = child.stdin.take()?;
+    let output = std::thread::scope(|scope| {
+        let writer = scope.spawn(move || stdin.write_all(input));
+        let output = child.wait_with_output().ok()?;
+        writer.join().ok()?.ok()?;
+        Some(output)
+    })?;
     output
         .status
         .success()
