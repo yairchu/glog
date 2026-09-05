@@ -311,8 +311,14 @@ fn delta_enabled() -> bool {
 }
 
 fn run_delta(input: &[u8]) -> Option<String> {
-    let mut child = Command::new("delta")
-        .args(["--paging=never", "--color-only"])
+    pipe_through(
+        Command::new("delta").args(["--paging=never", "--color-only"]),
+        input,
+    )
+}
+
+fn pipe_through(command: &mut Command, input: &[u8]) -> Option<String> {
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
