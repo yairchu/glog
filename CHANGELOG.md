@@ -5,6 +5,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+## 0.1.1 - 2026-09-06
+
 ### Fixed
 
 - Prevented large diffs formatted by delta from hanging when delta's output
@@ -19,5 +21,6 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Initial release of the interactive `git log` and `git show` browser.
 
-[Unreleased]: https://github.com/yairchu/glog/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/yairchu/glog/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/yairchu/glog/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/yairchu/glog/releases/tag/v0.1.0
