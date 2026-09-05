@@ -17,8 +17,7 @@ cargo build --release
 
 Or install from a checkout with `cargo install --path .`.
 
-When published on crates.io, install the `glog-tui` package; the executable
-is still named `glog`:
+Install the `glog-tui` package from crates.io; the executable is named `glog`:
 
 ```bash
 cargo install glog-tui
@@ -26,6 +25,29 @@ cargo install glog-tui
 
 Use `glog --help` for command-line help and `glog --version` to print the
 installed version.
+
+### Oh My Zsh
+
+Oh My Zsh's optional `git` plugin defines `glog` as an alias for
+`git log --oneline --decorate --graph`. A shell alias takes precedence over the
+installed executable, so affected users may appear to get the old command after
+installing glog. Check with:
+
+```zsh
+type -a glog
+```
+
+Run glog once without expanding the alias using `\glog`. To make glog the
+default permanently, add `unalias glog` to `~/.zshrc` after Oh My Zsh is
+loaded:
+
+```zsh
+source $ZSH/oh-my-zsh.sh
+unalias glog
+```
+
+Restart the shell or run `source ~/.zshrc`. This also allows glog's Zsh
+completion adapter to take effect.
 
 ### Zsh completion
 
