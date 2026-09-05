@@ -413,6 +413,21 @@ mod tests {
         assert!(parse_log("").is_empty());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn pipes_input_larger_than_the_pipe_buffers() {
+        let input = b"x\n".repeat(512 * 1024);
+        let input_len = input.len();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(pipe_through(&mut Command::new("cat"), &input));
+        });
+        let output = receiver
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .expect("pipe_through deadlocked");
+        assert_eq!(output.unwrap().len(), input_len);
+    }
+
     #[test]
     fn loads_log_and_show_from_a_repository() {
         let repository = TestDirectory::new();
