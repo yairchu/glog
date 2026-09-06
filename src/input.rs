@@ -97,6 +97,7 @@ pub fn handle(event: Event, app: &mut App) {
 fn show_adjacent(app: &mut App, delta: isize) {
     if app.move_selection(delta) {
         app.show_offset = 0;
+        app.show_cursor = 0;
         app.load_show();
     }
 }
@@ -187,8 +188,17 @@ mod tests {
     fn f_pages_forward_in_show() {
         let mut app = App::new(Vec::new());
         app.mode = Mode::Show;
+        app.show_rows = (0..30)
+            .map(|source| crate::app::ShowRow {
+                text: String::new(),
+                source,
+                file: None,
+                folded: false,
+                fold_separator: false,
+            })
+            .collect();
         handle(key(KeyCode::Char('f')), &mut app);
-        assert_eq!(app.show_offset, 20);
+        assert_eq!(app.show_cursor, 20);
     }
 
     #[test]

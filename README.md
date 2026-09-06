@@ -97,7 +97,7 @@ Output-format options such as `--format`, `--pretty`, and `--oneline` are reserv
 | --- | --- | --- |
 | `Tab` | switch to Show | switch to Log |
 | `Escape` | — | return to Log |
-| `↑` / `k`, `↓` / `j` | select commit | scroll patch |
+| `↑` / `k`, `↓` / `j` | select commit | move patch cursor |
 | `Page Up` / `b`, `Page Down` / `Space` | move by page | scroll by page |
 | `f` | — | page forward |
 | `←`, `→` | — | previous/newer or next/older commit |
@@ -114,6 +114,10 @@ Output-format options such as `--format`, `--pretty`, and `--oneline` are reserv
 | `q`, `Ctrl-C` | quit | quit |
 
 The selected Log commit is the one displayed by Show. Show output is loaded lazily and a small cache keeps recently viewed patches.
+
+Show highlights the current patch row. Navigation and search move this cursor,
+and `Enter`/`z` acts on the file beneath it even when the cursor is in the last
+screenful.
 
 Common lockfiles (`*.lock`, `package-lock.json`, and `pnpm-lock.yaml`) start
 folded in Show so source changes remain prominent. The placeholder always shows

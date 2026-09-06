@@ -99,7 +99,7 @@ fn draw_help(frame: &mut Frame) {
     );
     let text = [
         "Navigation",
-        "  ↑/k, ↓/j          previous / next; scroll Show",
+        "  ↑/k, ↓/j          previous / next; move Show cursor",
         "  Page Up/b         page up",
         "  Page Down/Space/f page down (f in Show)",
         "  ←/→                previous / next commit (Show)",
@@ -220,7 +220,8 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut lines: Vec<_> = app
         .show_rows
         .iter()
-        .map(|row| {
+        .enumerate()
+        .map(|(index, row)| {
             let mut line = if row.fold_separator {
                 Line::from("━".repeat(area.width as usize))
             } else {
@@ -233,6 +234,9 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
                     .add_modifier(Modifier::BOLD);
             } else if row.fold_separator {
                 line.style = Style::default().fg(Color::Yellow);
+            }
+            if index == app.show_cursor {
+                line.style = line.style.add_modifier(Modifier::REVERSED);
             }
             line
         })
@@ -248,6 +252,11 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             .collect();
     }
     let max = lines.len().saturating_sub(area.height as usize);
+    if app.show_cursor < app.show_offset {
+        app.show_offset = app.show_cursor;
+    } else if app.show_cursor >= app.show_offset + app.visible_show_rows.max(1) {
+        app.show_offset = app.show_cursor + 1 - app.visible_show_rows.max(1);
+    }
     app.show_offset = app.show_offset.min(max);
     frame.render_widget(
         Paragraph::new(Text::from(lines))
@@ -406,6 +415,12 @@ mod tests {
         let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
         handle(key(KeyCode::Char(']')), &mut app);
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(app.show_rows[app.show_cursor].folded);
+        let cursor_y = 1 + app.show_cursor - app.show_offset;
+        assert!(terminal.backend().buffer()[(0, cursor_y as u16)]
+            .style()
+            .add_modifier
+            .contains(Modifier::REVERSED));
         handle(key(KeyCode::Enter), &mut app);
 
         assert!(app.show_rows.iter().any(|row| row.text == "+added"));

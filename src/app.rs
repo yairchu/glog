@@ -26,6 +26,7 @@ pub struct App {
     pub mode: Mode,
     pub log_offset: usize,
     pub show_offset: usize,
+    pub show_cursor: usize,
     pub show_text: String,
     pub show_rows: Vec<ShowRow>,
     pub status: Option<String>,
@@ -59,6 +60,7 @@ impl App {
             mode: Mode::Log,
             log_offset: 0,
             show_offset: 0,
+            show_cursor: 0,
             show_text: String::new(),
             show_rows: Vec::new(),
             status: None,
@@ -111,10 +113,12 @@ impl App {
             }
             Mode::Show => {
                 let amount = if delta.abs() == 1 { 1 } else { page.max(1) };
-                self.show_offset = if delta < 0 {
-                    self.show_offset.saturating_sub(amount)
+                self.show_cursor = if delta < 0 {
+                    self.show_cursor.saturating_sub(amount)
                 } else {
-                    self.show_offset.saturating_add(amount)
+                    self.show_cursor
+                        .saturating_add(amount)
+                        .min(self.show_rows.len().saturating_sub(1))
                 };
             }
         }
@@ -159,13 +163,13 @@ impl App {
     pub fn top(&mut self) {
         match self.mode {
             Mode::Log => self.selected = 0,
-            Mode::Show => self.show_offset = 0,
+            Mode::Show => self.show_cursor = 0,
         }
     }
     pub fn bottom(&mut self) {
         match self.mode {
             Mode::Log => self.selected = self.commits.len().saturating_sub(1),
-            Mode::Show => self.show_offset = self.show_rows.len().saturating_sub(1),
+            Mode::Show => self.show_cursor = self.show_rows.len().saturating_sub(1),
         }
     }
 
@@ -185,6 +189,7 @@ impl App {
             }
         }
         self.show_offset = 0;
+        self.show_cursor = 0;
         match git::show(&commit) {
             Ok(text) => {
                 self.show_text = text.clone();
@@ -290,13 +295,14 @@ impl App {
             });
         }
         self.show_rows = rows;
+        self.show_cursor = self.show_cursor.min(self.show_rows.len().saturating_sub(1));
         self.show_offset = self.show_offset.min(self.show_rows.len().saturating_sub(1));
     }
 
     pub fn toggle_show_file(&mut self) {
         let Some(file_index) = self
             .show_rows
-            .get(self.show_offset)
+            .get(self.show_cursor)
             .and_then(|row| row.file)
         else {
             return;
@@ -335,12 +341,14 @@ impl App {
         self.show_offset = self
             .show_rows
             .iter()
-            .position(|row| row.source == source)
+            .position(|row| row.source == source && row.folded)
+            .or_else(|| self.show_rows.iter().position(|row| row.source == source))
             .unwrap_or(self.show_offset);
+        self.show_cursor = self.show_offset;
     }
 
     pub fn toggle_all_lockfiles(&mut self) {
-        let current_source = self.show_rows.get(self.show_offset).map(|row| row.source);
+        let current_source = self.show_rows.get(self.show_cursor).map(|row| row.source);
         let lockfiles: Vec<_> = self
             .show_files
             .iter()
@@ -368,11 +376,12 @@ impl App {
                 .iter()
                 .rposition(|row| row.source <= source)
                 .unwrap_or(0);
+            self.show_cursor = self.show_offset;
         }
     }
 
     pub fn jump_show_file(&mut self, delta: isize) {
-        let Some(current_source) = self.show_rows.get(self.show_offset).map(|row| row.source)
+        let Some(current_source) = self.show_rows.get(self.show_cursor).map(|row| row.source)
         else {
             return;
         };
@@ -387,18 +396,23 @@ impl App {
                 .find(|file| file.start > current_source)
         };
         if let Some(target) = target {
-            self.show_offset = self
+            self.show_cursor = self
                 .show_rows
                 .iter()
-                .position(|row| row.source == target.start)
-                .unwrap_or(self.show_offset);
+                .position(|row| row.source == target.start && row.folded)
+                .or_else(|| {
+                    self.show_rows
+                        .iter()
+                        .position(|row| row.source == target.start)
+                })
+                .unwrap_or(self.show_cursor);
         }
     }
 
     pub fn click_show_row(&mut self, visible_row: usize) {
         let clicked = self.show_offset.saturating_add(visible_row);
+        self.show_cursor = clicked.min(self.show_rows.len().saturating_sub(1));
         if self.show_rows.get(clicked).is_some_and(|row| row.folded) {
-            self.show_offset = clicked;
             self.toggle_show_file();
         }
     }
@@ -465,7 +479,7 @@ impl App {
                     .search_match
                     .filter(|(mode, _)| *mode == Mode::Show)
                     .and_then(|(_, index)| self.show_rows.get(index))
-                    .or_else(|| self.show_rows.get(self.show_offset))
+                    .or_else(|| self.show_rows.get(self.show_cursor))
                     .map_or(0, |row| row.source);
                 for step in 1..=n {
                     let i = if reverse {
@@ -483,6 +497,7 @@ impl App {
                         if let Some(visible) = self.show_rows.iter().position(|row| row.source == i)
                         {
                             self.show_offset = visible;
+                            self.show_cursor = visible;
                             self.search_match = Some((Mode::Show, visible));
                         }
                         self.status = None;
@@ -567,7 +582,7 @@ mod tests {
         );
         assert!(!app.show_rows.iter().any(|row| row.text == "+new dep"));
 
-        app.show_offset = app.show_rows.iter().position(|row| row.folded).unwrap();
+        app.show_cursor = app.show_rows.iter().position(|row| row.folded).unwrap();
         app.toggle_show_file();
         assert!(app.show_rows.iter().any(|row| row.text == "+new dep"));
     }
@@ -585,7 +600,7 @@ mod tests {
         assert!(folded.iter().any(|row| row.text.contains("two.txt")));
         assert!(!app.show_rows.iter().any(|row| row.text == "+one"));
 
-        app.show_offset = app.show_rows.iter().position(|row| row.folded).unwrap();
+        app.show_cursor = app.show_rows.iter().position(|row| row.folded).unwrap();
         app.toggle_show_file();
         assert!(app.show_rows.iter().any(|row| row.text == "+one"));
         assert!(!app.show_rows.iter().any(|row| row.text == "+two"));
@@ -602,7 +617,7 @@ mod tests {
 
         app.next_match(false);
 
-        assert_eq!(app.show_rows[app.show_offset].text, "+hidden-needle");
-        assert_eq!(app.search_match, Some((Mode::Show, app.show_offset)));
+        assert_eq!(app.show_rows[app.show_cursor].text, "+hidden-needle");
+        assert_eq!(app.search_match, Some((Mode::Show, app.show_cursor)));
     }
 }

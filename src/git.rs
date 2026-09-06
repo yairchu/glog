@@ -629,7 +629,7 @@ mod tests {
         let mut app = crate::app::App::new(commits.clone());
         app.switch_mode();
         assert!(!app.show_text.contains("UNTRACKED"));
-        app.show_offset = app
+        app.show_cursor = app
             .show_rows
             .iter()
             .position(|row| row.folded && row.text.contains("new.txt"))
