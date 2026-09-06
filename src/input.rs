@@ -40,9 +40,16 @@ pub fn handle(event: Event, app: &mut App) {
             KeyCode::Esc if app.mode == Mode::Show => app.switch_mode(),
             KeyCode::Up | KeyCode::Char('k') => app.move_by(-1, 1),
             KeyCode::Down | KeyCode::Char('j') => app.move_by(1, 1),
+            KeyCode::PageUp | KeyCode::Char('b') if app.mode == Mode::Show => {
+                app.scroll_show(-(app.visible_show_rows.max(1) as isize));
+            }
+            KeyCode::PageDown | KeyCode::Char(' ') | KeyCode::Char('f')
+                if app.mode == Mode::Show =>
+            {
+                app.scroll_show(app.visible_show_rows.max(1) as isize);
+            }
             KeyCode::PageUp | KeyCode::Char('b') => app.move_by(-2, 20),
             KeyCode::PageDown | KeyCode::Char(' ') => app.move_by(2, 20),
-            KeyCode::Char('f') if app.mode == Mode::Show => app.move_by(2, 20),
             KeyCode::Left if app.mode == Mode::Show => show_adjacent(app, -1),
             KeyCode::Right if app.mode == Mode::Show => show_adjacent(app, 1),
             KeyCode::Char('g') | KeyCode::Home => app.top(),
