@@ -187,20 +187,37 @@ mod tests {
     }
 
     #[test]
-    fn f_pages_forward_in_show() {
-        let mut app = App::new(Vec::new());
-        app.mode = Mode::Show;
-        app.show_rows = (0..30)
-            .map(|source| crate::app::ShowRow {
-                text: String::new(),
-                source,
-                file: None,
-                folded: false,
-                fold_separator: false,
-            })
-            .collect();
-        handle(key(KeyCode::Char('f')), &mut app);
-        assert_eq!(app.show_cursor, 20);
+    fn show_page_keys_scroll_the_viewport_and_keep_the_cursor_visible() {
+        let app = || {
+            let mut app = App::new(Vec::new());
+            app.mode = Mode::Show;
+            app.show_rows = (0..30)
+                .map(|source| crate::app::ShowRow {
+                    text: String::new(),
+                    source,
+                    file: None,
+                    folded: false,
+                    fold_separator: false,
+                })
+                .collect();
+            app.visible_show_rows = 5;
+            app.show_offset = 10;
+            app.show_cursor = 12;
+            app
+        };
+
+        for code in [KeyCode::Char('f'), KeyCode::Char(' '), KeyCode::PageDown] {
+            let mut app = app();
+            handle(key(code), &mut app);
+            assert_eq!(app.show_offset, 15, "wrong offset for {code:?}");
+            assert_eq!(app.show_cursor, 15, "hidden cursor for {code:?}");
+        }
+        for code in [KeyCode::Char('b'), KeyCode::PageUp] {
+            let mut app = app();
+            handle(key(code), &mut app);
+            assert_eq!(app.show_offset, 5, "wrong offset for {code:?}");
+            assert_eq!(app.show_cursor, 9, "hidden cursor for {code:?}");
+        }
     }
 
     #[test]
