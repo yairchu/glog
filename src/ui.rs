@@ -328,6 +328,8 @@ fn highlight_matches(mut line: Line<'static>, query: &str, current: bool) -> Lin
 mod tests {
     use super::*;
     use crate::git::{Commit, CommitKind};
+    use crate::input::handle;
+    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{backend::TestBackend, Terminal};
 
     fn commit(subject: &str, graph_rows: usize) -> Commit {
@@ -388,6 +390,25 @@ mod tests {
             .collect::<Vec<_>>()
             .concat();
         assert_eq!(body, "body");
+    }
+
+    #[test]
+    fn keyboard_expands_a_folded_file_in_the_last_screenful() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = "commit metadata\ndiff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+added\ndiff --git a/old.txt b/old.txt\n--- a/old.txt\n+++ b/old.txt\n@@ -1 +1 @@\n-before\n+after\n"
+            .to_owned();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(!app.show_rows.iter().any(|row| row.text == "+added"));
+
+        let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        handle(key(KeyCode::Char(']')), &mut app);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        handle(key(KeyCode::Enter), &mut app);
+
+        assert!(app.show_rows.iter().any(|row| row.text == "+added"));
     }
 
     #[test]
