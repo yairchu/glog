@@ -23,9 +23,12 @@
    ```
 
 4. Commit the version, lockfile, and changelog together as the release commit.
-5. The maintainer merges and pushes the release commit, waits for CI, runs
-   `cargo publish --locked`, creates an annotated `vX.Y.Z` tag on the published
-   commit, and pushes the tag.
+5. The maintainer merges and pushes the release commit, then runs
+   `tools/publish-release.sh`. The script verifies CI passed for the exact
+   `origin/main` commit before publishing.
+6. After crates.io serves the new version, the maintainer runs
+   `tools/tag-release.sh`. The script verifies publication before creating and
+   pushing the annotated `vX.Y.Z` tag.
 
 Publishing and pushing tags are maintainer actions. Do not perform them unless
 the maintainer explicitly requests them.
