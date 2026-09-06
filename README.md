@@ -122,7 +122,9 @@ placeholder, to reveal the complete diff. Searching reveals a folded lockfile
 automatically when it contains the selected match.
 
 New untracked files also start folded individually, keeping large generated
-trees navigable while allowing each file to be expanded independently.
+trees navigable while allowing each file to be expanded independently. Their
+contents are loaded and formatted only when expanded, so repositories with
+many untracked artifacts still open quickly.
 
 ## Delta and color
 

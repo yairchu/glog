@@ -7,6 +7,7 @@ pub struct FileSection {
     pub path: String,
     pub lockfile: bool,
     pub untracked: bool,
+    pub lazy_untracked_path: Option<String>,
     pub additions: usize,
     pub deletions: usize,
 }
@@ -31,7 +32,14 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                 .iter()
                 .map(|line| ansi::plain(line))
                 .collect();
-            let path = diff_path(&visible).unwrap_or_else(|| "changed file".to_owned());
+            let lazy_untracked_path = visible.iter().find_map(|line| {
+                line.strip_prefix("glog-lazy-untracked:")
+                    .and_then(hex_decode)
+            });
+            let path = lazy_untracked_path
+                .clone()
+                .or_else(|| diff_path(&visible))
+                .unwrap_or_else(|| "changed file".to_owned());
             let additions = visible
                 .iter()
                 .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
@@ -47,12 +55,25 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                 untracked: visible
                     .iter()
                     .any(|line| line.starts_with("new file mode ")),
+                lazy_untracked_path,
                 path,
                 additions,
                 deletions,
             }
         })
         .collect()
+}
+
+fn hex_decode(hex: &str) -> Option<String> {
+    if hex.len() % 2 != 0 {
+        return None;
+    }
+    let bytes = (0..hex.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16))
+        .collect::<Result<Vec<_>, _>>()
+        .ok()?;
+    String::from_utf8(bytes).ok()
 }
 
 fn diff_path(lines: &[String]) -> Option<String> {
@@ -112,6 +133,13 @@ mod tests {
         let text = "diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+new\n";
         let sections = file_sections(text);
         assert!(sections[0].untracked);
+    }
+
+    #[test]
+    fn decodes_a_lazy_untracked_path() {
+        let text = "diff --git a/new.txt b/new.txt\nnew file mode 100644\nglog-lazy-untracked:6e65772e747874\n";
+        let sections = file_sections(text);
+        assert_eq!(sections[0].lazy_untracked_path.as_deref(), Some("new.txt"));
     }
 
     #[test]

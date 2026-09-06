@@ -8,8 +8,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 ### Fixed
 
 - Prevented unstaged views with thousands of untracked files from appearing to
-  hang by generating new-file patches without spawning one Git process per
-  file and folding each untracked file by default.
+  hang by folding each file individually and loading and formatting its patch
+  only when expanded.
 
 ## 0.1.1 - 2026-09-06
 

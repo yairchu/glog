@@ -248,17 +248,31 @@ fn show_diff(args: &[&str]) -> Result<String, String> {
 }
 
 fn show_unstaged() -> Result<String, String> {
-    let mut output = Command::new("git")
+    let output = Command::new("git")
         .args(["diff", "--color=always", "--no-ext-diff"])
         .output()
         .map_err(|error| format!("could not run git diff: {error}"))?;
     if !output.status.success() {
         return Err(stderr_message("git diff failed", &output.stderr));
     }
+    let mut formatted = format_output(output.stdout)?;
     for path in untracked_files()? {
-        if untracked_regular_file_diff(&path, &mut output.stdout)? {
-            continue;
-        }
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("could not inspect untracked file {path}: {error}"))?;
+        let old_path = git_quote_path(&format!("a/{path}"));
+        let new_path = git_quote_path(&format!("b/{path}"));
+        let mode = file_mode(&metadata);
+        formatted.push_str(&format!(
+            "\x1b[1mdiff --git {old_path} {new_path}\x1b[m\n\x1b[1mnew file mode {mode:o}\x1b[m\nglog-lazy-untracked:{}\n",
+            hex_encode(path.as_bytes())
+        ));
+    }
+    Ok(formatted)
+}
+
+pub fn show_untracked(path: &str) -> Result<String, String> {
+    let mut output = Vec::new();
+    if !untracked_regular_file_diff(path, &mut output)? {
         let untracked = Command::new("git")
             .args([
                 "--no-pager",
@@ -268,16 +282,16 @@ fn show_unstaged() -> Result<String, String> {
                 "--no-ext-diff",
                 "--",
                 NULL_DEVICE,
-                &path,
+                path,
             ])
             .output()
             .map_err(|error| format!("could not diff untracked file {path}: {error}"))?;
         if !matches!(untracked.status.code(), Some(0 | 1)) {
             return Err(stderr_message("git diff failed", &untracked.stderr));
         }
-        output.stdout.extend_from_slice(&untracked.stdout);
+        output = untracked.stdout;
     }
-    format_output(output.stdout)
+    format_output(output)
 }
 
 fn untracked_regular_file_diff(path: &str, output: &mut Vec<u8>) -> Result<bool, String> {
@@ -363,10 +377,16 @@ fn git_quote_path(path: &str) -> String {
     quoted
 }
 
+fn hex_encode(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 #[cfg(unix)]
 fn file_mode(metadata: &fs::Metadata) -> u32 {
     use std::os::unix::fs::PermissionsExt;
-    if metadata.permissions().mode() & 0o111 == 0 {
+    if metadata.file_type().is_symlink() {
+        0o120000
+    } else if metadata.permissions().mode() & 0o111 == 0 {
         0o100644
     } else {
         0o100755
@@ -594,8 +614,20 @@ mod tests {
         assert_eq!(commits[0].kind, CommitKind::Unstaged);
         assert_eq!(commits[1].kind, CommitKind::Staged);
         assert_eq!(commits[2].kind, CommitKind::Revision);
-        assert!(show(&commits[0]).unwrap().contains("UNTRACKED"));
+        assert!(show(&commits[0]).unwrap().contains("glog-lazy-untracked:"));
+        assert!(show_untracked("new.txt").unwrap().contains("UNTRACKED"));
         assert!(show(&commits[1]).unwrap().contains("staged"));
+
+        let mut app = crate::app::App::new(commits.clone());
+        app.switch_mode();
+        assert!(!app.show_text.contains("UNTRACKED"));
+        app.show_offset = app
+            .show_rows
+            .iter()
+            .position(|row| row.folded && row.text.contains("new.txt"))
+            .unwrap();
+        app.toggle_show_file();
+        assert!(app.show_text.contains("UNTRACKED"));
 
         let explicit = load_log(&["HEAD".to_owned()]).unwrap();
         assert_eq!(explicit.len(), 1);

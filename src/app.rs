@@ -238,14 +238,21 @@ impl App {
                 });
                 rows.push(ShowRow {
                     text: format!(
-                        "▶ {} — +{} −{} ({} folded; Enter/z to expand)",
+                        "▶ {}{} ({}; Enter/z to expand)",
                         file.path,
-                        file.additions,
-                        file.deletions,
-                        if file.untracked {
-                            "untracked file"
+                        if file.lazy_untracked_path.is_some() {
+                            String::new()
                         } else {
-                            "lockfile"
+                            format!(" — +{} −{}", file.additions, file.deletions)
+                        },
+                        if file.untracked {
+                            if file.lazy_untracked_path.is_some() {
+                                "untracked file, contents not loaded"
+                            } else {
+                                "untracked file folded"
+                            }
+                        } else {
+                            "lockfile folded"
                         }
                     ),
                     source: file.start,
@@ -300,7 +307,27 @@ impl App {
         }
         let path = file.path.clone();
         let source = file.start;
-        if !self.expanded_folds.remove(&path) {
+        let loaded = if let Some(untracked_path) = file.lazy_untracked_path.clone() {
+            match git::show_untracked(&untracked_path) {
+                Ok(text) => {
+                    let mut lines: Vec<_> = self.show_text.lines().map(str::to_owned).collect();
+                    lines.splice(file.start..file.end, text.lines().map(str::to_owned));
+                    self.show_text = lines.join("\n");
+                    self.show_text.push('\n');
+                    self.show_files = diff::file_sections(&self.show_text);
+                    self.expanded_folds.insert(path.clone());
+                    self.status = None;
+                    true
+                }
+                Err(error) => {
+                    self.status = Some(error);
+                    return;
+                }
+            }
+        } else {
+            false
+        };
+        if loaded || !self.expanded_folds.remove(&path) {
             self.expanded_folds.insert(path);
         }
         self.search_match = None;
