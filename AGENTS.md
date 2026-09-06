@@ -1,6 +1,9 @@
 # Repository instructions
 
 - Add `Co-authored-by: Codex <codex@openai.com>` to commits created or amended by Codex.
+- Never amend or otherwise rewrite a commit reachable from a remote ref unless
+  the maintainer explicitly requests a history rewrite. Create a follow-up
+  commit instead.
 
 ## Release workflow
 
