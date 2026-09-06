@@ -9,6 +9,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Fixed
 
+- Made watch mode fingerprint untracked files from metadata instead of rereading
+  their complete contents every second.
 - Prevented unstaged views with thousands of untracked files from appearing to
   hang by folding each file individually and loading and formatting its patch
   only when expanded.

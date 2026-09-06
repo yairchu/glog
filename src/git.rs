@@ -102,23 +102,23 @@ pub fn watch_fingerprint() -> Result<u64, String> {
         fingerprint.write(path.as_bytes());
         let metadata = fs::symlink_metadata(&path)
             .map_err(|error| format!("could not inspect untracked file {path}: {error}"))?;
-        if metadata.file_type().is_symlink() {
+        let file_type = metadata.file_type();
+        fingerprint.write_u64(metadata.len());
+        fingerprint.write_u8(u8::from(file_type.is_file()));
+        fingerprint.write_u8(u8::from(file_type.is_dir()));
+        fingerprint.write_u8(u8::from(file_type.is_symlink()));
+        fingerprint.write_u8(u8::from(metadata.permissions().readonly()));
+        let modified = metadata
+            .modified()
+            .map_err(|error| format!("could not inspect untracked file {path}: {error}"))?
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| format!("invalid modification time for {path}: {error}"))?;
+        fingerprint.write_u64(modified.as_secs());
+        fingerprint.write_u32(modified.subsec_nanos());
+        if file_type.is_symlink() {
             let target = fs::read_link(&path)
                 .map_err(|error| format!("could not read untracked symlink {path}: {error}"))?;
             fingerprint.write(target.to_string_lossy().as_bytes());
-        } else {
-            let mut file = fs::File::open(&path)
-                .map_err(|error| format!("could not read untracked file {path}: {error}"))?;
-            let mut buffer = [0; 16 * 1024];
-            loop {
-                let read = file
-                    .read(&mut buffer)
-                    .map_err(|error| format!("could not read untracked file {path}: {error}"))?;
-                if read == 0 {
-                    break;
-                }
-                fingerprint.write(&buffer[..read]);
-            }
         }
     }
     Ok(fingerprint.finish())
@@ -614,14 +614,16 @@ mod tests {
 
         let dirty_fingerprint = watch_fingerprint().unwrap();
         assert_ne!(ref_fingerprint, dirty_fingerprint);
-        fs::write(repository.path().join("new.txt"), "UNTRACKED\n").unwrap();
+        fs::write(repository.path().join("new.txt"), "UNTRACKED LONGER\n").unwrap();
         assert_ne!(dirty_fingerprint, watch_fingerprint().unwrap());
         let commits = load_log(&[]).unwrap();
         assert_eq!(commits[0].kind, CommitKind::Unstaged);
         assert_eq!(commits[1].kind, CommitKind::Staged);
         assert_eq!(commits[2].kind, CommitKind::Revision);
         assert!(show(&commits[0]).unwrap().contains("glog-lazy-untracked:"));
-        assert!(show_untracked("new.txt").unwrap().contains("UNTRACKED"));
+        assert!(show_untracked("new.txt")
+            .unwrap()
+            .contains("UNTRACKED LONGER"));
         assert!(show(&commits[1]).unwrap().contains("staged"));
 
         let mut app = crate::app::App::new(commits.clone());
