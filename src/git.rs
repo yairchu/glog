@@ -256,6 +256,9 @@ fn show_unstaged() -> Result<String, String> {
         return Err(stderr_message("git diff failed", &output.stderr));
     }
     for path in untracked_files()? {
+        if untracked_regular_file_diff(&path, &mut output.stdout)? {
+            continue;
+        }
         let untracked = Command::new("git")
             .args([
                 "--no-pager",
@@ -275,6 +278,104 @@ fn show_unstaged() -> Result<String, String> {
         output.stdout.extend_from_slice(&untracked.stdout);
     }
     format_output(output.stdout)
+}
+
+fn untracked_regular_file_diff(path: &str, output: &mut Vec<u8>) -> Result<bool, String> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| format!("could not inspect untracked file {path}: {error}"))?;
+    if !metadata.file_type().is_file() {
+        return Ok(false);
+    }
+
+    // Generate the simple new-file patch directly. Spawning `git diff
+    // --no-index` once per untracked file is painfully slow for generated
+    // trees containing thousands of files, even when every binary file only
+    // contributes a three-line notice.
+    let mut file = fs::File::open(path)
+        .map_err(|error| format!("could not read untracked file {path}: {error}"))?;
+    let mut contents = Vec::with_capacity(8_000);
+    Read::by_ref(&mut file)
+        .take(8_000)
+        .read_to_end(&mut contents)
+        .map_err(|error| format!("could not read untracked file {path}: {error}"))?;
+
+    let old_path = git_quote_path(&format!("a/{path}"));
+    let new_path = git_quote_path(&format!("b/{path}"));
+    let mode = file_mode(&metadata);
+    output.extend_from_slice(
+        format!(
+            "\x1b[1mdiff --git {old_path} {new_path}\x1b[m\n\x1b[1mnew file mode {mode:o}\x1b[m\n"
+        )
+        .as_bytes(),
+    );
+    if contents.contains(&0) {
+        output.extend_from_slice(
+            format!("\x1b[1mBinary files /dev/null and {new_path} differ\x1b[m\n").as_bytes(),
+        );
+        return Ok(true);
+    }
+
+    file.read_to_end(&mut contents)
+        .map_err(|error| format!("could not read untracked file {path}: {error}"))?;
+
+    let line_count = contents.iter().filter(|byte| **byte == b'\n').count()
+        + usize::from(!contents.is_empty() && contents.last() != Some(&b'\n'));
+    if contents.is_empty() {
+        return Ok(true);
+    }
+    output.extend_from_slice(
+        format!(
+            "\x1b[1m--- /dev/null\x1b[m\n\x1b[1m+++ {new_path}\x1b[m\n\x1b[36m@@ -0,0 +1,{line_count} @@\x1b[m\n"
+        )
+        .as_bytes(),
+    );
+    for line in contents.split_inclusive(|byte| *byte == b'\n') {
+        output.extend_from_slice(b"\x1b[32m+");
+        output.extend_from_slice(line);
+        output.extend_from_slice(b"\x1b[m");
+        if line.last() != Some(&b'\n') {
+            output.extend_from_slice(b"\n\x1b[1m\\ No newline at end of file\x1b[m\n");
+        }
+    }
+    Ok(true)
+}
+
+fn git_quote_path(path: &str) -> String {
+    if path
+        .bytes()
+        .all(|byte| (b' '..=b'~').contains(&byte) && byte != b'"' && byte != b'\\')
+    {
+        return path.to_owned();
+    }
+    let mut quoted = String::from("\"");
+    for byte in path.bytes() {
+        match byte {
+            b'"' => quoted.push_str("\\\""),
+            b'\\' => quoted.push_str("\\\\"),
+            b'\n' => quoted.push_str("\\n"),
+            b'\r' => quoted.push_str("\\r"),
+            b'\t' => quoted.push_str("\\t"),
+            b' '..=b'~' => quoted.push(byte as char),
+            _ => quoted.push_str(&format!("\\{byte:03o}")),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
+#[cfg(unix)]
+fn file_mode(metadata: &fs::Metadata) -> u32 {
+    use std::os::unix::fs::PermissionsExt;
+    if metadata.permissions().mode() & 0o111 == 0 {
+        0o100644
+    } else {
+        0o100755
+    }
+}
+
+#[cfg(not(unix))]
+fn file_mode(_metadata: &fs::Metadata) -> u32 {
+    0o100644
 }
 
 fn untracked_files() -> Result<Vec<String>, String> {
@@ -431,6 +532,20 @@ mod tests {
             .recv_timeout(std::time::Duration::from_secs(10))
             .expect("pipe_through deadlocked");
         assert_eq!(output.unwrap().len(), input_len);
+    }
+
+    #[test]
+    fn formats_untracked_binary_without_running_git_diff() {
+        let repository = TestDirectory::new();
+        fs::write(repository.path().join("generated.bin"), b"header\0payload").unwrap();
+        let _current_dir = CurrentDirGuard::enter(repository.path());
+        let mut output = Vec::new();
+
+        assert!(untracked_regular_file_diff("generated.bin", &mut output).unwrap());
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.contains("diff --git a/generated.bin b/generated.bin"));
+        assert!(output.contains("new file mode 100644"));
+        assert!(output.contains("Binary files /dev/null and b/generated.bin differ"));
     }
 
     #[test]

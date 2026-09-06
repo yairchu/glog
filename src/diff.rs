@@ -6,6 +6,7 @@ pub struct FileSection {
     pub end: usize,
     pub path: String,
     pub lockfile: bool,
+    pub untracked: bool,
     pub additions: usize,
     pub deletions: usize,
 }
@@ -43,6 +44,9 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                 start: *start,
                 end,
                 lockfile: is_lockfile(&path),
+                untracked: visible
+                    .iter()
+                    .any(|line| line.starts_with("new file mode ")),
                 path,
                 additions,
                 deletions,
@@ -97,9 +101,17 @@ mod tests {
         assert_eq!(sections.len(), 2);
         assert_eq!(sections[0].path, "src/main.rs");
         assert!(!sections[0].lockfile);
+        assert!(!sections[0].untracked);
         assert_eq!(sections[1].path, "Cargo.lock");
         assert!(sections[1].lockfile);
         assert_eq!((sections[1].additions, sections[1].deletions), (2, 1));
+    }
+
+    #[test]
+    fn recognizes_an_untracked_file() {
+        let text = "diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+new\n";
+        let sections = file_sections(text);
+        assert!(sections[0].untracked);
     }
 
     #[test]

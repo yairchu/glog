@@ -102,8 +102,8 @@ Output-format options such as `--format`, `--pretty`, and `--oneline` are reserv
 | `f` | — | page forward |
 | `←`, `→` | — | previous/newer or next/older commit |
 | `[`, `]` | — | previous/next changed file |
-| `Enter` | open selected commit | expand/fold current lockfile |
-| `z` | — | expand/fold current lockfile |
+| `Enter` | open selected commit | expand/fold current folded file |
+| `z` | — | expand/fold current folded file |
 | `L` | — | expand/fold all lockfiles |
 | `g`, `G` | first/last commit | top/bottom |
 | `/`, `?`, `n`, `N` | search forward/backward; repeat/opposite | search forward/backward; repeat/opposite |
@@ -120,6 +120,9 @@ folded in Show so source changes remain prominent. The placeholder always shows
 the file and its added/deleted line counts. Press `Enter` or `z`, or click the
 placeholder, to reveal the complete diff. Searching reveals a folded lockfile
 automatically when it contains the selected match.
+
+New untracked files also start folded individually, keeping large generated
+trees navigable while allowing each file to be expanded independently.
 
 ## Delta and color
 

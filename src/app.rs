@@ -48,7 +48,7 @@ pub struct App {
     cache: HashMap<String, String>,
     cache_order: VecDeque<String>,
     show_files: Vec<FileSection>,
-    expanded_lockfiles: HashSet<String>,
+    expanded_folds: HashSet<String>,
 }
 
 impl App {
@@ -81,7 +81,7 @@ impl App {
             cache: HashMap::new(),
             cache_order: VecDeque::new(),
             show_files: Vec::new(),
-            expanded_lockfiles: HashSet::new(),
+            expanded_folds: HashSet::new(),
         }
     }
 
@@ -204,7 +204,7 @@ impl App {
 
     fn reset_show_folds(&mut self) {
         self.show_files = diff::file_sections(&self.show_text);
-        self.expanded_lockfiles.clear();
+        self.expanded_folds.clear();
         self.rebuild_show_rows();
     }
 
@@ -228,7 +228,7 @@ impl App {
                     fold_separator: false,
                 });
             }
-            if file.lockfile && !self.expanded_lockfiles.contains(&file.path) {
+            if (file.lockfile || file.untracked) && !self.expanded_folds.contains(&file.path) {
                 rows.push(ShowRow {
                     text: String::new(),
                     source: file.start,
@@ -238,8 +238,15 @@ impl App {
                 });
                 rows.push(ShowRow {
                     text: format!(
-                        "▶ {} — +{} −{} (lockfile folded; Enter/z to expand)",
-                        file.path, file.additions, file.deletions
+                        "▶ {} — +{} −{} ({} folded; Enter/z to expand)",
+                        file.path,
+                        file.additions,
+                        file.deletions,
+                        if file.untracked {
+                            "untracked file"
+                        } else {
+                            "lockfile"
+                        }
                     ),
                     source: file.start,
                     file: Some(file_index),
@@ -288,13 +295,13 @@ impl App {
             return;
         };
         let file = &self.show_files[file_index];
-        if !file.lockfile {
+        if !file.lockfile && !file.untracked {
             return;
         }
         let path = file.path.clone();
         let source = file.start;
-        if !self.expanded_lockfiles.remove(&path) {
-            self.expanded_lockfiles.insert(path);
+        if !self.expanded_folds.remove(&path) {
+            self.expanded_folds.insert(path);
         }
         self.search_match = None;
         self.rebuild_show_rows();
@@ -315,11 +322,16 @@ impl App {
             .collect();
         if lockfiles
             .iter()
-            .any(|path| !self.expanded_lockfiles.contains(path))
+            .any(|path| !self.expanded_folds.contains(path))
         {
-            self.expanded_lockfiles.extend(lockfiles);
+            self.expanded_folds.extend(lockfiles);
         } else {
-            self.expanded_lockfiles.clear();
+            self.expanded_folds.retain(|path| {
+                !self
+                    .show_files
+                    .iter()
+                    .any(|file| file.lockfile && file.path == *path)
+            });
         }
         self.search_match = None;
         self.rebuild_show_rows();
@@ -435,12 +447,10 @@ impl App {
                         (start + step) % n
                     };
                     if lines[i].to_lowercase().contains(&query) {
-                        if let Some(file) = self
-                            .show_files
-                            .iter()
-                            .find(|file| file.lockfile && (file.start..file.end).contains(&i))
-                        {
-                            self.expanded_lockfiles.insert(file.path.clone());
+                        if let Some(file) = self.show_files.iter().find(|file| {
+                            (file.lockfile || file.untracked) && (file.start..file.end).contains(&i)
+                        }) {
+                            self.expanded_folds.insert(file.path.clone());
                             self.rebuild_show_rows();
                         }
                         if let Some(visible) = self.show_rows.iter().position(|row| row.source == i)
@@ -533,6 +543,25 @@ mod tests {
         app.show_offset = app.show_rows.iter().position(|row| row.folded).unwrap();
         app.toggle_show_file();
         assert!(app.show_rows.iter().any(|row| row.text == "+new dep"));
+    }
+
+    #[test]
+    fn untracked_files_start_folded_individually() {
+        let mut app = App::new(Vec::new());
+        app.show_text = "diff --git a/one.txt b/one.txt\nnew file mode 100644\n--- /dev/null\n+++ b/one.txt\n@@ -0,0 +1 @@\n+one\ndiff --git a/two.txt b/two.txt\nnew file mode 100644\n--- /dev/null\n+++ b/two.txt\n@@ -0,0 +1 @@\n+two\n"
+            .to_owned();
+        app.reset_show_folds();
+
+        let folded: Vec<_> = app.show_rows.iter().filter(|row| row.folded).collect();
+        assert_eq!(folded.len(), 2);
+        assert!(folded.iter().any(|row| row.text.contains("one.txt")));
+        assert!(folded.iter().any(|row| row.text.contains("two.txt")));
+        assert!(!app.show_rows.iter().any(|row| row.text == "+one"));
+
+        app.show_offset = app.show_rows.iter().position(|row| row.folded).unwrap();
+        app.toggle_show_file();
+        assert!(app.show_rows.iter().any(|row| row.text == "+one"));
+        assert!(!app.show_rows.iter().any(|row| row.text == "+two"));
     }
 
     #[test]
