@@ -56,6 +56,8 @@ pub fn handle(event: Event, app: &mut App) {
         }
     } else if let Event::Mouse(mouse) = event {
         match mouse.kind {
+            MouseEventKind::ScrollUp if app.mode == Mode::Show => app.scroll_show(-3),
+            MouseEventKind::ScrollDown if app.mode == Mode::Show => app.scroll_show(3),
             MouseEventKind::ScrollUp => app.move_by(-1, 3),
             MouseEventKind::ScrollDown => app.move_by(1, 3),
             MouseEventKind::Down(MouseButton::Left) if mouse.row == 0 => {
@@ -199,6 +201,38 @@ mod tests {
             .collect();
         handle(key(KeyCode::Char('f')), &mut app);
         assert_eq!(app.show_cursor, 20);
+    }
+
+    #[test]
+    fn show_mouse_wheel_scrolls_immediately_and_keeps_cursor_visible() {
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_rows = (0..30)
+            .map(|source| crate::app::ShowRow {
+                text: String::new(),
+                source,
+                file: None,
+                folded: false,
+                fold_separator: false,
+            })
+            .collect();
+        app.visible_show_rows = 5;
+        app.show_offset = 10;
+        app.show_cursor = 14;
+
+        let wheel_down = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 0,
+            row: 0,
+            modifiers: KeyModifiers::NONE,
+        });
+        handle(wheel_down.clone(), &mut app);
+        assert_eq!(app.show_offset, 13);
+        assert_eq!(app.show_cursor, 14);
+
+        handle(wheel_down, &mut app);
+        assert_eq!(app.show_offset, 16);
+        assert_eq!(app.show_cursor, 16);
     }
 
     #[test]

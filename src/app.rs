@@ -124,6 +124,23 @@ impl App {
         }
     }
 
+    pub fn scroll_show(&mut self, delta: isize) {
+        let height = self.visible_show_rows.max(1);
+        let max_offset = self.show_rows.len().saturating_sub(height);
+        self.show_offset = if delta < 0 {
+            self.show_offset.saturating_sub(delta.unsigned_abs())
+        } else {
+            self.show_offset
+                .saturating_add(delta as usize)
+                .min(max_offset)
+        };
+        if self.show_cursor < self.show_offset {
+            self.show_cursor = self.show_offset;
+        } else if self.show_cursor >= self.show_offset + height {
+            self.show_cursor = self.show_offset + height - 1;
+        }
+    }
+
     pub fn move_selection(&mut self, delta: isize) -> bool {
         if self.commits.is_empty() {
             return false;
