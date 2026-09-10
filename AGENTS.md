@@ -4,6 +4,9 @@
 - Never amend or otherwise rewrite a commit reachable from a remote ref unless
   the maintainer explicitly requests a history rewrite. Create a follow-up
   commit instead.
+- Changelog fix entries should only describe bugs present in the previous
+  release. For fixes to unreleased features, update the feature's existing
+  entry if needed rather than adding a separate fix entry.
 
 ## Release workflow
 
