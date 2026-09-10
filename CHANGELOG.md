@@ -5,6 +5,16 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+## 0.1.3 - 2026-09-10
+
+### Fixed
+
+- Made folded files in the last screenful of Show keyboard-accessible by adding
+  a visible cursor independent of the scroll position.
+- Made mouse-wheel scrolling in Show move the viewport immediately while keeping
+  the cursor visible.
+- Made Show page-navigation keys scroll the viewport by the visible page height.
+
 ## 0.1.2 - 2026-09-06
 
 ### Fixed
@@ -31,7 +41,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Initial release of the interactive `git log` and `git show` browser.
 
-[Unreleased]: https://github.com/yairchu/glog/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/yairchu/glog/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/yairchu/glog/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/yairchu/glog/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/yairchu/glog/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/yairchu/glog/releases/tag/v0.1.0
