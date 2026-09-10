@@ -75,6 +75,38 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
     Ok(commits)
 }
 
+/// Resolve a single commit before opening the terminal; defer ancestry traversal.
+pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
+    let separator = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    let revision = match &args[..separator] {
+        [] => "HEAD",
+        [revision] if !revision.starts_with('-') => revision,
+        _ => return Err("usage: glog show [commit] [-- pathspec...]".to_owned()),
+    };
+    let output = Command::new("git")
+        .args([
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{revision}^{{commit}}"),
+        ])
+        .output()
+        .map_err(|error| format!("could not resolve commit: {error}"))?;
+    if !output.status.success() {
+        return Err(stderr_message("could not resolve commit", &output.stderr));
+    }
+    let hash = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let commits = load_log(&["-1".to_owned(), hash.clone(), "--".to_owned()])?;
+    let mut app = crate::app::App::new(commits);
+    app.pending_history = Some(hash);
+    app.show_paths = args.get(separator + 1..).unwrap_or_default().to_vec();
+    app.switch_mode();
+    Ok(app)
+}
+
 pub fn watch_fingerprint() -> Result<u64, String> {
     let mut fingerprint = DefaultHasher::new();
     hash_command(
@@ -211,13 +243,13 @@ fn has_diff(args: &[&str]) -> Result<bool, String> {
 
 pub fn show(commit: &Commit) -> Result<String, String> {
     match commit.kind {
-        CommitKind::Revision => show_revision(&commit.hash),
+        CommitKind::Revision => show_revision(&commit.hash, &[]),
         CommitKind::Staged => show_diff(&["diff", "--cached", "--color=always", "--no-ext-diff"]),
         CommitKind::Unstaged => show_unstaged(),
     }
 }
 
-fn show_revision(hash: &str) -> Result<String, String> {
+pub fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
     let output = Command::new("git")
         .args([
             "--no-pager",
@@ -225,7 +257,9 @@ fn show_revision(hash: &str) -> Result<String, String> {
             "--color=always",
             "--no-ext-diff",
             hash,
+            "--",
         ])
+        .args(paths)
         .env("GIT_PAGER", "cat")
         .output()
         .map_err(|error| format!("could not run git show: {error}"))?;
@@ -527,6 +561,64 @@ mod tests {
     impl Drop for CurrentDirGuard {
         fn drop(&mut self) {
             env::set_current_dir(&self.original).unwrap();
+        }
+    }
+
+    #[test]
+    fn show_opens_exact_commit_and_loads_history_on_navigation() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write("first.txt", "first\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "first"]);
+        git(&["tag", "-a", "first-tag", "-m", "tag"]);
+        fs::write("second.txt", "second\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "second"]);
+        fs::write("dirty.txt", "dirty\n").unwrap();
+
+        let mut app = load_show_app(&[]).unwrap();
+        assert_eq!(app.mode, crate::app::Mode::Show);
+        assert_eq!(app.commits.len(), 1);
+        assert_eq!(app.commits[0].subject, "second");
+        assert!(app.show_text.contains("second.txt"));
+        assert!(app.pending_history.is_some());
+        assert!(app.move_selection(1));
+        assert_eq!(app.commits[app.selected].subject, "first");
+        assert!(app.pending_history.is_none());
+
+        // A path absent from the selected commit must not select an ancestor.
+        let mut app = load_show_app(&["HEAD".into(), "--".into(), "first.txt".into()]).unwrap();
+        assert_eq!(app.commits[0].subject, "second");
+        assert!(!app.show_text.contains("second.txt"));
+        app.switch_mode();
+        assert_eq!(app.mode, crate::app::Mode::Log);
+        assert_eq!(app.commits.len(), 2);
+        assert_eq!(app.selected, 0);
+
+        let app = load_show_app(&["first-tag".into()]).unwrap();
+        assert_eq!(app.commits[0].subject, "first");
+        for args in [
+            vec!["missing"],
+            vec!["HEAD", "HEAD~1"],
+            vec!["HEAD~1..HEAD"],
+            vec!["--watch"],
+            vec!["HEAD:first.txt"],
+        ] {
+            assert!(
+                load_show_app(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err()
+            );
         }
     }
 

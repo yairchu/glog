@@ -69,7 +69,9 @@ pub fn handle(event: Event, app: &mut App) {
             MouseEventKind::ScrollDown => app.move_by(1, 3),
             MouseEventKind::Down(MouseButton::Left) if mouse.row == 0 => {
                 if (app.log_tab_start..app.log_tab_end).contains(&mouse.column) {
-                    app.mode = Mode::Log;
+                    if app.mode != Mode::Log {
+                        app.switch_mode();
+                    }
                     app.show_help = false;
                 } else if (app.show_tab_start..app.show_tab_end).contains(&mouse.column) {
                     if app.mode != Mode::Show {

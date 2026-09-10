@@ -51,7 +51,8 @@ completion adapter to take effect.
 
 ### Zsh completion
 
-The included completion adapter reuses Zsh's `git log` completer, including branches, tags, revisions, paths, and Git log options. From a checkout, install it with:
+The included completion adapter reuses Zsh's `git log` completer, including branches, tags, revisions, paths, and Git log options. Explicit `log`
+and `show` commands select the corresponding Git completer. From a checkout, install it with:
 
 ```zsh
 mkdir -p ~/.cargo/share/zsh/site-functions
@@ -78,6 +79,24 @@ glog --first-parent main
 glog --since="2 weeks ago"
 glog main -- src/
 ```
+
+Open directly in Show with `glog show`, optionally naming a commit (hash, branch,
+tag, or revision expression):
+
+```bash
+glog show                 # HEAD, even with a dirty working tree
+glog show main~3
+glog show v0.1.0 -- src/
+glog log show             # log for a branch named "show"
+glog log --all
+```
+
+Show accepts one commit and optional pathspecs after `--`. Pathspecs restrict
+patches while history remains rooted at the requested commit. History loads on
+first switching to Log with `Tab`/`Escape` or navigating with the arrow keys;
+`q` quits directly. The existing folding, search, and file navigation work as
+usual. `glog log` explicitly selects Log mode and otherwise accepts the same
+arguments as the shorthand `glog` invocation.
 
 Use watch mode to refresh the default `HEAD` view when commits, branches, tags,
 remote-tracking refs, staged changes, unstaged changes, or untracked files

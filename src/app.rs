@@ -46,6 +46,8 @@ pub struct App {
     pub show_tab_start: u16,
     pub show_tab_end: u16,
     pub quit: bool,
+    pub pending_history: Option<String>,
+    pub show_paths: Vec<String>,
     cache: HashMap<String, String>,
     cache_order: VecDeque<String>,
     show_files: Vec<FileSection>,
@@ -80,10 +82,25 @@ impl App {
             show_tab_start: 13,
             show_tab_end: 19,
             quit: false,
+            pending_history: None,
+            show_paths: Vec::new(),
             cache: HashMap::new(),
             cache_order: VecDeque::new(),
             show_files: Vec::new(),
             expanded_folds: HashSet::new(),
+        }
+    }
+
+    fn load_history(&mut self) {
+        let Some(hash) = self.pending_history.clone() else {
+            return;
+        };
+        match git::load_log(&[hash, "--".to_owned()]) {
+            Ok(commits) => {
+                self.commits = commits;
+                self.pending_history = None;
+            }
+            Err(error) => self.status = Some(format!("Could not load history: {error}")),
         }
     }
 
@@ -95,6 +112,8 @@ impl App {
         };
         if self.mode == Mode::Show {
             self.load_show();
+        } else {
+            self.load_history();
         }
     }
 
@@ -142,6 +161,7 @@ impl App {
     }
 
     pub fn move_selection(&mut self, delta: isize) -> bool {
+        self.load_history();
         if self.commits.is_empty() {
             return false;
         }
@@ -207,7 +227,12 @@ impl App {
         }
         self.show_offset = 0;
         self.show_cursor = 0;
-        match git::show(&commit) {
+        let shown = if commit.kind == CommitKind::Revision {
+            git::show_revision(&commit.hash, &self.show_paths)
+        } else {
+            git::show(&commit)
+        };
+        match shown {
             Ok(text) => {
                 self.show_text = text.clone();
                 self.reset_show_folds();

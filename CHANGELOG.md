@@ -5,6 +5,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Added `glog show [commit] [-- pathspec...]` to open directly in Show, with
+  history loaded when navigating, and `glog log` as an explicit Log command.
+
 ## 0.1.3 - 2026-09-10
 
 ### Fixed

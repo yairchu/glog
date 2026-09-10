@@ -21,26 +21,36 @@ use ratatui::Terminal;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    if let Some(information) = parse_information(&args) {
+    let (show, command_args) = parse_command(&args);
+    if let Some(information) = parse_information(command_args) {
         println!("{information}");
         return ExitCode::SUCCESS;
     }
-    let watch = match parse_watch(&args) {
+    let watch = match if show {
+        Ok(false)
+    } else {
+        parse_watch(command_args)
+    } {
         Ok(watch) => watch,
         Err(error) => {
             eprintln!("glog: {error}");
             return ExitCode::FAILURE;
         }
     };
-    let git_args = if watch { &[][..] } else { args.as_slice() };
-    let commits = match git::load_log(git_args) {
-        Ok(commits) => commits,
+    let git_args = if watch { &[][..] } else { command_args };
+    let loaded = if show {
+        git::load_show_app(command_args)
+    } else {
+        git::load_log(git_args).map(App::new)
+    };
+    let mut app = match loaded {
+        Ok(app) => app,
         Err(error) => {
             eprintln!("glog: {error}");
             return ExitCode::FAILURE;
         }
     };
-    if !should_start_tui(watch, commits.len()) {
+    if !should_start_tui(watch, app.commits.len()) {
         eprintln!("glog: no commits matched");
         return ExitCode::SUCCESS;
     }
@@ -53,7 +63,6 @@ fn main() -> ExitCode {
         }
     };
     let mut guard = TerminalGuard(true);
-    let mut app = App::new(commits);
     app.watch = watch;
     app.context = args.join(" ");
     let result = run(&mut terminal, &mut app);
@@ -63,6 +72,14 @@ fn main() -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+fn parse_command(args: &[String]) -> (bool, &[String]) {
+    match args.first().map(String::as_str) {
+        Some("show") => (true, &args[1..]),
+        Some("log") => (false, &args[1..]),
+        _ => (false, args),
     }
 }
 
@@ -79,14 +96,17 @@ fn parse_information(args: &[String]) -> Option<&'static str> {
 const HELP: &str = "glog — an interactive git log and git show browser
 
 Usage: glog [--watch]
-       glog [git log arguments] [--] [pathspec...]
+       glog [log] [git log arguments] [--] [pathspec...]
+       glog show [commit] [-- pathspec...]
 
 Options:
   --watch       Refresh the default HEAD view when the repository changes
   -h, --help    Print help
   -V, --version Print version
 
-All other arguments are passed through to git log. Inside the TUI, press h for
+Show opens HEAD or the specified commit, with history available via Tab.
+Use glog log show to browse a branch named show.
+Log arguments are passed through to git log. Inside the TUI, press h for
 key help, Tab to switch between Log and Show, and q or Ctrl-C to quit.";
 
 fn start_terminal() -> io::Result<Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>> {
@@ -185,6 +205,26 @@ impl Drop for TerminalGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn commands_preserve_log_shorthand_and_escape_reserved_names() {
+        for (args, show, remaining) in [
+            (vec!["show", "HEAD~2"], true, vec!["HEAD~2"]),
+            (vec!["log", "show"], false, vec!["show"]),
+            (vec!["log", "log"], false, vec!["log"]),
+            (
+                vec!["main", "--", "show"],
+                false,
+                vec!["main", "--", "show"],
+            ),
+            (vec![], false, vec![]),
+        ] {
+            let args: Vec<String> = args.into_iter().map(str::to_owned).collect();
+            let (actual, rest) = parse_command(&args);
+            assert_eq!(actual, show);
+            assert_eq!(rest, remaining);
+        }
+    }
 
     #[test]
     fn watch_must_be_the_only_argument() {
