@@ -46,7 +46,7 @@ pub struct App {
     pub show_tab_start: u16,
     pub show_tab_end: u16,
     pub quit: bool,
-    pub pending_history: Option<String>,
+    pub pending_history: Option<Vec<String>>,
     pub show_paths: Vec<String>,
     cache: HashMap<String, String>,
     cache_order: VecDeque<String>,
@@ -92,13 +92,13 @@ impl App {
     }
 
     fn load_history(&mut self) {
-        let Some(hash) = self.pending_history.clone() else {
+        let Some(args) = self.pending_history.clone() else {
             return;
         };
-        match git::load_log(&[hash, "--".to_owned()]) {
+        match git::load_log(&args) {
             Ok(commits) => {
-                self.commits = commits;
                 self.pending_history = None;
+                self.replace_commits(commits);
             }
             Err(error) => self.status = Some(format!("Could not load history: {error}")),
         }

@@ -51,8 +51,8 @@ completion adapter to take effect.
 
 ### Zsh completion
 
-The included completion adapter reuses Zsh's `git log` completer, including branches, tags, revisions, paths, and Git log options. Explicit `log`
-and `show` commands select the corresponding Git completer. From a checkout, install it with:
+The included completion adapter reuses Zsh's `git log` completer, including branches, tags, revisions, paths, and Git log options. Explicit `log`, `show`,
+and `diff` commands select the corresponding Git completer. From a checkout, install it with:
 
 ```zsh
 mkdir -p ~/.cargo/share/zsh/site-functions
@@ -92,11 +92,27 @@ glog log --all
 ```
 
 Show accepts one commit and optional pathspecs after `--`. Pathspecs restrict
-patches while history remains rooted at the requested commit. History loads on
+patches. With an explicit commit, history remains rooted at that commit. With
+no commit argument, Log includes the usual unstaged and staged entries and
+keeps HEAD selected. History loads on
 first switching to Log with `Tab`/`Escape` or navigating with the arrow keys;
 `q` quits directly. The existing folding, search, and file navigation work as
 usual. `glog log` explicitly selects Log mode and otherwise accepts the same
 arguments as the shorthand `glog` invocation.
+
+Open working-tree changes directly in Show:
+
+```bash
+glog diff                 # unstaged changes, including untracked files
+glog diff --cached        # staged changes
+glog log diff             # log for a branch named "diff"
+```
+
+If the requested changes are empty, glog prints a brief message and exits
+successfully without opening the terminal UI. Switching to Log loads the
+normal history, including working-tree entries, and keeps the displayed entry
+selected. This also works before the repository's first commit. This initial
+`diff` command accepts only the optional `--cached` flag.
 
 Use watch mode to refresh the default `HEAD` view when commits, branches, tags,
 remote-tracking refs, staged changes, unstaged changes, or untracked files

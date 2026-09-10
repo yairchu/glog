@@ -2,7 +2,7 @@
 
 autoload -Uz _git
 local service=git-log
-if (( CURRENT > 2 )) && [[ $words[2] == (log|show) ]]; then
+if (( CURRENT > 2 )) && [[ $words[2] == (log|show|diff) ]]; then
   service=git-$words[2]
   words=("$words[1]" "${words[@]:2}")
   (( CURRENT-- ))

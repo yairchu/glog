@@ -21,12 +21,12 @@ use ratatui::Terminal;
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
-    let (show, command_args) = parse_command(&args);
+    let (command, command_args) = parse_command(&args);
     if let Some(information) = parse_information(command_args) {
         println!("{information}");
         return ExitCode::SUCCESS;
     }
-    let watch = match if show {
+    let watch = match if command != Command::Log {
         Ok(false)
     } else {
         parse_watch(command_args)
@@ -38,10 +38,10 @@ fn main() -> ExitCode {
         }
     };
     let git_args = if watch { &[][..] } else { command_args };
-    let loaded = if show {
-        git::load_show_app(command_args)
-    } else {
-        git::load_log(git_args).map(App::new)
+    let loaded = match command {
+        Command::Show => git::load_show_app(command_args),
+        Command::Diff => git::load_diff_app(command_args),
+        Command::Log => git::load_log(git_args).map(App::new),
     };
     let mut app = match loaded {
         Ok(app) => app,
@@ -51,7 +51,12 @@ fn main() -> ExitCode {
         }
     };
     if !should_start_tui(watch, app.commits.len()) {
-        eprintln!("glog: no commits matched");
+        let message = match command {
+            Command::Diff if command_args.is_empty() => "no unstaged changes",
+            Command::Diff => "no staged changes",
+            _ => "no commits matched",
+        };
+        eprintln!("glog: {message}");
         return ExitCode::SUCCESS;
     }
 
@@ -75,11 +80,19 @@ fn main() -> ExitCode {
     }
 }
 
-fn parse_command(args: &[String]) -> (bool, &[String]) {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Command {
+    Log,
+    Show,
+    Diff,
+}
+
+fn parse_command(args: &[String]) -> (Command, &[String]) {
     match args.first().map(String::as_str) {
-        Some("show") => (true, &args[1..]),
-        Some("log") => (false, &args[1..]),
-        _ => (false, args),
+        Some("show") => (Command::Show, &args[1..]),
+        Some("diff") => (Command::Diff, &args[1..]),
+        Some("log") => (Command::Log, &args[1..]),
+        _ => (Command::Log, args),
     }
 }
 
@@ -98,6 +111,7 @@ const HELP: &str = "glog — an interactive git log and git show browser
 Usage: glog [--watch]
        glog [log] [git log arguments] [--] [pathspec...]
        glog show [commit] [-- pathspec...]
+       glog diff [--cached]
 
 Options:
   --watch       Refresh the default HEAD view when the repository changes
@@ -105,7 +119,9 @@ Options:
   -V, --version Print version
 
 Show opens HEAD or the specified commit, with history available via Tab.
-Use glog log show to browse a branch named show.
+Diff opens unstaged changes (including untracked files), or staged changes
+with --cached, and exits if empty.
+Use glog log show (or glog log diff) to browse a branch named after a command.
 Log arguments are passed through to git log. Inside the TUI, press h for
 key help, Tab to switch between Log and Show, and q or Ctrl-C to quit.";
 
@@ -209,15 +225,18 @@ mod tests {
     #[test]
     fn commands_preserve_log_shorthand_and_escape_reserved_names() {
         for (args, show, remaining) in [
-            (vec!["show", "HEAD~2"], true, vec!["HEAD~2"]),
-            (vec!["log", "show"], false, vec!["show"]),
-            (vec!["log", "log"], false, vec!["log"]),
+            (vec!["show", "HEAD~2"], Command::Show, vec!["HEAD~2"]),
+            (vec!["log", "show"], Command::Log, vec!["show"]),
+            (vec!["log", "log"], Command::Log, vec!["log"]),
             (
                 vec!["main", "--", "show"],
-                false,
+                Command::Log,
                 vec!["main", "--", "show"],
             ),
-            (vec![], false, vec![]),
+            (vec![], Command::Log, vec![]),
+            (vec!["diff"], Command::Diff, vec![]),
+            (vec!["diff", "--cached"], Command::Diff, vec!["--cached"]),
+            (vec!["log", "diff"], Command::Log, vec!["diff"]),
         ] {
             let args: Vec<String> = args.into_iter().map(str::to_owned).collect();
             let (actual, rest) = parse_command(&args);

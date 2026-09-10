@@ -101,9 +101,32 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
     let hash = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     let commits = load_log(&["-1".to_owned(), hash.clone(), "--".to_owned()])?;
     let mut app = crate::app::App::new(commits);
-    app.pending_history = Some(hash);
+    app.pending_history = Some(if separator == 0 {
+        Vec::new()
+    } else {
+        vec![hash, "--".to_owned()]
+    });
     app.show_paths = args.get(separator + 1..).unwrap_or_default().to_vec();
     app.switch_mode();
+    Ok(app)
+}
+
+/// Open a working-tree entry without traversing committed history.
+pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
+    let kind = match args {
+        [] => CommitKind::Unstaged,
+        [flag] if flag == "--cached" => CommitKind::Staged,
+        _ => return Err("usage: glog diff [--cached]".to_owned()),
+    };
+    let entries = working_tree_entries()?
+        .into_iter()
+        .filter(|entry| entry.kind == kind)
+        .collect();
+    let mut app = crate::app::App::new(entries);
+    if !app.commits.is_empty() {
+        app.pending_history = Some(Vec::new());
+        app.switch_mode();
+    }
     Ok(app)
 }
 
@@ -586,6 +609,8 @@ mod tests {
         fs::write("second.txt", "second\n").unwrap();
         git(&["add", "."]);
         git(&["commit", "-qm", "second"]);
+        fs::write("first.txt", "staged\n").unwrap();
+        git(&["add", "first.txt"]);
         fs::write("dirty.txt", "dirty\n").unwrap();
 
         let mut app = load_show_app(&[]).unwrap();
@@ -594,6 +619,12 @@ mod tests {
         assert_eq!(app.commits[0].subject, "second");
         assert!(app.show_text.contains("second.txt"));
         assert!(app.pending_history.is_some());
+        app.switch_mode();
+        assert_eq!(app.commits[0].kind, CommitKind::Unstaged);
+        assert_eq!(app.commits[1].kind, CommitKind::Staged);
+        assert_eq!(app.selected, 2);
+        assert_eq!(app.commits[app.selected].subject, "second");
+        app.switch_mode();
         assert!(app.move_selection(1));
         assert_eq!(app.commits[app.selected].subject, "first");
         assert!(app.pending_history.is_none());
@@ -620,6 +651,62 @@ mod tests {
                 load_show_app(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err()
             );
         }
+    }
+
+    #[test]
+    fn diff_opens_only_requested_changes_and_preserves_selection_in_log() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        let cached = ["--cached".to_owned()];
+        assert!(load_diff_app(&[]).unwrap().commits.is_empty());
+        assert!(load_diff_app(&cached).unwrap().commits.is_empty());
+        fs::write("new.txt", "untracked\n").unwrap();
+        let mut app = load_diff_app(&[]).unwrap();
+        assert_eq!(app.mode, crate::app::Mode::Show);
+        assert_eq!(app.commits[0].kind, CommitKind::Unstaged);
+        assert!(app.show_text.contains("glog-lazy-untracked:"));
+        app.switch_mode();
+        assert_eq!(app.commits.len(), 1); // Unborn HEAD is supported.
+        git(&["add", "new.txt"]);
+        assert!(load_diff_app(&[]).unwrap().commits.is_empty());
+        assert_eq!(
+            load_diff_app(&cached).unwrap().commits[0].kind,
+            CommitKind::Staged
+        );
+        git(&["commit", "-qm", "first"]);
+        assert!(load_diff_app(&[]).unwrap().commits.is_empty());
+        assert!(load_diff_app(&cached).unwrap().commits.is_empty());
+        fs::write("new.txt", "staged-content\n").unwrap();
+        git(&["add", "new.txt"]);
+        fs::write("new.txt", "unstaged-content\n").unwrap();
+        for (args, kind, selected, content) in [
+            (&[][..], CommitKind::Unstaged, 0, "unstaged-content"),
+            (&cached[..], CommitKind::Staged, 1, "staged-content"),
+        ] {
+            let mut app = load_diff_app(args).unwrap();
+            assert_eq!(app.mode, crate::app::Mode::Show);
+            assert_eq!(app.commits.len(), 1);
+            assert!(crate::ansi::plain(&app.show_text).contains(content));
+            assert!(app.pending_history.is_some());
+            app.switch_mode();
+            assert_eq!(app.commits.len(), 3);
+            assert_eq!(app.selected, selected);
+            assert_eq!(app.commits[app.selected].kind, kind);
+            assert!(app.pending_history.is_none());
+        }
+        assert!(load_diff_app(&["HEAD".into()]).is_err());
+        assert!(load_diff_app(&["--watch".into()]).is_err());
     }
 
     #[test]
