@@ -48,6 +48,9 @@ pub struct App {
     pub quit: bool,
     pub pending_history: Option<Vec<String>>,
     pub show_paths: Vec<String>,
+    search_history: Vec<String>,
+    search_history_index: usize,
+    search_draft: String,
     cache: HashMap<String, String>,
     cache_order: VecDeque<String>,
     show_files: Vec<FileSection>,
@@ -84,6 +87,9 @@ impl App {
             quit: false,
             pending_history: None,
             show_paths: Vec::new(),
+            search_history: Vec::new(),
+            search_history_index: 0,
+            search_draft: String::new(),
             cache: HashMap::new(),
             cache_order: VecDeque::new(),
             show_files: Vec::new(),
@@ -471,11 +477,40 @@ impl App {
 
     pub fn begin_search(&mut self, reverse: bool) {
         self.search_input = Some(String::new());
+        self.search_history_index = self.search_history.len();
+        self.search_draft.clear();
         self.search_reverse = reverse;
     }
+    pub fn recall_search(&mut self, older: bool) {
+        let Some(input) = self.search_input.as_ref() else {
+            return;
+        };
+        let end = self.search_history.len();
+        let index = if older {
+            self.search_history_index.saturating_sub(1)
+        } else {
+            (self.search_history_index + 1).min(end)
+        };
+        if index == self.search_history_index {
+            return;
+        }
+        if self.search_history_index == end {
+            self.search_draft.clone_from(input);
+        }
+        self.search_history_index = index;
+        self.search_input = Some(if index == end {
+            self.search_draft.clone()
+        } else {
+            self.search_history[index].clone()
+        });
+    }
+
     pub fn submit_search(&mut self) {
         if let Some(query) = self.search_input.take() {
             if !query.is_empty() {
+                if self.search_history.last() != Some(&query) {
+                    self.search_history.push(query.clone());
+                }
                 self.search = Some(query);
                 self.search_match = None;
                 self.next_match(self.search_reverse);

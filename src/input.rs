@@ -14,6 +14,8 @@ pub fn handle(event: Event, app: &mut App) {
             match key.code {
                 KeyCode::Esc => app.search_input = None,
                 KeyCode::Enter => app.submit_search(),
+                KeyCode::Up => app.recall_search(true),
+                KeyCode::Down => app.recall_search(false),
                 KeyCode::Backspace => {
                     app.search_input.as_mut().unwrap().pop();
                 }
@@ -131,6 +133,66 @@ mod tests {
         assert_eq!(app.mode, Mode::Log);
         handle(key(KeyCode::Esc), &mut app);
         assert!(!app.quit);
+    }
+
+    #[test]
+    fn search_history_can_be_recalled_edited_and_shared_between_views() {
+        let mut app = App::new(Vec::new());
+        handle(key(KeyCode::Char('/')), &mut app);
+        for c in "first".chars() {
+            handle(key(KeyCode::Char(c)), &mut app);
+        }
+        handle(key(KeyCode::Enter), &mut app);
+        app.mode = Mode::Show;
+        handle(key(KeyCode::Char('?')), &mut app);
+        handle(key(KeyCode::Up), &mut app);
+        assert_eq!(app.search_input.as_deref(), Some("first"));
+        assert!(app.search_reverse);
+        handle(key(KeyCode::Backspace), &mut app);
+        handle(key(KeyCode::Char('!')), &mut app);
+        handle(key(KeyCode::Enter), &mut app);
+        assert_eq!(app.search.as_deref(), Some("firs!"));
+        handle(key(KeyCode::Char('/')), &mut app);
+        handle(key(KeyCode::Char('d')), &mut app);
+        handle(key(KeyCode::Up), &mut app);
+        assert_eq!(app.search_input.as_deref(), Some("firs!"));
+        handle(key(KeyCode::Up), &mut app);
+        handle(key(KeyCode::Up), &mut app);
+        assert_eq!(app.search_input.as_deref(), Some("first"));
+        handle(key(KeyCode::Down), &mut app);
+        assert_eq!(app.search_input.as_deref(), Some("firs!"));
+        handle(key(KeyCode::Down), &mut app);
+        handle(key(KeyCode::Down), &mut app);
+        assert_eq!(app.search_input.as_deref(), Some("d"));
+        handle(key(KeyCode::Esc), &mut app);
+        handle(key(KeyCode::Char('/')), &mut app);
+        handle(key(KeyCode::Up), &mut app);
+        assert_eq!(app.search_input.as_deref(), Some("firs!"));
+    }
+
+    #[test]
+    fn search_history_ignores_empty_cancelled_and_consecutive_duplicate_queries() {
+        let mut app = App::new(Vec::new());
+        handle(key(KeyCode::Char('/')), &mut app);
+        handle(key(KeyCode::Up), &mut app);
+        handle(key(KeyCode::Down), &mut app);
+        assert_eq!(app.search_input.as_deref(), Some(""));
+        handle(key(KeyCode::Enter), &mut app);
+        for query in ["older", "newer", "newer"] {
+            app.begin_search(false);
+            app.search_input = Some(query.to_owned());
+            handle(key(KeyCode::Enter), &mut app);
+        }
+        app.begin_search(false);
+        app.search_input = Some("cancelled".to_owned());
+        handle(key(KeyCode::Esc), &mut app);
+        app.begin_search(false);
+        handle(key(KeyCode::Enter), &mut app);
+        app.begin_search(false);
+        handle(key(KeyCode::Up), &mut app);
+        assert_eq!(app.search_input.as_deref(), Some("newer"));
+        handle(key(KeyCode::Up), &mut app);
+        assert_eq!(app.search_input.as_deref(), Some("older"));
     }
 
     #[test]

@@ -7,6 +7,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Added search history recall with Up/Down while entering `/` or `?` searches,
+  allowing previous queries to be edited and reused across Log and Show.
+
 - Added `glog diff` and `glog diff --cached` to open unstaged or staged changes
   directly, exiting successfully when the requested changes are empty.
 - Added `glog show [commit] [-- pathspec...]` to open directly in Show, with
