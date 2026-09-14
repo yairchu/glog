@@ -537,7 +537,9 @@ impl App {
                         (start + step) % n
                     };
                     let c = &self.commits[i];
-                    if self.log_format.text(c).to_lowercase().contains(&query) {
+                    if c.hash.to_lowercase().contains(&query)
+                        || self.log_format.text(c).to_lowercase().contains(&query)
+                    {
                         self.selected = i;
                         self.search_match = Some((Mode::Log, i));
                         self.status = None;
@@ -618,6 +620,32 @@ mod tests {
         app.next_match(false);
         assert_eq!(app.selected, 1);
         assert_eq!(app.search_match, Some((Mode::Log, 1)));
+    }
+
+    #[test]
+    fn log_search_matches_full_and_partial_hashes_independently_of_display() {
+        let hash = "0123456789abcdef0123456789abcdef01234567";
+        let mut target = commit("target");
+        target.hash = hash.to_owned();
+        target.short_hash = hash[..7].to_owned();
+        for format in ["%h %s", "%s"] {
+            for query in [hash.to_owned(), hash[..12].to_uppercase()] {
+                for reverse in [false, true] {
+                    let mut app = App::new(vec![commit("first"), target.clone(), commit("last")]);
+                    app.log_format = crate::log_format::LogFormat::parse(format).unwrap();
+                    app.selected = if reverse { 0 } else { 2 };
+                    app.begin_search(reverse);
+                    app.search_input = Some(query.clone());
+                    app.submit_search();
+                    assert_eq!(
+                        app.selected, 1,
+                        "format={format}, query={query}, reverse={reverse}"
+                    );
+                    assert_eq!(app.search_match, Some((Mode::Log, 1)));
+                    assert_eq!(app.status, None);
+                }
+            }
+        }
     }
 
     #[test]

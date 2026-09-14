@@ -9,6 +9,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Added `Ctrl-L` to redraw the screen, including while searching or viewing help.
 
+### Fixed
+
+- Made Log search match full commit hashes and longer abbreviations, including
+  when hashes are hidden from the displayed rows.
+
 ## 0.2.0 - 2026-09-14
 
 ### Added
