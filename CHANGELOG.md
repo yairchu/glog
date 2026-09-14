@@ -10,6 +10,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Added configurable, colored Log rows with `--pretty=format:...`, `--format`,
   and Git date formatting, plus `a`/`d`/`r`/`x`/`s` keys to toggle author,
   date, refs, hash, and subject together with their associated punctuation.
+  Dates default to local `YYYY-MM-DD HH:MM`, respecting Git's `log.date`
+  setting and explicit date options.
 
 - Added search history recall with Up/Down while entering `/` or `?` searches,
   allowing previous queries to be edited and reused across Log and Show.

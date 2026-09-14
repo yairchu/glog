@@ -142,6 +142,11 @@ or `tformat:` prefixes. Other placeholders, named presets other than `oneline`,
 and multiline formats are rejected. Git handles `--date`, including
 `--date=format:...`; choose a date format that fits on one line.
 
+Dates default to `YYYY-MM-DD HH:MM` in your local timezone, without seconds
+or a timezone suffix. An explicit `--date` (or `--relative-date`) takes
+precedence over Git's `log.date` setting, which takes precedence over glog's
+fallback (`format-local:%Y-%m-%d %H:%M`).
+
 In Log, press `a`, `d`, `r`, `x`, or `s` to toggle author, date, refs, hash, or
 subject. Fields keep their position, punctuation, and color when restored.
 For example, hiding author changes `%h [%ad] (%an) %s` into `%h [%ad] %s`.

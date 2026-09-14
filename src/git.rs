@@ -34,9 +34,27 @@ pub enum CommitKind {
     Unstaged,
 }
 
-pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
+fn log_command(user_args: &[String]) -> Result<Command, String> {
+    let configured_date = Command::new("git")
+        .args(["config", "--get", "log.date"])
+        .output()
+        .map_err(|error| format!("could not read Git date configuration: {error}"))?;
     let mut command = Command::new("git");
     command.env("LC_ALL", "C");
+    // Supply a configuration fallback rather than a --date argument, so Git
+    // retains its own precedence for --date and --relative-date.
+    match configured_date.status.code() {
+        Some(0) => {}
+        Some(1) => {
+            command.args(["-c", "log.date=format-local:%Y-%m-%d %H:%M"]);
+        }
+        _ => {
+            return Err(stderr_message(
+                "could not read Git date configuration",
+                &configured_date.stderr,
+            ))
+        }
+    }
     command.args(["--no-pager", "log"]);
     let separator = user_args
         .iter()
@@ -51,7 +69,11 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
         "--pretty=format:%x1e%H%x1f%h%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%s",
     ]);
     command.args(&user_args[separator..]);
-    let output = command.output().map_err(|error| {
+    Ok(command)
+}
+
+pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
+    let output = log_command(user_args)?.output().map_err(|error| {
         if error.kind() == std::io::ErrorKind::NotFound {
             "git executable not found".to_owned()
         } else {
@@ -738,8 +760,8 @@ mod tests {
                 "-qm",
                 "A subject",
             ])
-            .env("GIT_AUTHOR_DATE", "2026-09-14T12:00:00+03:00")
-            .env("GIT_COMMITTER_DATE", "2026-09-14T12:00:00+03:00")
+            .env("GIT_AUTHOR_DATE", "2001-09-14T12:00:00+03:00")
+            .env("GIT_COMMITTER_DATE", "2001-09-14T12:00:00+03:00")
             .output()
             .unwrap();
         assert!(
@@ -747,6 +769,38 @@ mod tests {
             "{}",
             String::from_utf8_lossy(&output.stderr)
         );
+        // When no setting is inherited, verify the fallback in two timezones
+        // without changing the test process's environment.
+        let read_date = |args: &[String], timezone: &str| {
+            let output = log_command(args)
+                .unwrap()
+                .env("TZ", timezone)
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            parse_log(&String::from_utf8_lossy(&output.stdout))[0]
+                .author_date
+                .clone()
+        };
+        let configured_date = Command::new("git")
+            .args(["config", "--get", "log.date"])
+            .output()
+            .unwrap();
+        if configured_date.status.code() == Some(1) {
+            assert_eq!(read_date(&[], "UTC0"), "2001-09-14 09:00");
+            assert_eq!(read_date(&[], "EST5"), "2001-09-14 04:00");
+        }
+        assert!(Command::new("git")
+            .args(["config", "log.date", "format:%Y/%m/%d"])
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(read_date(&[], "UTC0"), "2001/09/14");
+        assert_eq!(
+            read_date(&["--date".into(), "short".into()], "UTC0"),
+            "2001-09-14"
+        );
+        assert!(read_date(&["--relative-date".into()], "UTC0").contains("ago"));
         let (format, args) = crate::log_format::parse_args(&[
             "--pretty=format:%h %ad (%an) %s".into(),
             "--date=short".into(),
@@ -756,14 +810,14 @@ mod tests {
         let commit = &commits[0];
         assert_eq!(commit.author, "Alice");
         assert_eq!(commit.author_email, "alice@example.com");
-        assert_eq!(commit.author_date, "2026-09-14");
+        assert_eq!(commit.author_date, "2001-09-14");
         assert_eq!(
             format.text(commit),
-            format!("{} 2026-09-14 (Alice) A subject", commit.short_hash)
+            format!("{} 2001-09-14 (Alice) A subject", commit.short_hash)
         );
         assert_eq!(
             load_log(&["--date=format:%Y".into()]).unwrap()[0].author_date,
-            "2026"
+            "2001"
         );
     }
 
