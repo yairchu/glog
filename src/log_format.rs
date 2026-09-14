@@ -389,6 +389,18 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn git_filter_values_are_not_parsed_as_display_options() {
+        for option in ["--grep", "--grep-reflog", "--author", "--committer"] {
+            for pattern in ["--oneline", "--format=%s", "--pretty", "--"] {
+                let args = [option, pattern, "--format=%h"].map(str::to_owned);
+                let (format, forwarded) = parse_args(&args).unwrap();
+                assert_eq!(forwarded, [option, pattern], "{args:?}");
+                assert_eq!(format.text(&commit()), "abcdef0", "{args:?}");
+            }
+        }
+    }
+
+    #[test]
     fn parses_options_without_consuming_pathspecs_and_last_format_wins() {
         let args = [
             "--pretty=format:%h %ad %an %s",

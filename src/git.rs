@@ -678,6 +678,37 @@ mod tests {
     }
 
     #[test]
+    fn log_grep_can_search_for_a_display_option() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        for args in [
+            vec!["init", "-q"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "Document --oneline usage",
+            ],
+        ] {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let (_, args) =
+            crate::log_format::parse_args(&["--grep".into(), "--oneline".into()]).unwrap();
+        let commits = load_log(&args).unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].subject, "Document --oneline usage");
+    }
+
+    #[test]
     fn date_only_options_preserve_working_tree_entries() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
