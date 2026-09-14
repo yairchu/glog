@@ -125,7 +125,7 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
             return Err(stderr_message("git log failed", &output.stderr));
         }
     } else {
-        parse_log(&String::from_utf8_lossy(&output.stdout))
+        parse_log(&String::from_utf8_lossy(&output.stdout))?
     };
     if only_date_options(user_args) {
         let mut working_tree = working_tree_entries()?;
@@ -274,7 +274,19 @@ fn hash_command(
     Ok(())
 }
 
-fn parse_log(output: &str) -> Vec<Commit> {
+fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
+    // Inspect dates before splitting into graph lines: a newline in %ad would
+    // otherwise split the metadata record and silently discard the commit.
+    for record in output.split(RECORD).skip(1) {
+        if let Some(date) = record.split(FIELD).nth(5) {
+            if date.contains(['\n', '\r']) {
+                return Err(
+                    "Git author dates must fit on one line; use --date=short or change log.date"
+                        .to_owned(),
+                );
+            }
+        }
+    }
     let mut pending_graph = Vec::new();
     let mut commits = Vec::new();
     for line in output.lines() {
@@ -299,7 +311,7 @@ fn parse_log(output: &str) -> Vec<Commit> {
             pending_graph.push(line.to_owned());
         }
     }
-    commits
+    Ok(commits)
 }
 
 fn working_tree_entries() -> Result<Vec<Commit>, String> {
@@ -985,7 +997,7 @@ mod tests {
                 .output()
                 .unwrap();
             assert!(output.status.success());
-            parse_log(&String::from_utf8_lossy(&output.stdout))[0]
+            parse_log(&String::from_utf8_lossy(&output.stdout)).unwrap()[0]
                 .author_date
                 .clone()
         };
@@ -1140,7 +1152,7 @@ mod tests {
     #[test]
     fn parses_full_identity_and_graph_lines() {
         let input = "|\\\n* \u{1e}abcdef\u{1f}abcdef0\u{1f}HEAD -> main\u{1f}Alice\u{1f}alice@example.com\u{1f}2026-09-14\u{1f}\u{1f}hello\n| * \u{1e}123456\u{1f}1234567\u{1f}\u{1f}Bob\u{1f}bob@example.com\u{1f}2026-09-13\u{1f}\u{1f}world\n";
-        let commits = parse_log(input);
+        let commits = parse_log(input).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].hash, "abcdef");
         assert_eq!(commits[0].graph, ["|\\", "* "]);
@@ -1149,7 +1161,7 @@ mod tests {
 
     #[test]
     fn parses_empty_output() {
-        assert!(parse_log("").is_empty());
+        assert!(parse_log("").unwrap().is_empty());
     }
 
     #[cfg(unix)]

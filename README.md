@@ -141,7 +141,9 @@ date), `%an` (author name), `%ae` (author email), `%d` (refs with parentheses),
 `--format` accept either `=VALUE` or a separate value, with optional `format:`
 or `tformat:` prefixes. Other placeholders, named presets other than `oneline`,
 and multiline formats are rejected. Git handles `--date`, including
-`--date=format:...`; choose a date format that fits on one line.
+`--date=format:...`; choose a date format that fits on one line. Dates containing
+newlines or carriage returns are rejected with an error, including those from
+Git's `log.date` setting; use `--date=short` to override that setting in Log.
 
 Dates default to `YYYY-MM-DD HH:MM` in your local timezone, without seconds
 or a timezone suffix. An explicit `--date` (or `--relative-date`) takes

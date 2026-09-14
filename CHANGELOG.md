@@ -18,6 +18,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   setting and explicit date options. Dates, authors, and collaborator badges
   are visible by default; `--oneline` keeps the compact hash/refs/subject view.
   Display-only options, including date formatting, preserve working-tree entries.
+  Multiline Git dates are rejected explicitly instead of hiding commits.
 
 - Added search history recall with Up/Down while entering `/` or `?` searches,
   allowing previous queries to be edited and reused across Log and Show.
