@@ -17,6 +17,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   Dates default to local `YYYY-MM-DD HH:MM`, respecting Git's `log.date`
   setting and explicit date options. Dates, authors, and collaborator badges
   are visible by default; `--oneline` keeps the compact hash/refs/subject view.
+  Display-only options, including date formatting, preserve working-tree entries.
 
 - Added search history recall with Up/Down while entering `/` or `?` searches,
   allowing previous queries to be edited and reused across Log and Show.
@@ -24,7 +25,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Added `glog diff` and `glog diff --cached` to open unstaged or staged changes
   directly, exiting successfully when the requested changes are empty.
 - Added `glog show [commit] [-- pathspec...]` to open directly in Show, with
-  history loaded when navigating, and `glog log` as an explicit Log command.
+  history loaded when navigating, pathspecs applied to both committed and
+  working-tree patches, and `glog log` as an explicit Log command.
 
 ## 0.1.3 - 2026-09-10
 

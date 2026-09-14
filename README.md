@@ -92,7 +92,8 @@ glog log --all
 ```
 
 Show accepts one commit and optional pathspecs after `--`. Pathspecs restrict
-patches. With an explicit commit, history remains rooted at that commit. With
+both committed and working-tree patches, including untracked files. With an
+explicit commit, history remains rooted at that commit. With
 no commit argument, Log includes the usual unstaged and staged entries and
 keeps HEAD selected. History loads on
 first switching to Log with `Tab`/`Escape` or navigating with the arrow keys;

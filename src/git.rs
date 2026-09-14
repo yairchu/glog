@@ -127,12 +127,27 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
     } else {
         parse_log(&String::from_utf8_lossy(&output.stdout))
     };
-    if user_args.is_empty() {
+    if only_date_options(user_args) {
         let mut working_tree = working_tree_entries()?;
         working_tree.append(&mut commits);
         commits = working_tree;
     }
     Ok(commits)
+}
+
+// Date options still go to Git for formatting, but do not restrict history.
+fn only_date_options(args: &[String]) -> bool {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--date" {
+            if args.next().is_none() {
+                return false;
+            }
+        } else if arg != "--relative-date" && !arg.starts_with("--date=") {
+            return false;
+        }
+    }
+    true
 }
 
 /// Resolve a single commit before opening the terminal; defer ancestry traversal.
@@ -213,7 +228,7 @@ pub fn watch_fingerprint() -> Result<u64, String> {
         &["show-ref", "--head", "--dereference"],
         true,
     )?;
-    for path in untracked_files()? {
+    for path in untracked_files(&[])? {
         fingerprint.write(path.as_bytes());
         let metadata = fs::symlink_metadata(&path)
             .map_err(|error| format!("could not inspect untracked file {path}: {error}"))?;
@@ -289,7 +304,7 @@ fn parse_log(output: &str) -> Vec<Commit> {
 
 fn working_tree_entries() -> Result<Vec<Commit>, String> {
     let unstaged =
-        has_diff(&["diff", "--quiet", "--no-ext-diff"])? || !untracked_files()?.is_empty();
+        has_diff(&["diff", "--quiet", "--no-ext-diff"])? || !untracked_files(&[])?.is_empty();
     let staged = has_diff(&["diff", "--cached", "--quiet", "--no-ext-diff"])?;
     let mut entries = Vec::new();
     if unstaged {
@@ -332,15 +347,18 @@ fn has_diff(args: &[&str]) -> Result<bool, String> {
     }
 }
 
-pub fn show(commit: &Commit) -> Result<String, String> {
+pub fn show(commit: &Commit, paths: &[String]) -> Result<String, String> {
     match commit.kind {
-        CommitKind::Revision => show_revision(&commit.hash, &[]),
-        CommitKind::Staged => show_diff(&["diff", "--cached", "--color=always", "--no-ext-diff"]),
-        CommitKind::Unstaged => show_unstaged(),
+        CommitKind::Revision => show_revision(&commit.hash, paths),
+        CommitKind::Staged => show_diff(
+            &["diff", "--cached", "--color=always", "--no-ext-diff"],
+            paths,
+        ),
+        CommitKind::Unstaged => show_unstaged(paths),
     }
 }
 
-pub fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
+fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
     let output = Command::new("git")
         .args([
             "--no-pager",
@@ -360,9 +378,11 @@ pub fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
     format_output(output.stdout)
 }
 
-fn show_diff(args: &[&str]) -> Result<String, String> {
+fn show_diff(args: &[&str], paths: &[String]) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)
+        .arg("--")
+        .args(paths)
         .env("GIT_PAGER", "cat")
         .output()
         .map_err(|error| format!("could not run git diff: {error}"))?;
@@ -372,16 +392,17 @@ fn show_diff(args: &[&str]) -> Result<String, String> {
     format_output(output.stdout)
 }
 
-fn show_unstaged() -> Result<String, String> {
+fn show_unstaged(paths: &[String]) -> Result<String, String> {
     let output = Command::new("git")
-        .args(["diff", "--color=always", "--no-ext-diff"])
+        .args(["diff", "--color=always", "--no-ext-diff", "--"])
+        .args(paths)
         .output()
         .map_err(|error| format!("could not run git diff: {error}"))?;
     if !output.status.success() {
         return Err(stderr_message("git diff failed", &output.stderr));
     }
     let mut formatted = format_output(output.stdout)?;
-    for path in untracked_files()? {
+    for path in untracked_files(paths)? {
         let metadata = fs::symlink_metadata(&path)
             .map_err(|error| format!("could not inspect untracked file {path}: {error}"))?;
         let old_path = git_quote_path(&format!("a/{path}"));
@@ -529,9 +550,10 @@ fn file_mode(_metadata: &fs::Metadata) -> u32 {
     0o100644
 }
 
-fn untracked_files() -> Result<Vec<String>, String> {
+fn untracked_files(paths: &[String]) -> Result<Vec<String>, String> {
     let output = Command::new("git")
-        .args(["ls-files", "--others", "--exclude-standard", "-z"])
+        .args(["ls-files", "--others", "--exclude-standard", "-z", "--"])
+        .args(paths)
         .output()
         .map_err(|error| format!("could not list untracked files: {error}"))?;
     if !output.status.success() {
@@ -1102,7 +1124,7 @@ mod tests {
 
         let _current_dir = CurrentDirGuard::enter(repository.path());
         let commits = load_log(&[]).unwrap();
-        let shown = show(&commits[0]).unwrap();
+        let shown = show(&commits[0], &[]).unwrap();
         let clean_fingerprint = watch_fingerprint().unwrap();
 
         git(&["branch", "watch-test"]);
@@ -1128,11 +1150,13 @@ mod tests {
         assert_eq!(commits[0].kind, CommitKind::Unstaged);
         assert_eq!(commits[1].kind, CommitKind::Staged);
         assert_eq!(commits[2].kind, CommitKind::Revision);
-        assert!(show(&commits[0]).unwrap().contains("glog-lazy-untracked:"));
+        assert!(show(&commits[0], &[])
+            .unwrap()
+            .contains("glog-lazy-untracked:"));
         assert!(show_untracked("new.txt")
             .unwrap()
             .contains("UNTRACKED LONGER"));
-        assert!(show(&commits[1]).unwrap().contains("staged"));
+        assert!(show(&commits[1], &[]).unwrap().contains("staged"));
 
         let mut app = crate::app::App::new(commits.clone());
         app.switch_mode();

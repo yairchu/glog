@@ -235,12 +235,7 @@ impl App {
         }
         self.show_offset = 0;
         self.show_cursor = 0;
-        let shown = if commit.kind == CommitKind::Revision {
-            git::show_revision(&commit.hash, &self.show_paths)
-        } else {
-            git::show(&commit)
-        };
-        match shown {
+        match git::show(&commit, &self.show_paths) {
             Ok(text) => {
                 self.show_text = text.clone();
                 self.reset_show_folds();
