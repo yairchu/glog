@@ -32,6 +32,18 @@ pub fn handle(event: Event, app: &mut App) {
             return;
         }
         match key.code {
+            KeyCode::Char(c @ ('a' | 'd' | 'r' | 'x' | 's')) if app.mode == Mode::Log => {
+                use crate::log_format::Field;
+                let field = match c {
+                    'a' => Field::Author,
+                    'd' => Field::Date,
+                    'r' => Field::Refs,
+                    'x' => Field::Hash,
+                    _ => Field::Subject,
+                };
+                app.log_format.toggle(field);
+                app.search_match = None;
+            }
             KeyCode::Char('q') => app.quit = true,
             KeyCode::Tab => app.switch_mode(),
             KeyCode::Enter if app.mode == Mode::Log => app.switch_mode(),
@@ -122,6 +134,24 @@ mod tests {
 
     fn key(code: KeyCode) -> Event {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn field_keys_toggle_log_rendering_but_do_not_edit_show_or_search() {
+        let commit = crate::log_format::tests::commit();
+        let mut app = App::new(vec![commit.clone()]);
+        handle(key(KeyCode::Char('a')), &mut app);
+        assert!(app.log_format.text(&commit).contains("(Alice)"));
+        app.mode = Mode::Show;
+        handle(key(KeyCode::Char('a')), &mut app);
+        assert!(app.log_format.text(&commit).contains("(Alice)"));
+        app.mode = Mode::Log;
+        app.begin_search(false);
+        handle(key(KeyCode::Char('a')), &mut app);
+        assert_eq!(app.search_input.as_deref(), Some("a"));
+        handle(key(KeyCode::Esc), &mut app);
+        handle(key(KeyCode::Char('a')), &mut app);
+        assert!(!app.log_format.text(&commit).contains("Alice"));
     }
 
     #[test]

@@ -3,6 +3,7 @@ mod app;
 mod diff;
 mod git;
 mod input;
+mod log_format;
 mod ui;
 
 use std::{
@@ -26,6 +27,17 @@ fn main() -> ExitCode {
         println!("{information}");
         return ExitCode::SUCCESS;
     }
+    let (log_format, log_args) = match if command == Command::Log {
+        log_format::parse_args(command_args)
+    } else {
+        Ok((log_format::LogFormat::default(), command_args.to_vec()))
+    } {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("glog: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     let watch = match if command != Command::Log {
         Ok(false)
     } else {
@@ -37,7 +49,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let git_args = if watch { &[][..] } else { command_args };
+    let git_args = if watch { &[][..] } else { &log_args };
     let loaded = match command {
         Command::Show => git::load_show_app(command_args),
         Command::Diff => git::load_diff_app(command_args),
@@ -68,6 +80,7 @@ fn main() -> ExitCode {
         }
     };
     let mut guard = TerminalGuard(true);
+    app.log_format = log_format;
     app.watch = watch;
     app.context = args.join(" ");
     let result = run(&mut terminal, &mut app);
@@ -114,6 +127,10 @@ Usage: glog [--watch]
        glog diff [--cached]
 
 Options:
+  --pretty=format:FORMAT / --format=FORMAT
+                Format Log rows (%h %H %ad %an %ae %d %D %s %%)
+  --date=STYLE  Format author dates using Git (e.g. short, relative, iso)
+  --oneline     Use the compact hash, refs, and subject layout
   --watch       Refresh the default HEAD view when the repository changes
   -h, --help    Print help
   -V, --version Print version

@@ -74,6 +74,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         format!("{prefix}{input}█")
     } else if let Some(status) = &app.status {
         status.clone()
+    } else if app.mode == Mode::Log {
+        "↑/k ↓/j  Enter show  a author  d date  r refs  x hash  s subject  / ? search  h help  q quit".to_owned()
     } else {
         "↑/k ↓/j  ←/→ commit  [/ ] file  Enter/z fold  L lockfiles  / ? search  h help  q quit"
             .to_owned()
@@ -90,7 +92,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_help(frame: &mut Frame) {
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(68);
-    let height = screen.height.saturating_sub(2).min(21);
+    let height = screen.height.saturating_sub(2).min(23);
     let area = Rect::new(
         screen.x + screen.width.saturating_sub(width) / 2,
         screen.y + screen.height.saturating_sub(height) / 2,
@@ -106,6 +108,7 @@ fn draw_help(frame: &mut Frame) {
         "  [, ]              previous / next changed file (Show)",
         "  g, G              top / bottom",
         "",
+        "  a/d/r/x/s         toggle author/date/refs/hash/subject (Log)",
         "Views and search",
         "  Enter             open commit / toggle folded file",
         "  z                 toggle current file fold (Show)",
@@ -184,17 +187,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             let mut line = ansi::parse_line(graph);
             if part + 1 == commit.graph.len() {
-                line.spans.push(Span::styled(
-                    format!("{} ", commit.short_hash),
-                    Style::default().fg(Color::Yellow),
-                ));
-                if !commit.decorations.is_empty() {
-                    line.spans.push(Span::styled(
-                        format!("({}) ", commit.decorations),
-                        Style::default().fg(Color::Green),
-                    ));
-                }
-                line.spans.push(Span::raw(commit.subject.clone()));
+                line.spans.extend(app.log_format.spans(commit));
             }
             if let Some(query) = &app.search {
                 let current = app.search_match == Some((Mode::Log, index));
@@ -347,9 +340,35 @@ mod tests {
             hash: subject.repeat(40).chars().take(40).collect(),
             short_hash: subject.to_owned(),
             decorations: String::new(),
+            author: String::new(),
+            author_email: String::new(),
+            author_date: String::new(),
             subject: subject.to_owned(),
             graph: vec!["* ".to_owned(); graph_rows],
         }
+    }
+
+    #[test]
+    fn log_fields_render_with_color_and_toggle_without_changing_selection() {
+        let mut app = App::new(vec![crate::log_format::tests::commit()]);
+        app.log_format = crate::log_format::LogFormat::parse("%h [%ad] (%an) %s").unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let row = app.log_row_origin;
+        let text = |terminal: &Terminal<TestBackend>| {
+            (0..80)
+                .map(|x| terminal.backend().buffer()[(x, row)].symbol())
+                .collect::<String>()
+        };
+        assert!(text(&terminal).contains("abcdef0 [2026-09-14] (Alice) A subject"));
+        assert_eq!(terminal.backend().buffer()[(2, row)].fg, Color::Yellow);
+        handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::NONE)),
+            &mut app,
+        );
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(text(&terminal).contains("abcdef0 [2026-09-14] A subject"));
+        assert_eq!(app.selected, 0);
     }
 
     #[test]

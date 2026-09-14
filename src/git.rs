@@ -21,6 +21,9 @@ pub struct Commit {
     pub short_hash: String,
     pub decorations: String,
     pub subject: String,
+    pub author: String,
+    pub author_email: String,
+    pub author_date: String,
     pub graph: Vec<String>,
 }
 
@@ -45,7 +48,7 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
         "--decorate=short",
         "--color=always",
         "--no-abbrev-commit",
-        "--pretty=format:%x1e%H%x1f%h%x1f%D%x1f%s",
+        "--pretty=format:%x1e%H%x1f%h%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%s",
     ]);
     command.args(&user_args[separator..]);
     let output = command.output().map_err(|error| {
@@ -204,15 +207,18 @@ fn parse_log(output: &str) -> Vec<Commit> {
     let mut commits = Vec::new();
     for line in output.lines() {
         if let Some(marker) = line.find(RECORD) {
-            let fields: Vec<_> = line[marker + 1..].splitn(4, FIELD).collect();
-            if fields.len() == 4 {
+            let fields: Vec<_> = line[marker + 1..].splitn(7, FIELD).collect();
+            if fields.len() == 7 {
                 pending_graph.push(line[..marker].to_owned());
                 commits.push(Commit {
                     kind: CommitKind::Revision,
                     hash: fields[0].to_owned(),
                     short_hash: fields[1].to_owned(),
                     decorations: fields[2].to_owned(),
-                    subject: fields[3].to_owned(),
+                    author: fields[3].to_owned(),
+                    author_email: fields[4].to_owned(),
+                    author_date: fields[5].to_owned(),
+                    subject: fields[6].to_owned(),
                     graph: std::mem::take(&mut pending_graph),
                 });
             }
@@ -247,6 +253,9 @@ fn pseudo_commit(kind: CommitKind, short_hash: &str, subject: &str) -> Commit {
         hash: format!("[{short_hash}]"),
         short_hash: short_hash.to_owned(),
         decorations: String::new(),
+        author: String::new(),
+        author_email: String::new(),
+        author_date: String::new(),
         subject: subject.to_owned(),
         graph: vec!["* ".to_owned()],
     }
@@ -710,8 +719,57 @@ mod tests {
     }
 
     #[test]
+    fn loads_format_metadata_with_git_date_options() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "user.name=Alice",
+                "-c",
+                "user.email=alice@example.com",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "A subject",
+            ])
+            .env("GIT_AUTHOR_DATE", "2026-09-14T12:00:00+03:00")
+            .env("GIT_COMMITTER_DATE", "2026-09-14T12:00:00+03:00")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let (format, args) = crate::log_format::parse_args(&[
+            "--pretty=format:%h %ad (%an) %s".into(),
+            "--date=short".into(),
+        ])
+        .unwrap();
+        let commits = load_log(&args).unwrap();
+        let commit = &commits[0];
+        assert_eq!(commit.author, "Alice");
+        assert_eq!(commit.author_email, "alice@example.com");
+        assert_eq!(commit.author_date, "2026-09-14");
+        assert_eq!(
+            format.text(commit),
+            format!("{} 2026-09-14 (Alice) A subject", commit.short_hash)
+        );
+        assert_eq!(
+            load_log(&["--date=format:%Y".into()]).unwrap()[0].author_date,
+            "2026"
+        );
+    }
+
+    #[test]
     fn parses_full_identity_and_graph_lines() {
-        let input = "|\\\n* \u{1e}abcdef\u{1f}abcdef0\u{1f}HEAD -> main\u{1f}hello\n| * \u{1e}123456\u{1f}1234567\u{1f}\u{1f}world\n";
+        let input = "|\\\n* \u{1e}abcdef\u{1f}abcdef0\u{1f}HEAD -> main\u{1f}Alice\u{1f}alice@example.com\u{1f}2026-09-14\u{1f}hello\n| * \u{1e}123456\u{1f}1234567\u{1f}\u{1f}Bob\u{1f}bob@example.com\u{1f}2026-09-13\u{1f}world\n";
         let commits = parse_log(input);
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].hash, "abcdef");

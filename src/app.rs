@@ -22,6 +22,7 @@ pub struct ShowRow {
 
 pub struct App {
     pub commits: Vec<Commit>,
+    pub log_format: crate::log_format::LogFormat,
     pub selected: usize,
     pub mode: Mode,
     pub log_offset: usize,
@@ -61,6 +62,7 @@ impl App {
     pub fn new(commits: Vec<Commit>) -> Self {
         Self {
             commits,
+            log_format: crate::log_format::LogFormat::default(),
             selected: 0,
             mode: Mode::Log,
             log_offset: 0,
@@ -538,10 +540,7 @@ impl App {
                         (start + step) % n
                     };
                     let c = &self.commits[i];
-                    if format!("{} {} {}", c.short_hash, c.decorations, c.subject)
-                        .to_lowercase()
-                        .contains(&query)
-                    {
+                    if self.log_format.text(c).to_lowercase().contains(&query) {
                         self.selected = i;
                         self.search_match = Some((Mode::Log, i));
                         self.status = None;
@@ -597,6 +596,9 @@ mod tests {
             hash: subject.repeat(40).chars().take(40).collect(),
             short_hash: subject.to_owned(),
             decorations: String::new(),
+            author: String::new(),
+            author_email: String::new(),
+            author_date: String::new(),
             subject: subject.to_owned(),
             graph: vec!["* ".to_owned()],
         }

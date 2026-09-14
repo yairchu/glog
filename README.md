@@ -4,7 +4,7 @@
 
 It is a small, strictly read-only terminal UI for exploring Git history. Git remains responsible for revision parsing, pathspecs, traversal, decorations, and patch generation; `glog` adds selection, scrolling, search, and Log/Show tabs.
 
-With no arguments, dirty working-tree state appears ahead of `HEAD` as separate `Unstaged changes` and `Staged changes` entries, divided from committed history by a labeled separator. Untracked files are included in the unstaged diff. These synthetic entries are omitted when empty and whenever explicit `git log` arguments are supplied.
+With no arguments, dirty working-tree state appears ahead of `HEAD` as separate `Unstaged changes` and `Staged changes` entries, divided from committed history by a labeled separator. Untracked files are included in the unstaged diff. These synthetic entries are omitted when empty and whenever explicit `git log` arguments are supplied. Display-format options alone preserve these entries.
 
 ## Install and run
 
@@ -124,7 +124,42 @@ glog --watch
 
 For its initial implementation, `--watch` must be the only argument. Combinations such as `glog --watch --all` fail with a concise error rather than providing partial watch semantics.
 
-Output-format options such as `--format`, `--pretty`, and `--oneline` are reserved by `glog`, since its parser requires a machine-readable format.
+## Log row format
+
+Choose a Git-style format without requiring aligned columns:
+
+```bash
+glog --pretty=format:"%h %ad %an %s" --date=short
+glog --format="%h [%ad] (%an) %s" --date=relative
+glog --oneline
+```
+
+Supported placeholders are `%h` (short hash), `%H` (full hash), `%ad` (author
+date), `%an` (author name), `%ae` (author email), `%d` (refs with parentheses),
+`%D` (bare refs), `%s` (subject), and `%%` (literal percent). `--pretty` and
+`--format` accept either `=VALUE` or a separate value, with optional `format:`
+or `tformat:` prefixes. Other placeholders, named presets other than `oneline`,
+and multiline formats are rejected. Git handles `--date`, including
+`--date=format:...`; choose a date format that fits on one line.
+
+In Log, press `a`, `d`, `r`, `x`, or `s` to toggle author, date, refs, hash, or
+subject. Fields keep their position, punctuation, and color when restored.
+For example, hiding author changes `%h [%ad] (%an) %s` into `%h [%ad] %s`.
+All occurrences of the toggled field change together, including both author
+name and email. A field absent from a custom format is inserted before the
+subject, or at the end if there is no subject.
+
+Literal labels, opening punctuation, and spaces before a placeholder belong
+to that field; closing brackets/quotes and immediately following punctuation
+belong to the preceding field. A final literal belongs to the last field.
+Use wrappers around individual fields, such as ` (author: %an)` or ` [%ad]`,
+for predictable toggling. Empty fields also omit their punctuation.
+
+The default layout remains hash, refs, and subject; toggling date or author
+adds ` [%ad]` or ` (%an)`. Hashes are yellow, dates gray, authors cyan, and refs
+green. Search follows the currently rendered fields. Toggles last for the
+session and survive switching views and watch refreshes. Synthetic working-tree
+entries retain their identifying hash and subject regardless of format.
 
 ## Keys
 
@@ -135,6 +170,7 @@ Output-format options such as `--format`, `--pretty`, and `--oneline` are reserv
 | `↑` / `k`, `↓` / `j` | select commit | move patch cursor |
 | `Page Up` / `b`, `Page Down` / `Space` | move by page | scroll by page |
 | `f` | — | page forward |
+| `a`, `d`, `r`, `x`, `s` | toggle author/date/refs/hash/subject | — |
 | `←`, `→` | — | previous/newer or next/older commit |
 | `[`, `]` | — | previous/next changed file |
 | `Enter` | open selected commit | expand/fold current folded file |
