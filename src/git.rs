@@ -1029,6 +1029,52 @@ mod tests {
     }
 
     #[test]
+    fn multiline_dates_report_an_error_instead_of_hiding_commits() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        for args in [
+            vec!["init", "-q"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                "Visible commit",
+            ],
+        ] {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(output.status.success());
+        }
+
+        for date in ["format:%Y%n%m", "format:%Y\n%m", "format:%Y\r%m"] {
+            let error = load_log(&[format!("--date={date}")]).unwrap_err();
+            assert!(error.contains("one line"), "{error}");
+            assert!(Command::new("git")
+                .args(["config", "log.date", date])
+                .status()
+                .unwrap()
+                .success());
+            for options in [vec![], vec!["--oneline".into()]] {
+                let (_, args) = crate::log_format::parse_args(&options).unwrap();
+                let error = load_log(&args).unwrap_err();
+                assert!(error.contains("one line"), "{error}");
+            }
+            let error = load_show_app(&[])
+                .err()
+                .expect("Show must reject multiline dates");
+            assert!(error.contains("one line"), "{error}");
+
+            // A valid explicit option still overrides the invalid configuration.
+            let commits = load_log(&["--date=short".into()]).unwrap();
+            assert_eq!(commits.len(), 1);
+            assert_eq!(commits[0].subject, "Visible commit");
+        }
+    }
+
+    #[test]
     fn collaborator_identities_are_deduplicated_and_match_exact_emails() {
         let trailers = [
             "Codex <CODEX@OPENAI.COM>",
