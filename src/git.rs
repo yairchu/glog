@@ -656,6 +656,123 @@ mod tests {
     }
 
     #[test]
+    fn date_only_options_preserve_working_tree_entries() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write("tracked.txt", "original\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "first"]);
+        fs::write("tracked.txt", "staged\n").unwrap();
+        git(&["add", "."]);
+        fs::write("tracked.txt", "unstaged\n").unwrap();
+
+        for options in [
+            vec!["--date=short"],
+            vec!["--date", "short"],
+            vec!["--relative-date"],
+            vec!["--date=relative", "--date=short"],
+        ] {
+            let mut args = vec!["--format=%h %ad %s".to_owned()];
+            args.extend(options.iter().map(|arg| (*arg).to_owned()));
+            let (_, args) = crate::log_format::parse_args(&args).unwrap();
+            let commits = load_log(&args).unwrap();
+            assert_eq!(
+                commits.iter().map(|commit| commit.kind).collect::<Vec<_>>(),
+                [
+                    CommitKind::Unstaged,
+                    CommitKind::Staged,
+                    CommitKind::Revision
+                ],
+                "{options:?} must only change date display"
+            );
+            if options.last() == Some(&"short") || options.last() == Some(&"--date=short") {
+                assert_eq!(commits[2].author_date.len(), 10);
+            }
+            for restriction in [
+                vec!["HEAD"],
+                vec!["-1"],
+                vec!["--", "tracked.txt"],
+                vec!["--", "--date=short"],
+            ] {
+                let mut restricted = args.clone();
+                restricted.extend(restriction.into_iter().map(str::to_owned));
+                assert!(load_log(&restricted)
+                    .unwrap()
+                    .iter()
+                    .all(|commit| commit.kind == CommitKind::Revision));
+            }
+        }
+    }
+
+    #[test]
+    fn show_pathspecs_filter_staged_unstaged_and_untracked_patches() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        for dir in ["wanted", "unrelated"] {
+            fs::create_dir(dir).unwrap();
+            fs::write(format!("{dir}/tracked.txt"), "original\n").unwrap();
+        }
+        git(&["add", "."]);
+        git(&["commit", "-qm", "first"]);
+        for dir in ["wanted", "unrelated"] {
+            fs::write(format!("{dir}/tracked.txt"), "staged\n").unwrap();
+        }
+        git(&["add", "."]);
+        for dir in ["wanted", "unrelated"] {
+            fs::write(format!("{dir}/tracked.txt"), "unstaged\n").unwrap();
+            fs::write(format!("{dir}/new.txt"), "untracked\n").unwrap();
+        }
+
+        for paths in [vec!["wanted/"], vec![".", ":(exclude)unrelated/"]] {
+            let mut args = vec!["--".to_owned()];
+            args.extend(paths.into_iter().map(str::to_owned));
+            let mut app = load_show_app(&args).unwrap();
+            assert!(app.show_text.contains("wanted/tracked.txt"));
+            assert!(!app.show_text.contains("unrelated/"));
+            let mut patches = Vec::new();
+            for kind in [CommitKind::Staged, CommitKind::Unstaged] {
+                assert!(app.move_selection(-1));
+                app.load_show();
+                assert_eq!(app.commits[app.selected].kind, kind);
+                assert!(app.show_text.contains("wanted/tracked.txt"));
+                if kind == CommitKind::Unstaged {
+                    assert!(app.show_text.contains("wanted/new.txt"));
+                    assert!(app.show_text.contains("glog-lazy-untracked:"));
+                }
+                patches.push((kind, app.show_text.clone()));
+            }
+            for (kind, patch) in patches {
+                assert!(
+                    !patch.contains("unrelated/"),
+                    "{kind:?} ignored pathspecs: {patch}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn show_opens_exact_commit_and_loads_history_on_navigation() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
