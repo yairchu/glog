@@ -8,14 +8,15 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 ### Added
 
 - Added compact collaborator badges beside the Log author: `꩜` for Codex,
-  terracotta `❋` for Claude Code, and gray `+N` for other coauthors,
+  terracotta `❋` for Claude Code, and gray `+N` for multiple or unrecognized coauthors,
   based on deduplicated `Co-authored-by` trailers and following the author toggle.
 
 - Added configurable, colored Log rows with `--pretty=format:...`, `--format`,
   and Git date formatting, plus `a`/`d`/`r`/`x`/`s` keys to toggle author,
   date, refs, hash, and subject together with their associated punctuation.
   Dates default to local `YYYY-MM-DD HH:MM`, respecting Git's `log.date`
-  setting and explicit date options.
+  setting and explicit date options. Dates, authors, and collaborator badges
+  are visible by default; `--oneline` keeps the compact hash/refs/subject view.
 
 - Added search history recall with Up/Down while entering `/` or `?` searches,
   allowing previous queries to be edited and reused across Log and Show.

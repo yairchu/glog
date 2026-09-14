@@ -352,37 +352,40 @@ mod tests {
 
     #[test]
     fn collaborator_badges_have_distinct_colors_on_selected_rows() {
-        let mut c = crate::log_format::tests::commit();
-        c.collaborators = crate::git::Collaborators {
-            codex: true,
-            claude: true,
-            others: 1,
-        };
-        let mut app = App::new(vec![c]);
-        app.log_format.toggle(crate::log_format::Field::Author);
-        let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
-        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        for (glyph, color) in [
-            ("꩜", Color::Reset),
-            ("❋", Color::Rgb(215, 119, 87)),
-            ("+", Color::Rgb(160, 160, 160)),
-            ("1", Color::Gray),
+        for (codex, claude, others, glyph, color) in [
+            (true, false, 0, "꩜", Color::Reset),
+            (false, true, 0, "❋", Color::Rgb(215, 119, 87)),
+            (false, false, 1, "1", Color::Gray),
+            (true, true, 0, "2", Color::Gray),
+            (false, true, 1, "2", Color::Gray),
         ] {
-            let cell = (0..80)
-                .map(|x| &terminal.backend().buffer()[(x, app.log_row_origin)])
-                .find(|cell| cell.symbol() == glyph)
-                .unwrap();
-            assert_eq!(cell.fg, color);
-            assert_eq!(cell.bg, Color::DarkGray);
+            let mut c = crate::log_format::tests::commit();
+            c.collaborators = crate::git::Collaborators {
+                codex,
+                claude,
+                others,
+            };
+            let mut app = App::new(vec![c]);
+            app.log_format = crate::log_format::LogFormat::parse("%an").unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            for (glyph, color) in [(glyph, color), ("+", Color::Rgb(160, 160, 160))] {
+                let cell = (0..80)
+                    .map(|x| &terminal.backend().buffer()[(x, app.log_row_origin)])
+                    .find(|cell| cell.symbol() == glyph)
+                    .unwrap();
+                assert_eq!(cell.fg, color);
+                assert_eq!(cell.bg, Color::DarkGray);
+            }
+            assert_eq!(
+                (0..80)
+                    .filter(
+                        |&x| terminal.backend().buffer()[(x, app.log_row_origin)].symbol() == "+"
+                    )
+                    .count(),
+                1
+            );
         }
-        let separators: Vec<_> = (0..80)
-            .map(|x| &terminal.backend().buffer()[(x, app.log_row_origin)])
-            .filter(|cell| cell.symbol() == "+")
-            .collect();
-        assert_eq!(separators.len(), 3);
-        assert!(separators
-            .iter()
-            .all(|cell| cell.fg == Color::Rgb(160, 160, 160)));
     }
 
     #[test]

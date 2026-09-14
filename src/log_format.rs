@@ -30,10 +30,7 @@ pub struct LogFormat {
 
 impl Default for LogFormat {
     fn default() -> Self {
-        let mut format = Self::parse("%h %ad %an (%D) %s").unwrap();
-        format.toggle(Field::Date);
-        format.toggle(Field::Author);
-        format
+        Self::parse("%h %ad %an (%D) %s").unwrap()
     }
 }
 
@@ -186,23 +183,22 @@ impl LogFormat {
             spans.push(Span::styled(text, style));
             if Some(index) == last_author {
                 let collaborators = &commit.collaborators;
-                let separator =
-                    || Span::styled("+", Style::default().fg(Color::Rgb(160, 160, 160)));
-                if collaborators.codex {
-                    spans.push(separator());
-                    spans.push(Span::raw("꩜"));
-                }
-                if collaborators.claude {
-                    spans.push(separator());
+                let total = usize::from(collaborators.codex)
+                    + usize::from(collaborators.claude)
+                    + collaborators.others;
+                if total > 0 {
                     spans.push(Span::styled(
-                        "❋",
-                        Style::default().fg(Color::Rgb(215, 119, 87)),
+                        "+",
+                        Style::default().fg(Color::Rgb(160, 160, 160)),
                     ));
-                }
-                if collaborators.others > 0 {
-                    spans.push(separator());
-                    let badge = collaborators.others.to_string();
-                    spans.push(Span::styled(badge, Style::default().fg(Color::Gray)));
+                    let badge = if total == 1 && collaborators.codex {
+                        Span::raw("꩜")
+                    } else if total == 1 && collaborators.claude {
+                        Span::styled("❋", Style::default().fg(Color::Rgb(215, 119, 87)))
+                    } else {
+                        Span::styled(total.to_string(), Style::default().fg(Color::Gray))
+                    };
+                    spans.push(badge);
                 }
             }
         }
@@ -277,6 +273,29 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn only_single_recognized_coauthors_use_icons() {
+        for (codex, claude, others, expected) in [
+            (false, false, 0, "Alice"),
+            (true, false, 0, "Alice+꩜"),
+            (false, true, 0, "Alice+❋"),
+            (false, false, 1, "Alice+1"),
+            (true, true, 0, "Alice+2"),
+            (false, true, 1, "Alice+2"),
+            (true, false, 1, "Alice+2"),
+            (false, false, 2, "Alice+2"),
+            (true, true, 2, "Alice+4"),
+        ] {
+            let mut c = commit();
+            c.collaborators = crate::git::Collaborators {
+                codex,
+                claude,
+                others,
+            };
+            assert_eq!(LogFormat::parse("%an").unwrap().text(&c), expected);
+        }
+    }
+
+    #[test]
     fn collaborator_badges_follow_author_once_and_toggle_with_it() {
         let mut c = commit();
         c.collaborators = crate::git::Collaborators {
@@ -285,12 +304,12 @@ pub(crate) mod tests {
             others: 2,
         };
         for (source, expected) in [
-            ("%h (%an) %s", "abcdef0 (Alice)+꩜+❋+2 A subject"),
+            ("%h (%an) %s", "abcdef0 (Alice)+4 A subject"),
             (
                 "%h (%an <%ae>) %s",
-                "abcdef0 (Alice <alice@example.com>)+꩜+❋+2 A subject",
+                "abcdef0 (Alice <alice@example.com>)+4 A subject",
             ),
-            ("%h <%ae> %s", "abcdef0 <alice@example.com>+꩜+❋+2 A subject"),
+            ("%h <%ae> %s", "abcdef0 <alice@example.com>+4 A subject"),
         ] {
             let mut format = LogFormat::parse(source).unwrap();
             assert_eq!(format.text(&c), expected);
@@ -301,7 +320,7 @@ pub(crate) mod tests {
         }
         assert_eq!(
             LogFormat::default().text(&c),
-            "abcdef0 (HEAD -> main) A subject"
+            "abcdef0 2026-09-14 Alice+4 (HEAD -> main) A subject"
         );
         c.collaborators = crate::git::Collaborators {
             others: 1,
@@ -331,13 +350,15 @@ pub(crate) mod tests {
     #[test]
     fn default_layout_and_new_fields_have_clean_spacing() {
         let mut format = LogFormat::default();
-        assert_eq!(format.text(&commit()), "abcdef0 (HEAD -> main) A subject");
-        format.toggle(Field::Author);
-        format.toggle(Field::Date);
         assert_eq!(
             format.text(&commit()),
             "abcdef0 2026-09-14 Alice (HEAD -> main) A subject"
         );
+        format.toggle(Field::Author);
+        format.toggle(Field::Date);
+        assert_eq!(format.text(&commit()), "abcdef0 (HEAD -> main) A subject");
+        let (compact, _) = parse_args(&["--oneline".into()]).unwrap();
+        assert_eq!(compact.text(&commit()), format.text(&commit()));
         let mut format = LogFormat::parse("%s").unwrap();
         format.toggle(Field::Author);
         format.toggle(Field::Date);
@@ -356,7 +377,10 @@ pub(crate) mod tests {
             "abcdef0123456789 2026-09-14 Alice <alice@example.com> (HEAD -> main) A subject %"
         );
         c.decorations.clear();
-        assert_eq!(LogFormat::default().text(&c), "abcdef0 A subject");
+        assert_eq!(
+            LogFormat::default().text(&c),
+            "abcdef0 2026-09-14 Alice A subject"
+        );
         c.kind = CommitKind::Unstaged;
         assert_eq!(
             LogFormat::parse("%an").unwrap().text(&c),

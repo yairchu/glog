@@ -160,17 +160,19 @@ belong to the preceding field. A final literal belongs to the last field.
 Use wrappers around individual fields, such as ` (author: %an)` or ` [%ad]`,
 for predictable toggling. Empty fields also omit their punctuation.
 
-The default layout remains hash, refs, and subject; toggling date or author
-adds ` %ad` or ` %an`. Hashes are yellow, dates gray, authors cyan, and refs
+The default layout shows hash, date, author (with collaborator badges), refs,
+and subject. Press `d` or `a` to hide date or author, or use `--oneline` for
+the compact hash/refs/subject view. Hashes are yellow, dates gray, authors cyan, and refs
 green. Search follows the currently rendered fields. Toggles last for the
 session and survive switching views and watch refreshes. Synthetic working-tree
 entries retain their identifying hash and subject regardless of format.
 
-Collaborator badges appear once after the last visible author name/email field:
-`꩜` for Codex in the terminal foreground color, `❋` for Claude Code in warm
-terracotta, and gray `+1` for another collaborator (`+2`, etc. for several).
-Each badge has a medium gray `+` separator, for example `Alice+꩜+❋+1`.
-The separators have their own color, independent of the icons and count.
+A collaborator badge appears once after the last visible author name/email field.
+A single coauthor uses `꩜` for Codex in the terminal foreground color, `❋` for
+Claude Code in warm terracotta, or a gray `1` for an unrecognized coauthor.
+Two or more coauthors always use a gray total count, including Codex and Claude
+together. The badge has a medium gray `+` separator: `Alice+❋`, `Alice+1`, or
+`Alice+2`. The separator has its own color, independent of the icon or count.
 They are static and follow the author toggle. Credits come only from
 `Co-authored-by` trailers: `codex@openai.com` identifies Codex and
 `noreply@anthropic.com` identifies Claude Code, including model-specific names.
