@@ -30,7 +30,7 @@ pub struct LogFormat {
 
 impl Default for LogFormat {
     fn default() -> Self {
-        let mut format = Self::parse("%h [%ad] (%an) (%D) %s").unwrap();
+        let mut format = Self::parse("%h %ad %an (%D) %s").unwrap();
         format.toggle(Field::Date);
         format.toggle(Field::Author);
         format
@@ -101,8 +101,8 @@ impl LogFormat {
         if !self.parts.iter().any(|part| part.field == field) {
             let source = match field {
                 Field::Hash => " %h",
-                Field::Date => " [%ad]",
-                Field::Author => " (%an)",
+                Field::Date => " %ad",
+                Field::Author => " %an",
                 Field::Refs => " (%D)",
                 Field::Subject => " %s",
             };
@@ -266,12 +266,12 @@ pub(crate) mod tests {
         format.toggle(Field::Date);
         assert_eq!(
             format.text(&commit()),
-            "abcdef0 [2026-09-14] (Alice) (HEAD -> main) A subject"
+            "abcdef0 2026-09-14 Alice (HEAD -> main) A subject"
         );
         let mut format = LogFormat::parse("%s").unwrap();
         format.toggle(Field::Author);
         format.toggle(Field::Date);
-        assert_eq!(format.text(&commit()), "(Alice) [2026-09-14] A subject");
+        assert_eq!(format.text(&commit()), "Alice 2026-09-14 A subject");
         format.toggle(Field::Author);
         format.toggle(Field::Date);
         assert_eq!(format.text(&commit()), "A subject");

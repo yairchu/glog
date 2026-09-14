@@ -156,7 +156,7 @@ Use wrappers around individual fields, such as ` (author: %an)` or ` [%ad]`,
 for predictable toggling. Empty fields also omit their punctuation.
 
 The default layout remains hash, refs, and subject; toggling date or author
-adds ` [%ad]` or ` (%an)`. Hashes are yellow, dates gray, authors cyan, and refs
+adds ` %ad` or ` %an`. Hashes are yellow, dates gray, authors cyan, and refs
 green. Search follows the currently rendered fields. Toggles last for the
 session and survive switching views and watch refreshes. Synthetic working-tree
 entries retain their identifying hash and subject regardless of format.

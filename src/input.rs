@@ -141,10 +141,10 @@ mod tests {
         let commit = crate::log_format::tests::commit();
         let mut app = App::new(vec![commit.clone()]);
         handle(key(KeyCode::Char('a')), &mut app);
-        assert!(app.log_format.text(&commit).contains("(Alice)"));
+        assert!(app.log_format.text(&commit).contains(" Alice "));
         app.mode = Mode::Show;
         handle(key(KeyCode::Char('a')), &mut app);
-        assert!(app.log_format.text(&commit).contains("(Alice)"));
+        assert!(app.log_format.text(&commit).contains(" Alice "));
         app.mode = Mode::Log;
         app.begin_search(false);
         handle(key(KeyCode::Char('a')), &mut app);
