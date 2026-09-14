@@ -11,6 +11,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Fixed
 
+- Recognized `Co-authored-by: Codex <noreply@openai.com>` as a Codex contribution.
 - Made Log search match full commit hashes and longer abbreviations, including
   when hashes are hidden from the displayed rows.
 

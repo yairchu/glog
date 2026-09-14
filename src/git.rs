@@ -53,7 +53,7 @@ impl Collaborators {
                 continue;
             }
             match email.as_str() {
-                "codex@openai.com" => result.codex = true,
+                "codex@openai.com" | "noreply@openai.com" => result.codex = true,
                 "noreply@anthropic.com" => result.claude = true,
                 _ => result.others += 1,
             }
@@ -1083,6 +1083,23 @@ mod tests {
             let commits = load_log(&["--date=short".into()]).unwrap();
             assert_eq!(commits.len(), 1);
             assert_eq!(commits[0].subject, "Visible commit");
+        }
+    }
+
+    #[test]
+    fn codex_noreply_address_is_recognized_and_deduplicated() {
+        for trailers in [
+            "Codex <noreply@openai.com>".to_owned(),
+            ["Codex <NOREPLY@OPENAI.COM>", "Codex <codex@openai.com>"].join(&COAUTHOR.to_string()),
+        ] {
+            assert_eq!(
+                Collaborators::parse(&trailers, "yairchu@gmail.com"),
+                Collaborators {
+                    codex: true,
+                    claude: false,
+                    others: 0,
+                }
+            );
         }
     }
 
