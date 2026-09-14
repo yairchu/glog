@@ -219,6 +219,20 @@ pub fn parse_args(args: &[String]) -> Result<(LogFormat, Vec<String>), String> {
     let mut git_args = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
+        // Git consumes the next argument as a pattern even when it looks like
+        // a display flag or the pathspec separator.
+        if matches!(
+            arg.as_str(),
+            "--grep" | "--grep-reflog" | "--author" | "--committer" | "-G" | "-S"
+        ) {
+            git_args.push(arg.clone());
+            git_args.push(
+                args.next()
+                    .ok_or_else(|| format!("{arg} requires a pattern"))?
+                    .clone(),
+            );
+            continue;
+        }
         if arg == "--" {
             git_args.push(arg.clone());
             git_args.extend(args.cloned());
@@ -390,13 +404,21 @@ pub(crate) mod tests {
 
     #[test]
     fn git_filter_values_are_not_parsed_as_display_options() {
-        for option in ["--grep", "--grep-reflog", "--author", "--committer"] {
+        for option in [
+            "--grep",
+            "--grep-reflog",
+            "--author",
+            "--committer",
+            "-G",
+            "-S",
+        ] {
             for pattern in ["--oneline", "--format=%s", "--pretty", "--"] {
                 let args = [option, pattern, "--format=%h"].map(str::to_owned);
                 let (format, forwarded) = parse_args(&args).unwrap();
                 assert_eq!(forwarded, [option, pattern], "{args:?}");
                 assert_eq!(format.text(&commit()), "abcdef0", "{args:?}");
             }
+            assert!(parse_args(&[option.into()]).is_err());
         }
     }
 
