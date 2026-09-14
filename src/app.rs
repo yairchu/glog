@@ -599,6 +599,7 @@ mod tests {
             author: String::new(),
             author_email: String::new(),
             author_date: String::new(),
+            collaborators: crate::git::Collaborators::default(),
             subject: subject.to_owned(),
             graph: vec!["* ".to_owned()],
         }

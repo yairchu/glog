@@ -166,6 +166,17 @@ green. Search follows the currently rendered fields. Toggles last for the
 session and survive switching views and watch refreshes. Synthetic working-tree
 entries retain their identifying hash and subject regardless of format.
 
+Collaborator badges appear once after the last visible author name/email field:
+`꩜` for Codex in the terminal foreground color, `❋` for Claude Code in warm
+terracotta, and gray `+1` for another collaborator (`+2`, etc. for several).
+Each badge has a medium gray `+` separator, for example `Alice+꩜+❋+1`.
+The separators have their own color, independent of the icons and count.
+They are static and follow the author toggle. Credits come only from
+`Co-authored-by` trailers: `codex@openai.com` identifies Codex and
+`noreply@anthropic.com` identifies Claude Code, including model-specific names.
+Other identities use the generic badge. Emails are deduplicated without regard
+to case, and the primary author is excluded. Full credits remain in Show.
+
 ## Keys
 
 | Key | Log | Show |

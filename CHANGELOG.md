@@ -7,6 +7,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Added compact collaborator badges beside the Log author: `꩜` for Codex,
+  terracotta `❋` for Claude Code, and gray `+N` for other coauthors,
+  based on deduplicated `Co-authored-by` trailers and following the author toggle.
+
 - Added configurable, colored Log rows with `--pretty=format:...`, `--format`,
   and Git date formatting, plus `a`/`d`/`r`/`x`/`s` keys to toggle author,
   date, refs, hash, and subject together with their associated punctuation.

@@ -138,7 +138,21 @@ impl LogFormat {
             ];
         }
         let mut spans = Vec::new();
-        for part in self.parts.iter().filter(|part| part.enabled) {
+        // Append badges once, after the last visible author name/email field.
+        let last_author = self.parts.iter().rposition(|part| {
+            part.enabled
+                && match part.token.as_str() {
+                    "an" => !commit.author.is_empty(),
+                    "ae" => !commit.author_email.is_empty(),
+                    _ => false,
+                }
+        });
+        for (index, part) in self
+            .parts
+            .iter()
+            .enumerate()
+            .filter(|(_, part)| part.enabled)
+        {
             let value = match part.token.as_str() {
                 "h" => &commit.short_hash,
                 "H" => &commit.hash,
@@ -170,6 +184,27 @@ impl LogFormat {
                 Field::Subject => Style::default(),
             };
             spans.push(Span::styled(text, style));
+            if Some(index) == last_author {
+                let collaborators = &commit.collaborators;
+                let separator =
+                    || Span::styled("+", Style::default().fg(Color::Rgb(160, 160, 160)));
+                if collaborators.codex {
+                    spans.push(separator());
+                    spans.push(Span::raw("꩜"));
+                }
+                if collaborators.claude {
+                    spans.push(separator());
+                    spans.push(Span::styled(
+                        "❋",
+                        Style::default().fg(Color::Rgb(215, 119, 87)),
+                    ));
+                }
+                if collaborators.others > 0 {
+                    spans.push(separator());
+                    let badge = collaborators.others.to_string();
+                    spans.push(Span::styled(badge, Style::default().fg(Color::Gray)));
+                }
+            }
         }
         spans
     }
@@ -236,8 +271,43 @@ pub(crate) mod tests {
             author: "Alice".into(),
             author_email: "alice@example.com".into(),
             author_date: "2026-09-14".into(),
+            collaborators: crate::git::Collaborators::default(),
             graph: vec!["* ".into()],
         }
+    }
+
+    #[test]
+    fn collaborator_badges_follow_author_once_and_toggle_with_it() {
+        let mut c = commit();
+        c.collaborators = crate::git::Collaborators {
+            codex: true,
+            claude: true,
+            others: 2,
+        };
+        for (source, expected) in [
+            ("%h (%an) %s", "abcdef0 (Alice)+꩜+❋+2 A subject"),
+            (
+                "%h (%an <%ae>) %s",
+                "abcdef0 (Alice <alice@example.com>)+꩜+❋+2 A subject",
+            ),
+            ("%h <%ae> %s", "abcdef0 <alice@example.com>+꩜+❋+2 A subject"),
+        ] {
+            let mut format = LogFormat::parse(source).unwrap();
+            assert_eq!(format.text(&c), expected);
+            format.toggle(Field::Author);
+            assert_eq!(format.text(&c), "abcdef0 A subject");
+            format.toggle(Field::Author);
+            assert_eq!(format.text(&c), expected);
+        }
+        assert_eq!(
+            LogFormat::default().text(&c),
+            "abcdef0 (HEAD -> main) A subject"
+        );
+        c.collaborators = crate::git::Collaborators {
+            others: 1,
+            ..Default::default()
+        };
+        assert_eq!(LogFormat::parse("%an").unwrap().text(&c), "Alice+1");
     }
 
     #[test]

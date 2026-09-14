@@ -92,7 +92,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_help(frame: &mut Frame) {
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(68);
-    let height = screen.height.saturating_sub(2).min(23);
+    let height = screen.height.saturating_sub(2).min(24);
     let area = Rect::new(
         screen.x + screen.width.saturating_sub(width) / 2,
         screen.y + screen.height.saturating_sub(height) / 2,
@@ -109,6 +109,7 @@ fn draw_help(frame: &mut Frame) {
         "  g, G              top / bottom",
         "",
         "  a/d/r/x/s         toggle author/date/refs/hash/subject (Log)",
+        "  Author badges: +꩜ Codex  +❋ Claude Code  +N other coauthors",
         "Views and search",
         "  Enter             open commit / toggle folded file",
         "  z                 toggle current file fold (Show)",
@@ -343,9 +344,45 @@ mod tests {
             author: String::new(),
             author_email: String::new(),
             author_date: String::new(),
+            collaborators: crate::git::Collaborators::default(),
             subject: subject.to_owned(),
             graph: vec!["* ".to_owned(); graph_rows],
         }
+    }
+
+    #[test]
+    fn collaborator_badges_have_distinct_colors_on_selected_rows() {
+        let mut c = crate::log_format::tests::commit();
+        c.collaborators = crate::git::Collaborators {
+            codex: true,
+            claude: true,
+            others: 1,
+        };
+        let mut app = App::new(vec![c]);
+        app.log_format.toggle(crate::log_format::Field::Author);
+        let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        for (glyph, color) in [
+            ("꩜", Color::Reset),
+            ("❋", Color::Rgb(215, 119, 87)),
+            ("+", Color::Rgb(160, 160, 160)),
+            ("1", Color::Gray),
+        ] {
+            let cell = (0..80)
+                .map(|x| &terminal.backend().buffer()[(x, app.log_row_origin)])
+                .find(|cell| cell.symbol() == glyph)
+                .unwrap();
+            assert_eq!(cell.fg, color);
+            assert_eq!(cell.bg, Color::DarkGray);
+        }
+        let separators: Vec<_> = (0..80)
+            .map(|x| &terminal.backend().buffer()[(x, app.log_row_origin)])
+            .filter(|cell| cell.symbol() == "+")
+            .collect();
+        assert_eq!(separators.len(), 3);
+        assert!(separators
+            .iter()
+            .all(|cell| cell.fg == Color::Rgb(160, 160, 160)));
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use std::{
-    collections::hash_map::DefaultHasher,
+    collections::{hash_map::DefaultHasher, HashSet},
     env, fs,
     hash::Hasher,
     io::{Read, Write},
@@ -8,6 +8,7 @@ use std::{
 
 const RECORD: char = '\x1e';
 const FIELD: char = '\x1f';
+const COAUTHOR: char = '\x1d';
 
 #[cfg(windows)]
 const NULL_DEVICE: &str = "NUL";
@@ -24,7 +25,41 @@ pub struct Commit {
     pub author: String,
     pub author_email: String,
     pub author_date: String,
+    pub collaborators: Collaborators,
     pub graph: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Collaborators {
+    pub codex: bool,
+    pub claude: bool,
+    pub others: usize,
+}
+
+impl Collaborators {
+    fn parse(trailers: &str, author_email: &str) -> Self {
+        let mut result = Self::default();
+        let mut seen = HashSet::new();
+        seen.insert(author_email.trim().to_ascii_lowercase());
+        for trailer in trailers.split(COAUTHOR) {
+            let Some((name, email)) = trailer.trim().rsplit_once('<') else {
+                continue;
+            };
+            let Some(email) = email.strip_suffix('>') else {
+                continue;
+            };
+            let email = email.trim().to_ascii_lowercase();
+            if name.trim().is_empty() || !email.contains('@') || !seen.insert(email.clone()) {
+                continue;
+            }
+            match email.as_str() {
+                "codex@openai.com" => result.codex = true,
+                "noreply@anthropic.com" => result.claude = true,
+                _ => result.others += 1,
+            }
+        }
+        result
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,7 +101,7 @@ fn log_command(user_args: &[String]) -> Result<Command, String> {
         "--decorate=short",
         "--color=always",
         "--no-abbrev-commit",
-        "--pretty=format:%x1e%H%x1f%h%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%s",
+        "--pretty=format:%x1e%H%x1f%h%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)%x1f%s",
     ]);
     command.args(&user_args[separator..]);
     Ok(command)
@@ -229,8 +264,8 @@ fn parse_log(output: &str) -> Vec<Commit> {
     let mut commits = Vec::new();
     for line in output.lines() {
         if let Some(marker) = line.find(RECORD) {
-            let fields: Vec<_> = line[marker + 1..].splitn(7, FIELD).collect();
-            if fields.len() == 7 {
+            let fields: Vec<_> = line[marker + 1..].splitn(8, FIELD).collect();
+            if fields.len() == 8 {
                 pending_graph.push(line[..marker].to_owned());
                 commits.push(Commit {
                     kind: CommitKind::Revision,
@@ -240,7 +275,8 @@ fn parse_log(output: &str) -> Vec<Commit> {
                     author: fields[3].to_owned(),
                     author_email: fields[4].to_owned(),
                     author_date: fields[5].to_owned(),
-                    subject: fields[6].to_owned(),
+                    collaborators: Collaborators::parse(fields[6], fields[4]),
+                    subject: fields[7].to_owned(),
                     graph: std::mem::take(&mut pending_graph),
                 });
             }
@@ -278,6 +314,7 @@ fn pseudo_commit(kind: CommitKind, short_hash: &str, subject: &str) -> Commit {
         author: String::new(),
         author_email: String::new(),
         author_date: String::new(),
+        collaborators: Collaborators::default(),
         subject: subject.to_owned(),
         graph: vec!["* ".to_owned()],
     }
@@ -822,8 +859,71 @@ mod tests {
     }
 
     #[test]
+    fn collaborator_identities_are_deduplicated_and_match_exact_emails() {
+        let trailers = [
+            "Codex <CODEX@OPENAI.COM>",
+            "Codex <codex@openai.com>",
+            "Claude Opus <noreply@anthropic.com>",
+            "Claude Code <noreply@anthropic.com>",
+            "Alice <ALICE@example.com>",
+            "Bob <bob@example.com>",
+            "Bob again <BOB@example.com>",
+            "Codex <human@example.com>",
+            "not an identity",
+            "Missing close <missing@example.com",
+        ]
+        .join(&COAUTHOR.to_string());
+        assert_eq!(
+            Collaborators::parse(&trailers, "alice@example.com"),
+            Collaborators {
+                codex: true,
+                claude: true,
+                others: 2,
+            }
+        );
+        assert_eq!(
+            Collaborators::parse("", "alice@example.com"),
+            Collaborators::default()
+        );
+    }
+
+    #[test]
+    fn loads_coauthor_trailers_without_turning_message_text_into_graph_rows() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        for message in [
+            "Mentions only\n\nThis discusses Codex and Claude Code without crediting either.",
+            "Collaborative change\n\nCo-authored-by: Codex <codex@openai.com>\nco-authored-by: Claude Code <noreply@anthropic.com>\nCo-authored-by: Bob <bob@example.com>\nCo-authored-by: Bob again <BOB@example.com>\nCo-authored-by: Alice <alice@example.com>\nReviewed-by: Other <other@example.com>",
+        ] {
+            let output = Command::new("git").args([
+                "-c", "user.name=Alice", "-c", "user.email=alice@example.com",
+                "commit", "--allow-empty", "-qm", message,
+            ]).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        }
+        let commits = load_log(&[]).unwrap();
+        assert_eq!(commits.len(), 2);
+        assert_eq!(commits[0].subject, "Collaborative change");
+        assert_eq!(
+            commits[0].collaborators,
+            Collaborators {
+                codex: true,
+                claude: true,
+                others: 1
+            }
+        );
+        assert_eq!(commits[1].collaborators, Collaborators::default());
+        assert!(commits.iter().all(|commit| commit.graph.len() == 1));
+    }
+
+    #[test]
     fn parses_full_identity_and_graph_lines() {
-        let input = "|\\\n* \u{1e}abcdef\u{1f}abcdef0\u{1f}HEAD -> main\u{1f}Alice\u{1f}alice@example.com\u{1f}2026-09-14\u{1f}hello\n| * \u{1e}123456\u{1f}1234567\u{1f}\u{1f}Bob\u{1f}bob@example.com\u{1f}2026-09-13\u{1f}world\n";
+        let input = "|\\\n* \u{1e}abcdef\u{1f}abcdef0\u{1f}HEAD -> main\u{1f}Alice\u{1f}alice@example.com\u{1f}2026-09-14\u{1f}\u{1f}hello\n| * \u{1e}123456\u{1f}1234567\u{1f}\u{1f}Bob\u{1f}bob@example.com\u{1f}2026-09-13\u{1f}\u{1f}world\n";
         let commits = parse_log(input);
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].hash, "abcdef");
