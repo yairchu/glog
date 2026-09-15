@@ -1,6 +1,6 @@
 use crate::{
     ansi,
-    app::{App, Mode},
+    app::{App, Mode, ShowScroll},
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -277,20 +277,41 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
         .copied()
         .unwrap_or(cursor_start);
     let height = usize::from(area.height).max(1);
-    if app.show_scroll_to_cursor {
-        app.show_offset = cursor_start;
-        app.show_scroll_to_cursor = false;
-    } else if cursor_end <= app.show_offset {
-        app.show_offset = cursor_start;
-    } else if cursor_start >= app.show_offset + height {
-        app.show_offset = cursor_start + 1 - height;
-    }
     let max = app
         .show_row_starts
         .last()
         .copied()
         .unwrap_or(0)
         .saturating_sub(height);
+    let request = app.show_scroll.take();
+    let matched_rows = if matches!(request, Some(ShowScroll::Search)) {
+        lines.get(app.show_cursor).and_then(|line| {
+            app.search.as_deref().and_then(|query| {
+                wrapped_match_rows(line, query, area.width, cursor_end - cursor_start)
+            })
+        })
+    } else {
+        None
+    };
+    match request {
+        Some(ShowScroll::Bottom) => app.show_offset = max,
+        Some(ShowScroll::Cursor) => app.show_offset = cursor_start,
+        _ if matched_rows.is_some() => {
+            let rows = matched_rows.unwrap();
+            let start = cursor_start + rows.start;
+            let end = cursor_start + rows.end;
+            if start < app.show_offset {
+                app.show_offset = start;
+            } else if end > app.show_offset + height {
+                app.show_offset = end.saturating_sub(height).min(start);
+            }
+        }
+        _ if cursor_end <= app.show_offset => app.show_offset = cursor_start,
+        _ if cursor_start >= app.show_offset + height => {
+            app.show_offset = cursor_start + 1 - height;
+        }
+        _ => {}
+    }
     app.show_offset = app.show_offset.min(max);
     // Skip complete logical rows first so scrolling is not limited to u16::MAX.
     let first = app
@@ -319,6 +340,58 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
     }
+}
+
+// Render only on a search request, using the same word wrapping as the viewport.
+// Probe in small chunks so a long minified line does not allocate a huge buffer.
+fn wrapped_match_rows(
+    line: &Line<'_>,
+    query: &str,
+    width: u16,
+    height: usize,
+) -> Option<std::ops::Range<usize>> {
+    use ratatui::{buffer::Buffer, widgets::Widget};
+
+    if width == 0 {
+        return None;
+    }
+    let text = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+    let mut marked = highlight_matches(Line::raw(text), query, true);
+    // Search navigation selects a logical line; reveal its first occurrence.
+    let mut found = false;
+    for span in &mut marked.spans {
+        if span.style.bg == Some(Color::Yellow) && !found {
+            found = true;
+        } else {
+            span.style = Style::default();
+        }
+    }
+    if !found {
+        return None;
+    }
+    let paragraph = Paragraph::new(marked).wrap(Wrap { trim: false });
+    let mut rows: Option<std::ops::Range<usize>> = None;
+    for offset in (0..height.min(usize::from(u16::MAX) + 1)).step_by(64) {
+        let area = Rect::new(0, 0, width, (height - offset).min(64) as u16);
+        let mut buffer = Buffer::empty(area);
+        paragraph
+            .clone()
+            .scroll((offset as u16, 0))
+            .render(area, &mut buffer);
+        for y in 0..area.height {
+            if (0..width).any(|x| buffer[(x, y)].bg == Color::Yellow) {
+                let screen = offset + usize::from(y);
+                rows.get_or_insert(screen..screen + 1).end = screen + 1;
+            } else if rows.is_some() {
+                return rows;
+            }
+        }
+    }
+    rows
 }
 
 fn brighten_background(color: Color) -> Color {
@@ -838,7 +911,13 @@ mod release_review_tests {
 
     #[test]
     fn search_reveals_match_in_wrapped_continuation() {
-        for prefix in ["a".repeat(60), "界".repeat(30), "one two ".repeat(8)] {
+        for prefix in [
+            "a".repeat(60),
+            "界".repeat(30),
+            "one two ".repeat(8),
+            "a".repeat(635), // Match crosses a probe chunk boundary.
+            format!("\x1b[32m{}\x1b[0m", "a".repeat(60)),
+        ] {
             let mut terminal = Terminal::new(TestBackend::new(10, 6)).unwrap();
             let mut app = App::new(Vec::new());
             app.mode = Mode::Show;

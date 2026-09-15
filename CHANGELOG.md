@@ -13,7 +13,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Kept the Show viewport steady when the next or previous search match is
   already visible, scrolling only enough to reveal off-screen matches,
-  accounting for wrapped lines.
+  accounting for wrapped lines and revealing matches in their continuations.
+  Made `G`/End reach the final wrapped screen row.
 - Highlighted the full Show cursor row with a lighter background, brightening
   existing diff backgrounds while preserving search highlight colors and
   following wrapped cursor rows.

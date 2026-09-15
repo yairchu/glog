@@ -20,6 +20,13 @@ pub struct ShowRow {
     pub fold_separator: bool,
 }
 
+#[derive(Clone, Copy)]
+pub enum ShowScroll {
+    Cursor,
+    Bottom,
+    Search,
+}
+
 pub struct App {
     pub commits: Vec<Commit>,
     pub log_format: crate::log_format::LogFormat,
@@ -33,7 +40,7 @@ pub struct App {
     pub show_rows: Vec<ShowRow>,
     // Start of each wrapped row, followed by the total screen height.
     pub show_row_starts: Vec<usize>,
-    pub show_scroll_to_cursor: bool,
+    pub show_scroll: Option<ShowScroll>,
     pub status: Option<String>,
     pub search: Option<String>,
     pub search_input: Option<String>,
@@ -76,7 +83,7 @@ impl App {
             show_text: String::new(),
             show_rows: Vec::new(),
             show_row_starts: Vec::new(),
-            show_scroll_to_cursor: false,
+            show_scroll: None,
             status: None,
             search: None,
             search_input: None,
@@ -228,7 +235,10 @@ impl App {
     pub fn bottom(&mut self) {
         match self.mode {
             Mode::Log => self.selected = self.commits.len().saturating_sub(1),
-            Mode::Show => self.show_cursor = self.show_rows.len().saturating_sub(1),
+            Mode::Show => {
+                self.show_cursor = self.show_rows.len().saturating_sub(1);
+                self.show_scroll = Some(ShowScroll::Bottom);
+            }
         }
     }
 
@@ -403,7 +413,7 @@ impl App {
             .position(|row| row.source == source && row.folded)
             .or_else(|| self.show_rows.iter().position(|row| row.source == source))
             .unwrap_or(self.show_cursor);
-        self.show_scroll_to_cursor = true;
+        self.show_scroll = Some(ShowScroll::Cursor);
     }
 
     pub fn toggle_all_lockfiles(&mut self) {
@@ -435,7 +445,7 @@ impl App {
                 .iter()
                 .rposition(|row| row.source <= source)
                 .unwrap_or(0);
-            self.show_scroll_to_cursor = true;
+            self.show_scroll = Some(ShowScroll::Cursor);
         }
     }
 
@@ -603,6 +613,7 @@ impl App {
                         {
                             self.show_cursor = visible;
                             self.search_match = Some((Mode::Show, visible));
+                            self.show_scroll = Some(ShowScroll::Search);
                         }
                         self.status = None;
                         return;
