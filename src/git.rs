@@ -689,6 +689,131 @@ mod tests {
         }
     }
 
+    struct WatchReadingContext {
+        cursor_text: String,
+        offset: usize,
+        expanded_files: Vec<String>,
+    }
+
+    // Return snapshots before making regression assertions, so an expected
+    // failure does not poison the process-wide current-directory lock.
+    fn working_tree_watch_refresh(kind: CommitKind) -> (WatchReadingContext, WatchReadingContext) {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write("Cargo.lock", "original\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        let contents = (0..30)
+            .map(|i| format!("dependency-{i:02}\n"))
+            .collect::<String>();
+        fs::write("Cargo.lock", contents).unwrap();
+        if kind == CommitKind::Staged {
+            git(&["add", "Cargo.lock"]);
+        }
+
+        let mut app = crate::app::App::new(load_log(&[]).unwrap());
+        app.watch = true;
+        app.selected = app
+            .commits
+            .iter()
+            .position(|commit| commit.kind == kind)
+            .unwrap();
+        app.switch_mode();
+        app.show_cursor = app.show_rows.iter().position(|row| row.folded).unwrap();
+        app.toggle_show_file();
+        let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.text.contains("dependency-15"))
+            .unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        app.scroll_show(2);
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+
+        let snapshot = |app: &crate::app::App| WatchReadingContext {
+            cursor_text: app.show_rows[app.show_cursor].text.clone(),
+            offset: app.show_offset,
+            expanded_files: app
+                .show_rows
+                .iter()
+                .filter(|row| row.text.contains("diff --git") && row.text.contains("Cargo.lock"))
+                .map(|row| row.text.clone())
+                .collect(),
+        };
+        let before = snapshot(&app);
+        assert!(before.offset > 0);
+        assert_eq!(before.expanded_files.len(), 1);
+        let fingerprint = watch_fingerprint().unwrap();
+        // An unrelated ref change triggers watch refresh while this patch stays identical.
+        git(&["branch", "unrelated"]);
+        assert_ne!(watch_fingerprint().unwrap(), fingerprint);
+        app.replace_commits(load_log(&[]).unwrap());
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        assert_eq!(app.commits[app.selected].kind, kind);
+        (before, snapshot(&app))
+    }
+
+    #[test]
+    fn watch_refresh_preserves_unstaged_reading_position() {
+        let (before, after) = working_tree_watch_refresh(CommitKind::Unstaged);
+        assert_eq!(
+            (after.cursor_text, after.offset),
+            (before.cursor_text, before.offset),
+            "refresh must preserve the unstaged cursor and viewport"
+        );
+    }
+
+    #[test]
+    fn watch_refresh_preserves_staged_reading_position() {
+        let (before, after) = working_tree_watch_refresh(CommitKind::Staged);
+        assert_eq!(
+            (after.cursor_text, after.offset),
+            (before.cursor_text, before.offset),
+            "refresh must preserve the staged cursor and viewport"
+        );
+    }
+
+    #[test]
+    fn watch_refresh_preserves_unstaged_expanded_folds() {
+        let (before, after) = working_tree_watch_refresh(CommitKind::Unstaged);
+        assert_eq!(
+            after.expanded_files, before.expanded_files,
+            "refresh must keep the unstaged lockfile expanded"
+        );
+    }
+
+    #[test]
+    fn watch_refresh_preserves_staged_expanded_folds() {
+        let (before, after) = working_tree_watch_refresh(CommitKind::Staged);
+        assert_eq!(
+            after.expanded_files, before.expanded_files,
+            "refresh must keep the staged lockfile expanded"
+        );
+    }
+
     #[test]
     fn log_grep_can_search_for_a_display_option() {
         let directory = TestDirectory::new();

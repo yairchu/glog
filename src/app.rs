@@ -711,6 +711,68 @@ mod tests {
     }
 
     #[test]
+    fn watch_refresh_preserves_log_viewport_when_commits_are_prepended() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let commits: Vec<_> = (0..12).map(|i| commit(&format!("commit {i}"))).collect();
+        let mut app = App::new(commits.clone());
+        app.watch = true;
+        app.selected = 5;
+        app.log_offset = 4;
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let before = terminal.backend().buffer().clone();
+        let selected_hash = app.commits[app.selected].hash.clone();
+
+        // This is the same refresh entry point used by the watch event loop.
+        app.replace_commits([vec![commit("new head")], commits].concat());
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+
+        assert_eq!(app.commits[app.selected].hash, selected_hash);
+        assert_eq!(
+            terminal.backend().buffer(),
+            &before,
+            "new commits above the viewport must not move the text being read"
+        );
+    }
+
+    #[test]
+    fn watch_refresh_preserves_historical_show_viewport() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let selected = commit("selected");
+        let mut app = App::new(vec![selected.clone()]);
+        app.watch = true;
+        let patch = (0..30).map(|i| format!("line {i}\n")).collect::<String>();
+        app.insert_cache(selected.hash.clone(), patch);
+        app.switch_mode();
+        app.show_cursor = 10;
+        app.show_offset = 8;
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let before = terminal.backend().buffer().clone();
+
+        app.replace_commits(vec![commit("new head"), selected.clone()]);
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+
+        assert_eq!(app.commits[app.selected].hash, selected.hash);
+        assert_eq!(app.show_cursor, 10);
+        assert_eq!(
+            terminal.backend().buffer(),
+            &before,
+            "refresh must preserve the viewport of an unchanged historical patch"
+        );
+    }
+
+    #[test]
     fn lockfiles_start_folded_and_can_be_expanded() {
         let mut app = App::new(Vec::new());
         app.show_text = "commit metadata\ndiff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n-old\n+new\ndiff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n-old dep\n+new dep\n"
