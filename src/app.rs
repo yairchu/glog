@@ -26,10 +26,14 @@ pub struct App {
     pub selected: usize,
     pub mode: Mode,
     pub log_offset: usize,
+    // Viewport offsets are screen rows; the cursor indexes logical Show rows.
     pub show_offset: usize,
     pub show_cursor: usize,
     pub show_text: String,
     pub show_rows: Vec<ShowRow>,
+    // Start of each wrapped row, followed by the total screen height.
+    pub show_row_starts: Vec<usize>,
+    pub show_scroll_to_cursor: bool,
     pub status: Option<String>,
     pub search: Option<String>,
     pub search_input: Option<String>,
@@ -71,6 +75,8 @@ impl App {
             show_cursor: 0,
             show_text: String::new(),
             show_rows: Vec::new(),
+            show_row_starts: Vec::new(),
+            show_scroll_to_cursor: false,
             status: None,
             search: None,
             search_input: None,
@@ -155,7 +161,12 @@ impl App {
 
     pub fn scroll_show(&mut self, delta: isize) {
         let height = self.visible_show_rows.max(1);
-        let max_offset = self.show_rows.len().saturating_sub(height);
+        let total = self
+            .show_row_starts
+            .last()
+            .copied()
+            .unwrap_or(self.show_rows.len());
+        let max_offset = total.saturating_sub(height);
         self.show_offset = if delta < 0 {
             self.show_offset.saturating_sub(delta.unsigned_abs())
         } else {
@@ -163,11 +174,9 @@ impl App {
                 .saturating_add(delta as usize)
                 .min(max_offset)
         };
-        if self.show_cursor < self.show_offset {
-            self.show_cursor = self.show_offset;
-        } else if self.show_cursor >= self.show_offset + height {
-            self.show_cursor = self.show_offset + height - 1;
-        }
+        let first = self.show_row_at_screen(self.show_offset);
+        let last = self.show_row_at_screen(self.show_offset + height - 1);
+        self.show_cursor = self.show_cursor.clamp(first, last);
     }
 
     pub fn move_selection(&mut self, delta: isize) -> bool {
@@ -210,7 +219,10 @@ impl App {
     pub fn top(&mut self) {
         match self.mode {
             Mode::Log => self.selected = 0,
-            Mode::Show => self.show_cursor = 0,
+            Mode::Show => {
+                self.show_cursor = 0;
+                self.show_offset = 0;
+            }
         }
     }
     pub fn bottom(&mut self) {
@@ -343,7 +355,7 @@ impl App {
         }
         self.show_rows = rows;
         self.show_cursor = self.show_cursor.min(self.show_rows.len().saturating_sub(1));
-        self.show_offset = self.show_offset.min(self.show_rows.len().saturating_sub(1));
+        self.show_row_starts.clear();
     }
 
     pub fn toggle_show_file(&mut self) {
@@ -385,13 +397,13 @@ impl App {
         }
         self.search_match = None;
         self.rebuild_show_rows();
-        self.show_offset = self
+        self.show_cursor = self
             .show_rows
             .iter()
             .position(|row| row.source == source && row.folded)
             .or_else(|| self.show_rows.iter().position(|row| row.source == source))
-            .unwrap_or(self.show_offset);
-        self.show_cursor = self.show_offset;
+            .unwrap_or(self.show_cursor);
+        self.show_scroll_to_cursor = true;
     }
 
     pub fn toggle_all_lockfiles(&mut self) {
@@ -418,12 +430,12 @@ impl App {
         self.search_match = None;
         self.rebuild_show_rows();
         if let Some(source) = current_source {
-            self.show_offset = self
+            self.show_cursor = self
                 .show_rows
                 .iter()
                 .rposition(|row| row.source <= source)
                 .unwrap_or(0);
-            self.show_cursor = self.show_offset;
+            self.show_scroll_to_cursor = true;
         }
     }
 
@@ -456,8 +468,26 @@ impl App {
         }
     }
 
+    fn show_row_at_screen(&self, screen: usize) -> usize {
+        if self.show_row_starts.is_empty() {
+            return screen.min(self.show_rows.len().saturating_sub(1));
+        }
+        self.show_row_starts
+            .partition_point(|&start| start <= screen)
+            .saturating_sub(1)
+            .min(self.show_rows.len().saturating_sub(1))
+    }
+
     pub fn click_show_row(&mut self, visible_row: usize) {
-        let clicked = self.show_offset.saturating_add(visible_row);
+        let screen = self.show_offset.saturating_add(visible_row);
+        if self
+            .show_row_starts
+            .last()
+            .is_some_and(|&total| screen >= total)
+        {
+            return;
+        }
+        let clicked = self.show_row_at_screen(screen);
         self.show_cursor = clicked.min(self.show_rows.len().saturating_sub(1));
         if self.show_rows.get(clicked).is_some_and(|row| row.folded) {
             self.toggle_show_file();
