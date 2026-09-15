@@ -4,7 +4,7 @@
 
 It is a small, strictly read-only terminal UI for exploring Git history. Git remains responsible for revision parsing, pathspecs, traversal, decorations, and patch generation; `glog` adds selection, scrolling, search, and Log/Show tabs.
 
-With no arguments, dirty working-tree state appears ahead of `HEAD` as separate `Unstaged changes` and `Staged changes` entries, divided from committed history by a labeled separator. Untracked files are included in the unstaged diff. These synthetic entries are omitted when empty and whenever explicit `git log` arguments are supplied. Display-format options alone preserve these entries.
+With no arguments, `glog` shows committed history, loaded once, without inspecting working-tree changes. Use `glog --watch` for a live view: nonempty `Unstaged changes` and `Staged changes` entries appear ahead of `HEAD`, divided from committed history by a labeled separator. Untracked files are included in the unstaged diff.
 
 ## Install and run
 
@@ -92,10 +92,9 @@ glog log --all
 ```
 
 Show accepts one commit and optional pathspecs after `--`. Pathspecs restrict
-both committed and working-tree patches, including untracked files. With an
+committed patches. With an
 explicit commit, history remains rooted at that commit. With
-no commit argument, Log includes the usual unstaged and staged entries and
-keeps HEAD selected. History loads on
+no commit argument, Log shows committed history and keeps HEAD selected. History loads on
 first switching to Log with `Tab`/`Escape` or navigating with the arrow keys;
 `q` quits directly. The existing folding, search, and file navigation work as
 usual. `glog log` explicitly selects Log mode and otherwise accepts the same
@@ -111,9 +110,11 @@ glog log diff             # log for a branch named "diff"
 
 If the requested changes are empty, glog prints a brief message and exits
 successfully without opening the terminal UI. Switching to Log loads the
-normal history, including working-tree entries, and keeps the displayed entry
-selected. This also works before the repository's first commit. This initial
-`diff` command accepts only the optional `--cached` flag.
+committed history and selects HEAD; before the first commit, Log is empty.
+The `diff` commands work without watch mode. Changes are read when opened and
+untracked-file contents are read when expanded; this is not a session-wide
+snapshot and does not refresh automatically. The `diff` command accepts only
+the optional `--cached` flag.
 
 Use watch mode to refresh the default `HEAD` view when commits, branches, tags,
 remote-tracking refs, staged changes, unstaged changes, or untracked files

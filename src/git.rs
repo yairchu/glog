@@ -115,7 +115,7 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
             format!("could not run git log: {error}")
         }
     })?;
-    let mut commits = if !output.status.success() {
+    let commits = if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("does not have any commits yet")
             || stderr.contains("your current branch appears to be broken")
@@ -127,27 +127,15 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
     } else {
         parse_log(&String::from_utf8_lossy(&output.stdout))?
     };
-    if only_date_options(user_args) {
-        let mut working_tree = working_tree_entries()?;
-        working_tree.append(&mut commits);
-        commits = working_tree;
-    }
     Ok(commits)
 }
 
-// Date options still go to Git for formatting, but do not restrict history.
-fn only_date_options(args: &[String]) -> bool {
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        if arg == "--date" {
-            if args.next().is_none() {
-                return false;
-            }
-        } else if arg != "--relative-date" && !arg.starts_with("--date=") {
-            return false;
-        }
-    }
-    true
+/// Watch mode includes live working-tree entries ahead of committed history.
+pub fn load_watch_log() -> Result<Vec<Commit>, String> {
+    let commits = load_log(&[])?;
+    let mut entries = working_tree_entries()?;
+    entries.extend(commits);
+    Ok(entries)
 }
 
 /// Resolve a single commit before opening the terminal; defer ancestry traversal.
@@ -728,7 +716,7 @@ mod tests {
             git(&["add", "Cargo.lock"]);
         }
 
-        let mut app = crate::app::App::new(load_log(&[]).unwrap());
+        let mut app = crate::app::App::new(load_watch_log().unwrap());
         app.watch = true;
         app.selected = app
             .commits
@@ -786,7 +774,7 @@ mod tests {
             git(&["branch", "unrelated"]);
         }
         assert_ne!(watch_fingerprint().unwrap(), fingerprint);
-        app.replace_commits(load_log(&[]).unwrap());
+        app.replace_commits(load_watch_log().unwrap());
         terminal
             .draw(|frame| crate::ui::draw(frame, &mut app))
             .unwrap();
@@ -888,7 +876,7 @@ mod tests {
     }
 
     #[test]
-    fn date_only_options_preserve_working_tree_entries() {
+    fn ordinary_log_excludes_working_tree_entries_with_display_options() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
         let git = |args: &[&str]| {
@@ -910,6 +898,7 @@ mod tests {
         fs::write("tracked.txt", "unstaged\n").unwrap();
 
         for options in [
+            vec![],
             vec!["--date=short"],
             vec!["--date", "short"],
             vec!["--relative-date"],
@@ -921,15 +910,11 @@ mod tests {
             let commits = load_log(&args).unwrap();
             assert_eq!(
                 commits.iter().map(|commit| commit.kind).collect::<Vec<_>>(),
-                [
-                    CommitKind::Unstaged,
-                    CommitKind::Staged,
-                    CommitKind::Revision
-                ],
+                [CommitKind::Revision],
                 "{options:?} must only change date display"
             );
             if options.last() == Some(&"short") || options.last() == Some(&"--date=short") {
-                assert_eq!(commits[2].author_date.len(), 10);
+                assert_eq!(commits[0].author_date.len(), 10);
             }
             for restriction in [
                 vec!["HEAD"],
@@ -945,6 +930,10 @@ mod tests {
                     .all(|commit| commit.kind == CommitKind::Revision));
             }
         }
+        // Git log can read history even when the index cannot be inspected.
+        fs::write(".git/index", "invalid index").unwrap();
+        assert_eq!(load_log(&[]).unwrap().len(), 1);
+        assert!(load_watch_log().is_err());
     }
 
     #[test]
@@ -983,11 +972,21 @@ mod tests {
             let mut app = load_show_app(&args).unwrap();
             assert!(app.show_text.contains("wanted/tracked.txt"));
             assert!(!app.show_text.contains("unrelated/"));
+            app.switch_mode();
+            assert!(app
+                .commits
+                .iter()
+                .all(|commit| commit.kind == CommitKind::Revision));
             let mut patches = Vec::new();
+            // Path filtering remains available to the patch loader, independently
+            // of which entries the ordinary Log exposes.
             for kind in [CommitKind::Staged, CommitKind::Unstaged] {
-                assert!(app.move_selection(-1));
-                app.load_show();
-                assert_eq!(app.commits[app.selected].kind, kind);
+                let entry = working_tree_entries()
+                    .unwrap()
+                    .into_iter()
+                    .find(|entry| entry.kind == kind)
+                    .unwrap();
+                app.show_text = show(&entry, &app.show_paths).unwrap();
                 assert!(app.show_text.contains("wanted/tracked.txt"));
                 if kind == CommitKind::Unstaged {
                     assert!(app.show_text.contains("wanted/new.txt"));
@@ -1037,9 +1036,11 @@ mod tests {
         assert!(app.show_text.contains("second.txt"));
         assert!(app.pending_history.is_some());
         app.switch_mode();
-        assert_eq!(app.commits[0].kind, CommitKind::Unstaged);
-        assert_eq!(app.commits[1].kind, CommitKind::Staged);
-        assert_eq!(app.selected, 2);
+        assert!(app
+            .commits
+            .iter()
+            .all(|commit| commit.kind == CommitKind::Revision));
+        assert_eq!(app.selected, 0);
         assert_eq!(app.commits[app.selected].subject, "second");
         app.switch_mode();
         assert!(app.move_selection(1));
@@ -1071,7 +1072,7 @@ mod tests {
     }
 
     #[test]
-    fn diff_opens_only_requested_changes_and_preserves_selection_in_log() {
+    fn diff_opens_requested_changes_and_switches_to_committed_history() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
         let git = |args: &[&str]| {
@@ -1089,12 +1090,14 @@ mod tests {
         assert!(load_diff_app(&[]).unwrap().commits.is_empty());
         assert!(load_diff_app(&cached).unwrap().commits.is_empty());
         fs::write("new.txt", "untracked\n").unwrap();
+        assert!(load_log(&[]).unwrap().is_empty());
+        assert_eq!(load_watch_log().unwrap()[0].kind, CommitKind::Unstaged);
         let mut app = load_diff_app(&[]).unwrap();
         assert_eq!(app.mode, crate::app::Mode::Show);
         assert_eq!(app.commits[0].kind, CommitKind::Unstaged);
         assert!(app.show_text.contains("glog-lazy-untracked:"));
         app.switch_mode();
-        assert_eq!(app.commits.len(), 1); // Unborn HEAD is supported.
+        assert!(app.commits.is_empty()); // Unborn HEAD has no committed history.
         git(&["add", "new.txt"]);
         assert!(load_diff_app(&[]).unwrap().commits.is_empty());
         assert_eq!(
@@ -1107,20 +1110,27 @@ mod tests {
         fs::write("new.txt", "staged-content\n").unwrap();
         git(&["add", "new.txt"]);
         fs::write("new.txt", "unstaged-content\n").unwrap();
-        for (args, kind, selected, content) in [
-            (&[][..], CommitKind::Unstaged, 0, "unstaged-content"),
-            (&cached[..], CommitKind::Staged, 1, "staged-content"),
+        for (args, kind, content) in [
+            (&[][..], CommitKind::Unstaged, "unstaged-content"),
+            (&cached[..], CommitKind::Staged, "staged-content"),
         ] {
             let mut app = load_diff_app(args).unwrap();
             assert_eq!(app.mode, crate::app::Mode::Show);
             assert_eq!(app.commits.len(), 1);
+            assert_eq!(app.commits[0].kind, kind);
             assert!(crate::ansi::plain(&app.show_text).contains(content));
             assert!(app.pending_history.is_some());
             app.switch_mode();
-            assert_eq!(app.commits.len(), 3);
-            assert_eq!(app.selected, selected);
-            assert_eq!(app.commits[app.selected].kind, kind);
+            assert_eq!(app.commits.len(), 1);
+            assert_eq!(app.selected, 0);
+            assert_eq!(app.commits[app.selected].kind, CommitKind::Revision);
             assert!(app.pending_history.is_none());
+            for direction in [-1, 1] {
+                let mut direct = load_diff_app(args).unwrap();
+                assert!(direct.move_selection(direction));
+                assert_eq!(direct.commits[direct.selected].kind, CommitKind::Revision);
+                assert_eq!(direct.commits[direct.selected].subject, "first");
+            }
         }
         assert!(load_diff_app(&["HEAD".into()]).is_err());
         assert!(load_diff_app(&["--watch".into()]).is_err());
@@ -1419,7 +1429,10 @@ mod tests {
         assert_ne!(ref_fingerprint, dirty_fingerprint);
         fs::write(repository.path().join("new.txt"), "UNTRACKED LONGER\n").unwrap();
         assert_ne!(dirty_fingerprint, watch_fingerprint().unwrap());
-        let commits = load_log(&[]).unwrap();
+        let ordinary = load_log(&[]).unwrap();
+        assert_eq!(ordinary.len(), 1);
+        assert_eq!(ordinary[0].kind, CommitKind::Revision);
+        let commits = load_watch_log().unwrap();
         assert_eq!(commits[0].kind, CommitKind::Unstaged);
         assert_eq!(commits[1].kind, CommitKind::Staged);
         assert_eq!(commits[2].kind, CommitKind::Revision);

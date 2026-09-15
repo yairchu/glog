@@ -53,6 +53,7 @@ fn main() -> ExitCode {
     let loaded = match command {
         Command::Show => git::load_show_app(command_args),
         Command::Diff => git::load_diff_app(command_args),
+        Command::Log if watch => git::load_watch_log().map(App::new),
         Command::Log => git::load_log(git_args).map(App::new),
     };
     let mut app = match loaded {
@@ -131,10 +132,11 @@ Options:
                 Format Log rows (%h %H %ad %an %ae %d %D %s %%)
   --date=STYLE  Format author dates using Git (e.g. short, relative, iso)
   --oneline     Use the compact hash, refs, and subject layout
-  --watch       Refresh the default HEAD view when the repository changes
+  --watch       Include working-tree changes and refresh the default HEAD view
   -h, --help    Print help
   -V, --version Print version
 
+Log shows committed history, loaded once unless --watch is used.
 Show opens HEAD or the specified commit, with history available via Tab.
 Diff opens unstaged changes (including untracked files), or staged changes
 with --cached, and exits if empty.
@@ -190,7 +192,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
         }
         if app.watch && last_watch.elapsed() >= Duration::from_secs(1) {
             match git::watch_fingerprint() {
-                Ok(current) if fingerprint != Some(current) => match git::load_log(&[]) {
+                Ok(current) if fingerprint != Some(current) => match git::load_watch_log() {
                     Ok(commits) => {
                         app.status = None;
                         app.replace_commits(commits);

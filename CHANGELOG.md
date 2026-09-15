@@ -5,6 +5,12 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Changed
+
+- Limited staged and unstaged Log entries to `--watch`. Ordinary Log now loads
+  committed history only, without inspecting working-tree changes. Direct
+  `glog diff` and `glog diff --cached` remain available without watch mode.
+
 ### Fixed
 
 - Preserved reading position and expanded files when watch mode refreshes,
