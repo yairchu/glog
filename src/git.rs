@@ -692,12 +692,16 @@ mod tests {
     struct WatchReadingContext {
         cursor_text: String,
         offset: usize,
+        screen_position: isize,
         expanded_files: Vec<String>,
     }
 
     // Return snapshots before making regression assertions, so an expected
     // failure does not poison the process-wide current-directory lock.
-    fn working_tree_watch_refresh(kind: CommitKind) -> (WatchReadingContext, WatchReadingContext) {
+    fn working_tree_watch_refresh(
+        kind: CommitKind,
+        insert_lines: bool,
+    ) -> (WatchReadingContext, WatchReadingContext) {
         use ratatui::{backend::TestBackend, Terminal};
 
         let directory = TestDirectory::new();
@@ -754,6 +758,8 @@ mod tests {
         let snapshot = |app: &crate::app::App| WatchReadingContext {
             cursor_text: app.show_rows[app.show_cursor].text.clone(),
             offset: app.show_offset,
+            screen_position: app.show_row_starts[app.show_cursor] as isize
+                - app.show_offset as isize,
             expanded_files: app
                 .show_rows
                 .iter()
@@ -765,8 +771,20 @@ mod tests {
         assert!(before.offset > 0);
         assert_eq!(before.expanded_files.len(), 1);
         let fingerprint = watch_fingerprint().unwrap();
-        // An unrelated ref change triggers watch refresh while this patch stays identical.
-        git(&["branch", "unrelated"]);
+        if insert_lines {
+            let contents = fs::read_to_string("Cargo.lock").unwrap();
+            fs::write(
+                "Cargo.lock",
+                format!("new-one\nnew-two\nnew-three\n{contents}"),
+            )
+            .unwrap();
+            if kind == CommitKind::Staged {
+                git(&["add", "Cargo.lock"]);
+            }
+        } else {
+            // An unrelated ref change triggers refresh while the patch stays identical.
+            git(&["branch", "unrelated"]);
+        }
         assert_ne!(watch_fingerprint().unwrap(), fingerprint);
         app.replace_commits(load_log(&[]).unwrap());
         terminal
@@ -778,7 +796,7 @@ mod tests {
 
     #[test]
     fn watch_refresh_preserves_unstaged_reading_position() {
-        let (before, after) = working_tree_watch_refresh(CommitKind::Unstaged);
+        let (before, after) = working_tree_watch_refresh(CommitKind::Unstaged, false);
         assert_eq!(
             (after.cursor_text, after.offset),
             (before.cursor_text, before.offset),
@@ -788,7 +806,7 @@ mod tests {
 
     #[test]
     fn watch_refresh_preserves_staged_reading_position() {
-        let (before, after) = working_tree_watch_refresh(CommitKind::Staged);
+        let (before, after) = working_tree_watch_refresh(CommitKind::Staged, false);
         assert_eq!(
             (after.cursor_text, after.offset),
             (before.cursor_text, before.offset),
@@ -798,7 +816,7 @@ mod tests {
 
     #[test]
     fn watch_refresh_preserves_unstaged_expanded_folds() {
-        let (before, after) = working_tree_watch_refresh(CommitKind::Unstaged);
+        let (before, after) = working_tree_watch_refresh(CommitKind::Unstaged, false);
         assert_eq!(
             after.expanded_files, before.expanded_files,
             "refresh must keep the unstaged lockfile expanded"
@@ -807,10 +825,34 @@ mod tests {
 
     #[test]
     fn watch_refresh_preserves_staged_expanded_folds() {
-        let (before, after) = working_tree_watch_refresh(CommitKind::Staged);
+        let (before, after) = working_tree_watch_refresh(CommitKind::Staged, false);
         assert_eq!(
             after.expanded_files, before.expanded_files,
             "refresh must keep the staged lockfile expanded"
+        );
+    }
+
+    #[test]
+    fn watch_refresh_follows_staged_line_after_insertions() {
+        let (before, after) = working_tree_watch_refresh(CommitKind::Staged, true);
+        assert_eq!(after.cursor_text, before.cursor_text);
+        assert_eq!(after.screen_position, before.screen_position);
+        assert_eq!(after.expanded_files, before.expanded_files);
+        assert!(
+            after.offset > before.offset,
+            "the viewport must follow the displaced line"
+        );
+    }
+
+    #[test]
+    fn watch_refresh_follows_unstaged_line_after_insertions() {
+        let (before, after) = working_tree_watch_refresh(CommitKind::Unstaged, true);
+        assert_eq!(after.cursor_text, before.cursor_text);
+        assert_eq!(after.screen_position, before.screen_position);
+        assert_eq!(after.expanded_files, before.expanded_files);
+        assert!(
+            after.offset > before.offset,
+            "the viewport must follow the displaced line"
         );
     }
 

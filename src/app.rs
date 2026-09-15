@@ -25,6 +25,7 @@ pub enum ShowScroll {
     Cursor,
     Bottom,
     Search,
+    PreserveCursorPosition(isize),
 }
 
 pub struct App {
@@ -208,19 +209,129 @@ impl App {
             .commits
             .get(self.selected)
             .map(|commit| (commit.kind, commit.hash.clone()));
+        let old_start = self.log_selected_start();
         self.commits = commits;
-        self.selected = selected
-            .and_then(|key| {
-                self.commits
-                    .iter()
-                    .position(|commit| commit.kind == key.0 && commit.hash == key.1)
-            })
-            .unwrap_or_else(|| self.selected.min(self.commits.len().saturating_sub(1)));
-        self.log_offset = 0;
-        if self.mode == Mode::Show {
-            self.show_offset = 0;
-            self.load_show();
+        let preserved = selected.and_then(|key| {
+            self.commits
+                .iter()
+                .position(|commit| commit.kind == key.0 && commit.hash == key.1)
+        });
+        self.selected =
+            preserved.unwrap_or_else(|| self.selected.min(self.commits.len().saturating_sub(1)));
+        if preserved.is_some() {
+            self.log_offset = self
+                .log_offset
+                .saturating_add_signed(self.log_selected_start() as isize - old_start as isize);
+        } else {
+            self.log_offset = 0;
         }
+        if self.mode == Mode::Show {
+            if preserved.is_some() {
+                self.refresh_show();
+            } else {
+                self.show_offset = 0;
+                self.show_cursor = 0;
+                self.show_scroll = None;
+                self.search_match = None;
+                self.load_show();
+            }
+        }
+    }
+
+    fn log_selected_start(&self) -> usize {
+        let separator = self
+            .commits
+            .iter()
+            .position(|commit| commit.kind == CommitKind::Revision)
+            .is_some_and(|index| index > 0 && self.selected >= index);
+        self.commits
+            .iter()
+            .take(self.selected)
+            .map(|commit| commit.graph.len())
+            .sum::<usize>()
+            + usize::from(separator)
+    }
+
+    fn refresh_show(&mut self) {
+        let Some(commit) = self.commits.get(self.selected) else {
+            return;
+        };
+        // A selected historical commit is immutable, including expanded folds.
+        if commit.kind == CommitKind::Revision {
+            return;
+        }
+        let text = match git::show(commit, &self.show_paths) {
+            Ok(text) => text,
+            Err(error) => {
+                self.status = Some(error);
+                return;
+            }
+        };
+        if text == self.show_text {
+            return;
+        }
+        let old_cursor = self.show_cursor;
+        let cursor_row = self.show_rows.get(old_cursor).cloned();
+        let cursor_file = cursor_row
+            .as_ref()
+            .and_then(|row| row.file)
+            .map(|index| self.show_files[index].clone());
+        let screen_position = self
+            .show_row_starts
+            .get(old_cursor)
+            .copied()
+            .unwrap_or(old_cursor) as isize
+            - self.show_offset as isize;
+        let expanded = self.expanded_folds.clone();
+        self.show_text = text;
+        self.reset_show_folds();
+        // Reopen by path, loading fresh contents for lazy untracked files too.
+        for path in expanded {
+            if let Some(index) = self.show_rows.iter().position(|row| {
+                row.folded
+                    && row
+                        .file
+                        .is_some_and(|file| self.show_files[file].path == path)
+            }) {
+                self.show_cursor = index;
+                self.toggle_show_file();
+            }
+        }
+        let candidates: Vec<_> = self
+            .show_rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| match (&cursor_file, row.file) {
+                (Some(old), Some(index)) => self.show_files[index].path == old.path,
+                (None, None) => true,
+                _ => false,
+            })
+            .collect();
+        let relative_source = cursor_row
+            .as_ref()
+            .map(|row| {
+                row.source
+                    .saturating_sub(cursor_file.as_ref().map_or(0, |file| file.start))
+            })
+            .unwrap_or(0);
+        let distance = |row: &ShowRow| {
+            row.source
+                .saturating_sub(row.file.map_or(0, |index| self.show_files[index].start))
+                .abs_diff(relative_source)
+        };
+        self.show_cursor = candidates
+            .iter()
+            .filter(|(_, row)| {
+                cursor_row
+                    .as_ref()
+                    .is_some_and(|old| old.text == row.text && old.folded == row.folded)
+            })
+            .min_by_key(|(_, row)| distance(row))
+            .or_else(|| candidates.iter().min_by_key(|(_, row)| distance(row)))
+            .map(|(index, _)| *index)
+            .unwrap_or(old_cursor.min(self.show_rows.len().saturating_sub(1)));
+        self.search_match = None;
+        self.show_scroll = Some(ShowScroll::PreserveCursorPosition(screen_position));
     }
 
     pub fn top(&mut self) {
@@ -245,6 +356,7 @@ impl App {
     pub fn load_show(&mut self) {
         let Some(commit) = self.commits.get(self.selected).cloned() else {
             self.show_text = "No commits matched the supplied arguments.".to_owned();
+            self.reset_show_folds();
             return;
         };
         if commit.kind == CommitKind::Revision {
@@ -770,6 +882,32 @@ mod tests {
             &before,
             "refresh must preserve the viewport of an unchanged historical patch"
         );
+    }
+
+    #[test]
+    fn watch_refresh_clears_show_when_the_selected_entry_disappears() {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let selected = commit("selected");
+        let mut app = App::new(vec![selected.clone()]);
+        app.watch = true;
+        app.insert_cache(selected.hash, "old patch".to_owned());
+        app.switch_mode();
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        app.replace_commits(Vec::new());
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        assert_eq!(app.show_rows.len(), 1);
+        assert_eq!(
+            app.show_rows[0].text,
+            "No commits matched the supplied arguments."
+        );
+        assert_eq!(app.show_cursor, 0);
+        assert_eq!(app.show_offset, 0);
     }
 
     #[test]

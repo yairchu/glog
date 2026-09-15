@@ -294,6 +294,9 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
         None
     };
     match request {
+        Some(ShowScroll::PreserveCursorPosition(position)) => {
+            app.show_offset = cursor_start.saturating_add_signed(-position);
+        }
         Some(ShowScroll::Bottom) => app.show_offset = max,
         Some(ShowScroll::Cursor) => app.show_offset = cursor_start,
         _ if matched_rows.is_some() => {

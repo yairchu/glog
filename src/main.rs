@@ -192,9 +192,9 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
             match git::watch_fingerprint() {
                 Ok(current) if fingerprint != Some(current) => match git::load_log(&[]) {
                     Ok(commits) => {
+                        app.status = None;
                         app.replace_commits(commits);
                         fingerprint = Some(current);
-                        app.status = None;
                     }
                     Err(error) => app.status = Some(format!("Watch refresh failed: {error}")),
                 },

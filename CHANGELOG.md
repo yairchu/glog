@@ -5,6 +5,12 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Fixed
+
+- Preserved reading position and expanded files when watch mode refreshes,
+  keeping the selected commit in place and following surviving lines in changed
+  working-tree patches.
+
 ## 0.2.1 - 2026-09-15
 
 ### Added
