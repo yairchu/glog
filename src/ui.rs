@@ -231,7 +231,27 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
                 line.style = Style::default().fg(Color::Yellow);
             }
             if index == app.show_cursor {
-                line.style = line.style.add_modifier(Modifier::REVERSED);
+                line.style = line.style.bg(Color::DarkGray);
+                if row.folded {
+                    line.style = line.style.fg(Color::LightYellow);
+                }
+                for span in &mut line.spans {
+                    if let Some(bg) = span.style.bg {
+                        span.style.bg = Some(brighten_background(bg));
+                    }
+                }
+                let padding = usize::from(area.width).saturating_sub(line.width());
+                let background = line
+                    .spans
+                    .last()
+                    .and_then(|span| span.style.bg)
+                    .unwrap_or(Color::DarkGray);
+                if line.width() > 0 && padding > 0 {
+                    line.spans.push(Span::styled(
+                        " ".repeat(padding),
+                        Style::default().bg(background),
+                    ));
+                }
             }
             line
         })
@@ -259,6 +279,54 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             .wrap(Wrap { trim: false }),
         area,
     );
+    // Empty lines have no spans to carry the cursor background.
+    if let Some(y) = app.show_cursor.checked_sub(app.show_offset) {
+        if y < usize::from(area.height) {
+            let y = area.y + y as u16;
+            for x in area.x..area.right() {
+                let cell = &mut frame.buffer_mut()[(x, y)];
+                if cell.bg == Color::Reset {
+                    cell.bg = Color::DarkGray;
+                }
+            }
+        }
+    }
+}
+
+fn brighten_background(color: Color) -> Color {
+    match color {
+        Color::Reset | Color::Black => Color::DarkGray,
+        Color::Red => Color::LightRed,
+        Color::Green => Color::LightGreen,
+        Color::Yellow => Color::LightYellow,
+        Color::Blue => Color::LightBlue,
+        Color::Magenta => Color::LightMagenta,
+        Color::Cyan => Color::LightCyan,
+        Color::Gray => Color::White,
+        Color::Rgb(r, g, b) => Color::Rgb(
+            r.saturating_add(32),
+            g.saturating_add(32),
+            b.saturating_add(32),
+        ),
+        Color::Indexed(index) => match index {
+            0..=7 => Color::Indexed(index + 8),
+            8..=15 => color,
+            16..=231 => {
+                let index = index - 16;
+                let levels = [0, 95, 135, 175, 215, 255];
+                brighten_background(Color::Rgb(
+                    levels[usize::from(index / 36)],
+                    levels[usize::from(index / 6 % 6)],
+                    levels[usize::from(index % 6)],
+                ))
+            }
+            232..=255 => {
+                let level = 8 + (index - 232) * 10;
+                brighten_background(Color::Rgb(level, level, level))
+            }
+        },
+        _ => color,
+    }
 }
 
 fn highlight_matches(mut line: Line<'static>, query: &str, current: bool) -> Line<'static> {
@@ -477,13 +545,59 @@ mod tests {
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         assert!(app.show_rows[app.show_cursor].folded);
         let cursor_y = 1 + app.show_cursor - app.show_offset;
-        assert!(terminal.backend().buffer()[(0, cursor_y as u16)]
-            .style()
-            .add_modifier
-            .contains(Modifier::REVERSED));
+        let cursor = &terminal.backend().buffer()[(0, cursor_y as u16)];
+        assert_eq!(cursor.bg, Color::DarkGray);
+        assert_eq!(cursor.fg, Color::LightYellow);
+        assert!(!cursor.modifier.contains(Modifier::REVERSED));
         handle(key(KeyCode::Enter), &mut app);
 
         assert!(app.show_rows.iter().any(|row| row.text == "+added"));
+    }
+
+    #[test]
+    fn show_cursor_fills_row_and_brightens_diff_backgrounds() {
+        for (input, expected) in [
+            ("plain", Color::DarkGray),
+            ("", Color::DarkGray),
+            ("\x1b[48;2;0;48;0m+added", Color::Rgb(32, 80, 32)),
+            ("\x1b[48;2;48;0;0m-removed", Color::Rgb(80, 32, 32)),
+            ("\x1b[48;5;22m+added", Color::Rgb(32, 127, 32)),
+        ] {
+            let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+            let mut app = App::new(Vec::new());
+            app.mode = Mode::Show;
+            app.show_text = format!("{input}\nnext");
+
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+            let buffer = terminal.backend().buffer();
+            for x in 0..40 {
+                assert_eq!(buffer[(x, 1)].bg, expected, "input={input:?}, x={x}");
+                assert!(!buffer[(x, 1)].modifier.contains(Modifier::REVERSED));
+            }
+            assert_eq!(buffer[(39, 2)].bg, Color::Reset);
+        }
+    }
+
+    #[test]
+    fn show_cursor_preserves_current_search_highlight() {
+        let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = "\x1b[48;2;0;48;0m+added".to_owned();
+        app.search = Some("added".to_owned());
+        app.search_match = Some((Mode::Show, 0));
+
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 1)].bg, Color::Rgb(32, 80, 32));
+        for x in 1..6 {
+            assert_eq!(buffer[(x, 1)].fg, Color::Black);
+            assert_eq!(buffer[(x, 1)].bg, Color::Yellow);
+            assert!(!buffer[(x, 1)].modifier.contains(Modifier::REVERSED));
+        }
+        assert_eq!(buffer[(39, 1)].bg, Color::Rgb(32, 80, 32));
     }
 
     #[test]
