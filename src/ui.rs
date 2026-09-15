@@ -823,3 +823,59 @@ mod show_wrapping_tests {
         assert_eq!(terminal.backend().buffer()[(0, 4)].symbol(), "s");
     }
 }
+
+#[cfg(test)]
+mod release_review_tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    fn visible_text(terminal: &Terminal<TestBackend>) -> String {
+        let buffer = terminal.backend().buffer();
+        (1..5)
+            .flat_map(|y| (0..10).map(move |x| buffer[(x, y)].symbol()))
+            .collect()
+    }
+
+    #[test]
+    fn search_reveals_match_in_wrapped_continuation() {
+        for prefix in ["a".repeat(60), "界".repeat(30), "one two ".repeat(8)] {
+            let mut terminal = Terminal::new(TestBackend::new(10, 6)).unwrap();
+            let mut app = App::new(Vec::new());
+            app.mode = Mode::Show;
+            app.show_text = format!("start\n{prefix}needle\nafter");
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            app.search = Some("needle".to_owned());
+            app.repeat_search(false);
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            assert!(
+                visible_text(&terminal).contains("needle"),
+                "match hidden for {prefix:?}"
+            );
+            let offset = app.show_offset;
+            app.repeat_search(true);
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            assert_eq!(app.show_offset, offset);
+            app.scroll_show(-100);
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            assert_eq!(
+                app.show_offset, 0,
+                "manual scrolling must remain possible after searching"
+            );
+        }
+    }
+
+    #[test]
+    fn bottom_reveals_end_of_wrapped_last_line() {
+        let mut terminal = Terminal::new(TestBackend::new(10, 6)).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = format!("start\n{}END", "a".repeat(60));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        app.bottom();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(visible_text(&terminal).contains("END"));
+        app.scroll_show(-1);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.show_offset, 3);
+    }
+}
