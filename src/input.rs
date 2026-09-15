@@ -40,6 +40,12 @@ pub fn handle(event: Event, app: &mut App) {
                 KeyCode::Tab | KeyCode::Esc => app.switch_mode(),
                 KeyCode::Char('q') => app.quit = true,
                 KeyCode::Char('h') => app.show_help = true,
+                KeyCode::Left if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    show_adjacent(app, -1)
+                }
+                KeyCode::Right if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                    show_adjacent(app, 1)
+                }
                 _ => {
                     if let Some(view) = &mut app.status_view {
                         match key.code {
@@ -167,6 +173,7 @@ fn show_adjacent(app: &mut App, delta: isize) {
     if app.move_selection(delta) {
         app.show_offset = 0;
         app.show_cursor = 0;
+        app.mode = Mode::Show;
         app.load_show();
     }
 }

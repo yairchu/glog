@@ -150,7 +150,9 @@ and in detached HEAD state.
 
 Sections start open and files start collapsed. `Enter`/`z` toggles the selected
 section or file; expanding a file loads its patch inline. Use Up/Down or j/k,
-Page Up/Down, Home/End, and the mouse to navigate. Left/Right pans long lines.
+Page Up/Down, Home/End, and the mouse to navigate. Left/Right navigates history,
+just like Show: Right opens the newest commit, and Left from that commit returns
+to Working tree. Shift-Left/Right pans long lines in Status.
 Status refreshes once per second while visible, preserving expanded files and
 the reading position where possible. Only expanded patches are loaded.
 Everything remains read-only: staging, unstaging, and conflict resolution happen

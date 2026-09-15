@@ -225,10 +225,9 @@ impl App {
 
     pub fn move_selection(&mut self, delta: isize) -> bool {
         let leaving_direct_diff = self.pending_history.is_some()
-            && self
-                .commits
-                .get(self.selected)
-                .is_some_and(|commit| commit.kind != CommitKind::Revision);
+            && self.commits.get(self.selected).is_some_and(|commit| {
+                matches!(commit.kind, CommitKind::Staged | CommitKind::Unstaged)
+            });
         self.load_history();
         // Loading history from a direct diff already selects HEAD. Do not skip it.
         if leaving_direct_diff && self.pending_history.is_none() {

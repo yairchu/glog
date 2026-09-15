@@ -869,6 +869,71 @@ mod tests {
     }
 
     #[test]
+    fn status_arrows_navigate_virtual_commit_and_lazy_history() {
+        use crate::{
+            app::{App, Mode},
+            input,
+        };
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        let mut unborn = App::new(vec![working_tree_commit(true)]);
+        unborn.watch = true;
+        unborn.pending_history = Some(Vec::new());
+        unborn.open_status();
+        input::handle(key(KeyCode::Right), &mut unborn);
+        assert_eq!(unborn.mode, Mode::Status);
+        assert_eq!(unborn.selected, 0);
+        for subject in ["first", "second"] {
+            fs::write("tracked.txt", subject).unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-qm", subject]);
+        }
+        for lazy in [true, false] {
+            let mut app = App::new(if lazy {
+                vec![working_tree_commit(true)]
+            } else {
+                load_watch_log().unwrap()
+            });
+            app.watch = true;
+            if lazy {
+                app.pending_history = Some(Vec::new());
+            }
+            app.open_status();
+            app.status_view.as_mut().unwrap().cursor = 1;
+            input::handle(key(KeyCode::Right), &mut app);
+            assert_eq!(app.mode, Mode::Show);
+            assert_eq!(app.commits[app.selected].subject, "second");
+            assert!(app.show_text.contains("second"));
+            input::handle(key(KeyCode::Left), &mut app);
+            assert_eq!(app.mode, Mode::Status);
+            assert_eq!(app.selected, 0);
+            assert_eq!(app.status_view.as_ref().unwrap().cursor, 1);
+            input::handle(key(KeyCode::Left), &mut app);
+            assert_eq!(app.mode, Mode::Status);
+            assert_eq!(app.selected, 0);
+            input::handle(
+                Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)),
+                &mut app,
+            );
+            assert_eq!(app.mode, Mode::Status);
+            assert_eq!(app.status_view.as_ref().unwrap().horizontal, 4);
+        }
+    }
+
+    #[test]
     fn status_loads_from_subdirectory_and_refreshes_expanded_patches() {
         use ratatui::{backend::TestBackend, Terminal};
         let directory = TestDirectory::new();
