@@ -474,10 +474,10 @@ impl App {
                 let expanded = self.expanded_folds.contains(&file.path);
                 let detail = if file.lazy_untracked_path.is_some() {
                     "contents not loaded".to_owned()
-                } else if lines[file.start..file.end]
-                    .iter()
-                    .any(|line| crate::ansi::plain(line).contains("Binary files "))
-                {
+                } else if lines[file.start..file.end].iter().any(|line| {
+                    let plain = crate::ansi::plain(line);
+                    plain.starts_with("Binary files ") && plain.ends_with(" differ")
+                }) {
                     "binary".to_owned()
                 } else {
                     format!("+{} −{}", file.additions, file.deletions)
@@ -1088,6 +1088,35 @@ mod tests {
             .show_rows
             .iter()
             .any(|row| row.folded && row.text.contains("two.rs")));
+    }
+
+    #[test]
+    fn stat_summary_does_not_mistake_patch_text_for_a_binary_marker() {
+        for (content, expected) in [
+            (
+                "+Binary files are labeled, and lazy untracked files show contents not loaded",
+                "+1 −0",
+            ),
+            ("+Binary files a/example and b/example differ", "+1 −0"),
+            ("-Binary files a/example and b/example differ", "+0 −1"),
+            (" Binary files a/example and b/example differ", "+0 −0"),
+            (
+                "\x1b[1mBinary files a/README.md and b/README.md differ\x1b[m",
+                "binary",
+            ),
+        ] {
+            let mut app = App::new(Vec::new());
+            app.show_stat = true;
+            app.show_text = format!(
+                "diff --git a/README.md b/README.md\n--- a/README.md\n+++ b/README.md\n{content}\n"
+            );
+            app.ensure_show_rows();
+            assert_eq!(
+                app.show_rows[0].text,
+                format!("▶ README.md | {expected}"),
+                "{content}"
+            );
+        }
     }
 
     #[test]
