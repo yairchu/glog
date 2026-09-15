@@ -302,7 +302,9 @@ impl StatusView {
                 key: RowKey::Group(group),
                 text: format!(
                     "{} {} ({})",
-                    if self.collapsed.contains(&group) {
+                    if entries.is_empty() {
+                        " "
+                    } else if self.collapsed.contains(&group) {
                         "▶"
                     } else {
                         "▼"
@@ -310,7 +312,11 @@ impl StatusView {
                     group.title(),
                     entries.len()
                 ),
-                color: Some(group.color()),
+                color: Some(if entries.is_empty() {
+                    Color::Gray
+                } else {
+                    group.color()
+                }),
             });
             if self.collapsed.contains(&group) {
                 continue;
@@ -378,6 +384,14 @@ impl StatusView {
         };
         match row.key.clone() {
             RowKey::Group(group) => {
+                if !self
+                    .snapshot
+                    .entries
+                    .iter()
+                    .any(|entry| entry.key.group == group)
+                {
+                    return;
+                }
                 if !self.collapsed.remove(&group) {
                     self.collapsed.insert(group);
                 }
@@ -643,6 +657,12 @@ mod tests {
                 .collect();
             assert!(heading.contains(expected), "{heading}");
             assert_eq!(view.rows.len(), 3);
+            for index in 0..3 {
+                assert!(view.rows[index].text.starts_with("  "));
+                view.cursor = index;
+                view.toggle();
+                assert!(view.collapsed.is_empty());
+            }
         }
     }
 }
