@@ -19,9 +19,24 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Constraint::Length(1),
         ])
         .split(frame.area());
-    let selected = if app.mode == Mode::Log { 0 } else { 1 };
+    let selected = match app.mode {
+        Mode::Log => 0,
+        Mode::Show => 1,
+        Mode::Status => 1,
+    };
     let header_style = Style::default().fg(Color::White).bg(Color::DarkGray);
-    let tabs = Tabs::new(["Log", "Show"])
+    let detail = if app.mode == Mode::Status
+        || app
+            .commits
+            .get(app.selected)
+            .is_some_and(|commit| commit.kind == crate::git::CommitKind::WorkingTree)
+    {
+        "Status"
+    } else {
+        "Show"
+    };
+    let tab_width = if detail == "Status" { 15 } else { 13 };
+    let tabs = Tabs::new(["Log", detail])
         .select(selected)
         .style(header_style)
         .highlight_style(
@@ -36,28 +51,34 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         format!(" glog {} ", app.context)
     };
-    let reserved = 13 + if app.watch { 8 } else { 0 };
+    let live = app.watch || app.mode == Mode::Status;
+    let reserved = tab_width + if live { 8 } else { 0 };
     let command_width =
         (command.chars().count() as u16).min(chunks[0].width.saturating_sub(reserved));
     let header = Layout::horizontal([
         Constraint::Length(command_width),
-        Constraint::Length(13),
+        Constraint::Length(tab_width),
         Constraint::Min(0),
-        Constraint::Length(if app.watch { 8 } else { 0 }),
+        Constraint::Length(if live { 8 } else { 0 }),
     ])
     .split(chunks[0]);
     app.log_tab_start = header[1].x;
     app.log_tab_end = header[1].x.saturating_add(5);
     app.show_tab_start = header[1].x.saturating_add(6);
-    app.show_tab_end = header[1].x.saturating_add(12);
+    app.show_tab_end = header[1].x.saturating_add(tab_width - 1);
     frame.render_widget(
         Paragraph::new(command).style(header_style.add_modifier(Modifier::BOLD)),
         header[0],
     );
     frame.render_widget(tabs, header[1]);
-    if app.watch {
+    if live {
         frame.render_widget(
-            Paragraph::new(" WATCH  ").style(
+            Paragraph::new(if app.mode == Mode::Status {
+                " LIVE   "
+            } else {
+                " WATCH  "
+            })
+            .style(
                 header_style
                     .fg(Color::LightGreen)
                     .add_modifier(Modifier::BOLD),
@@ -66,10 +87,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         );
     }
     match app.mode {
+        Mode::Status => {
+            if let Some(view) = &mut app.status_view {
+                view.draw(frame, chunks[1]);
+            }
+        }
         Mode::Log => draw_log(frame, app, chunks[1]),
         Mode::Show => draw_show(frame, app, chunks[1]),
     }
-    let help = if let Some(input) = &app.search_input {
+    let help = if app.mode == Mode::Status {
+        app.status_view.as_ref().and_then(|view| view.error.clone()).unwrap_or_else(|| "↑/k ↓/j  Enter/z fold  ←/→ pan  Tab Log  Esc Log  Ctrl-L redraw  h help  q quit · LIVE".to_owned())
+    } else if let Some(input) = &app.search_input {
         let prefix = if app.search_reverse { '?' } else { '/' };
         format!("{prefix}{input}█")
     } else if let Some(status) = &app.status {
@@ -111,12 +139,12 @@ fn draw_help(frame: &mut Frame) {
         "  a/d/r/x/s         toggle author/date/refs/hash/subject (Log)",
         "  Author badges: +꩜ Codex  +❋ Claude Code  +N other coauthors",
         "Views and search",
-        "  Enter             open commit / toggle folded file",
+        "  Enter             open commit / toggle section or file",
         "  z                 toggle current file fold (Show)",
         "  L                 expand / fold all lockfiles (Show)",
         "  s                 toggle file summary / patch (Show)",
         "  Escape            return to Log / cancel",
-        "  Tab               switch Log / Show",
+        "  Tab               switch Log / detail",
         "  /, ?              search forward / backward",
         "  n, N              repeat / reverse search",
         "  Ctrl-L            redraw the screen",

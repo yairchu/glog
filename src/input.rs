@@ -35,6 +35,34 @@ pub fn handle(event: Event, app: &mut App) {
             }
             return;
         }
+        if app.mode == Mode::Status {
+            match key.code {
+                KeyCode::Tab | KeyCode::Esc => app.switch_mode(),
+                KeyCode::Char('q') => app.quit = true,
+                KeyCode::Char('h') => app.show_help = true,
+                _ => {
+                    if let Some(view) = &mut app.status_view {
+                        match key.code {
+                            KeyCode::Up | KeyCode::Char('k') => view.move_by(-1),
+                            KeyCode::Down | KeyCode::Char('j') => view.move_by(1),
+                            KeyCode::PageUp | KeyCode::Char('b') => {
+                                view.move_by(-(view.height.max(1) as isize))
+                            }
+                            KeyCode::PageDown | KeyCode::Char(' ') | KeyCode::Char('f') => {
+                                view.move_by(view.height.max(1) as isize)
+                            }
+                            KeyCode::Left => view.horizontal = view.horizontal.saturating_sub(4),
+                            KeyCode::Right => view.horizontal = view.horizontal.saturating_add(4),
+                            KeyCode::Home | KeyCode::Char('g') => view.cursor = 0,
+                            KeyCode::End | KeyCode::Char('G') => view.bottom(),
+                            KeyCode::Enter | KeyCode::Char('z') => view.toggle(),
+                            _ => {}
+                        }
+                    }
+                }
+            }
+            return;
+        }
         match key.code {
             KeyCode::Char(c @ ('a' | 'd' | 'r' | 'x' | 's')) if app.mode == Mode::Log => {
                 use crate::log_format::Field;
@@ -81,6 +109,17 @@ pub fn handle(event: Event, app: &mut App) {
             _ => {}
         }
     } else if let Event::Mouse(mouse) = event {
+        if app.mode == Mode::Status && mouse.row != 0 {
+            if let Some(view) = &mut app.status_view {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => view.move_by(-3),
+                    MouseEventKind::ScrollDown => view.move_by(3),
+                    MouseEventKind::Down(MouseButton::Left) => view.click(mouse.row),
+                    _ => {}
+                }
+            }
+            return;
+        }
         match mouse.kind {
             MouseEventKind::ScrollUp if app.mode == Mode::Show => app.scroll_show(-3),
             MouseEventKind::ScrollDown if app.mode == Mode::Show => app.scroll_show(3),
@@ -93,7 +132,7 @@ pub fn handle(event: Event, app: &mut App) {
                     }
                     app.show_help = false;
                 } else if (app.show_tab_start..app.show_tab_end).contains(&mouse.column) {
-                    if app.mode != Mode::Show {
+                    if app.mode == Mode::Log {
                         app.switch_mode();
                     }
                     app.show_help = false;

@@ -64,6 +64,7 @@ impl Collaborators {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommitKind {
+    WorkingTree,
     Revision,
     Staged,
     Unstaged,
@@ -130,12 +131,25 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
     Ok(commits)
 }
 
-/// Watch mode includes live working-tree entries ahead of committed history.
+/// Watch mode includes one stable working-tree item ahead of committed history.
 pub fn load_watch_log() -> Result<Vec<Commit>, String> {
     let commits = load_log(&[])?;
-    let mut entries = working_tree_entries()?;
+    let clean = working_tree_entries()?.is_empty();
+    let mut entries = vec![working_tree_commit(clean)];
     entries.extend(commits);
     Ok(entries)
+}
+
+pub fn working_tree_commit(clean: bool) -> Commit {
+    pseudo_commit(
+        CommitKind::WorkingTree,
+        "worktree",
+        if clean {
+            "Working tree · clean"
+        } else {
+            "Working tree"
+        },
+    )
 }
 
 /// Resolve a single commit before opening the terminal; defer ancestry traversal.
@@ -358,6 +372,7 @@ fn has_diff(args: &[&str]) -> Result<bool, String> {
 
 pub fn show(commit: &Commit, paths: &[String]) -> Result<String, String> {
     match commit.kind {
+        CommitKind::WorkingTree => Err("Working tree opens the Status view".to_owned()),
         CommitKind::Revision => show_revision(&commit.hash, paths),
         CommitKind::Staged => show_diff(
             &["diff", "--cached", "--color=always", "--no-ext-diff"],
@@ -725,7 +740,7 @@ mod tests {
             git(&["add", "Cargo.lock"]);
         }
 
-        let mut app = crate::app::App::new(load_watch_log().unwrap());
+        let mut app = crate::app::App::new(working_tree_entries().unwrap());
         app.watch = true;
         app.selected = app
             .commits
@@ -783,7 +798,7 @@ mod tests {
             git(&["branch", "unrelated"]);
         }
         assert_ne!(watch_fingerprint().unwrap(), fingerprint);
-        app.replace_commits(load_watch_log().unwrap());
+        app.replace_commits(working_tree_entries().unwrap());
         terminal
             .draw(|frame| crate::ui::draw(frame, &mut app))
             .unwrap();
@@ -851,6 +866,96 @@ mod tests {
             after.offset > before.offset,
             "the viewport must follow the displaced line"
         );
+    }
+
+    #[test]
+    fn status_loads_from_subdirectory_and_refreshes_expanded_patches() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let directory = TestDirectory::new();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .current_dir(directory.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write(directory.path().join("tracked.txt"), "original\n").unwrap();
+        fs::write(directory.path().join("rename.txt"), "rename content\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        fs::create_dir(directory.path().join("nested")).unwrap();
+        let _guard = CurrentDirGuard::enter(&directory.path().join("nested"));
+        let mut view = crate::status::StatusView::load().unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
+        let render = |view: &mut crate::status::StatusView,
+                      terminal: &mut Terminal<TestBackend>| {
+            terminal
+                .draw(|frame| view.draw(frame, frame.area()))
+                .unwrap();
+            (0..40)
+                .map(|y| {
+                    (0..120)
+                        .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert!(render(&mut view, &mut terminal)[0].contains("Working tree clean"));
+        git(&["mv", "rename.txt", "moved.txt"]);
+        fs::write(directory.path().join("tracked.txt"), "staged-content\n").unwrap();
+        git(&["add", "tracked.txt"]);
+        fs::write(directory.path().join("tracked.txt"), "unstaged-content\n").unwrap();
+        fs::write(directory.path().join("new file.txt"), "untracked-content\n").unwrap();
+        view.refresh().unwrap();
+        let rows = render(&mut view, &mut terminal);
+        assert!(rows.iter().any(|row| row.contains("Staged (2)")));
+        assert!(rows.iter().any(|row| row.contains("Unstaged (1)")));
+        assert!(rows.iter().any(|row| row.contains("Untracked (1)")));
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.contains("modified  tracked.txt"))
+                .count(),
+            2
+        );
+        view.cursor = rows
+            .iter()
+            .position(|row| row.contains("renamed  rename.txt → moved.txt"))
+            .unwrap()
+            - 1;
+        view.toggle();
+        assert!(render(&mut view, &mut terminal)
+            .iter()
+            .any(|row| row.contains("rename from rename.txt")));
+        // Collapse the rename, then load and refresh an untracked file lazily.
+        view.toggle();
+        let rows = render(&mut view, &mut terminal);
+        view.cursor = rows
+            .iter()
+            .position(|row| row.contains("new  new file.txt"))
+            .unwrap()
+            - 1;
+        view.toggle();
+        assert!(render(&mut view, &mut terminal)
+            .iter()
+            .any(|row| row.contains("+untracked-content")));
+        fs::write(directory.path().join("new file.txt"), "updated-content\n").unwrap();
+        view.refresh().unwrap();
+        assert!(render(&mut view, &mut terminal)
+            .iter()
+            .any(|row| row.contains("+updated-content")));
+        fs::remove_file(directory.path().join("new file.txt")).unwrap();
+        view.refresh().unwrap();
+        assert!(!render(&mut view, &mut terminal)
+            .iter()
+            .any(|row| row.contains("new file.txt")));
     }
 
     #[test]
@@ -1137,7 +1242,7 @@ mod tests {
         assert!(load_diff_app(&cached).unwrap().commits.is_empty());
         fs::write("new.txt", "untracked\n").unwrap();
         assert!(load_log(&[]).unwrap().is_empty());
-        assert_eq!(load_watch_log().unwrap()[0].kind, CommitKind::Unstaged);
+        assert_eq!(load_watch_log().unwrap()[0].kind, CommitKind::WorkingTree);
         let mut app = load_diff_app(&[]).unwrap();
         assert_eq!(app.mode, crate::app::Mode::Show);
         assert_eq!(app.commits[0].kind, CommitKind::Unstaged);
@@ -1472,6 +1577,9 @@ mod tests {
         let _current_dir = CurrentDirGuard::enter(repository.path());
         let commits = load_log(&[]).unwrap();
         let shown = show(&commits[0], &[]).unwrap();
+        let clean_item = load_watch_log().unwrap().remove(0);
+        assert_eq!(clean_item.kind, CommitKind::WorkingTree);
+        assert_eq!(clean_item.subject, "Working tree · clean");
         let clean_fingerprint = watch_fingerprint().unwrap();
 
         git(&["branch", "watch-test"]);
@@ -1496,10 +1604,27 @@ mod tests {
         let ordinary = load_log(&[]).unwrap();
         assert_eq!(ordinary.len(), 1);
         assert_eq!(ordinary[0].kind, CommitKind::Revision);
-        let commits = load_watch_log().unwrap();
+        let watched = load_watch_log().unwrap();
+        assert_eq!(watched.len(), 2);
+        assert_eq!(watched[0].kind, CommitKind::WorkingTree);
+        assert_eq!(watched[0].subject, "Working tree");
+        assert_eq!(watched[0].hash, clean_item.hash);
+        let mut watched_app = crate::app::App::new(watched.clone());
+        watched_app.watch = true;
+        watched_app.switch_mode();
+        assert_eq!(watched_app.mode, crate::app::Mode::Status);
+        watched_app.switch_mode();
+        assert_eq!(watched_app.mode, crate::app::Mode::Log);
+        assert_eq!(watched_app.selected, 0);
+        watched_app.replace_commits(vec![clean_item.clone(), watched[1].clone()]);
+        assert_eq!(
+            watched_app.commits[watched_app.selected].hash,
+            clean_item.hash
+        );
+        assert_eq!(watched[1].kind, CommitKind::Revision);
+        let commits = working_tree_entries().unwrap();
         assert_eq!(commits[0].kind, CommitKind::Unstaged);
         assert_eq!(commits[1].kind, CommitKind::Staged);
-        assert_eq!(commits[2].kind, CommitKind::Revision);
         assert!(show(&commits[0], &[])
             .unwrap()
             .contains("glog-lazy-untracked:"));

@@ -1,10 +1,10 @@
 # glog
 
-`glog` — an interactive `git log` and `git show` browser.
+`glog` — an interactive browser for Git history and working-tree changes.
 
-It is a small, strictly read-only terminal UI for exploring Git history. Git remains responsible for revision parsing, pathspecs, traversal, decorations, and patch generation; `glog` adds selection, scrolling, search, and Log/Show tabs.
+It is a small, strictly read-only terminal UI for exploring Git history. Git remains responsible for revision parsing, pathspecs, traversal, decorations, and patch generation; `glog` adds selection, scrolling, search, and Log and detail views.
 
-With no arguments, `glog` shows committed history, loaded once, without inspecting working-tree changes. Use `glog --watch` for a live view: nonempty `Unstaged changes` and `Staged changes` entries appear ahead of `HEAD`, divided from committed history by a labeled separator. Untracked files are included in the unstaged diff.
+With no arguments, `glog` shows committed history, loaded once, without inspecting working-tree changes. Use `glog --watch` for a live view: a single `Working tree` item appears ahead of `HEAD`. Open it to inspect grouped staged, unstaged, untracked, and conflicting files. The item remains available as `Working tree · clean` when there are no changes.
 
 ## Install and run
 
@@ -89,13 +89,14 @@ glog show --stat main~3    # expandable file summary
 glog show v0.1.0 -- src/
 glog log show             # log for a branch named "show"
 glog log --all
+glog status               # live working-tree overview
 ```
 
 Show accepts one commit and optional pathspecs after `--`. Pathspecs restrict
 committed patches. With an
 explicit commit, history remains rooted at that commit. With
 no commit argument, Log shows committed history and keeps HEAD selected. History loads on
-first switching to Log with `Tab`/`Escape` or navigating with the arrow keys;
+first switching to Log with `Escape` (or cycling tabs) or navigating with the arrow keys;
 `q` quits directly. The existing folding, search, and file navigation work as
 usual. `glog log` explicitly selects Log mode and otherwise accepts the same
 arguments as the shorthand `glog` invocation.
@@ -137,6 +138,30 @@ glog --watch
 ```
 
 For its initial implementation, `--watch` must be the only argument. Combinations such as `glog --watch --all` fail with a concise error rather than providing partial watch semantics.
+
+## Working-tree status
+
+`glog status` opens the live **Status** view directly. It shows the current branch,
+upstream ahead/behind counts when available, and a clean-tree message or
+expandable **Staged**, **Unstaged**, and **Untracked** sections. **Conflicts**
+appear first when present. Renames show both paths; files with staged and
+unstaged edits appear in both sections. It also works before the first commit
+and in detached HEAD state.
+
+Sections start open and files start collapsed. `Enter`/`z` toggles the selected
+section or file; expanding a file loads its patch inline. Use Up/Down or j/k,
+Page Up/Down, Home/End, and the mouse to navigate. Left/Right pans long lines.
+Status refreshes once per second while visible, preserving expanded files and
+the reading position where possible. Only expanded patches are loaded.
+Everything remains read-only: staging, unstaging, and conflict resolution happen
+outside glog. Status currently accepts no command-line options.
+
+Log and its detail view are the two navigation tabs. Opening a commit shows
+**Show**; opening **Working tree** shows **Status**. `Tab` switches between Log
+and the selected item's detail view, and `Escape` returns to Log. Both tabs are
+clickable. `glog status` starts a watch session; returning to Log selects the
+Working tree item. Ordinary `glog` remains committed-history-only.
+Use `glog log status` to browse a branch named `status`.
 
 ## Log row format
 
@@ -199,7 +224,7 @@ to case, and the primary author is excluded. Full credits remain in Show.
 
 | Key | Log | Show |
 | --- | --- | --- |
-| `Tab` | switch to Show | switch to Log |
+| `Tab` | open selected item | return to Log |
 | `Escape` | — | return to Log |
 | `↑` / `k`, `↓` / `j` | select commit | move patch cursor |
 | `Page Up` / `b`, `Page Down` / `Space` | move by page | scroll by page |

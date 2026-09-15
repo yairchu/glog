@@ -7,6 +7,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Added `glog status` and a live Status detail view with branch/upstream
+  information, clean-tree state, expandable conflict/staged/unstaged/untracked
+  sections, and lazily loaded inline patches. Watch mode has one Working tree
+  item that opens Status, including when clean; commits open Show.
+
 - Added expandable file summaries with `glog show --stat`, `glog diff --stat`,
   and the Show `s` toggle. Enter/z expands individual patches beneath their
   summaries, search reveals matching loaded patches, and switching back to the
@@ -14,7 +19,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Changed
 
-- Limited staged and unstaged Log entries to `--watch`. Ordinary Log now loads
+- Limited the Working tree Log item to watch sessions. Ordinary Log now loads
   committed history only, without inspecting working-tree changes. Direct
   `glog diff` and `glog diff --cached` remain available without watch mode.
 

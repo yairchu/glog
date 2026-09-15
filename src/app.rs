@@ -7,6 +7,7 @@ use crate::{
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
+    Status,
     Log,
     Show,
 }
@@ -30,6 +31,7 @@ pub enum ShowScroll {
 }
 
 pub struct App {
+    pub status_view: Option<crate::status::StatusView>,
     pub commits: Vec<Commit>,
     pub log_format: crate::log_format::LogFormat,
     pub selected: usize,
@@ -77,6 +79,7 @@ pub struct App {
 impl App {
     pub fn new(commits: Vec<Commit>) -> Self {
         Self {
+            status_view: None,
             commits,
             log_format: crate::log_format::LogFormat::default(),
             selected: 0,
@@ -124,7 +127,11 @@ impl App {
         let Some(args) = self.pending_history.clone() else {
             return;
         };
-        match git::load_log(&args) {
+        match if self.watch {
+            git::load_watch_log()
+        } else {
+            git::load_log(&args)
+        } {
             Ok(commits) => {
                 self.pending_history = None;
                 self.replace_commits(commits);
@@ -133,7 +140,30 @@ impl App {
         }
     }
 
+    pub fn open_status(&mut self) {
+        if self.status_view.is_none() {
+            match crate::status::StatusView::load() {
+                Ok(view) => self.status_view = Some(view),
+                Err(error) => {
+                    self.status = Some(error);
+                    return;
+                }
+            }
+        }
+        self.search_input = None;
+        self.mode = Mode::Status;
+    }
+
     pub fn switch_mode(&mut self) {
+        if self.mode == Mode::Log
+            && self
+                .commits
+                .get(self.selected)
+                .is_some_and(|commit| commit.kind == CommitKind::WorkingTree)
+        {
+            self.open_status();
+            return;
+        }
         self.mode = if self.mode == Mode::Log {
             Mode::Show
         } else {
@@ -148,6 +178,7 @@ impl App {
 
     pub fn move_by(&mut self, delta: isize, page: usize) {
         match self.mode {
+            Mode::Status => {}
             Mode::Log => {
                 if self.commits.is_empty() {
                     return;
@@ -350,6 +381,7 @@ impl App {
 
     pub fn top(&mut self) {
         match self.mode {
+            Mode::Status => {}
             Mode::Log => self.selected = 0,
             Mode::Show => {
                 self.show_cursor = 0;
@@ -359,6 +391,7 @@ impl App {
     }
     pub fn bottom(&mut self) {
         match self.mode {
+            Mode::Status => {}
             Mode::Log => self.selected = self.commits.len().saturating_sub(1),
             Mode::Show => {
                 self.show_cursor = self.show_rows.len().saturating_sub(1);
@@ -368,6 +401,14 @@ impl App {
     }
 
     pub fn load_show(&mut self) {
+        if self
+            .commits
+            .get(self.selected)
+            .is_some_and(|commit| commit.kind == CommitKind::WorkingTree)
+        {
+            self.open_status();
+            return;
+        }
         let Some(commit) = self.commits.get(self.selected).cloned() else {
             self.show_text = "No commits matched the supplied arguments.".to_owned();
             self.reset_show_folds();
@@ -785,6 +826,7 @@ impl App {
             return;
         };
         match self.mode {
+            Mode::Status => {}
             Mode::Log => {
                 let n = self.commits.len();
                 let start = self

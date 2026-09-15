@@ -4,6 +4,7 @@ mod diff;
 mod git;
 mod input;
 mod log_format;
+mod status;
 mod ui;
 
 use std::{
@@ -38,7 +39,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let watch = match if command != Command::Log {
+    let watch = match if command == Command::Status {
+        Ok(true)
+    } else if command != Command::Log {
         Ok(false)
     } else {
         parse_watch(command_args)
@@ -51,6 +54,19 @@ fn main() -> ExitCode {
     };
     let git_args = if watch { &[][..] } else { &log_args };
     let loaded = match command {
+        Command::Status => {
+            if !command_args.is_empty() {
+                Err("usage: glog status".to_owned())
+            } else {
+                crate::status::StatusView::load().map(|view| {
+                    let mut app = App::new(vec![git::working_tree_commit(false)]);
+                    app.status_view = Some(view);
+                    app.mode = app::Mode::Status;
+                    app.pending_history = Some(Vec::new());
+                    app
+                })
+            }
+        }
         Command::Show => git::load_show_app(command_args),
         Command::Diff => git::load_diff_app(command_args),
         Command::Log if watch => git::load_watch_log().map(App::new),
@@ -63,7 +79,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    if !should_start_tui(watch, app.commits.len()) {
+    if command != Command::Status && !should_start_tui(watch, app.commits.len()) {
         let message = match command {
             Command::Diff if !command_args.iter().any(|arg| arg == "--cached") => {
                 "no unstaged changes"
@@ -101,10 +117,12 @@ enum Command {
     Log,
     Show,
     Diff,
+    Status,
 }
 
 fn parse_command(args: &[String]) -> (Command, &[String]) {
     match args.first().map(String::as_str) {
+        Some("status") => (Command::Status, &args[1..]),
         Some("show") => (Command::Show, &args[1..]),
         Some("diff") => (Command::Diff, &args[1..]),
         Some("log") => (Command::Log, &args[1..]),
@@ -128,16 +146,19 @@ Usage: glog [--watch]
        glog [log] [git log arguments] [--] [pathspec...]
        glog show [--stat] [commit] [-- pathspec...]
        glog diff [--cached] [--stat]
+       glog status
 
 Options:
   --pretty=format:FORMAT / --format=FORMAT
                 Format Log rows (%h %H %ad %an %ae %d %D %s %%)
   --date=STYLE  Format author dates using Git (e.g. short, relative, iso)
   --oneline     Use the compact hash, refs, and subject layout
-  --watch       Include working-tree changes and refresh the default HEAD view
+  --watch       Include a Working tree item and refresh the default HEAD view
   -h, --help    Print help
   -V, --version Print version
 
+Status opens the Working tree detail view in a watch session.
+Watch mode includes one Working tree item; commits open Show.
 Log shows committed history, loaded once unless --watch is used.
 Show opens HEAD or the specified commit, with history available via Tab.
 Diff opens unstaged changes (including untracked files), or staged changes
@@ -145,7 +166,7 @@ with --cached, and exits if empty. Add --stat to Show or Diff to start with
 expandable file summaries; press s in Show to toggle summary / patch.
 Use glog log show (or glog log diff) to browse a branch named after a command.
 Log arguments are passed through to git log. Inside the TUI, press h for
-key help, Tab to switch between Log and Show, Ctrl-L to redraw the screen, and q
+key help, Tab to switch between Log and its detail view, Ctrl-L to redraw the screen, and q
 or Ctrl-C to quit.";
 
 fn start_terminal() -> io::Result<Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>> {
@@ -168,6 +189,7 @@ fn start_terminal() -> io::Result<Terminal<ratatui::backend::CrosstermBackend<io
 
 fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
     let mut last_watch = Instant::now();
+    let mut last_status = Instant::now();
     let mut fingerprint = app
         .watch
         .then(git::watch_fingerprint)
@@ -192,6 +214,14 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
                     break;
                 }
             }
+        }
+        if app.mode == app::Mode::Status && last_status.elapsed() >= Duration::from_secs(1) {
+            if let Some(view) = &mut app.status_view {
+                if let Err(error) = view.refresh() {
+                    view.error = Some(error);
+                }
+            }
+            last_status = Instant::now();
         }
         if app.watch && last_watch.elapsed() >= Duration::from_secs(1) {
             match git::watch_fingerprint() {
@@ -252,6 +282,8 @@ mod tests {
     #[test]
     fn commands_preserve_log_shorthand_and_escape_reserved_names() {
         for (args, show, remaining) in [
+            (vec!["status"], Command::Status, vec![]),
+            (vec!["log", "status"], Command::Log, vec!["status"]),
             (vec!["show", "HEAD~2"], Command::Show, vec!["HEAD~2"]),
             (vec!["log", "show"], Command::Log, vec!["show"]),
             (vec!["log", "log"], Command::Log, vec!["log"]),
