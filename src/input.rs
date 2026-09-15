@@ -52,6 +52,7 @@ pub fn handle(event: Event, app: &mut App) {
             KeyCode::Tab => app.switch_mode(),
             KeyCode::Enter if app.mode == Mode::Log => app.switch_mode(),
             KeyCode::Enter | KeyCode::Char('z') if app.mode == Mode::Show => app.toggle_show_file(),
+            KeyCode::Char('s') if app.mode == Mode::Show => app.toggle_show_stat(),
             KeyCode::Char('L') if app.mode == Mode::Show => app.toggle_all_lockfiles(),
             KeyCode::Char('[') if app.mode == Mode::Show => app.jump_show_file(-1),
             KeyCode::Char(']') if app.mode == Mode::Show => app.jump_show_file(1),
@@ -303,6 +304,7 @@ mod tests {
                     file: None,
                     folded: false,
                     fold_separator: false,
+                    summary: false,
                 })
                 .collect();
             app.visible_show_rows = 5;
@@ -336,6 +338,7 @@ mod tests {
                 file: None,
                 folded: false,
                 fold_separator: false,
+                summary: false,
             })
             .collect();
         app.visible_show_rows = 5;

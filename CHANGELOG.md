@@ -5,6 +5,13 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Added expandable file summaries with `glog show --stat`, `glog diff --stat`,
+  and the Show `s` toggle. Enter/z expands individual patches beneath their
+  summaries, search reveals matching loaded patches, and switching back to the
+  patch restores the reading line.
+
 ### Changed
 
 - Limited staged and unstaged Log entries to `--watch`. Ordinary Log now loads

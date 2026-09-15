@@ -18,6 +18,7 @@ pub struct ShowRow {
     pub file: Option<usize>,
     pub folded: bool,
     pub fold_separator: bool,
+    pub summary: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -38,6 +39,8 @@ pub struct App {
     pub show_offset: usize,
     pub show_cursor: usize,
     pub show_text: String,
+    pub show_stat: bool,
+    stat_bookmark: Option<(String, usize)>,
     pub show_rows: Vec<ShowRow>,
     // Start of each wrapped row, followed by the total screen height.
     pub show_row_starts: Vec<usize>,
@@ -82,6 +85,8 @@ impl App {
             show_offset: 0,
             show_cursor: 0,
             show_text: String::new(),
+            show_stat: false,
+            stat_bookmark: None,
             show_rows: Vec::new(),
             show_row_starts: Vec::new(),
             show_scroll: None,
@@ -400,6 +405,7 @@ impl App {
     fn reset_show_folds(&mut self) {
         self.show_files = diff::file_sections(&self.show_text);
         self.expanded_folds.clear();
+        self.stat_bookmark = None;
         self.rebuild_show_rows();
     }
 
@@ -421,15 +427,55 @@ impl App {
                     file: None,
                     folded: false,
                     fold_separator: false,
+                    summary: false,
                 });
             }
-            if (file.lockfile || file.untracked) && !self.expanded_folds.contains(&file.path) {
+            if self.show_stat {
+                let expanded = self.expanded_folds.contains(&file.path);
+                let detail = if file.lazy_untracked_path.is_some() {
+                    "contents not loaded".to_owned()
+                } else if lines[file.start..file.end]
+                    .iter()
+                    .any(|line| crate::ansi::plain(line).contains("Binary files "))
+                {
+                    "binary".to_owned()
+                } else {
+                    format!("+{} −{}", file.additions, file.deletions)
+                };
+                rows.push(ShowRow {
+                    text: format!(
+                        "{} {} | {}",
+                        if expanded { "▼" } else { "▶" },
+                        file.path,
+                        detail
+                    ),
+                    source: file.start,
+                    file: Some(file_index),
+                    folded: !expanded,
+                    fold_separator: false,
+                    summary: true,
+                });
+                if expanded {
+                    for (index, line) in lines[file.start..file.end].iter().enumerate() {
+                        rows.push(ShowRow {
+                            text: (*line).to_owned(),
+                            source: file.start + index,
+                            file: Some(file_index),
+                            folded: false,
+                            fold_separator: false,
+                            summary: false,
+                        });
+                    }
+                }
+            } else if (file.lockfile || file.untracked) && !self.expanded_folds.contains(&file.path)
+            {
                 rows.push(ShowRow {
                     text: String::new(),
                     source: file.start,
                     file: Some(file_index),
                     folded: false,
                     fold_separator: true,
+                    summary: false,
                 });
                 rows.push(ShowRow {
                     text: format!(
@@ -454,6 +500,7 @@ impl App {
                     file: Some(file_index),
                     folded: true,
                     fold_separator: false,
+                    summary: false,
                 });
                 rows.push(ShowRow {
                     text: String::new(),
@@ -461,6 +508,7 @@ impl App {
                     file: Some(file_index),
                     folded: false,
                     fold_separator: true,
+                    summary: false,
                 });
             } else {
                 for (index, line) in lines[file.start..file.end].iter().enumerate() {
@@ -470,6 +518,7 @@ impl App {
                         file: Some(file_index),
                         folded: false,
                         fold_separator: false,
+                        summary: false,
                     });
                 }
             }
@@ -482,11 +531,62 @@ impl App {
                 file: None,
                 folded: false,
                 fold_separator: false,
+                summary: false,
             });
         }
         self.show_rows = rows;
         self.show_cursor = self.show_cursor.min(self.show_rows.len().saturating_sub(1));
         self.show_row_starts.clear();
+    }
+
+    pub fn toggle_show_stat(&mut self) {
+        self.ensure_show_rows();
+        let current = self.show_rows.get(self.show_cursor).cloned();
+        let file = current
+            .as_ref()
+            .and_then(|row| row.file)
+            .map(|index| self.show_files[index].clone());
+        if !self.show_stat {
+            self.stat_bookmark = file
+                .as_ref()
+                .zip(current.as_ref())
+                .map(|(file, row)| (file.path.clone(), row.source.saturating_sub(file.start)));
+            self.expanded_folds.clear();
+        }
+        self.show_stat = !self.show_stat;
+        if !self.show_stat {
+            if let Some(file) = &file {
+                if file.lazy_untracked_path.is_none() {
+                    self.expanded_folds.insert(file.path.clone());
+                }
+            }
+        }
+        self.rebuild_show_rows();
+        if let Some(file) = file {
+            let source = if self.show_stat {
+                file.start
+            } else if let Some(row) = current.as_ref().filter(|row| !row.summary) {
+                row.source
+            } else {
+                file.start
+                    + self
+                        .stat_bookmark
+                        .as_ref()
+                        .filter(|(path, _)| *path == file.path)
+                        .map_or(0, |(_, line)| *line)
+            };
+            self.show_cursor = self
+                .show_rows
+                .iter()
+                .position(|row| {
+                    row.file
+                        .is_some_and(|index| self.show_files[index].path == file.path)
+                        && (self.show_stat || row.source == source)
+                })
+                .unwrap_or(self.show_cursor.min(self.show_rows.len().saturating_sub(1)));
+        }
+        self.search_match = None;
+        self.show_scroll = Some(ShowScroll::Cursor);
     }
 
     pub fn toggle_show_file(&mut self) {
@@ -498,7 +598,7 @@ impl App {
             return;
         };
         let file = &self.show_files[file_index];
-        if !file.lockfile && !file.untracked {
+        if !self.show_stat && !file.lockfile && !file.untracked {
             return;
         }
         let path = file.path.clone();
@@ -725,12 +825,16 @@ impl App {
                     };
                     if lines[i].to_lowercase().contains(&query) {
                         if let Some(file) = self.show_files.iter().find(|file| {
-                            (file.lockfile || file.untracked) && (file.start..file.end).contains(&i)
+                            (self.show_stat || file.lockfile || file.untracked)
+                                && (file.start..file.end).contains(&i)
                         }) {
                             self.expanded_folds.insert(file.path.clone());
                             self.rebuild_show_rows();
                         }
-                        if let Some(visible) = self.show_rows.iter().position(|row| row.source == i)
+                        if let Some(visible) = self
+                            .show_rows
+                            .iter()
+                            .position(|row| row.source == i && !row.summary)
                         {
                             self.show_cursor = visible;
                             self.search_match = Some((Mode::Show, visible));
@@ -917,6 +1021,57 @@ mod tests {
         );
         assert_eq!(app.show_cursor, 0);
         assert_eq!(app.show_offset, 0);
+    }
+
+    #[test]
+    fn stat_summaries_expand_collapse_and_search_regular_files() {
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_stat = true;
+        app.show_text = "commit message\ndiff --git a/one.rs b/one.rs\n--- a/one.rs\n+++ b/one.rs\n-old\n+needle\ndiff --git a/two.rs b/two.rs\n--- a/two.rs\n+++ b/two.rs\n-other\n+replacement\n".to_owned();
+        app.ensure_show_rows();
+        assert_eq!(app.show_rows.len(), 3);
+        assert_eq!(app.show_rows[0].text, "commit message");
+        assert_eq!(app.show_rows[1].text, "▶ one.rs | +1 −1");
+        app.show_cursor = 1;
+        app.toggle_show_file();
+        assert!(app.show_rows[1].summary);
+        assert!(!app.show_rows[1].folded);
+        assert!(app.show_rows.iter().any(|row| row.text == "+needle"));
+        app.toggle_show_file();
+        assert_eq!(app.show_rows.len(), 3);
+        app.search = Some("needle".to_owned());
+        app.next_match(false);
+        assert_eq!(app.show_rows[app.show_cursor].text, "+needle");
+        assert!(app
+            .show_rows
+            .iter()
+            .any(|row| row.folded && row.text.contains("two.rs")));
+    }
+
+    #[test]
+    fn stat_hotkey_returns_to_the_line_being_read() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = "message\ndiff --git a/one.rs b/one.rs\n--- a/one.rs\n+++ b/one.rs\n-old\n+reading-here\n".to_owned();
+        app.ensure_show_rows();
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.text == "+reading-here")
+            .unwrap();
+        for expected in [true, false] {
+            crate::input::handle(
+                Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
+                &mut app,
+            );
+            assert_eq!(app.show_stat, expected);
+            if expected {
+                assert!(app.show_rows[app.show_cursor].summary);
+            }
+        }
+        assert_eq!(app.show_rows[app.show_cursor].text, "+reading-here");
     }
 
     #[test]

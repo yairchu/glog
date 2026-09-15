@@ -85,7 +85,7 @@ tag, or revision expression):
 
 ```bash
 glog show                 # HEAD, even with a dirty working tree
-glog show main~3
+glog show --stat main~3    # expandable file summary
 glog show v0.1.0 -- src/
 glog log show             # log for a branch named "show"
 glog log --all
@@ -105,6 +105,7 @@ Open working-tree changes directly in Show:
 ```bash
 glog diff                 # unstaged changes, including untracked files
 glog diff --cached        # staged changes
+glog diff --cached --stat # staged file summary
 glog log diff             # log for a branch named "diff"
 ```
 
@@ -114,7 +115,18 @@ committed history and selects HEAD; before the first commit, Log is empty.
 The `diff` commands work without watch mode. Changes are read when opened and
 untracked-file contents are read when expanded; this is not a session-wide
 snapshot and does not refresh automatically. The `diff` command accepts only
-the optional `--cached` flag.
+the optional `--cached` and `--stat` flags.
+
+Use `--stat` with `show` or `diff` to start with the commit message (if any)
+and compact per-file summaries showing additions and deletions. Each file starts
+collapsed; `Enter`/`z` expands its patch beneath the summary and collapses it again.
+Binary files are labeled, and lazy untracked files show “contents not loaded”
+until expanded. Search reveals matches inside collapsed patches already loaded.
+
+In Show, press `s` to switch between the file summary and patch views. Collapsing
+selects the current file; switching back restores the line you were reading.
+This is an interactive presentation option, so the full patch remains available.
+The default Show presentation is unchanged, including for large commits.
 
 Use watch mode to refresh the default `HEAD` view when commits, branches, tags,
 remote-tracking refs, staged changes, unstaged changes, or untracked files
@@ -198,6 +210,7 @@ to case, and the primary author is excluded. Full credits remain in Show.
 | `Enter` | open selected commit | expand/fold current folded file |
 | `z` | — | expand/fold current folded file |
 | `L` | — | expand/fold all lockfiles |
+| `s` | toggle subject | toggle file summary / patch |
 | `g`, `G` | first/last commit | top/bottom |
 | `/`, `?`, `n`, `N` | search forward/backward; repeat/opposite | search forward/backward; repeat/opposite |
 | `h` | toggle key help | toggle key help |

@@ -77,7 +77,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.mode == Mode::Log {
         "↑/k ↓/j  Enter show  a author  d date  r refs  x hash  s subject  / ? search  h help  q quit".to_owned()
     } else {
-        "↑/k ↓/j  ←/→ commit  [/ ] file  Enter/z fold  L lockfiles  / ? search  h help  q quit"
+        "↑/k ↓/j  ←/→ commit  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search  h help  q quit"
             .to_owned()
     };
     frame.render_widget(
@@ -92,7 +92,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_help(frame: &mut Frame) {
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(68);
-    let height = screen.height.saturating_sub(2).min(25);
+    let height = screen.height.saturating_sub(2).min(26);
     let area = Rect::new(
         screen.x + screen.width.saturating_sub(width) / 2,
         screen.y + screen.height.saturating_sub(height) / 2,
@@ -114,6 +114,7 @@ fn draw_help(frame: &mut Frame) {
         "  Enter             open commit / toggle folded file",
         "  z                 toggle current file fold (Show)",
         "  L                 expand / fold all lockfiles (Show)",
+        "  s                 toggle file summary / patch (Show)",
         "  Escape            return to Log / cancel",
         "  Tab               switch Log / Show",
         "  /, ?              search forward / backward",
@@ -219,13 +220,14 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
         .map(|(index, row)| {
             let mut line = if row.fold_separator {
                 Line::from("━".repeat(area.width as usize))
+            } else if row.summary {
+                summary_line(&row.text)
             } else {
                 ansi::normalized_line(&row.text)
             };
-            if row.folded {
+            if row.folded || row.summary {
                 line.style = Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::LightYellow)
+                    .fg(Color::Yellow)
                     .add_modifier(Modifier::BOLD);
             } else if row.fold_separator {
                 line.style = Style::default().fg(Color::Yellow);
@@ -343,6 +345,28 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
     }
+}
+
+fn summary_line(text: &str) -> Line<'static> {
+    if let Some((prefix, stats)) = text.rsplit_once(" | ") {
+        if let Some((added, deleted)) = stats.split_once(' ') {
+            if added
+                .strip_prefix('+')
+                .is_some_and(|count| count.parse::<usize>().is_ok())
+                && deleted
+                    .strip_prefix('−')
+                    .is_some_and(|count| count.parse::<usize>().is_ok())
+            {
+                return Line::from(vec![
+                    Span::raw(format!("{prefix} | ")),
+                    Span::styled(added.to_owned(), Style::default().fg(Color::Green)),
+                    Span::raw(" "),
+                    Span::styled(deleted.to_owned(), Style::default().fg(Color::Red)),
+                ]);
+            }
+        }
+    }
+    ansi::normalized_line(text)
 }
 
 // Render only on a search request, using the same word wrapping as the viewport.
@@ -521,6 +545,44 @@ mod tests {
             subject: subject.to_owned(),
             graph: vec!["* ".to_owned(); graph_rows],
         }
+    }
+
+    #[test]
+    fn stat_view_renders_compact_summaries_and_keeps_expanded_header() {
+        let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_stat = true;
+        app.show_text = "message\ndiff --git a/one.rs b/one.rs\n--- a/one.rs\n+++ b/one.rs\n-old\n+new\ndiff --git a/image.bin b/image.bin\nBinary files a/image.bin and b/image.bin differ\n".to_owned();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let row_text = |terminal: &Terminal<TestBackend>, y| {
+            (0..60)
+                .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                .collect::<String>()
+        };
+        assert!(row_text(&terminal, 1).starts_with("message"));
+        assert!(row_text(&terminal, 2).starts_with("▶ one.rs | +1 −1"));
+        assert!(row_text(&terminal, 3).starts_with("▶ image.bin | binary"));
+        for (x, color) in [
+            (11, Color::Green),
+            (12, Color::Green),
+            (14, Color::Red),
+            (15, Color::Red),
+        ] {
+            assert_eq!(terminal.backend().buffer()[(x, 2)].fg, color);
+            assert_eq!(terminal.backend().buffer()[(x, 2)].bg, Color::Reset);
+        }
+        app.show_cursor = 1;
+        handle(
+            Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+            &mut app,
+        );
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(row_text(&terminal, 2).starts_with("▼ one.rs | +1 −1"));
+        assert!(row_text(&terminal, 3).contains("diff --git a/one.rs"));
+        assert_eq!(terminal.backend().buffer()[(11, 2)].fg, Color::Green);
+        assert_eq!(terminal.backend().buffer()[(14, 2)].fg, Color::Red);
+        assert_eq!(terminal.backend().buffer()[(11, 2)].bg, Color::DarkGray);
     }
 
     #[test]

@@ -144,10 +144,15 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
         .iter()
         .position(|arg| arg == "--")
         .unwrap_or(args.len());
-    let revision = match &args[..separator] {
+    let stat = args[..separator].iter().any(|arg| arg == "--stat");
+    let revisions: Vec<_> = args[..separator]
+        .iter()
+        .filter(|arg| *arg != "--stat")
+        .collect();
+    let revision = match revisions.as_slice() {
         [] => "HEAD",
-        [revision] if !revision.starts_with('-') => revision,
-        _ => return Err("usage: glog show [commit] [-- pathspec...]".to_owned()),
+        [revision] if !revision.starts_with('-') => revision.as_str(),
+        _ => return Err("usage: glog show [--stat] [commit] [-- pathspec...]".to_owned()),
     };
     let output = Command::new("git")
         .args([
@@ -164,7 +169,8 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
     let hash = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     let commits = load_log(&["-1".to_owned(), hash.clone(), "--".to_owned()])?;
     let mut app = crate::app::App::new(commits);
-    app.pending_history = Some(if separator == 0 {
+    app.show_stat = stat;
+    app.pending_history = Some(if revisions.is_empty() {
         Vec::new()
     } else {
         vec![hash, "--".to_owned()]
@@ -176,16 +182,19 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
 
 /// Open a working-tree entry without traversing committed history.
 pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
-    let kind = match args {
+    let stat = args.iter().any(|arg| arg == "--stat");
+    let options: Vec<_> = args.iter().filter(|arg| *arg != "--stat").collect();
+    let kind = match options.as_slice() {
         [] => CommitKind::Unstaged,
-        [flag] if flag == "--cached" => CommitKind::Staged,
-        _ => return Err("usage: glog diff [--cached]".to_owned()),
+        [flag] if *flag == "--cached" => CommitKind::Staged,
+        _ => return Err("usage: glog diff [--cached] [--stat]".to_owned()),
     };
     let entries = working_tree_entries()?
         .into_iter()
         .filter(|entry| entry.kind == kind)
         .collect();
     let mut app = crate::app::App::new(entries);
+    app.show_stat = stat;
     if !app.commits.is_empty() {
         app.pending_history = Some(Vec::new());
         app.switch_mode();
@@ -1056,6 +1065,43 @@ mod tests {
         assert_eq!(app.commits.len(), 2);
         assert_eq!(app.selected, 0);
 
+        for args in [
+            vec!["--stat"],
+            vec!["--stat", "HEAD"],
+            vec!["HEAD", "--stat"],
+            vec!["--stat", "HEAD", "--", "second.txt"],
+        ] {
+            let mut summary =
+                load_show_app(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).unwrap();
+            assert!(summary.show_stat);
+            assert!(summary
+                .show_rows
+                .iter()
+                .any(|row| row.summary && row.folded && row.text.contains("second.txt")));
+            assert!(!summary
+                .show_rows
+                .iter()
+                .any(|row| row.text.contains("diff --git")));
+            summary.show_cursor = summary
+                .show_rows
+                .iter()
+                .position(|row| row.summary)
+                .unwrap();
+            summary.toggle_show_file();
+            assert!(summary
+                .show_rows
+                .iter()
+                .any(|row| row.summary && !row.folded));
+            assert!(summary
+                .show_rows
+                .iter()
+                .any(|row| row.text.contains("diff --git")));
+        }
+        // Options after -- are pathspecs, even when named like presentation flags.
+        let summary_path = load_show_app(&["--".into(), "--stat".into()]).unwrap();
+        assert!(!summary_path.show_stat);
+        assert!(!summary_path.show_rows.iter().any(|row| row.summary));
+
         let app = load_show_app(&["first-tag".into()]).unwrap();
         assert_eq!(app.commits[0].subject, "first");
         for args in [
@@ -1131,6 +1177,24 @@ mod tests {
                 assert_eq!(direct.commits[direct.selected].kind, CommitKind::Revision);
                 assert_eq!(direct.commits[direct.selected].subject, "first");
             }
+        }
+        for (args, kind) in [
+            (vec!["--stat"], CommitKind::Unstaged),
+            (vec!["--stat", "--cached"], CommitKind::Staged),
+            (vec!["--cached", "--stat"], CommitKind::Staged),
+        ] {
+            let summary =
+                load_diff_app(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).unwrap();
+            assert!(summary.show_stat);
+            assert_eq!(summary.commits[0].kind, kind);
+            assert!(summary
+                .show_rows
+                .iter()
+                .any(|row| row.summary && row.folded));
+            assert!(!summary
+                .show_rows
+                .iter()
+                .any(|row| row.text.contains("diff --git")));
         }
         assert!(load_diff_app(&["HEAD".into()]).is_err());
         assert!(load_diff_app(&["--watch".into()]).is_err());
