@@ -253,6 +253,14 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 ansi::normalized_line(&row.text)
             };
+            if row.file.is_none() {
+                let text = line.to_string();
+                if text == "Notes:" || (text.starts_with("Notes (") && text.ends_with("):")) {
+                    for span in &mut line.spans {
+                        span.style = span.style.add_modifier(Modifier::BOLD);
+                    }
+                }
+            }
             if row.folded || row.summary {
                 line.style = Style::default()
                     .fg(Color::Yellow)

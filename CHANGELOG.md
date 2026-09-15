@@ -21,6 +21,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Changed
 
+- Rendered Git notes headings in bold in Show, keeping note bodies plain.
+
 - Limited the Working tree Log item to watch sessions. Ordinary Log now loads
   committed history only, without inspecting working-tree changes. Direct
   `glog diff` and `glog diff --cached` remain available without watch mode.
