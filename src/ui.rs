@@ -683,3 +683,45 @@ mod tests {
         assert!(app.log_tab_start > 7);
     }
 }
+#[cfg(test)]
+mod release_review_tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+    #[test]
+    fn wrapped_preceding_line_does_not_get_cursor_background() {
+        let mut terminal = Terminal::new(TestBackend::new(10, 8)).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = "abcdefghijklmno\nselected\nafter".to_owned();
+        app.ensure_show_rows();
+        app.show_cursor = 1;
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(0, 2)].bg,
+            Color::Reset,
+            "Continuation of unselected first line must not look selected"
+        );
+    }
+    #[test]
+    fn repeated_search_reveals_match_after_wrapped_lines() {
+        let mut terminal = Terminal::new(TestBackend::new(10, 6)).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text =
+            "needle 0\nabcdefghijklmno\nabcdefghijklmno\nneedle 3\nfour\nfive\nsix".to_owned();
+        app.ensure_show_rows();
+        app.search = Some("needle".to_owned());
+        app.search_match = Some((Mode::Show, 0));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        app.repeat_search(false);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (1..5)
+            .map(|y| (0..10).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        assert!(
+            rows.iter().any(|r| r.contains("needle 3")),
+            "Match not visible: {rows:?}"
+        );
+    }
+}
