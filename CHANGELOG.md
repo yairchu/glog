@@ -11,6 +11,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Fixed
 
+- Kept the Show viewport steady when the next or previous search match is
+  already visible, scrolling only enough to reveal off-screen matches.
 - Highlighted the full Show cursor row with a lighter background, brightening
   existing diff backgrounds while preserving search highlight colors.
 - Recognized `Co-authored-by: Codex <noreply@openai.com>` as a Codex contribution.

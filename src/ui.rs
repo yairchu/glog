@@ -555,6 +555,42 @@ mod tests {
     }
 
     #[test]
+    fn repeated_show_search_scrolls_only_to_reveal_hidden_matches() {
+        let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text =
+            "zero\nneedle one\ntwo\nneedle three\nfour\nfive\nneedle six\nseven\neight".to_owned();
+        app.ensure_show_rows();
+        app.show_cursor = 1;
+        app.show_offset = 1;
+        app.search = Some("needle".to_owned());
+        app.search_match = Some((Mode::Show, 1));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        for (key, cursor, offset) in [
+            ('n', 3, 1), // Already visible.
+            ('n', 6, 3), // Reveal below the viewport.
+            ('N', 3, 3), // Already visible at its top edge.
+            ('N', 1, 1), // Reveal above the viewport.
+            ('N', 6, 3), // Wrap to the last match.
+            ('n', 1, 1), // Wrap to the first match.
+        ] {
+            handle(
+                Event::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
+                &mut app,
+            );
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+            assert_eq!(app.show_cursor, cursor);
+            assert_eq!(app.show_offset, offset);
+            let matched_cell = &terminal.backend().buffer()[(0, 1 + (cursor - offset) as u16)];
+            assert_eq!(matched_cell.symbol(), "n");
+            assert_eq!(matched_cell.bg, Color::Yellow);
+        }
+    }
+
+    #[test]
     fn show_cursor_fills_row_and_brightens_diff_backgrounds() {
         for (input, expected) in [
             ("plain", Color::DarkGray),

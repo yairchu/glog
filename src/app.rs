@@ -571,7 +571,6 @@ impl App {
                         }
                         if let Some(visible) = self.show_rows.iter().position(|row| row.source == i)
                         {
-                            self.show_offset = visible;
                             self.show_cursor = visible;
                             self.search_match = Some((Mode::Show, visible));
                         }
