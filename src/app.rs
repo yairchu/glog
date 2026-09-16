@@ -894,6 +894,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fmt::Write;
 
     fn commit(subject: &str) -> Commit {
         Commit {
@@ -1013,7 +1014,10 @@ mod tests {
         let selected = commit("selected");
         let mut app = App::new(vec![selected.clone()]);
         app.watch = true;
-        let patch = (0..30).map(|i| format!("line {i}\n")).collect::<String>();
+        let mut patch = String::new();
+        for i in 0..30 {
+            writeln!(patch, "line {i}").unwrap();
+        }
         app.insert_cache(selected.hash.clone(), patch);
         app.switch_mode();
         app.show_cursor = 10;

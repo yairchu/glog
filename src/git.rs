@@ -649,6 +649,7 @@ fn stderr_message(prefix: &str, stderr: &[u8]) -> String {
 mod tests {
     use super::*;
     use std::{
+        fmt::Write,
         fs,
         path::{Path, PathBuf},
         sync::{atomic::AtomicUsize, atomic::Ordering, Mutex, MutexGuard},
@@ -732,9 +733,10 @@ mod tests {
         fs::write("Cargo.lock", "original\n").unwrap();
         git(&["add", "."]);
         git(&["commit", "-qm", "initial"]);
-        let contents = (0..30)
-            .map(|i| format!("dependency-{i:02}\n"))
-            .collect::<String>();
+        let mut contents = String::new();
+        for i in 0..30 {
+            writeln!(contents, "dependency-{i:02}").unwrap();
+        }
         fs::write("Cargo.lock", contents).unwrap();
         if kind == CommitKind::Staged {
             git(&["add", "Cargo.lock"]);
