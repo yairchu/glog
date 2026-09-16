@@ -62,6 +62,10 @@ pub fn handle(event: Event, app: &mut App) {
                             KeyCode::Home | KeyCode::Char('g') => view.cursor = 0,
                             KeyCode::End | KeyCode::Char('G') => view.bottom(),
                             KeyCode::Enter | KeyCode::Char('z') => view.toggle(),
+                            KeyCode::Char('s') => {
+                                view.toggle_stat();
+                                app.show_stat = view.show_stat;
+                            }
                             _ => {}
                         }
                     }

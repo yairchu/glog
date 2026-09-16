@@ -997,7 +997,7 @@ mod tests {
             .position(|row| row.contains("renamed  rename.txt → moved.txt"))
             .unwrap()
             - 1;
-        view.toggle();
+        // Regular patches, including renames, start expanded.
         assert!(render(&mut view, &mut terminal)
             .iter()
             .any(|row| row.contains("rename from rename.txt")));

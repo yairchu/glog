@@ -102,7 +102,7 @@ fn diff_path(lines: &[String]) -> Option<String> {
     )
 }
 
-fn is_lockfile(path: &str) -> bool {
+pub(crate) fn is_lockfile(path: &str) -> bool {
     let name = path.rsplit('/').next().unwrap_or(path);
     name.ends_with(".lock")
         || matches!(

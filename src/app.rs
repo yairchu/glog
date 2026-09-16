@@ -150,6 +150,11 @@ impl App {
                 }
             }
         }
+        if let Some(view) = &mut self.status_view {
+            if view.show_stat != self.show_stat {
+                view.toggle_stat();
+            }
+        }
         self.search_input = None;
         self.mode = Mode::Status;
     }

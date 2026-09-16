@@ -27,14 +27,6 @@ impl Group {
             Self::Untracked => "Untracked",
         }
     }
-    fn color(self) -> Color {
-        match self {
-            Self::Conflicts => Color::LightRed,
-            Self::Staged => Color::Green,
-            Self::Unstaged => Color::Red,
-            Self::Untracked => Color::Yellow,
-        }
-    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Key {
@@ -203,6 +195,11 @@ pub struct StatusView {
     collapsed: HashSet<Group>,
     patches: HashMap<Key, String>,
     rows: Vec<Row>,
+    pub show_stat: bool,
+    stats: HashMap<Key, String>,
+    expanded_folds: HashSet<Key>,
+    collapsed_files: HashSet<Key>,
+    stat_bookmark: Option<Row>,
     pub cursor: usize,
     offset: usize,
     pub horizontal: u16,
@@ -230,24 +227,161 @@ impl StatusView {
         if entry.key.group == Group::Untracked {
             return crate::git::show_untracked(&self.root.join(&entry.key.path).to_string_lossy());
         }
-        let mut command = Command::new("git");
-        command
-            .arg("--literal-pathspecs")
-            .arg("-C")
-            .arg(&self.root)
-            .args(["diff", "--color=always", "--no-ext-diff", "--no-textconv"]);
-        if entry.key.group == Group::Staged {
-            command.arg("--cached");
-        }
-        command.arg("--").arg(&entry.key.path);
-        if let Some(original) = &entry.original {
-            command.arg(original);
-        }
+        let mut command = self.diff_command(entry);
+        command.arg("--color=always");
+        self.diff_paths(&mut command, entry);
         let output = command.output().map_err(|error| error.to_string())?;
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
         }
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+    }
+    fn diff_command(&self, entry: &Entry) -> Command {
+        let mut command = Command::new("git");
+        command
+            .arg("--literal-pathspecs")
+            .arg("-C")
+            .arg(&self.root)
+            .args(["diff", "--no-ext-diff", "--no-textconv"]);
+        if entry.key.group == Group::Staged {
+            command.arg("--cached");
+        }
+        command
+    }
+    fn diff_paths(&self, command: &mut Command, entry: &Entry) {
+        command.arg("--").arg(&entry.key.path);
+        if let Some(original) = &entry.original {
+            command.arg(original);
+        }
+    }
+    fn load_stats(&self, snapshot: &Snapshot) -> Result<HashMap<Key, String>, String> {
+        let mut stats = HashMap::new();
+        for entry in &snapshot.entries {
+            if entry.key.group == Group::Untracked {
+                let patch = self.patch(entry)?;
+                let detail = if patch
+                    .lines()
+                    .any(|line| crate::ansi::plain(line).starts_with("Binary files "))
+                {
+                    "binary".into()
+                } else {
+                    let files = crate::diff::file_sections(&patch);
+                    format!(
+                        "+{} −{}",
+                        files.iter().map(|file| file.additions).sum::<usize>(),
+                        files.iter().map(|file| file.deletions).sum::<usize>()
+                    )
+                };
+                stats.insert(entry.key.clone(), detail);
+                continue;
+            }
+            let mut command = self.diff_command(entry);
+            command.args(["--numstat", "-z"]);
+            self.diff_paths(&mut command, entry);
+            let output = command.output().map_err(|error| error.to_string())?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+            }
+            let mut added = 0usize;
+            let mut deleted = 0usize;
+            let mut binary = false;
+            let mut records = output.stdout.split(|&byte| byte == 0);
+            while let Some(record) = records.next() {
+                let mut fields = record.splitn(3, |&byte| byte == b'\t');
+                let (Some(a), Some(d), Some(path)) = (fields.next(), fields.next(), fields.next())
+                else {
+                    continue;
+                };
+                if a == b"-" || d == b"-" {
+                    binary = true;
+                } else {
+                    added += String::from_utf8_lossy(a)
+                        .parse::<usize>()
+                        .map_err(|error| error.to_string())?;
+                    deleted += String::from_utf8_lossy(d)
+                        .parse::<usize>()
+                        .map_err(|error| error.to_string())?;
+                }
+                // With -z, a rename has an empty path followed by two path records.
+                if path.is_empty() {
+                    records.next();
+                    records.next();
+                }
+            }
+            stats.insert(
+                entry.key.clone(),
+                if binary {
+                    "binary".into()
+                } else {
+                    format!("+{added} −{deleted}")
+                },
+            );
+        }
+        Ok(stats)
+    }
+    pub fn toggle_stat(&mut self) {
+        let current = self.rows.get(self.cursor).cloned();
+        if !self.show_stat {
+            self.stat_bookmark = current.clone();
+            self.expanded_folds.clear();
+            self.collapsed_files.clear();
+        }
+        let next_stat = !self.show_stat;
+        let mut patches = self.patches.clone();
+        if !next_stat {
+            for entry in &self.snapshot.entries {
+                if !Self::fold_by_default(entry) && !patches.contains_key(&entry.key) {
+                    match self.patch(entry) {
+                        Ok(patch) => {
+                            patches.insert(entry.key.clone(), patch);
+                        }
+                        Err(error) => {
+                            self.error = Some(error);
+                            return;
+                        }
+                    }
+                }
+            }
+            if let Some(Row {
+                key: RowKey::File(key) | RowKey::Patch(key, _),
+                ..
+            }) = &current
+            {
+                if patches.contains_key(key) {
+                    self.expanded_folds.insert(key.clone());
+                }
+            }
+        }
+        self.patches = patches;
+        self.show_stat = next_stat;
+        self.error = None;
+        self.rebuild();
+        if !self.show_stat {
+            if let Some(Row {
+                key: RowKey::File(key),
+                ..
+            }) = current
+            {
+                if let Some(bookmark) = &self.stat_bookmark {
+                    if matches!(&bookmark.key, RowKey::Patch(saved, _) if saved == &key) {
+                        self.cursor = self
+                            .rows
+                            .iter()
+                            .position(|row| {
+                                matches!(&row.key, RowKey::Patch(current, _) if current == &key)
+                                    && row.text == bookmark.text
+                            })
+                            .or_else(|| self.rows.iter().position(|row| row.key == bookmark.key))
+                            .unwrap_or(self.cursor);
+                    }
+                }
+            }
+        }
+    }
+    fn fold_by_default(entry: &Entry) -> bool {
+        entry.key.group == Group::Untracked
+            || entry.label == "added"
+            || crate::diff::is_lockfile(&entry.key.path)
     }
     pub fn refresh(&mut self) -> Result<(), String> {
         let output = Command::new("git")
@@ -269,10 +403,15 @@ impl StatusView {
         let snapshot = parse(&output.stdout)?;
         let mut patches = HashMap::new();
         for entry in &snapshot.entries {
-            if self.patches.contains_key(&entry.key) {
+            if self.patches.contains_key(&entry.key)
+                || (!self.show_stat && !Self::fold_by_default(entry))
+            {
                 patches.insert(entry.key.clone(), self.patch(entry)?);
             }
         }
+        self.stats = self.load_stats(&snapshot)?;
+        self.expanded_folds.retain(|key| patches.contains_key(key));
+        self.collapsed_files.retain(|key| patches.contains_key(key));
         self.snapshot = snapshot;
         self.patches = patches;
         self.error = None;
@@ -315,31 +454,41 @@ impl StatusView {
                 color: Some(if entries.is_empty() {
                     Color::Gray
                 } else {
-                    group.color()
+                    Color::Reset
                 }),
             });
             if self.collapsed.contains(&group) {
                 continue;
             }
             for entry in entries {
-                let expanded = self.patches.contains_key(&entry.key);
+                let expanded = self.patches.contains_key(&entry.key)
+                    && ((!self.show_stat
+                        && !Self::fold_by_default(entry)
+                        && !self.collapsed_files.contains(&entry.key))
+                        || self.expanded_folds.contains(&entry.key));
                 let name = match &entry.original {
                     Some(original) => {
                         format!("{} → {}", visible(original), visible(&entry.key.path))
                     }
                     None => visible(&entry.key.path),
                 };
+                let detail = self
+                    .stats
+                    .get(&entry.key)
+                    .map(|stats| format!(" | {stats}"))
+                    .unwrap_or_default();
                 self.rows.push(Row {
                     key: RowKey::File(entry.key.clone()),
                     text: format!(
-                        "  {} {}  {}",
+                        "  {} {}  {}{}",
                         if expanded { "▼" } else { "▶" },
                         entry.label,
-                        name
+                        name,
+                        detail
                     ),
-                    color: Some(group.color()),
+                    color: Some(Color::Reset),
                 });
-                if let Some(patch) = self.patches.get(&entry.key) {
+                if let Some(patch) = self.patches.get(&entry.key).filter(|_| expanded) {
                     for (index, line) in patch.lines().enumerate() {
                         self.rows.push(Row {
                             key: RowKey::Patch(entry.key.clone(), index),
@@ -362,6 +511,11 @@ impl StatusView {
                     .min_by_key(|(index, _)| index.abs_diff(self.cursor))
                     .map(|(index, _)| index)
                     .or_else(|| self.rows.iter().position(|row| row.key == old.key))
+                    .or_else(|| {
+                        self.rows
+                            .iter()
+                            .position(|row| row.key == RowKey::File(key.clone()))
+                    })
             } else {
                 self.rows.iter().position(|row| row.key == old.key)
             }
@@ -397,7 +551,25 @@ impl StatusView {
                 }
             }
             RowKey::File(key) | RowKey::Patch(key, _) => {
-                if self.patches.remove(&key).is_none() {
+                let Some(entry) = self.snapshot.entries.iter().find(|entry| entry.key == key)
+                else {
+                    return;
+                };
+                let expand = if !self.show_stat && !Self::fold_by_default(entry) {
+                    self.expanded_folds.remove(&key);
+                    if self.collapsed_files.remove(&key) {
+                        !self.patches.contains_key(&key)
+                    } else {
+                        self.collapsed_files.insert(key.clone());
+                        false
+                    }
+                } else if self.expanded_folds.remove(&key) {
+                    false
+                } else {
+                    self.expanded_folds.insert(key.clone());
+                    !self.patches.contains_key(&key)
+                };
+                if expand {
                     if let Some(entry) = self.snapshot.entries.iter().find(|entry| entry.key == key)
                     {
                         match self.patch(entry) {
@@ -405,6 +577,7 @@ impl StatusView {
                                 self.patches.insert(key.clone(), patch);
                             }
                             Err(error) => {
+                                self.expanded_folds.remove(&key);
                                 self.error = Some(error);
                                 return;
                             }
@@ -475,7 +648,12 @@ impl StatusView {
         {
             let mut line = crate::ansi::normalized_line(&row.text);
             if let Some(color) = row.color {
-                line = Line::raw(row.text.clone()).style(Style::default().fg(color));
+                line = if matches!(row.key, RowKey::File(_)) {
+                    crate::ui::summary_line(&row.text)
+                } else {
+                    Line::raw(row.text.clone())
+                }
+                .style(Style::default().fg(color));
             }
             if self.offset + screen == self.cursor {
                 line.style = line.style.bg(Color::DarkGray);
@@ -499,6 +677,220 @@ impl StatusView {
 mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn stats_hotkey_counts_changes_and_restores_reading_line_across_refresh() {
+        use crate::app::{App, Mode};
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        use std::fs;
+
+        let root = std::env::temp_dir().join(format!(
+            "glog-status-stats-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        fs::write(root.join("file.txt"), "old\n").unwrap();
+        fs::write(root.join("old name.txt"), "rename me\n").unwrap();
+        fs::write(root.join("binary"), b"old\0").unwrap();
+        fs::write(root.join("Cargo.lock"), "old\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        fs::write(root.join("file.txt"), "staged\n").unwrap();
+        git(&["add", "file.txt"]);
+        fs::write(root.join("file.txt"), "reading\nextra\n").unwrap();
+        fs::write(root.join("binary"), b"new\0").unwrap();
+        fs::write(root.join("Cargo.lock"), "new\n").unwrap();
+        git(&["mv", "old name.txt", "new name.txt"]);
+        fs::write(root.join("untracked"), "new\n").unwrap();
+        let mut view = StatusView {
+            root: root.clone(),
+            ..StatusView::default()
+        };
+        view.refresh().unwrap();
+        assert!(!view.show_stat);
+        assert!(view
+            .rows
+            .iter()
+            .any(|row| row.text.ends_with("file.txt | +2 −1")));
+        assert!(!view
+            .patches
+            .keys()
+            .any(|key| key.path == "Cargo.lock" || key.group == Group::Untracked));
+        let key = Key {
+            group: Group::Unstaged,
+            path: "file.txt".into(),
+        };
+        view.cursor = view
+            .rows
+            .iter()
+            .position(|row| row.key == RowKey::File(key.clone()))
+            .unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Status;
+        app.status_view = Some(view);
+        let enter = |app: &mut App| {
+            crate::input::handle(
+                Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                app,
+            )
+        };
+        enter(&mut app);
+        let view = app.status_view.as_mut().unwrap();
+        assert!(view.rows[view.cursor].key == RowKey::File(key.clone()));
+        assert!(view.rows[view.cursor].text.starts_with("  ▶"));
+        assert!(!view
+            .rows
+            .iter()
+            .any(|row| matches!(&row.key, RowKey::Patch(current, _) if current == &key)));
+        view.refresh().unwrap();
+        assert!(view.rows[view.cursor].text.starts_with("  ▶"));
+        enter(&mut app);
+        let mut view = app.status_view.take().unwrap();
+        assert!(view.rows[view.cursor].text.starts_with("  ▼"));
+        view.cursor = view
+            .rows
+            .iter()
+            .position(|row| crate::ansi::plain(&row.text) == "+reading")
+            .unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Status;
+        app.status_view = Some(view);
+        let press_s = |app: &mut App| {
+            crate::input::handle(
+                Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
+                app,
+            )
+        };
+        press_s(&mut app);
+        assert!(app.show_stat);
+        let view = app.status_view.as_mut().unwrap();
+        assert!(view.show_stat);
+        assert_eq!(view.error, None);
+        assert!(view.rows[view.cursor].key == RowKey::File(key.clone()));
+        assert!(view.rows[view.cursor].text.ends_with(" | +2 −1"));
+        assert!(view.rows.iter().any(|row| row.key
+            == RowKey::File(Key {
+                group: Group::Staged,
+                path: "file.txt".into()
+            })
+            && row.text.ends_with("file.txt | +1 −1")));
+        assert!(view
+            .rows
+            .iter()
+            .any(|row| row.text.contains("old name.txt → new name.txt | +0 −0")));
+        assert!(view
+            .rows
+            .iter()
+            .any(|row| row.text.ends_with("binary | binary")));
+        assert!(view
+            .rows
+            .iter()
+            .any(|row| row.text.ends_with("untracked | +1 −0")));
+        assert!(!view
+            .rows
+            .iter()
+            .any(|row| matches!(row.key, RowKey::Patch(_, _))));
+        assert!(!view.patches.keys().any(|key| key.group == Group::Untracked));
+        view.toggle();
+        assert!(view
+            .rows
+            .iter()
+            .any(|row| matches!(row.key, RowKey::Patch(_, _))));
+        fs::write(root.join("file.txt"), "inserted\nreading\nextra\n").unwrap();
+        view.refresh().unwrap();
+        assert!(view.rows[view.cursor].text.ends_with(" | +3 −1"));
+        assert!(view.expanded_folds.contains(&key));
+        view.toggle();
+        press_s(&mut app);
+        let view = app.status_view.as_mut().unwrap();
+        assert!(!view.show_stat);
+        assert_eq!(crate::ansi::plain(&view.rows[view.cursor].text), "+reading");
+        press_s(&mut app);
+        let view = app.status_view.as_mut().unwrap();
+        view.cursor = view
+            .rows
+            .iter()
+            .position(|row| row.text.contains("untracked | +1 −0"))
+            .unwrap();
+        view.toggle();
+        assert!(view.rows[view.cursor].text.ends_with("untracked | +1 −0"));
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("file.txt | +3 −1"));
+        assert!(screen.contains("s summary"));
+        for mode in [false, true] {
+            press_s(&mut app);
+            assert_eq!(app.show_stat, mode);
+            app.status_view.as_mut().unwrap().cursor = 0;
+            terminal
+                .draw(|frame| crate::ui::draw(frame, &mut app))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let mut checked = false;
+            for y in 0..30 {
+                let line: String = (0..120).map(|x| buffer[(x, y)].symbol()).collect();
+                if let Some(index) = line
+                    .chars()
+                    .collect::<Vec<_>>()
+                    .windows(5)
+                    .position(|chars| chars == ['+', '3', ' ', '−', '1'])
+                {
+                    assert_eq!(buffer[(index as u16, y)].fg, Color::Green);
+                    assert_eq!(buffer[(index as u16 + 3, y)].fg, Color::Red);
+                    checked = true;
+                }
+                if line.contains("Staged (") || line.contains("Unstaged (") {
+                    assert!(
+                        (0..120).all(|x| !matches!(buffer[(x, y)].fg, Color::Green | Color::Red))
+                    );
+                }
+            }
+            assert!(checked, "statistics stay visible in both modes");
+        }
+        app.show_stat = false;
+        app.open_status();
+        assert!(!app.status_view.as_ref().unwrap().show_stat);
+        app.show_stat = true;
+        app.open_status();
+        assert!(app.status_view.as_ref().unwrap().show_stat);
+    }
 
     #[test]
     fn status_records_separate_index_worktree_untracked_and_conflicts() {
@@ -561,8 +953,13 @@ mod tests {
         assert_eq!(view.cursor - view.offset, 1);
         assert!(view.collapsed.contains(&Group::Staged));
         view.toggle();
+        assert!(view.rows[view.cursor].text.starts_with("  ▶"));
+        view.toggle_stat();
         assert!(matches!(view.rows[view.cursor].key, RowKey::File(_)));
-        assert!(view.patches.is_empty());
+        assert!(!view
+            .rows
+            .iter()
+            .any(|row| matches!(row.key, RowKey::Patch(_, _))));
     }
 
     #[test]
