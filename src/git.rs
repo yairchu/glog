@@ -387,6 +387,7 @@ fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
         .args([
             "--no-pager",
             "show",
+            "--decorate=short",
             "--color=always",
             "--no-ext-diff",
             "--full-index",

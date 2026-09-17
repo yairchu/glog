@@ -7,6 +7,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Show branch names and tags beside the commit hash in Show using Git's native
+  ref decorations.
+
 - Added inline Before/After image previews in expanded Show, Diff, and Status
   patches using Kitty graphics (automatically enabled in Kitty and Ghostty).
   Previews load lazily, scroll and fold with the diff, and display the correct
