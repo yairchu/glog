@@ -19,6 +19,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             Constraint::Length(1),
         ])
         .split(frame.area());
+    let has_log = app.has_log_view();
     let selected = match app.mode {
         Mode::Log => 0,
         Mode::Show => 1,
@@ -35,9 +36,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         "Show"
     };
-    let tab_width = if detail == "Status" { 15 } else { 13 };
-    let tabs = Tabs::new(["Log", detail])
-        .select(selected)
+    let tab_width = if !has_log {
+        6
+    } else if detail == "Status" {
+        15
+    } else {
+        13
+    };
+    let labels = if has_log {
+        vec!["Log", detail]
+    } else {
+        vec![detail]
+    };
+    let tabs = Tabs::new(labels)
+        .select(if has_log { selected } else { 0 })
         .style(header_style)
         .highlight_style(
             Style::default()
@@ -63,8 +75,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .split(chunks[0]);
     app.log_tab_start = header[1].x;
-    app.log_tab_end = header[1].x.saturating_add(5);
-    app.show_tab_start = header[1].x.saturating_add(6);
+    app.log_tab_end = header[1].x.saturating_add(if has_log { 5 } else { 0 });
+    app.show_tab_start = header[1].x.saturating_add(if has_log { 6 } else { 0 });
     app.show_tab_end = header[1].x.saturating_add(tab_width - 1);
     frame.render_widget(
         Paragraph::new(command).style(header_style.add_modifier(Modifier::BOLD)),
@@ -104,6 +116,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         status.clone()
     } else if app.mode == Mode::Log {
         "↑/k ↓/j  Enter show  a author  d date  r refs  x hash  s subject  / ? search  h help  q quit".to_owned()
+    } else if !has_log {
+        "↑/k ↓/j  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search  h help  q quit"
+            .to_owned()
     } else {
         "↑/k ↓/j  ←/→ commit  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search  h help  q quit"
             .to_owned()
@@ -113,11 +128,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         chunks[2],
     );
     if app.show_help {
-        draw_help(frame);
+        draw_help(frame, has_log);
     }
 }
 
-fn draw_help(frame: &mut Frame) {
+fn draw_help(frame: &mut Frame, has_log: bool) {
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(68);
     let height = screen.height.saturating_sub(2).min(26);
@@ -152,6 +167,21 @@ fn draw_help(frame: &mut Frame) {
         "  h                 close help",
         "  q                 quit (or close help)",
     ]
+    .into_iter()
+    .filter(|line| {
+        has_log
+            || !(line.contains("Log")
+                || line.contains("previous / next commit")
+                || line.contains("Author badges"))
+    })
+    .map(|line| {
+        if !has_log && line.contains("open commit") {
+            "  Enter             toggle section or file"
+        } else {
+            line
+        }
+    })
+    .collect::<Vec<_>>()
     .join("\n");
     frame.render_widget(Clear, area);
     frame.render_widget(
@@ -885,6 +915,55 @@ mod tests {
             .style
             .add_modifier
             .contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn comparisons_hide_log_and_ignore_history_navigation() {
+        use crossterm::event::{
+            Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+        };
+
+        let mut comparison = commit("Diff A..B", 1);
+        comparison.kind = crate::git::CommitKind::Comparison { worktree: false };
+        let mut app = App::new(vec![comparison]);
+        app.mode = Mode::Show;
+        app.context = "diff A..B".to_owned();
+        app.show_text = "comparison patch".to_owned();
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let row_text = |terminal: &Terminal<TestBackend>, y| {
+            (0..100)
+                .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                .collect::<String>()
+        };
+        assert!(!row_text(&terminal, 0).contains("Log"));
+        assert!(row_text(&terminal, 0).contains("Show"));
+        assert!(!row_text(&terminal, 29).contains("commit"));
+        assert_eq!(app.log_tab_start, app.log_tab_end);
+        for code in [KeyCode::Tab, KeyCode::Esc, KeyCode::Left, KeyCode::Right] {
+            crate::input::handle(
+                Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
+                &mut app,
+            );
+            assert_eq!(app.mode, Mode::Show);
+            assert_eq!(app.show_text, "comparison patch");
+        }
+        crate::input::handle(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: app.show_tab_start,
+                row: 0,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut app,
+        );
+        assert_eq!(app.mode, Mode::Show);
+        app.show_help = true;
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen = (0..30).map(|y| row_text(&terminal, y)).collect::<String>();
+        assert!(!screen.contains("Log"));
+        assert!(!screen.contains("previous / next commit"));
+        assert!(screen.contains("toggle section or file"));
     }
 
     #[test]

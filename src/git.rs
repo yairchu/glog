@@ -247,7 +247,9 @@ pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
     app.show_stat = stat;
     app.show_paths = paths;
     if !app.commits.is_empty() {
-        app.pending_history = Some(Vec::new());
+        if app.has_log_view() {
+            app.pending_history = Some(Vec::new());
+        }
         app.mode = crate::app::Mode::Show;
         app.show_text = text;
         app.ensure_show_rows();
@@ -1502,8 +1504,12 @@ mod tests {
                     .any(|preview| matches!(preview.source, crate::images::Source::File(..))),
                 worktree
             );
+            assert!(!app.has_log_view());
+            assert!(app.pending_history.is_none());
+            let original = app.show_text.clone();
             app.switch_mode();
-            assert_eq!(app.commits[app.selected].subject, "right");
+            assert_eq!(app.mode, crate::app::Mode::Show);
+            assert_eq!(app.show_text, original);
         }
         let mut summary = open(&["left..right", "--stat", "--", "note.txt"]);
         assert!(summary.show_stat);
@@ -1540,8 +1546,12 @@ mod tests {
             .show_text
             .contains("picture.png"));
         let mut navigation = open(&["left..right"]);
-        assert!(navigation.move_selection(1));
-        assert_eq!(navigation.commits[navigation.selected].subject, "right");
+        assert!(!navigation.move_selection(1));
+        assert!(!navigation.move_selection(-1));
+        assert_eq!(
+            navigation.commits[navigation.selected].subject,
+            "Diff left..right"
+        );
         for args in [
             vec!["missing"],
             vec!["--watch"],

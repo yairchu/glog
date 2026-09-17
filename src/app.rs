@@ -163,7 +163,17 @@ impl App {
         self.mode = Mode::Status;
     }
 
+    pub fn has_log_view(&self) -> bool {
+        !self
+            .commits
+            .get(self.selected)
+            .is_some_and(|commit| matches!(commit.kind, CommitKind::Comparison { .. }))
+    }
+
     pub fn switch_mode(&mut self) {
+        if !self.has_log_view() {
+            return;
+        }
         if self.mode == Mode::Log
             && self
                 .commits
@@ -233,12 +243,12 @@ impl App {
     }
 
     pub fn move_selection(&mut self, delta: isize) -> bool {
+        if !self.has_log_view() {
+            return false;
+        }
         let leaving_direct_diff = self.pending_history.is_some()
             && self.commits.get(self.selected).is_some_and(|commit| {
-                matches!(
-                    commit.kind,
-                    CommitKind::Staged | CommitKind::Unstaged | CommitKind::Comparison { .. }
-                )
+                matches!(commit.kind, CommitKind::Staged | CommitKind::Unstaged)
             });
         self.load_history();
         // Loading history from a direct diff already selects HEAD. Do not skip it.

@@ -164,6 +164,7 @@ Show opens HEAD or the specified commit, with history available via Tab.
 Diff opens unstaged changes (including untracked files), or staged changes
 with --cached. Revisions compare commits (A..B, A...B, A B) or a commit
 against the working tree (A); omitted range endpoints default to HEAD.
+Explicit revision comparisons have no Log tab or adjacent-commit navigation.
 Diff exits if empty. Add --stat to Show or Diff to start with
 expandable file summaries; press s in Show to toggle summary / patch.
 Use glog log show (or glog log diff) to browse a branch named after a command.
