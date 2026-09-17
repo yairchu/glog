@@ -7,6 +7,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Added revision comparisons to `glog diff`: `A..`, `..A`, `A..B`, `A B`,
+  `A...B`, a single revision against the working tree, and `--cached A` against
+  the index. Diff also accepts `-- pathspec...` filters, with summary mode,
+  folding, and image previews available for comparisons.
+
 - Show branch names and tags beside the commit hash in Show using Git's native
   ref decorations.
 

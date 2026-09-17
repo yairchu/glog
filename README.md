@@ -101,14 +101,25 @@ first switching to Log with `Escape` (or cycling tabs) or navigating with the ar
 usual. `glog log` explicitly selects Log mode and otherwise accepts the same
 arguments as the shorthand `glog` invocation.
 
-Open working-tree changes directly in Show:
+Open working-tree changes or revision comparisons directly in Show:
 
 ```bash
 glog diff                 # unstaged changes, including untracked files
 glog diff --cached        # staged changes
 glog diff --cached --stat # staged file summary
+glog diff A..             # A to HEAD
+glog diff ..A             # HEAD to A
+glog diff A..B            # A to B (also: glog diff A B)
+glog diff A...B           # merge base of A and B to B
+glog diff A               # A to the working tree
+glog diff --cached A      # A to the index
+glog diff A..B --stat -- src/ # comparison summary limited to src/
 glog log diff             # log for a branch named "diff"
 ```
+
+Revision comparisons follow Git’s diff semantics; omitted range endpoints use
+HEAD. Use `-- pathspec...` to limit any diff to selected paths. Only plain
+`glog diff` (optionally with path filters) includes untracked files.
 
 If the requested changes are empty, glog prints a brief message and exits
 successfully without opening the terminal UI. Switching to Log loads the

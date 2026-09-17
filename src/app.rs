@@ -235,7 +235,10 @@ impl App {
     pub fn move_selection(&mut self, delta: isize) -> bool {
         let leaving_direct_diff = self.pending_history.is_some()
             && self.commits.get(self.selected).is_some_and(|commit| {
-                matches!(commit.kind, CommitKind::Staged | CommitKind::Unstaged)
+                matches!(
+                    commit.kind,
+                    CommitKind::Staged | CommitKind::Unstaged | CommitKind::Comparison { .. }
+                )
             });
         self.load_history();
         // Loading history from a direct diff already selects HEAD. Do not skip it.
@@ -619,9 +622,13 @@ impl App {
                             } else {
                                 self.images.root.clone()
                             },
-                            self.commits
-                                .get(self.selected)
-                                .is_some_and(|c| c.kind == CommitKind::Unstaged),
+                            self.commits.get(self.selected).is_some_and(|c| {
+                                matches!(
+                                    c.kind,
+                                    CommitKind::Unstaged
+                                        | CommitKind::Comparison { worktree: true }
+                                )
+                            }),
                         )
                     })
                     .unwrap_or_default();
@@ -982,6 +989,7 @@ mod tests {
     fn commit(subject: &str) -> Commit {
         Commit {
             kind: CommitKind::Revision,
+            diff_args: Vec::new(),
             hash: subject.repeat(40).chars().take(40).collect(),
             short_hash: subject.to_owned(),
             decorations: String::new(),

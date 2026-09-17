@@ -18,6 +18,7 @@ const NULL_DEVICE: &str = "/dev/null";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
     pub kind: CommitKind,
+    pub diff_args: Vec<String>,
     pub hash: String,
     pub short_hash: String,
     pub decorations: String,
@@ -68,6 +69,7 @@ pub enum CommitKind {
     Revision,
     Staged,
     Unstaged,
+    Comparison { worktree: bool },
 }
 
 fn log_command(user_args: &[String]) -> Result<Command, String> {
@@ -194,24 +196,61 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
     Ok(app)
 }
 
-/// Open a working-tree entry without traversing committed history.
+/// Open a diff without traversing committed history.
 pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
-    let stat = args.iter().any(|arg| arg == "--stat");
-    let options: Vec<_> = args.iter().filter(|arg| *arg != "--stat").collect();
-    let kind = match options.as_slice() {
-        [] => CommitKind::Unstaged,
-        [flag] if *flag == "--cached" => CommitKind::Staged,
-        _ => return Err("usage: glog diff [--cached] [--stat]".to_owned()),
-    };
-    let entries = working_tree_entries()?
-        .into_iter()
-        .filter(|entry| entry.kind == kind)
+    let separator = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    let stat = args[..separator].iter().any(|arg| arg == "--stat");
+    let options: Vec<_> = args[..separator]
+        .iter()
+        .filter(|arg| *arg != "--stat")
+        .cloned()
         .collect();
-    let mut app = crate::app::App::new(entries);
+    let cached = options.iter().any(|arg| arg == "--cached");
+    let revisions: Vec<_> = options.iter().filter(|arg| *arg != "--cached").collect();
+    if revisions.iter().any(|arg| arg.starts_with('-'))
+        || revisions.len() > if cached { 1 } else { 2 }
+    {
+        return Err(
+            "usage: glog diff [--cached] [--stat] [revision [revision]] [-- pathspec...]"
+                .to_owned(),
+        );
+    }
+    let kind = if revisions.is_empty() {
+        if cached {
+            CommitKind::Staged
+        } else {
+            CommitKind::Unstaged
+        }
+    } else {
+        CommitKind::Comparison {
+            worktree: !cached && revisions.len() == 1 && !revisions[0].contains(".."),
+        }
+    };
+    let mut entry = match kind {
+        CommitKind::Unstaged => pseudo_commit(kind, "worktree", "Unstaged changes"),
+        CommitKind::Staged => pseudo_commit(kind, "index", "Staged changes"),
+        _ => pseudo_commit(kind, "diff", &format!("Diff {}", options.join(" "))),
+    };
+    if matches!(kind, CommitKind::Comparison { .. }) {
+        entry.diff_args = options;
+    }
+    let paths = args.get(separator + 1..).unwrap_or_default().to_vec();
+    let text = show(&entry, &paths)?;
+    let mut app = crate::app::App::new(if text.is_empty() {
+        Vec::new()
+    } else {
+        vec![entry]
+    });
     app.show_stat = stat;
+    app.show_paths = paths;
     if !app.commits.is_empty() {
         app.pending_history = Some(Vec::new());
-        app.switch_mode();
+        app.mode = crate::app::Mode::Show;
+        app.show_text = text;
+        app.ensure_show_rows();
     }
     Ok(app)
 }
@@ -307,6 +346,7 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
                 pending_graph.push(line[..marker].to_owned());
                 commits.push(Commit {
                     kind: CommitKind::Revision,
+                    diff_args: Vec::new(),
                     hash: fields[0].to_owned(),
                     short_hash: fields[1].to_owned(),
                     decorations: fields[2].to_owned(),
@@ -346,6 +386,7 @@ fn working_tree_entries() -> Result<Vec<Commit>, String> {
 fn pseudo_commit(kind: CommitKind, short_hash: &str, subject: &str) -> Commit {
     Commit {
         kind,
+        diff_args: Vec::new(),
         hash: format!("[{short_hash}]"),
         short_hash: short_hash.to_owned(),
         decorations: String::new(),
@@ -373,6 +414,11 @@ fn has_diff(args: &[&str]) -> Result<bool, String> {
 pub fn show(commit: &Commit, paths: &[String]) -> Result<String, String> {
     match commit.kind {
         CommitKind::WorkingTree => Err("Working tree opens the Status view".to_owned()),
+        CommitKind::Comparison { .. } => {
+            let mut args = vec!["diff", "--color=always", "--no-ext-diff"];
+            args.extend(commit.diff_args.iter().map(String::as_str));
+            show_diff(&args, paths)
+        }
         CommitKind::Revision => show_revision(&commit.hash, paths),
         CommitKind::Staged => show_diff(
             &["diff", "--cached", "--color=always", "--no-ext-diff"],
@@ -1377,8 +1423,135 @@ mod tests {
                 .iter()
                 .any(|row| row.text.contains("diff --git")));
         }
-        assert!(load_diff_app(&["HEAD".into()]).is_err());
+        assert!(load_diff_app(&["HEAD".into()]).is_ok());
         assert!(load_diff_app(&["--watch".into()]).is_err());
+    }
+
+    #[test]
+    fn diff_compares_revisions_paths_and_image_sources() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        let open = |args: &[&str]| {
+            load_diff_app(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>()).unwrap()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write("note.txt", "base\n").unwrap();
+        fs::write("picture.png", b"base\0image").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        git(&["tag", "base"]);
+        git(&["checkout", "-qb", "left"]);
+        fs::write("note.txt", "left\n").unwrap();
+        fs::write("picture.png", b"left\0image").unwrap();
+        git(&["commit", "-qam", "left"]);
+        git(&["checkout", "-qb", "right", "base"]);
+        fs::write("note.txt", "right\n").unwrap();
+        fs::write("picture.png", b"right\0image").unwrap();
+        fs::write("--stat", "flag-named path\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "right"]);
+        fs::write("note.txt", "index\n").unwrap();
+        fs::write("picture.png", b"index\0image").unwrap();
+        git(&["add", "."]);
+        fs::write("note.txt", "worktree\n").unwrap();
+        fs::write("picture.png", b"worktree\0image").unwrap();
+        fs::write("untracked.txt", "untracked\n").unwrap();
+
+        for (args, before, after, worktree) in [
+            (vec!["left.."], "left", "right", false),
+            (vec!["..left"], "right", "left", false),
+            (vec!["left..right"], "left", "right", false),
+            (vec!["left", "right"], "left", "right", false),
+            (vec!["left...right"], "base", "right", false),
+            (vec!["left..."], "base", "right", false),
+            (vec!["...left"], "base", "left", false),
+            (vec!["left"], "left", "worktree", true),
+            (vec!["--cached", "left"], "left", "index", false),
+        ] {
+            let mut app = open(&args);
+            let patch = crate::ansi::plain(&app.show_text);
+            assert!(patch.contains(&format!("-{before}\n")), "{args:?}: {patch}");
+            assert!(patch.contains(&format!("+{after}\n")), "{args:?}: {patch}");
+            assert!(!patch.contains("untracked.txt"));
+            assert_eq!(app.commits[0].kind, CommitKind::Comparison { worktree });
+            // Enabling previews must select historical blobs for commit/index
+            // comparisons and the current file only for worktree comparisons.
+            app.images.enabled = true;
+            app.images.root = directory.path().to_owned();
+            app.show_rows.clear();
+            app.ensure_show_rows();
+            let previews: Vec<_> = app
+                .show_rows
+                .iter()
+                .filter_map(|row| row.preview.as_ref())
+                .collect();
+            assert!(!previews.is_empty());
+            assert_eq!(
+                previews
+                    .iter()
+                    .any(|preview| matches!(preview.source, crate::images::Source::File(..))),
+                worktree
+            );
+            app.switch_mode();
+            assert_eq!(app.commits[app.selected].subject, "right");
+        }
+        let mut summary = open(&["left..right", "--stat", "--", "note.txt"]);
+        assert!(summary.show_stat);
+        assert!(!summary.show_text.contains("picture.png"));
+        assert!(summary
+            .show_rows
+            .iter()
+            .any(|row| row.summary && row.folded));
+        summary.show_cursor = summary
+            .show_rows
+            .iter()
+            .position(|row| row.summary)
+            .unwrap();
+        summary.toggle_show_file();
+        assert!(summary
+            .show_rows
+            .iter()
+            .any(|row| crate::ansi::plain(&row.text).contains("+right")));
+        let named_flag = open(&["base..right", "--", "--stat"]);
+        assert!(!named_flag.show_stat);
+        assert!(named_flag.show_text.contains("flag-named path"));
+        assert!(open(&["left..left"]).commits.is_empty());
+        assert!(open(&["left..right", "--", "missing.txt"])
+            .commits
+            .is_empty());
+        assert!(open(&["--", "missing.txt"]).commits.is_empty());
+        assert!(open(&["--", "untracked.txt"])
+            .show_text
+            .contains("glog-lazy-untracked:"));
+        assert!(
+            crate::ansi::plain(&open(&["--cached", "--", "note.txt"]).show_text).contains("+index")
+        );
+        assert!(!open(&["--cached", "--", "note.txt"])
+            .show_text
+            .contains("picture.png"));
+        let mut navigation = open(&["left..right"]);
+        assert!(navigation.move_selection(1));
+        assert_eq!(navigation.commits[navigation.selected].subject, "right");
+        for args in [
+            vec!["missing"],
+            vec!["--watch"],
+            vec!["left", "right", "base"],
+            vec!["--cached", "left", "right"],
+        ] {
+            assert!(
+                load_diff_app(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err()
+            );
+        }
     }
 
     #[test]

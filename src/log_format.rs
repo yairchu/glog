@@ -274,6 +274,7 @@ pub(crate) mod tests {
     pub fn commit() -> Commit {
         Commit {
             kind: CommitKind::Revision,
+            diff_args: Vec::new(),
             hash: "abcdef0123456789".into(),
             short_hash: "abcdef0".into(),
             decorations: "HEAD -> main".into(),

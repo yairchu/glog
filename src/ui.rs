@@ -589,6 +589,7 @@ mod tests {
     fn commit(subject: &str, graph_rows: usize) -> Commit {
         Commit {
             kind: CommitKind::Revision,
+            diff_args: Vec::new(),
             hash: subject.repeat(40).chars().take(40).collect(),
             short_hash: subject.to_owned(),
             decorations: String::new(),

@@ -82,10 +82,7 @@ fn main() -> ExitCode {
     };
     if command != Command::Status && !should_start_tui(watch, app.commits.len()) {
         let message = match command {
-            Command::Diff if !command_args.iter().any(|arg| arg == "--cached") => {
-                "no unstaged changes"
-            }
-            Command::Diff => "no staged changes",
+            Command::Diff => "no changes",
             _ => "no commits matched",
         };
         eprintln!("glog: {message}");
@@ -148,7 +145,7 @@ const HELP: &str = "glog — an interactive git log and git show browser
 Usage: glog [--watch]
        glog [log] [git log arguments] [--] [pathspec...]
        glog show [--stat] [commit] [-- pathspec...]
-       glog diff [--cached] [--stat]
+       glog diff [--cached] [--stat] [revision [revision]] [-- pathspec...]
        glog status
 
 Options:
@@ -165,7 +162,9 @@ Watch mode includes one Working tree item; commits open Show.
 Log shows committed history, loaded once unless --watch is used.
 Show opens HEAD or the specified commit, with history available via Tab.
 Diff opens unstaged changes (including untracked files), or staged changes
-with --cached, and exits if empty. Add --stat to Show or Diff to start with
+with --cached. Revisions compare commits (A..B, A...B, A B) or a commit
+against the working tree (A); omitted range endpoints default to HEAD.
+Diff exits if empty. Add --stat to Show or Diff to start with
 expandable file summaries; press s in Show to toggle summary / patch.
 Use glog log show (or glog log diff) to browse a branch named after a command.
 Log arguments are passed through to git log. Inside the TUI, press h for
