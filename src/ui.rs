@@ -36,20 +36,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         "Show"
     };
-    let tab_width = if !has_log {
-        6
+    let tab_width: u16 = if !has_log {
+        0
     } else if detail == "Status" {
         15
     } else {
         13
     };
-    let labels = if has_log {
-        vec!["Log", detail]
-    } else {
-        vec![detail]
-    };
-    let tabs = Tabs::new(labels)
-        .select(if has_log { selected } else { 0 })
+    let tabs = Tabs::new(["Log", detail])
+        .select(selected)
         .style(header_style)
         .highlight_style(
             Style::default()
@@ -77,12 +72,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.log_tab_start = header[1].x;
     app.log_tab_end = header[1].x.saturating_add(if has_log { 5 } else { 0 });
     app.show_tab_start = header[1].x.saturating_add(if has_log { 6 } else { 0 });
-    app.show_tab_end = header[1].x.saturating_add(tab_width - 1);
+    app.show_tab_end = header[1].x.saturating_add(tab_width.saturating_sub(1));
     frame.render_widget(
         Paragraph::new(command).style(header_style.add_modifier(Modifier::BOLD)),
         header[0],
     );
-    frame.render_widget(tabs, header[1]);
+    if has_log {
+        frame.render_widget(tabs, header[1]);
+    }
     if live {
         frame.render_widget(
             Paragraph::new(if app.mode == Mode::Status {
@@ -937,7 +934,9 @@ mod tests {
                 .collect::<String>()
         };
         assert!(!row_text(&terminal, 0).contains("Log"));
-        assert!(row_text(&terminal, 0).contains("Show"));
+        assert!(!row_text(&terminal, 0).contains("Show"));
+        assert_eq!(row_text(&terminal, 0).trim(), "glog diff A..B");
+        assert_eq!(app.show_tab_start, app.show_tab_end);
         assert!(!row_text(&terminal, 29).contains("commit"));
         assert_eq!(app.log_tab_start, app.log_tab_end);
         for code in [KeyCode::Tab, KeyCode::Esc, KeyCode::Left, KeyCode::Right] {

@@ -11,7 +11,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   `A...B`, a single revision against the working tree, and `--cached A` against
   the index. Diff also accepts `-- pathspec...` filters, with summary mode,
   folding, and image previews available for comparisons. Explicit comparisons
-  open a standalone Show view without a Log tab or adjacent-commit navigation.
+  open a standalone diff with a command context header, no tabs, and no
+  adjacent-commit navigation.
 
 - Show branch names and tags beside the commit hash in Show using Git's native
   ref decorations.
