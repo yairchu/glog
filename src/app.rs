@@ -14,6 +14,7 @@ pub enum Mode {
 
 #[derive(Clone, Debug)]
 pub struct ShowRow {
+    pub preview: Option<crate::images::Row>,
     pub text: String,
     pub source: usize,
     pub file: Option<usize>,
@@ -31,6 +32,7 @@ pub enum ShowScroll {
 }
 
 pub struct App {
+    pub images: crate::images::Images,
     pub status_view: Option<crate::status::StatusView>,
     pub commits: Vec<Commit>,
     pub log_format: crate::log_format::LogFormat,
@@ -42,7 +44,7 @@ pub struct App {
     pub show_cursor: usize,
     pub show_text: String,
     pub show_stat: bool,
-    stat_bookmark: Option<(String, usize)>,
+    stat_bookmark: Option<(String, usize, Option<crate::images::Row>)>,
     pub show_rows: Vec<ShowRow>,
     // Start of each wrapped row, followed by the total screen height.
     pub show_row_starts: Vec<usize>,
@@ -79,6 +81,7 @@ pub struct App {
 impl App {
     pub fn new(commits: Vec<Commit>) -> Self {
         Self {
+            images: crate::images::Images::default(),
             status_view: None,
             commits,
             log_format: crate::log_format::LogFormat::default(),
@@ -151,6 +154,7 @@ impl App {
             }
         }
         if let Some(view) = &mut self.status_view {
+            view.enable_images(self.images.enabled);
             if view.show_stat != self.show_stat {
                 view.toggle_stat();
             }
@@ -371,9 +375,9 @@ impl App {
         self.show_cursor = candidates
             .iter()
             .filter(|(_, row)| {
-                cursor_row
-                    .as_ref()
-                    .is_some_and(|old| old.text == row.text && old.folded == row.folded)
+                cursor_row.as_ref().is_some_and(|old| {
+                    old.text == row.text && old.folded == row.folded && old.preview == row.preview
+                })
             })
             .min_by_key(|(_, row)| distance(row))
             .or_else(|| candidates.iter().min_by_key(|(_, row)| distance(row)))
@@ -454,6 +458,14 @@ impl App {
         self.rebuild_show_rows();
     }
 
+    pub fn enable_images(&mut self) {
+        self.images = crate::images::Images::from_env();
+        self.rebuild_show_rows();
+        if let Some(view) = &mut self.status_view {
+            view.enable_images(self.images.enabled);
+        }
+    }
+
     pub fn ensure_show_rows(&mut self) {
         if self.show_rows.is_empty() && !self.show_text.is_empty() {
             self.reset_show_folds();
@@ -473,6 +485,7 @@ impl App {
                     folded: false,
                     fold_separator: false,
                     summary: false,
+                    preview: None,
                 });
             }
             if self.show_stat {
@@ -499,6 +512,7 @@ impl App {
                     folded: !expanded,
                     fold_separator: false,
                     summary: true,
+                    preview: None,
                 });
                 if expanded {
                     for (index, line) in lines[file.start..file.end].iter().enumerate() {
@@ -509,6 +523,7 @@ impl App {
                             folded: false,
                             fold_separator: false,
                             summary: false,
+                            preview: None,
                         });
                     }
                 }
@@ -521,6 +536,7 @@ impl App {
                     folded: false,
                     fold_separator: true,
                     summary: false,
+                    preview: None,
                 });
                 rows.push(ShowRow {
                     text: format!(
@@ -546,6 +562,7 @@ impl App {
                     folded: true,
                     fold_separator: false,
                     summary: false,
+                    preview: None,
                 });
                 rows.push(ShowRow {
                     text: String::new(),
@@ -554,6 +571,7 @@ impl App {
                     folded: false,
                     fold_separator: true,
                     summary: false,
+                    preview: None,
                 });
             } else {
                 for (index, line) in lines[file.start..file.end].iter().enumerate() {
@@ -564,6 +582,7 @@ impl App {
                         folded: false,
                         fold_separator: false,
                         summary: false,
+                        preview: None,
                     });
                 }
             }
@@ -577,7 +596,52 @@ impl App {
                 folded: false,
                 fold_separator: false,
                 summary: false,
+                preview: None,
             });
+        }
+        if self.images.enabled {
+            let mut expanded = Vec::new();
+            for row in rows {
+                let previews = row
+                    .file
+                    .filter(|_| crate::images::is_binary(&crate::ansi::plain(&row.text)))
+                    .map(|index| {
+                        let file = &self.show_files[index];
+                        crate::images::sources(
+                            &lines[file.start..file.end].join("\n"),
+                            &file.path,
+                            &if file.untracked
+                                && !lines[file.start..file.end]
+                                    .iter()
+                                    .any(|line| crate::ansi::plain(line).starts_with("index "))
+                            {
+                                std::env::current_dir().unwrap_or_else(|_| self.images.root.clone())
+                            } else {
+                                self.images.root.clone()
+                            },
+                            self.commits
+                                .get(self.selected)
+                                .is_some_and(|c| c.kind == CommitKind::Unstaged),
+                        )
+                    })
+                    .unwrap_or_default();
+                expanded.push(row.clone());
+                for (label, source) in previews {
+                    let mut label_row = row.clone();
+                    label_row.text = format!("{label} image");
+                    expanded.push(label_row);
+                    for y in 0..crate::images::HEIGHT {
+                        let mut image_row = row.clone();
+                        image_row.text.clear();
+                        image_row.preview = Some(crate::images::Row {
+                            source: source.clone(),
+                            row: y,
+                        });
+                        expanded.push(image_row);
+                    }
+                }
+            }
+            rows = expanded;
         }
         self.show_rows = rows;
         self.show_cursor = self.show_cursor.min(self.show_rows.len().saturating_sub(1));
@@ -592,10 +656,13 @@ impl App {
             .and_then(|row| row.file)
             .map(|index| self.show_files[index].clone());
         if !self.show_stat {
-            self.stat_bookmark = file
-                .as_ref()
-                .zip(current.as_ref())
-                .map(|(file, row)| (file.path.clone(), row.source.saturating_sub(file.start)));
+            self.stat_bookmark = file.as_ref().zip(current.as_ref()).map(|(file, row)| {
+                (
+                    file.path.clone(),
+                    row.source.saturating_sub(file.start),
+                    row.preview.clone(),
+                )
+            });
             self.expanded_folds.clear();
         }
         self.show_stat = !self.show_stat;
@@ -617,16 +684,27 @@ impl App {
                     + self
                         .stat_bookmark
                         .as_ref()
-                        .filter(|(path, _)| *path == file.path)
-                        .map_or(0, |(_, line)| *line)
+                        .filter(|(path, _, _)| *path == file.path)
+                        .map_or(0, |(_, line, _)| *line)
             };
+            let preview = current
+                .as_ref()
+                .filter(|row| !row.summary)
+                .and_then(|row| row.preview.as_ref())
+                .or_else(|| {
+                    self.stat_bookmark
+                        .as_ref()
+                        .filter(|(path, _, _)| *path == file.path)
+                        .and_then(|(_, _, preview)| preview.as_ref())
+                });
             self.show_cursor = self
                 .show_rows
                 .iter()
                 .position(|row| {
                     row.file
                         .is_some_and(|index| self.show_files[index].path == file.path)
-                        && (self.show_stat || row.source == source)
+                        && (self.show_stat
+                            || (row.source == source && row.preview.as_ref() == preview))
                 })
                 .unwrap_or(self.show_cursor.min(self.show_rows.len().saturating_sub(1)));
         }

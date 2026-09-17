@@ -89,7 +89,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     match app.mode {
         Mode::Status => {
             if let Some(view) = &mut app.status_view {
-                view.draw(frame, chunks[1]);
+                view.draw_with_images(frame, chunks[1], &mut app.images);
             }
         }
         Mode::Log => draw_log(frame, app, chunks[1]),
@@ -369,6 +369,24 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
         .wrap(Wrap { trim: false }),
         area,
     );
+    for (index, row) in app.show_rows.iter().enumerate() {
+        if let Some(preview) = &row.preview {
+            let screen = app.show_row_starts[index];
+            if screen >= app.show_offset && screen < app.show_offset + usize::from(area.height) {
+                app.images.render(
+                    frame,
+                    preview,
+                    Rect::new(
+                        area.x,
+                        area.y + (screen - app.show_offset) as u16,
+                        area.width,
+                        1,
+                    ),
+                    0,
+                );
+            }
+        }
+    }
     // Fill empty lines and the unused columns of every visible cursor continuation.
     for screen in cursor_start.max(app.show_offset)
         ..cursor_end.min(app.show_offset + usize::from(area.height))

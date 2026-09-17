@@ -349,6 +349,7 @@ mod tests {
             app.mode = Mode::Show;
             app.show_rows = (0..30)
                 .map(|source| crate::app::ShowRow {
+                    preview: None,
                     text: String::new(),
                     source,
                     file: None,
@@ -383,6 +384,7 @@ mod tests {
         app.mode = Mode::Show;
         app.show_rows = (0..30)
             .map(|source| crate::app::ShowRow {
+                preview: None,
                 text: String::new(),
                 source,
                 file: None,

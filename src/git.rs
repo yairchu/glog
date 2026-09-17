@@ -389,6 +389,7 @@ fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
             "show",
             "--color=always",
             "--no-ext-diff",
+            "--full-index",
             hash,
             "--",
         ])
@@ -405,6 +406,7 @@ fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
 fn show_diff(args: &[&str], paths: &[String]) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)
+        .arg("--full-index")
         .arg("--")
         .args(paths)
         .env("GIT_PAGER", "cat")
@@ -418,7 +420,13 @@ fn show_diff(args: &[&str], paths: &[String]) -> Result<String, String> {
 
 fn show_unstaged(paths: &[String]) -> Result<String, String> {
     let output = Command::new("git")
-        .args(["diff", "--color=always", "--no-ext-diff", "--"])
+        .args([
+            "diff",
+            "--color=always",
+            "--no-ext-diff",
+            "--full-index",
+            "--",
+        ])
         .args(paths)
         .output()
         .map_err(|error| format!("could not run git diff: {error}"))?;

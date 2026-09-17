@@ -272,6 +272,30 @@ trees navigable while allowing each file to be expanded independently. Their
 contents are loaded and formatted only when expanded, so repositories with
 many untracked artifacts still open quickly.
 
+## Inline image previews
+
+Binary PNG, JPEG, GIF, BMP, ICO, and WebP changes show labeled Before/After
+previews inside expanded diffs in Show, Diff, and Status. Added files show only
+After; deleted files show only Before. Previews scroll and fold with the patch,
+preserve aspect ratio, and load in the background when visible. Animated images
+show a still frame. Corrupt, unsupported, or oversized images keep the binary
+notice and show an unavailable-preview message.
+
+Previews use the Kitty graphics protocol's Unicode placeholders. They are
+enabled automatically in Kitty and Ghostty outside tmux. Other terminals keep
+the ordinary binary-file notice. To explicitly enable or disable previews:
+
+```bash
+GLOG_IMAGES=kitty glog diff
+GLOG_IMAGES=off glog
+```
+
+For tmux, explicitly enable previews and enable tmux's `allow-passthrough`
+setting; both tmux and the outer terminal must support Unicode placeholders.
+Previews occupy up to 64 columns and 12 rows per image. Files larger than 16 MiB
+or images exceeding 16 million pixels / 8192 pixels on either axis are skipped.
+SVG rendering and pixel-difference overlays are not currently supported.
+
 ## Delta and color
 
 `glog` automatically tries [`delta`](https://github.com/dandavison/delta) when it is on `PATH`. Delta is run with paging disabled; if it is absent or fails, ordinary colored `git show` output is used. ANSI colors from either program are rendered in the TUI.

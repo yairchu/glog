@@ -2,6 +2,7 @@ mod ansi;
 mod app;
 mod diff;
 mod git;
+mod images;
 mod input;
 mod log_format;
 mod status;
@@ -99,10 +100,12 @@ fn main() -> ExitCode {
         }
     };
     let mut guard = TerminalGuard(true);
+    app.enable_images();
     app.log_format = log_format;
     app.watch = watch;
     app.context = args.join(" ");
     let result = run(&mut terminal, &mut app);
+    let _ = app.images.clear(&mut io::stdout());
     let _ = guard.restore();
     if let Err(error) = result {
         eprintln!("glog: {error}");
@@ -197,10 +200,13 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
         .map_err(io::Error::other)?;
     while !app.quit {
         if app.redraw {
+            app.images.clear(&mut io::stdout())?;
             terminal.clear()?;
             app.redraw = false;
         }
+        app.images.poll();
         terminal.draw(|frame| ui::draw(frame, app))?;
+        app.images.flush(&mut io::stdout())?;
         if event::poll(Duration::from_millis(250))? {
             input::handle(event::read()?, app);
             // Terminals report a fast trackpad/wheel gesture as a burst of discrete

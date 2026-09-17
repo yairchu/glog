@@ -7,6 +7,12 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Added inline Before/After image previews in expanded Show, Diff, and Status
+  patches using Kitty graphics (automatically enabled in Kitty and Ghostty).
+  Previews load lazily, scroll and fold with the diff, and display the correct
+  historical, staged, or working-tree contents. `GLOG_IMAGES=off` disables them;
+  `GLOG_IMAGES=kitty` explicitly enables them, including through configured tmux.
+
 - Added `glog status` and a live Status detail view with branch/upstream
   information, clean-tree state, expandable conflict/staged/unstaged/untracked
   sections, and lazily loaded inline patches. Watch mode has one Working tree

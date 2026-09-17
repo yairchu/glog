@@ -77,6 +77,12 @@ fn hex_decode(hex: &str) -> Option<String> {
 }
 
 fn diff_path(lines: &[String]) -> Option<String> {
+    if let Some(path) = lines
+        .iter()
+        .find_map(|line| line.strip_prefix("rename to "))
+    {
+        return unquote_path(path).map(|(path, _)| path);
+    }
     let candidate = lines
         .iter()
         .find_map(|line| line.strip_prefix("+++ "))
@@ -86,20 +92,75 @@ fn diff_path(lines: &[String]) -> Option<String> {
                 .iter()
                 .find_map(|line| line.strip_prefix("--- "))
                 .filter(|path| *path != "/dev/null")
-        })
-        .or_else(|| {
-            lines
-                .first()
-                .and_then(|line| line.strip_prefix("diff --git ")?.split_whitespace().last())
-        })?;
-    let candidate = candidate.trim_matches('"');
+        });
+    let candidate = if let Some(path) = candidate {
+        path.trim_end_matches('\t')
+    } else {
+        let header = lines.first()?.strip_prefix("diff --git ")?;
+        if header.starts_with('"') {
+            let (_, consumed) = unquote_path(header)?;
+            header[consumed..].trim_start()
+        } else if let Some((_, path)) = header.split_once(" \"b/") {
+            // Include the opening quote in the path passed to the decoder.
+            &header[header.len() - path.len() - 3..]
+        } else {
+            // Git does not quote spaces. Prefer the split with identical paths;
+            // renames have their own unambiguous "rename to" metadata above.
+            let split = header
+                .match_indices(" b/")
+                .find(|(index, _)| {
+                    header[..*index].strip_prefix("a/") == Some(&header[*index + 3..])
+                })
+                .map(|(index, _)| index)
+                .or_else(|| header.rfind(" b/"))?;
+            &header[split + 1..]
+        }
+    };
+    let (candidate, _) = unquote_path(candidate)?;
     Some(
         candidate
             .strip_prefix("b/")
             .or_else(|| candidate.strip_prefix("a/"))
-            .unwrap_or(candidate)
+            .unwrap_or(&candidate)
             .to_owned(),
     )
+}
+
+fn unquote_path(path: &str) -> Option<(String, usize)> {
+    if !path.starts_with('"') {
+        return Some((path.to_owned(), path.len()));
+    }
+    let bytes = path.as_bytes();
+    let mut output = Vec::new();
+    let mut i = 1;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => return String::from_utf8(output).ok().map(|text| (text, i + 1)),
+            b'\\' => {
+                i += 1;
+                let byte = *bytes.get(i)?;
+                output.push(match byte {
+                    b'n' => b'\n',
+                    b't' => b'\t',
+                    b'r' => b'\r',
+                    b'a' => 7,
+                    b'b' => 8,
+                    b'v' => 11,
+                    b'f' => 12,
+                    b'\\' | b'"' => byte,
+                    b'0'..=b'3' => {
+                        let octal = std::str::from_utf8(bytes.get(i..i + 3)?).ok()?;
+                        i += 2;
+                        u8::from_str_radix(octal, 8).ok()?
+                    }
+                    _ => return None,
+                });
+            }
+            byte => output.push(byte),
+        }
+        i += 1;
+    }
+    None
 }
 
 pub(crate) fn is_lockfile(path: &str) -> bool {
@@ -114,6 +175,30 @@ pub(crate) fn is_lockfile(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn binary_paths_keep_spaces_quotes_and_git_octal_utf8() {
+        for (header, expected) in [
+            (
+                "diff --git a/picture space.png b/picture space.png",
+                "picture space.png",
+            ),
+            (
+                r#"diff --git "a/caf\303\251.png" "b/caf\303\251.png""#,
+                "café.png",
+            ),
+            (r#"diff --git "a/a\"b.png" "b/a\"b.png""#, "a\"b.png"),
+            (
+                "diff --git a/dir b/image.png b/dir b/image.png",
+                "dir b/image.png",
+            ),
+        ] {
+            let sections = file_sections(&format!("{header}\nBinary files differ\n"));
+            assert_eq!(sections[0].path, expected);
+        }
+        let sections = file_sections("diff --git a/old name.png b/new name.png\nrename from old name.png\nrename to new name.png\n");
+        assert_eq!(sections[0].path, "new name.png");
+    }
 
     #[test]
     fn finds_and_classifies_diff_sections() {

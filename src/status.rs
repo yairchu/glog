@@ -184,12 +184,14 @@ enum RowKey {
 }
 #[derive(Clone)]
 struct Row {
+    preview: Option<crate::images::Row>,
     key: RowKey,
     text: String,
     color: Option<Color>,
 }
 #[derive(Default)]
 pub struct StatusView {
+    images_enabled: bool,
     root: PathBuf,
     snapshot: Snapshot,
     collapsed: HashSet<Group>,
@@ -228,7 +230,7 @@ impl StatusView {
             return crate::git::show_untracked(&self.root.join(&entry.key.path).to_string_lossy());
         }
         let mut command = self.diff_command(entry);
-        command.arg("--color=always");
+        command.args(["--color=always", "--full-index"]);
         self.diff_paths(&mut command, entry);
         let output = command.output().map_err(|error| error.to_string())?;
         if !output.status.success() {
@@ -370,6 +372,7 @@ impl StatusView {
                             .position(|row| {
                                 matches!(&row.key, RowKey::Patch(current, _) if current == &key)
                                     && row.text == bookmark.text
+                                    && row.preview == bookmark.preview
                             })
                             .or_else(|| self.rows.iter().position(|row| row.key == bookmark.key))
                             .unwrap_or(self.cursor);
@@ -439,6 +442,7 @@ impl StatusView {
             }
             self.rows.push(Row {
                 key: RowKey::Group(group),
+                preview: None,
                 text: format!(
                     "{} {} ({})",
                     if entries.is_empty() {
@@ -487,6 +491,7 @@ impl StatusView {
                         detail
                     ),
                     color: Some(Color::Reset),
+                    preview: None,
                 });
                 if let Some(patch) = self.patches.get(&entry.key).filter(|_| expanded) {
                     for (index, line) in patch.lines().enumerate() {
@@ -494,7 +499,36 @@ impl StatusView {
                             key: RowKey::Patch(entry.key.clone(), index),
                             text: line.to_owned(),
                             color: None,
+                            preview: None,
                         });
+                        if self.images_enabled
+                            && crate::images::is_binary(&crate::ansi::plain(line))
+                        {
+                            for (label, source) in crate::images::sources(
+                                patch,
+                                &entry.key.path,
+                                &self.root,
+                                matches!(entry.key.group, Group::Unstaged | Group::Untracked),
+                            ) {
+                                self.rows.push(Row {
+                                    key: RowKey::Patch(entry.key.clone(), index),
+                                    text: format!("{label} image"),
+                                    color: None,
+                                    preview: None,
+                                });
+                                for y in 0..crate::images::HEIGHT {
+                                    self.rows.push(Row {
+                                        key: RowKey::Patch(entry.key.clone(), index),
+                                        text: String::new(),
+                                        color: None,
+                                        preview: Some(crate::images::Row {
+                                            source: source.clone(),
+                                            row: y,
+                                        }),
+                                    });
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -507,6 +541,7 @@ impl StatusView {
                     .filter(|(_, row)| {
                         matches!(&row.key, RowKey::Patch(current, _) if current == key)
                             && row.text == old.text
+                            && row.preview == old.preview
                     })
                     .min_by_key(|(index, _)| index.abs_diff(self.cursor))
                     .map(|(index, _)| index)
@@ -603,7 +638,24 @@ impl StatusView {
             }
         }
     }
+    pub fn enable_images(&mut self, enabled: bool) {
+        if self.images_enabled != enabled {
+            self.images_enabled = enabled;
+            self.rebuild();
+        }
+    }
+
+    #[cfg(test)]
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
+        self.draw_with_images(frame, area, &mut crate::images::Images::default());
+    }
+
+    pub fn draw_with_images(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        images: &mut crate::images::Images,
+    ) {
         let branch = if self.snapshot.branch == "(detached)" {
             "Detached HEAD"
         } else {
@@ -669,6 +721,9 @@ impl StatusView {
                 Paragraph::new(line).scroll((0, self.horizontal)),
                 Rect::new(area.x, self.origin + screen as u16, area.width, 1),
             );
+            if let Some(preview) = &row.preview {
+                images.render(frame, preview, row_area, self.horizontal);
+            }
         }
     }
 }
@@ -677,6 +732,50 @@ impl StatusView {
 mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn image_rows_follow_status_folds_and_preserve_the_scrolled_row() {
+        let key = Key {
+            group: Group::Staged,
+            path: "image.png".into(),
+        };
+        let mut view = StatusView::default();
+        view.snapshot.entries.push(Entry {
+            key: key.clone(),
+            label: "M".into(),
+            original: None,
+        });
+        view.patches.insert(key.clone(), "diff --git a/image.png b/image.png\nindex abcd1234..abcd5678 100644\nBinary files a/image.png and b/image.png differ\n".into());
+        view.enable_images(true);
+        assert_eq!(
+            view.rows.iter().filter(|row| row.preview.is_some()).count(),
+            24
+        );
+        view.cursor = view
+            .rows
+            .iter()
+            .position(|row| row.preview.as_ref().is_some_and(|p| p.row == 7))
+            .unwrap();
+        view.offset = view.cursor - 2;
+        let old = view.rows[view.cursor].preview.clone();
+        view.rebuild();
+        assert_eq!(view.rows[view.cursor].preview, old);
+        assert_eq!(view.cursor - view.offset, 2);
+        view.toggle();
+        assert!(!view.rows.iter().any(|row| row.preview.is_some()));
+        view.toggle();
+        assert_eq!(
+            view.rows.iter().filter(|row| row.preview.is_some()).count(),
+            24
+        );
+        view.toggle_stat();
+        assert!(!view.rows.iter().any(|row| row.preview.is_some()));
+        view.toggle();
+        assert_eq!(
+            view.rows.iter().filter(|row| row.preview.is_some()).count(),
+            24
+        );
+    }
 
     #[test]
     fn stats_hotkey_counts_changes_and_restores_reading_line_across_refresh() {
