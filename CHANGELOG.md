@@ -7,6 +7,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Added `less`-style `<` and `>` shortcuts to jump to the top and bottom in
+  Show, Diff, Status, and Log.
+
 - Added revision comparisons to `glog diff`: `A..`, `..A`, `A..B`, `A B`,
   `A...B`, a single revision against the working tree, and `--cached A` against
   the index. Diff also accepts `-- pathspec...` filters, with summary mode,

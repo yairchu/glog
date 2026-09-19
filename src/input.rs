@@ -59,8 +59,8 @@ pub fn handle(event: Event, app: &mut App) {
                             }
                             KeyCode::Left => view.horizontal = view.horizontal.saturating_sub(4),
                             KeyCode::Right => view.horizontal = view.horizontal.saturating_add(4),
-                            KeyCode::Home | KeyCode::Char('g') => view.cursor = 0,
-                            KeyCode::End | KeyCode::Char('G') => view.bottom(),
+                            KeyCode::Home | KeyCode::Char('g' | '<') => view.cursor = 0,
+                            KeyCode::End | KeyCode::Char('G' | '>') => view.bottom(),
                             KeyCode::Enter | KeyCode::Char('z') => view.toggle(),
                             KeyCode::Char('s') => {
                                 view.toggle_stat();
@@ -109,8 +109,8 @@ pub fn handle(event: Event, app: &mut App) {
             KeyCode::PageDown | KeyCode::Char(' ') => app.move_by(2, 20),
             KeyCode::Left if app.mode == Mode::Show => show_adjacent(app, -1),
             KeyCode::Right if app.mode == Mode::Show => show_adjacent(app, 1),
-            KeyCode::Char('g') | KeyCode::Home => app.top(),
-            KeyCode::Char('G') | KeyCode::End => app.bottom(),
+            KeyCode::Char('g' | '<') | KeyCode::Home => app.top(),
+            KeyCode::Char('G' | '>') | KeyCode::End => app.bottom(),
             KeyCode::Char('/') => app.begin_search(false),
             KeyCode::Char('?') => app.begin_search(true),
             KeyCode::Char('n') => app.repeat_search(false),

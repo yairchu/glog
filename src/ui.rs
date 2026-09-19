@@ -146,7 +146,7 @@ fn draw_help(frame: &mut Frame, has_log: bool) {
         "  Page Down/Space/f page down (f in Show)",
         "  ←/→                previous / next commit (Show)",
         "  [, ]              previous / next changed file (Show)",
-        "  g, G              top / bottom",
+        "  g/<, G/>          top / bottom (also Home/End)",
         "",
         "  a/d/r/x/s         toggle author/date/refs/hash/subject (Log)",
         "  Author badges: +꩜ Codex  +❋ Claude Code  +N other coauthors",

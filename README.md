@@ -164,7 +164,7 @@ and in detached HEAD state.
 
 Sections and regular patches start open, while lockfiles and new files start
 folded, just like Show. `Enter`/`z` toggles sections and individual files. Use Up/Down or j/k,
-Page Up/Down, Home/End, and the mouse to navigate. Left/Right navigates history,
+Page Up/Down, Home/End (or `g`/`G`, `<`/`>`), and the mouse to navigate. Left/Right navigates history,
 just like Show: Right opens the newest commit, and Left from that commit returns
 to Working tree. Shift-Left/Right pans long lines in Status.
 Status refreshes once per second while visible, preserving expanded files and
@@ -255,7 +255,7 @@ to case, and the primary author is excluded. Full credits remain in Show.
 | `z` | — | expand/fold current folded file |
 | `L` | — | expand/fold all lockfiles |
 | `s` | toggle subject | toggle file summary / patch |
-| `g`, `G` | first/last commit | top/bottom |
+| `g` / `<` / `Home`, `G` / `>` / `End` | first/last commit | top/bottom |
 | `/`, `?`, `n`, `N` | search forward/backward; repeat/opposite | search forward/backward; repeat/opposite |
 | `h` | toggle key help | toggle key help |
 | `Ctrl-L` | redraw the screen | redraw the screen |
