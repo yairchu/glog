@@ -757,6 +757,54 @@ mod tests {
         }
     }
 
+    #[test]
+    fn watch_refresh_updates_show_decorations_and_cached_views() {
+        use crate::app::Mode;
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        fs::write("file.txt", "before\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        let mut app = crate::app::App::new(load_watch_log().unwrap());
+        app.watch = true;
+        app.selected = 1;
+        app.switch_mode();
+        let cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.folded)
+            .unwrap();
+        app.show_cursor = cursor;
+        git(&["tag", "live-tag"]);
+        app.replace_commits(load_watch_log().unwrap());
+        assert!(
+            app.show_text.contains("live-tag"),
+            "Show must refresh newly added decorations"
+        );
+        assert_eq!(app.show_cursor, cursor);
+        app.switch_mode();
+        assert_eq!(app.mode, Mode::Log);
+        git(&["tag", "-d", "live-tag"]);
+        app.replace_commits(load_watch_log().unwrap());
+        app.switch_mode();
+        assert!(
+            !app.show_text.contains("live-tag"),
+            "Reopening Show must not reuse stale decorations"
+        );
+    }
+
     struct WatchReadingContext {
         cursor_text: String,
         offset: usize,
