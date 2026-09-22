@@ -136,21 +136,17 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
 /// Watch mode includes one stable working-tree item ahead of committed history.
 pub fn load_watch_log() -> Result<Vec<Commit>, String> {
     let commits = load_log(&[])?;
-    let clean = working_tree_entries()?.is_empty();
-    let mut entries = vec![working_tree_commit(clean)];
+    let summary = crate::status::working_tree_summary()?;
+    let mut entries = vec![working_tree_commit(&summary)];
     entries.extend(commits);
     Ok(entries)
 }
 
-pub fn working_tree_commit(clean: bool) -> Commit {
+pub fn working_tree_commit(summary: &str) -> Commit {
     pseudo_commit(
         CommitKind::WorkingTree,
         "worktree",
-        if clean {
-            "Working tree · clean"
-        } else {
-            "Working tree"
-        },
+        &format!("Working tree · {summary}"),
     )
 }
 
@@ -367,6 +363,7 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
     Ok(commits)
 }
 
+#[cfg(test)]
 fn working_tree_entries() -> Result<Vec<Commit>, String> {
     let unstaged =
         has_diff(&["diff", "--quiet", "--no-ext-diff"])? || !untracked_files(&[])?.is_empty();
@@ -401,6 +398,7 @@ fn pseudo_commit(kind: CommitKind, short_hash: &str, subject: &str) -> Commit {
     }
 }
 
+#[cfg(test)]
 fn has_diff(args: &[&str]) -> Result<bool, String> {
     let status = Command::new("git")
         .args(args)
@@ -948,7 +946,7 @@ mod tests {
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
         let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
-        let mut unborn = App::new(vec![working_tree_commit(true)]);
+        let mut unborn = App::new(vec![working_tree_commit("Clean")]);
         unborn.watch = true;
         unborn.pending_history = Some(Vec::new());
         unborn.open_status();
@@ -962,7 +960,7 @@ mod tests {
         }
         for lazy in [true, false] {
             let mut app = App::new(if lazy {
-                vec![working_tree_commit(true)]
+                vec![working_tree_commit("Clean")]
             } else {
                 load_watch_log().unwrap()
             });
@@ -1838,7 +1836,7 @@ mod tests {
         let shown = show(&commits[0], &[]).unwrap();
         let clean_item = load_watch_log().unwrap().remove(0);
         assert_eq!(clean_item.kind, CommitKind::WorkingTree);
-        assert_eq!(clean_item.subject, "Working tree · clean");
+        assert_eq!(clean_item.subject, "Working tree · Clean");
         let clean_fingerprint = watch_fingerprint().unwrap();
 
         git(&["branch", "watch-test"]);
@@ -1866,7 +1864,10 @@ mod tests {
         let watched = load_watch_log().unwrap();
         assert_eq!(watched.len(), 2);
         assert_eq!(watched[0].kind, CommitKind::WorkingTree);
-        assert_eq!(watched[0].subject, "Working tree");
+        assert_eq!(
+            watched[0].subject,
+            "Working tree · 1 changed file · 1 untracked file"
+        );
         assert_eq!(watched[0].hash, clean_item.hash);
         let mut watched_app = crate::app::App::new(watched.clone());
         watched_app.watch = true;

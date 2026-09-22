@@ -60,7 +60,7 @@ fn main() -> ExitCode {
                 Err("usage: glog status".to_owned())
             } else {
                 crate::status::StatusView::load().map(|view| {
-                    let mut app = App::new(vec![git::working_tree_commit(false)]);
+                    let mut app = App::new(vec![git::working_tree_commit(&view.summary())]);
                     app.status_view = Some(view);
                     app.mode = app::Mode::Status;
                     app.pending_history = Some(Vec::new());

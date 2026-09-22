@@ -32,7 +32,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Added `glog status` and a live Status detail view with branch/upstream
   information, clean-tree state, expandable conflict/staged/unstaged/untracked
   sections, and lazily loaded inline patches. Watch mode has one Working tree
-  item that opens Status, including when clean; commits open Show. Left/Right
+  item that opens Status, including when clean; its Log summary always shows
+  Clean or counts of changed and untracked files. Commits open Show. Left/Right
   navigates between Working tree and commits, with Shift-Left/Right for panning
   long Status lines. File statistics always show green additions and red deletions.
   Status shares Show’s default folding rules and `s` summary-mode setting,

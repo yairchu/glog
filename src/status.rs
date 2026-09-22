@@ -165,6 +165,59 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
     Ok(snapshot)
 }
 
+fn load_snapshot(root: &std::path::Path) -> Result<Snapshot, String> {
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args([
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--untracked-files=all",
+            "-z",
+        ])
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+    parse(&output.stdout)
+}
+
+pub fn working_tree_summary() -> Result<String, String> {
+    Ok(load_snapshot(std::path::Path::new("."))?.summary())
+}
+
+impl Snapshot {
+    fn summary(&self) -> String {
+        let changed = self
+            .entries
+            .iter()
+            .filter(|entry| entry.key.group != Group::Untracked)
+            .map(|entry| &entry.key.path)
+            .collect::<HashSet<_>>()
+            .len();
+        let untracked = self
+            .entries
+            .iter()
+            .filter(|entry| entry.key.group == Group::Untracked)
+            .count();
+        let mut parts = Vec::new();
+        for (count, kind) in [(changed, "changed"), (untracked, "untracked")] {
+            if count > 0 {
+                let suffix = if count == 1 { "" } else { "s" };
+                parts.push(format!("{count} {kind} file{suffix}"));
+            }
+        }
+        if parts.is_empty() {
+            "Clean".to_owned()
+        } else {
+            parts.join(" · ")
+        }
+    }
+}
+
 fn visible(text: &str) -> String {
     text.chars()
         .flat_map(|ch| {
@@ -210,6 +263,10 @@ pub struct StatusView {
     pub error: Option<String>,
 }
 impl StatusView {
+    pub fn summary(&self) -> String {
+        self.snapshot.summary()
+    }
+
     pub fn load() -> Result<Self, String> {
         let output = Command::new("git")
             .args(["rev-parse", "--show-toplevel"])
@@ -387,23 +444,7 @@ impl StatusView {
             || crate::diff::is_lockfile(&entry.key.path)
     }
     pub fn refresh(&mut self) -> Result<(), String> {
-        let output = Command::new("git")
-            .arg("-C")
-            .arg(&self.root)
-            .args([
-                "status",
-                "--porcelain=v2",
-                "--branch",
-                "--untracked-files=all",
-                "-z",
-            ])
-            .env("GIT_OPTIONAL_LOCKS", "0")
-            .output()
-            .map_err(|error| error.to_string())?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
-        }
-        let snapshot = parse(&output.stdout)?;
+        let snapshot = load_snapshot(&self.root)?;
         let mut patches = HashMap::new();
         for entry in &snapshot.entries {
             if self.patches.contains_key(&entry.key)
@@ -1072,7 +1113,7 @@ mod tests {
         };
         let mut view = StatusView { snapshot: parse(b"# branch.head feature\0u UU N... 100644 100644 100644 100644 a b c conflict.txt\0? new.txt\0").unwrap(), ..StatusView::default() };
         view.rebuild();
-        let mut app = App::new(vec![crate::git::working_tree_commit(false)]);
+        let mut app = App::new(vec![crate::git::working_tree_commit(&view.summary())]);
         app.status_view = Some(view);
         app.mode = Mode::Status;
         let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
