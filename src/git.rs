@@ -758,6 +758,124 @@ mod tests {
     }
 
     #[test]
+    fn binary_summaries_and_previews_ignore_configured_diff_prefixes() {
+        let results = {
+            let directory = TestDirectory::new();
+            let _guard = CurrentDirGuard::enter(directory.path());
+            let git = |args: &[&str]| {
+                let output = Command::new("git").args(args).output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            };
+            git(&["init", "-q"]);
+            git(&["config", "user.name", "Test"]);
+            git(&["config", "user.email", "test@example.com"]);
+            git(&["config", "commit.gpgsign", "false"]);
+            fs::create_dir("b").unwrap();
+            let path = "b/picture space.png";
+            fs::write(path, b"before\0image").unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-qm", "base"]);
+            fs::write(path, b"committed\0image").unwrap();
+            git(&["commit", "-qam", "image"]);
+            fs::write(path, b"staged\0image").unwrap();
+            git(&["add", "."]);
+            fs::write(path, b"worktree\0image").unwrap();
+            let mut results = Vec::new();
+            for (name, value) in [("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true")] {
+                git(&["config", name, value]);
+                let apps = [
+                    load_show_app(&["--stat".into()]).unwrap(),
+                    load_diff_app(&["--stat".into()]).unwrap(),
+                    load_diff_app(&["--stat".into(), "--cached".into()]).unwrap(),
+                    load_diff_app(&["--stat".into(), "HEAD~..HEAD".into()]).unwrap(),
+                ];
+                for mut app in apps {
+                    let summary = app.show_rows
+                        [app.show_rows.iter().position(|r| r.summary).unwrap()]
+                    .text
+                    .clone();
+                    app.images.enabled = true;
+                    app.images.root = directory.path().to_owned();
+                    app.show_cursor = app.show_rows.iter().position(|r| r.summary).unwrap();
+                    app.toggle_show_file();
+                    let previews = app.show_rows.iter().filter(|r| r.preview.is_some()).count();
+                    results.push((name, summary, previews));
+                }
+                git(&["config", "--unset", name]);
+            }
+            results
+        };
+        // Assert outside the cwd guard so a failing regression cannot poison it.
+        for (config, summary, previews) in results {
+            assert_eq!(summary, "▶ b/picture space.png | binary", "{config}");
+            assert_eq!(
+                previews, 24,
+                "{config}: both image previews must be available"
+            );
+        }
+    }
+
+    #[test]
+    fn merge_resolution_has_expandable_file_summaries() {
+        let mut app = {
+            let directory = TestDirectory::new();
+            let _guard = CurrentDirGuard::enter(directory.path());
+            let git = |args: &[&str]| {
+                let output = Command::new("git").args(args).output().unwrap();
+                assert!(
+                    output.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            };
+            git(&["init", "-q"]);
+            git(&["config", "user.name", "Test"]);
+            git(&["config", "user.email", "test@example.com"]);
+            git(&["config", "commit.gpgsign", "false"]);
+            fs::write("file.txt", "base\n").unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-qm", "base"]);
+            git(&["checkout", "-qb", "side"]);
+            fs::write("file.txt", "side\n").unwrap();
+            git(&["commit", "-qam", "side"]);
+            git(&["checkout", "-qb", "other", "HEAD~"]);
+            fs::write("file.txt", "other\n").unwrap();
+            git(&["commit", "-qam", "other"]);
+            let merge = Command::new("git")
+                .args(["merge", "side"])
+                .output()
+                .unwrap();
+            assert_eq!(merge.status.code(), Some(1));
+            fs::write("file.txt", "resolved\n").unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-qm", "merge"]);
+            load_show_app(&["--stat".into()]).unwrap()
+        };
+        let summary = app
+            .show_rows
+            .iter()
+            .position(|row| row.summary)
+            .expect("merge file summary");
+        assert_eq!(app.show_rows[summary].text, "▶ file.txt | +1 −2");
+        assert!(!app
+            .show_rows
+            .iter()
+            .any(|row| row.text.contains("++resolved")));
+        app.show_cursor = summary;
+        app.toggle_show_file();
+        assert!(app
+            .show_rows
+            .iter()
+            .any(|row| crate::ansi::plain(&row.text) == "++resolved"));
+        app.toggle_show_file();
+        assert!(app.show_rows[app.show_cursor].folded);
+    }
+
+    #[test]
     fn watch_refresh_updates_show_decorations_and_cached_views() {
         use crate::app::Mode;
         let directory = TestDirectory::new();

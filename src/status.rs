@@ -927,6 +927,80 @@ mod tests {
     }
 
     #[test]
+    fn refresh_invalidates_patches_and_stats_when_attributes_change() {
+        let root =
+            std::env::temp_dir().join(format!("glog-status-attributes-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::create_dir(root.join("nested")).unwrap();
+        std::fs::write(root.join("nested/file.txt"), "before\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        std::fs::write(root.join("nested/file.txt"), "staged\n").unwrap();
+        git(&["add", "."]);
+        std::fs::write(root.join("nested/file.txt"), "worktree\n").unwrap();
+        let mut view = StatusView {
+            root: root.clone(),
+            ..StatusView::default()
+        };
+        view.refresh().unwrap();
+        // Effective attributes may come from the root, a parent directory, or
+        // Git's private attributes file. The changed file itself never changes.
+        for attributes in [
+            ".gitattributes",
+            "nested/.gitattributes",
+            ".git/info/attributes",
+        ] {
+            std::fs::write(root.join(attributes), "*.txt binary\n").unwrap();
+            view.refresh().unwrap();
+            for group in [Group::Staged, Group::Unstaged] {
+                let key = Key {
+                    group,
+                    path: "nested/file.txt".into(),
+                };
+                assert!(
+                    view.patches[&key].contains("Binary files"),
+                    "{attributes}: stale patch"
+                );
+                assert_eq!(view.stats[&key], "binary", "{attributes}: stale statistics");
+            }
+            std::fs::remove_file(root.join(attributes)).unwrap();
+            view.refresh().unwrap();
+            for group in [Group::Staged, Group::Unstaged] {
+                let key = Key {
+                    group,
+                    path: "nested/file.txt".into(),
+                };
+                assert!(!view.patches[&key].contains("Binary files"));
+                assert_eq!(view.stats[&key], "+1 −1");
+            }
+        }
+    }
+
+    #[test]
     fn refresh_reuses_unchanged_files_and_batches_statistics() {
         let root = std::env::temp_dir().join(format!("glog-status-cache-{}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
