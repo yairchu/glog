@@ -40,13 +40,19 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                 .clone()
                 .or_else(|| diff_path(&visible))
                 .unwrap_or_else(|| "changed file".to_owned());
-            let additions = visible
+            // Only the file header is metadata: hunk content can itself start
+            // with `+++` or `---` (for example, an increment or a Markdown rule).
+            let body_start = visible
                 .iter()
-                .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+                .position(|line| line.starts_with("+++ "))
+                .map_or(visible.len(), |index| index + 1);
+            let additions = visible[body_start..]
+                .iter()
+                .filter(|line| line.starts_with('+'))
                 .count();
-            let deletions = visible
+            let deletions = visible[body_start..]
                 .iter()
-                .filter(|line| line.starts_with('-') && !line.starts_with("---"))
+                .filter(|line| line.starts_with('-'))
                 .count();
             FileSection {
                 start: *start,
