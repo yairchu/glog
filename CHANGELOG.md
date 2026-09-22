@@ -38,7 +38,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   navigates between Working tree and commits, with Shift-Left/Right for panning
   long Status lines. File statistics always show green additions and red deletions.
   Live refreshes reuse unchanged patches and file statistics, with tracked
-  statistics fetched in batches. Status shares Show’s default folding rules and
+  statistics fetched in batches. Untracked statistics stream file contents without
+  generating patches or invoking delta. Status shares Show’s default folding rules and
   `s` summary-mode setting, restoring the patch reading line when toggled back. Enter/z can fold any file
   from its statistics line, retaining that choice across live refreshes.
 

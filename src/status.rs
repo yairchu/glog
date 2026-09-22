@@ -8,6 +8,7 @@ use ratatui::{
 use std::{
     collections::{hash_map::DefaultHasher, HashMap, HashSet},
     hash::{Hash, Hasher},
+    io::{self, Read},
     path::PathBuf,
     process::Command,
 };
@@ -223,6 +224,47 @@ impl Snapshot {
     }
 }
 
+// Count without building or formatting a patch. Keep memory bounded even for
+// large generated text files, and use the patch renderer's binary sniff limit.
+fn untracked_stats(path: &std::path::Path) -> io::Result<String> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        let target = std::fs::read_link(path)?;
+        return untracked_stream_stats(target.as_os_str().as_encoded_bytes());
+    }
+    if !metadata.is_file() {
+        return Ok("contents not loaded".into());
+    }
+    untracked_stream_stats(std::fs::File::open(path)?)
+}
+
+fn untracked_stream_stats(mut reader: impl Read) -> io::Result<String> {
+    let mut prefix = Vec::with_capacity(8_000);
+    reader.by_ref().take(8_000).read_to_end(&mut prefix)?;
+    if prefix.contains(&0) {
+        return Ok("binary".into());
+    }
+    let mut lines = prefix.iter().filter(|&&byte| byte == b'\n').count();
+    let mut last = prefix.last().copied();
+    let mut buffer = [0; 64 * 1024];
+    loop {
+        let count = match reader.read(&mut buffer) {
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            result => result?,
+        };
+        if count == 0 {
+            break;
+        }
+        lines += buffer[..count]
+            .iter()
+            .filter(|&&byte| byte == b'\n')
+            .count();
+        last = Some(buffer[count - 1]);
+    }
+    lines += usize::from(last.is_some_and(|byte| byte != b'\n'));
+    Ok(format!("+{lines} −0"))
+}
+
 fn visible(text: &str) -> String {
     text.chars()
         .flat_map(|ch| {
@@ -332,20 +374,8 @@ impl StatusView {
             .iter()
             .filter(|entry| entry.key.group == Group::Untracked)
         {
-            let patch = self.patch(entry)?;
-            let detail = if patch
-                .lines()
-                .any(|line| crate::images::is_binary(&crate::ansi::plain(line)))
-            {
-                "binary".into()
-            } else {
-                let files = crate::diff::file_sections(&patch);
-                format!(
-                    "+{} −{}",
-                    files.iter().map(|file| file.additions).sum::<usize>(),
-                    files.iter().map(|file| file.deletions).sum::<usize>()
-                )
-            };
+            let detail = untracked_stats(&self.root.join(&entry.key.path))
+                .map_err(|error| format!("could not inspect {}: {error}", entry.key.path))?;
             stats.insert(entry.key.clone(), detail);
         }
         for group in [Group::Staged, Group::Unstaged, Group::Conflicts] {
@@ -868,6 +898,35 @@ mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
+    fn untracked_statistics_stream_text_and_stop_at_binary_prefix() {
+        for (contents, expected) in [
+            ("", "+0 −0"),
+            ("++counter;\nnormal\n", "+2 −0"),
+            ("one\ntwo", "+2 −0"),
+            ("\n", "+1 −0"),
+        ] {
+            assert_eq!(
+                untracked_stream_stats(contents.as_bytes()).unwrap(),
+                expected
+            );
+        }
+        let text = "line\n".repeat(40_000) + "tail";
+        assert_eq!(
+            untracked_stream_stats(text.as_bytes()).unwrap(),
+            "+40001 −0"
+        );
+        struct BinaryPrefix;
+        impl Read for BinaryPrefix {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                assert_eq!(buffer.len(), 8_000, "must not read past the binary prefix");
+                buffer.fill(0);
+                Ok(buffer.len())
+            }
+        }
+        assert_eq!(untracked_stream_stats(BinaryPrefix).unwrap(), "binary");
+    }
+
+    #[test]
     fn refresh_reuses_unchanged_files_and_batches_statistics() {
         let root = std::env::temp_dir().join(format!("glog-status-cache-{}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
@@ -909,7 +968,8 @@ mod tests {
             ..StatusView::default()
         };
         view.refresh().unwrap();
-        assert_eq!(view.patch_reads.get(), 4);
+        assert_eq!(view.patch_reads.get(), 3);
+        assert!(view.patches.keys().all(|key| key.group != Group::Untracked));
         assert_eq!(
             view.stat_reads.get(),
             1,
@@ -918,7 +978,7 @@ mod tests {
         view.refresh().unwrap();
         assert_eq!(
             view.patch_reads.get(),
-            4,
+            3,
             "unchanged refresh must reuse patches and untracked stats"
         );
         assert_eq!(
@@ -931,7 +991,7 @@ mod tests {
         view.refresh().unwrap();
         assert_eq!(
             view.patch_reads.get(),
-            5,
+            4,
             "only the edited file needs a new patch"
         );
         assert_eq!(view.stat_reads.get(), 2);
