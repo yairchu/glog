@@ -249,7 +249,7 @@ to case, and the primary author is excluded. Full credits remain in Show.
 | `Page Up` / `b`, `Page Down` / `Space` | move by page | scroll by page |
 | `f` | — | page forward |
 | `a`, `d`, `r`, `x`, `s` | toggle author/date/refs/hash/subject | — |
-| `←`, `→` | — | previous/newer or next/older commit |
+| `←`, `→` | select previous/newer or next/older commit | previous/newer or next/older commit |
 | `[`, `]` | — | previous/next changed file |
 | `Enter` | open selected commit | expand/fold current folded file |
 | `z` | — | expand/fold current folded file |

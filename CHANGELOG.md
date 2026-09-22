@@ -7,6 +7,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Added Left/Right shortcuts in Log to select the previous/newer or next/older
+  commit while staying in Log, matching commit navigation in Show and Status.
+
 - Added `less`-style `<` and `>` shortcuts to jump to the top and bottom in
   Show, Diff, Status, and Log.
 

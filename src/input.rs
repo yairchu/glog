@@ -109,6 +109,8 @@ pub fn handle(event: Event, app: &mut App) {
             KeyCode::PageDown | KeyCode::Char(' ') => app.move_by(2, 20),
             KeyCode::Left if app.mode == Mode::Show => show_adjacent(app, -1),
             KeyCode::Right if app.mode == Mode::Show => show_adjacent(app, 1),
+            KeyCode::Left if !key.modifiers.contains(KeyModifiers::SHIFT) => app.move_by(-1, 1),
+            KeyCode::Right if !key.modifiers.contains(KeyModifiers::SHIFT) => app.move_by(1, 1),
             KeyCode::Char('g' | '<') | KeyCode::Home => app.top(),
             KeyCode::Char('G' | '>') | KeyCode::End => app.bottom(),
             KeyCode::Char('/') => app.begin_search(false),

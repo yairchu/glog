@@ -112,7 +112,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if let Some(status) = &app.status {
         status.clone()
     } else if app.mode == Mode::Log {
-        "↑/k ↓/j  Enter show  a author  d date  r refs  x hash  s subject  / ? search  h help  q quit".to_owned()
+        "↑/k ↓/j  ←/→ commit  Enter show  a author  d date  r refs  x hash  s subject  / ? search  h help  q quit".to_owned()
     } else if !has_log {
         "↑/k ↓/j  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search  h help  q quit"
             .to_owned()
@@ -144,7 +144,7 @@ fn draw_help(frame: &mut Frame, has_log: bool) {
         "  ↑/k, ↓/j          previous / next; move Show cursor",
         "  Page Up/b         page up",
         "  Page Down/Space/f page down (f in Show)",
-        "  ←/→                previous / next commit (Show)",
+        "  ←/→                previous / next commit (Log/Show/Status)",
         "  [, ]              previous / next changed file (Show)",
         "  g/<, G/>          top / bottom (also Home/End)",
         "",
