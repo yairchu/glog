@@ -177,6 +177,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn counts_header_like_content_inside_hunks() {
+        let patch = "diff --git a/file b/file\n--- a/file\n+++ b/file\n@@ -1,3 +1,3 @@\n---counter;\n---- heading\n-old\n+++counter;\n++++ heading\n+new\n";
+        let files = file_sections(patch);
+        assert_eq!(files.len(), 1);
+        assert_eq!((files[0].additions, files[0].deletions), (3, 3));
+    }
+
+    #[test]
     fn binary_paths_keep_spaces_quotes_and_git_octal_utf8() {
         for (header, expected) in [
             (
