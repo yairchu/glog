@@ -21,7 +21,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   adjacent-commit navigation.
 
 - Show branch names and tags beside the commit hash in Show using Git's native
-  ref decorations.
+  ref decorations, refreshing them in watch mode when refs change while
+  preserving the reading position.
 
 - Added inline Before/After image previews in expanded Show, Diff, and Status
   patches using Kitty graphics (automatically enabled in Kitty and Ghostty).

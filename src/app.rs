@@ -276,6 +276,19 @@ impl App {
             .get(self.selected)
             .map(|commit| (commit.kind, commit.hash.clone()));
         let old_start = self.log_selected_start();
+        // Commit contents are immutable, but the decorations in cached Show text
+        // follow mutable refs. Invalidate affected views even while Log is open.
+        let decorations: HashMap<_, _> = commits
+            .iter()
+            .map(|commit| (&commit.hash, &commit.decorations))
+            .collect();
+        for old in &self.commits {
+            if decorations.get(&old.hash).copied() != Some(&old.decorations) {
+                self.cache.remove(&old.hash);
+            }
+        }
+        self.cache_order
+            .retain(|hash| self.cache.contains_key(hash));
         self.commits = commits;
         let preserved = selected.and_then(|key| {
             self.commits
@@ -322,8 +335,8 @@ impl App {
         let Some(commit) = self.commits.get(self.selected) else {
             return;
         };
-        // A selected historical commit is immutable, including expanded folds.
-        if commit.kind == CommitKind::Revision {
+        // Unchanged cached revisions retain their reading context without I/O.
+        if commit.kind == CommitKind::Revision && self.cache.contains_key(&commit.hash) {
             return;
         }
         let text = match git::show(commit, &self.show_paths) {
@@ -333,6 +346,9 @@ impl App {
                 return;
             }
         };
+        if commit.kind == CommitKind::Revision {
+            self.insert_cache(commit.hash.clone(), text.clone());
+        }
         if text == self.show_text {
             return;
         }

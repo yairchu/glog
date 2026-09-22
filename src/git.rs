@@ -781,11 +781,7 @@ mod tests {
         app.watch = true;
         app.selected = 1;
         app.switch_mode();
-        let cursor = app
-            .show_rows
-            .iter()
-            .position(|row| row.folded)
-            .unwrap();
+        let cursor = app.show_rows.iter().position(|row| row.folded).unwrap();
         app.show_cursor = cursor;
         git(&["tag", "live-tag"]);
         app.replace_commits(load_watch_log().unwrap());
