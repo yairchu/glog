@@ -18,9 +18,11 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
         .iter()
         .enumerate()
         .filter_map(|(index, line)| {
-            ansi::plain(line)
-                .starts_with("diff --git ")
-                .then_some(index)
+            let line = ansi::plain(line);
+            (line.starts_with("diff --git ")
+                || line.starts_with("diff --cc ")
+                || line.starts_with("diff --combined "))
+            .then_some(index)
         })
         .collect();
     starts
@@ -46,14 +48,25 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                 .iter()
                 .position(|line| line.starts_with("+++ "))
                 .map_or(visible.len(), |index| index + 1);
-            let additions = visible[body_start..]
-                .iter()
-                .filter(|line| line.starts_with('+'))
-                .count();
-            let deletions = visible[body_start..]
-                .iter()
-                .filter(|line| line.starts_with('-'))
-                .count();
+            let mut additions = 0;
+            let mut deletions = 0;
+            let mut parents = 1;
+            for line in &visible[body_start..] {
+                if line.starts_with("@@") {
+                    // A combined hunk has one prefix column per parent and
+                    // one more @ in its header than it has parents.
+                    parents = line.bytes().take_while(|&byte| byte == b'@').count() - 1;
+                    continue;
+                }
+                let prefix = &line.as_bytes()[..parents.min(line.len())];
+                if prefix.len() == parents && prefix.iter().all(|b| matches!(b, b' ' | b'+' | b'-'))
+                {
+                    // Count each displayed line once, including changes that
+                    // are present only in the second (or later) parent column.
+                    additions += usize::from(prefix.contains(&b'+'));
+                    deletions += usize::from(prefix.contains(&b'-'));
+                }
+            }
             FileSection {
                 start: *start,
                 end,
@@ -83,6 +96,14 @@ fn hex_decode(hex: &str) -> Option<String> {
 }
 
 fn diff_path(lines: &[String]) -> Option<String> {
+    // Combined headers contain a single repository-relative path, without
+    // a/ or b/ prefixes (even when the real path begins with one of them).
+    if let Some(path) = lines.first().and_then(|line| {
+        line.strip_prefix("diff --cc ")
+            .or_else(|| line.strip_prefix("diff --combined "))
+    }) {
+        return unquote_path(path).map(|(path, _)| path);
+    }
     if let Some(path) = lines
         .iter()
         .find_map(|line| line.strip_prefix("rename to "))
@@ -181,6 +202,21 @@ pub(crate) fn is_lockfile(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn combined_sections_count_each_changed_line_once_across_parents() {
+        for header in ["diff --cc", "diff --combined"] {
+            let patch = format!(
+                "{header} b/file name.txt\nindex 1111,2222,3333..4444\n--- a/b/file name.txt\n+++ b/b/file name.txt\n@@@@ -1,2 -1,2 -1,2 +1,2 @@@@\n---old in all parents\n  -old in third parent\n+++new in all parents\n  +new in third parent\n   context\n"
+            );
+            let files = file_sections(&patch);
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].path, "b/file name.txt");
+            assert_eq!((files[0].additions, files[0].deletions), (2, 2));
+        }
+        let files = file_sections(r#"diff --cc "b/quoted\tname.txt""#);
+        assert_eq!(files[0].path, "b/quoted\tname.txt");
+    }
 
     #[test]
     fn counts_header_like_content_inside_hunks() {

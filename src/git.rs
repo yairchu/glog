@@ -10,6 +10,10 @@ const RECORD: char = '\x1e';
 const FIELD: char = '\x1f';
 const COAUTHOR: char = '\x1d';
 
+// Patch paths are parsed relative to the repository, independent of user
+// preferences such as diff.noprefix and diff.mnemonicPrefix.
+pub(crate) const DIFF_PREFIX_ARGS: [&str; 2] = ["--src-prefix=a/", "--dst-prefix=b/"];
+
 #[cfg(windows)]
 const NULL_DEVICE: &str = "NUL";
 #[cfg(not(windows))]
@@ -437,9 +441,10 @@ fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
             "--color=always",
             "--no-ext-diff",
             "--full-index",
-            hash,
-            "--",
         ])
+        .args(DIFF_PREFIX_ARGS)
+        .arg(hash)
+        .arg("--")
         .args(paths)
         .env("GIT_PAGER", "cat")
         .output()
@@ -454,6 +459,7 @@ fn show_diff(args: &[&str], paths: &[String]) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)
         .arg("--full-index")
+        .args(DIFF_PREFIX_ARGS)
         .arg("--")
         .args(paths)
         .env("GIT_PAGER", "cat")
@@ -467,13 +473,9 @@ fn show_diff(args: &[&str], paths: &[String]) -> Result<String, String> {
 
 fn show_unstaged(paths: &[String]) -> Result<String, String> {
     let output = Command::new("git")
-        .args([
-            "diff",
-            "--color=always",
-            "--no-ext-diff",
-            "--full-index",
-            "--",
-        ])
+        .args(["diff", "--color=always", "--no-ext-diff", "--full-index"])
+        .args(DIFF_PREFIX_ARGS)
+        .arg("--")
         .args(paths)
         .output()
         .map_err(|error| format!("could not run git diff: {error}"))?;
@@ -505,10 +507,9 @@ pub fn show_untracked(path: &str) -> Result<String, String> {
                 "--no-index",
                 "--color=always",
                 "--no-ext-diff",
-                "--",
-                NULL_DEVICE,
-                path,
             ])
+            .args(DIFF_PREFIX_ARGS)
+            .args(["--", NULL_DEVICE, path])
             .output()
             .map_err(|error| format!("could not diff untracked file {path}: {error}"))?;
         if !matches!(untracked.status.code(), Some(0 | 1)) {
@@ -670,7 +671,7 @@ fn run_delta(input: &[u8]) -> Option<String> {
     )
 }
 
-fn pipe_through(command: &mut Command, input: &[u8]) -> Option<String> {
+pub(crate) fn pipe_through(command: &mut Command, input: &[u8]) -> Option<String> {
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

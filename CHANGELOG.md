@@ -27,7 +27,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Added inline Before/After image previews in expanded Show, Diff, and Status
   patches using Kitty graphics (automatically enabled in Kitty and Ghostty).
   Previews load lazily, scroll and fold with the diff, and display the correct
-  historical, staged, or working-tree contents. `GLOG_IMAGES=off` disables them;
+  historical, staged, or working-tree contents, regardless of Git diff prefix
+  settings. `GLOG_IMAGES=off` disables them;
   `GLOG_IMAGES=kitty` explicitly enables them, including through configured tmux.
 
 - Added `glog status` and a live Status detail view with branch/upstream
@@ -37,15 +38,17 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   Clean or counts of changed and untracked files. Commits open Show. Left/Right
   navigates between Working tree and commits, with Shift-Left/Right for panning
   long Status lines. File statistics always show green additions and red deletions.
-  Live refreshes reuse unchanged patches and file statistics, with tracked
-  statistics fetched in batches. Untracked statistics stream file contents without
+  Live refreshes reuse unchanged patches and file statistics, invalidating them
+  when effective Git attributes change. Tracked statistics are fetched in batches.
+  Untracked statistics stream file contents without
   generating patches or invoking delta. Status shares Show’s default folding rules and
   `s` summary-mode setting, restoring the patch reading line when toggled back. Enter/z can fold any file
   from its statistics line, retaining that choice across live refreshes.
 
 - Added expandable file summaries with `glog show --stat`, `glog diff --stat`,
-  and the Show `s` toggle. Enter/z expands individual patches beneath their
-  summaries, search reveals matching loaded patches, and switching back to the
+  and the Show `s` toggle, including combined merge diffs. Enter/z expands
+  individual patches beneath their summaries, search reveals matching loaded
+  patches, and switching back to the
   patch restores the reading line.
 
 ### Changed

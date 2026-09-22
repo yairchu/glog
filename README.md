@@ -137,6 +137,8 @@ and compact per-file summaries showing additions and deletions. Each file starts
 collapsed; `Enter`/`z` expands its patch beneath the summary and collapses it again.
 Binary files are labeled, and lazy untracked files show “contents not loaded”
 until expanded. Search reveals matches inside collapsed patches already loaded.
+Merge commits with combined diffs also have expandable summaries; their counts
+count each displayed changed line once across all parents.
 
 In Show, press `s` to switch between the file summary and patch views. Collapsing
 selects the current file; switching back restores the line you were reading.

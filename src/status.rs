@@ -355,7 +355,8 @@ impl StatusView {
             .arg("--literal-pathspecs")
             .arg("-C")
             .arg(&self.root)
-            .args(["diff", "--no-ext-diff", "--no-textconv"]);
+            .args(["diff", "--no-ext-diff", "--no-textconv"])
+            .args(crate::git::DIFF_PREFIX_ARGS);
         if entry.key.group == Group::Staged {
             command.arg("--cached");
         }
@@ -504,15 +505,60 @@ impl StatusView {
             || entry.label == "added"
             || crate::diff::is_lockfile(&entry.key.path)
     }
+    // Ask Git for effective attributes in one batch, covering worktree/index
+    // fallback, nested .gitattributes, info/attributes and global attributes.
+    fn attributes(&self, snapshot: &Snapshot) -> Result<HashMap<String, u64>, String> {
+        let mut paths: Vec<_> = snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.key.group != Group::Untracked)
+            .flat_map(|entry| std::iter::once(&entry.key.path).chain(entry.original.iter()))
+            .collect();
+        paths.sort_unstable();
+        paths.dedup();
+        if paths.is_empty() {
+            return Ok(HashMap::new());
+        }
+        let mut input = Vec::new();
+        for path in paths {
+            input.extend_from_slice(path.as_bytes());
+            input.push(0);
+        }
+        let output = crate::git::pipe_through(
+            Command::new("git").arg("-C").arg(&self.root).args([
+                "check-attr",
+                "--all",
+                "-z",
+                "--stdin",
+            ]),
+            &input,
+        )
+        .ok_or("could not read Git attributes")?;
+        let mut hashes = HashMap::<String, DefaultHasher>::new();
+        let mut fields = output.split_terminator('\0');
+        while let Some(path) = fields.next() {
+            let name = fields.next().ok_or("Missing Git attribute name")?;
+            let value = fields.next().ok_or("Missing Git attribute value")?;
+            let hash = hashes.entry(path.to_owned()).or_default();
+            name.hash(hash);
+            value.hash(hash);
+        }
+        Ok(hashes
+            .into_iter()
+            .map(|(path, hash)| (path, hash.finish()))
+            .collect())
+    }
+
     // Porcelain includes the HEAD/index object IDs; metadata catches worktree
     // edits even when the XY status stays unchanged. Directories (submodules
     // and nested repositories) need fresh diffs because child edits need not
     // change the directory's metadata.
-    fn fingerprint(&self, entry: &Entry) -> Option<u64> {
+    fn fingerprint(&self, entry: &Entry, attributes: &HashMap<String, u64>) -> Option<u64> {
         let mut hash = DefaultHasher::new();
         entry.record.hash(&mut hash);
         entry.original.hash(&mut hash);
         for path in std::iter::once(&entry.key.path).chain(entry.original.iter()) {
+            attributes.get(path).hash(&mut hash);
             match std::fs::symlink_metadata(self.root.join(path)) {
                 Ok(metadata) => {
                     if metadata.is_dir() {
@@ -546,12 +592,13 @@ impl StatusView {
 
     pub fn refresh(&mut self) -> Result<(), String> {
         let snapshot = load_snapshot(&self.root)?;
+        let attributes = self.attributes(&snapshot)?;
         let mut fingerprints = HashMap::new();
         let mut patches = HashMap::new();
         let mut stats = HashMap::new();
         let mut changed = Snapshot::default();
         for entry in &snapshot.entries {
-            let fingerprint = self.fingerprint(entry);
+            let fingerprint = self.fingerprint(entry, &attributes);
             let unchanged =
                 fingerprint.is_some() && self.fingerprints.get(&entry.key).copied() == fingerprint;
             if let Some(fingerprint) = fingerprint {
