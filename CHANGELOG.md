@@ -37,8 +37,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   Clean or counts of changed and untracked files. Commits open Show. Left/Right
   navigates between Working tree and commits, with Shift-Left/Right for panning
   long Status lines. File statistics always show green additions and red deletions.
-  Status shares Show’s default folding rules and `s` summary-mode setting,
-  restoring the patch reading line when toggled back. Enter/z can fold any file
+  Live refreshes reuse unchanged patches and file statistics, with tracked
+  statistics fetched in batches. Status shares Show’s default folding rules and
+  `s` summary-mode setting, restoring the patch reading line when toggled back. Enter/z can fold any file
   from its statistics line, retaining that choice across live refreshes.
 
 - Added expandable file summaries with `glog show --stat`, `glog diff --stat`,

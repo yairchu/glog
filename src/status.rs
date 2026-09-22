@@ -6,7 +6,8 @@ use ratatui::{
     Frame,
 };
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{hash_map::DefaultHasher, HashMap, HashSet},
+    hash::{Hash, Hasher},
     path::PathBuf,
     process::Command,
 };
@@ -35,6 +36,7 @@ struct Key {
 }
 #[derive(Clone, Debug)]
 struct Entry {
+    record: String,
     key: Key,
     label: String,
     original: Option<String>,
@@ -84,6 +86,7 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
         }
         if let Some(path) = record.strip_prefix("? ") {
             snapshot.entries.push(Entry {
+                record: record.to_owned(),
                 key: Key {
                     group: Group::Untracked,
                     path: path.to_owned(),
@@ -120,6 +123,7 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
         };
         if record.starts_with("u ") {
             snapshot.entries.push(Entry {
+                record: record.to_owned(),
                 key: Key {
                     group: Group::Conflicts,
                     path,
@@ -152,6 +156,7 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
                     _ => "changed",
                 };
                 snapshot.entries.push(Entry {
+                    record: record.to_owned(),
                     key: Key {
                         group,
                         path: path.clone(),
@@ -249,6 +254,11 @@ pub struct StatusView {
     snapshot: Snapshot,
     collapsed: HashSet<Group>,
     patches: HashMap<Key, String>,
+    fingerprints: HashMap<Key, u64>,
+    #[cfg(test)]
+    patch_reads: std::cell::Cell<usize>,
+    #[cfg(test)]
+    stat_reads: std::cell::Cell<usize>,
     rows: Vec<Row>,
     pub show_stat: bool,
     stats: HashMap<Key, String>,
@@ -283,6 +293,8 @@ impl StatusView {
         Ok(view)
     }
     fn patch(&self, entry: &Entry) -> Result<String, String> {
+        #[cfg(test)]
+        self.patch_reads.set(self.patch_reads.get() + 1);
         if entry.key.group == Group::Untracked {
             return crate::git::show_untracked(&self.root.join(&entry.key.path).to_string_lossy());
         }
@@ -315,66 +327,85 @@ impl StatusView {
     }
     fn load_stats(&self, snapshot: &Snapshot) -> Result<HashMap<Key, String>, String> {
         let mut stats = HashMap::new();
-        for entry in &snapshot.entries {
-            if entry.key.group == Group::Untracked {
-                let patch = self.patch(entry)?;
-                let detail = if patch
-                    .lines()
-                    .any(|line| crate::ansi::plain(line).starts_with("Binary files "))
-                {
-                    "binary".into()
-                } else {
-                    let files = crate::diff::file_sections(&patch);
-                    format!(
-                        "+{} −{}",
-                        files.iter().map(|file| file.additions).sum::<usize>(),
-                        files.iter().map(|file| file.deletions).sum::<usize>()
-                    )
-                };
-                stats.insert(entry.key.clone(), detail);
+        for entry in snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.key.group == Group::Untracked)
+        {
+            let patch = self.patch(entry)?;
+            let detail = if patch
+                .lines()
+                .any(|line| crate::images::is_binary(&crate::ansi::plain(line)))
+            {
+                "binary".into()
+            } else {
+                let files = crate::diff::file_sections(&patch);
+                format!(
+                    "+{} −{}",
+                    files.iter().map(|file| file.additions).sum::<usize>(),
+                    files.iter().map(|file| file.deletions).sum::<usize>()
+                )
+            };
+            stats.insert(entry.key.clone(), detail);
+        }
+        for group in [Group::Staged, Group::Unstaged, Group::Conflicts] {
+            let entries: Vec<_> = snapshot
+                .entries
+                .iter()
+                .filter(|entry| entry.key.group == group)
+                .collect();
+            let Some(first) = entries.first() else {
                 continue;
-            }
-            let mut command = self.diff_command(entry);
-            command.args(["--numstat", "-z"]);
-            self.diff_paths(&mut command, entry);
+            };
+            #[cfg(test)]
+            self.stat_reads.set(self.stat_reads.get() + 1);
+            let mut command = self.diff_command(first);
+            // One repository-wide numstat per group avoids spawning Git for
+            // every file. Read rename destinations from the NUL-delimited data.
+            command.args(["--numstat", "-z", "--"]);
             let output = command.output().map_err(|error| error.to_string())?;
             if !output.status.success() {
                 return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
             }
-            let mut added = 0usize;
-            let mut deleted = 0usize;
-            let mut binary = false;
+            let mut totals = HashMap::<String, (usize, usize, bool)>::new();
             let mut records = output.stdout.split(|&byte| byte == 0);
             while let Some(record) = records.next() {
                 let mut fields = record.splitn(3, |&byte| byte == b'\t');
-                let (Some(a), Some(d), Some(path)) = (fields.next(), fields.next(), fields.next())
+                let (Some(a), Some(d), Some(mut path)) =
+                    (fields.next(), fields.next(), fields.next())
                 else {
                     continue;
                 };
-                if a == b"-" || d == b"-" {
-                    binary = true;
-                } else {
-                    added += String::from_utf8_lossy(a)
-                        .parse::<usize>()
-                        .map_err(|error| error.to_string())?;
-                    deleted += String::from_utf8_lossy(d)
-                        .parse::<usize>()
-                        .map_err(|error| error.to_string())?;
-                }
-                // With -z, a rename has an empty path followed by two path records.
                 if path.is_empty() {
                     records.next();
-                    records.next();
+                    path = records.next().ok_or("Missing numstat rename destination")?;
+                }
+                let total = totals
+                    .entry(String::from_utf8_lossy(path).into_owned())
+                    .or_default();
+                if a == b"-" || d == b"-" {
+                    total.2 = true;
+                } else {
+                    total.0 += String::from_utf8_lossy(a)
+                        .parse::<usize>()
+                        .map_err(|error| error.to_string())?;
+                    total.1 += String::from_utf8_lossy(d)
+                        .parse::<usize>()
+                        .map_err(|error| error.to_string())?;
                 }
             }
-            stats.insert(
-                entry.key.clone(),
-                if binary {
-                    "binary".into()
-                } else {
-                    format!("+{added} −{deleted}")
-                },
-            );
+            for entry in entries {
+                let (added, deleted, binary) =
+                    totals.get(&entry.key.path).copied().unwrap_or_default();
+                stats.insert(
+                    entry.key.clone(),
+                    if binary {
+                        "binary".into()
+                    } else {
+                        format!("+{added} −{deleted}")
+                    },
+                );
+            }
         }
         Ok(stats)
     }
@@ -443,17 +474,79 @@ impl StatusView {
             || entry.label == "added"
             || crate::diff::is_lockfile(&entry.key.path)
     }
+    // Porcelain includes the HEAD/index object IDs; metadata catches worktree
+    // edits even when the XY status stays unchanged. Directories (submodules
+    // and nested repositories) need fresh diffs because child edits need not
+    // change the directory's metadata.
+    fn fingerprint(&self, entry: &Entry) -> Option<u64> {
+        let mut hash = DefaultHasher::new();
+        entry.record.hash(&mut hash);
+        entry.original.hash(&mut hash);
+        for path in std::iter::once(&entry.key.path).chain(entry.original.iter()) {
+            match std::fs::symlink_metadata(self.root.join(path)) {
+                Ok(metadata) => {
+                    if metadata.is_dir() {
+                        return None;
+                    }
+                    metadata.len().hash(&mut hash);
+                    metadata.modified().ok()?.hash(&mut hash);
+                    metadata.permissions().readonly().hash(&mut hash);
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::MetadataExt;
+                        metadata.ctime().hash(&mut hash);
+                        metadata.ctime_nsec().hash(&mut hash);
+                        metadata.ino().hash(&mut hash);
+                        metadata.mode().hash(&mut hash);
+                    }
+                    if metadata.file_type().is_symlink() {
+                        std::fs::read_link(self.root.join(path))
+                            .ok()?
+                            .hash(&mut hash);
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    "missing".hash(&mut hash);
+                }
+                Err(_) => return None,
+            }
+        }
+        Some(hash.finish())
+    }
+
     pub fn refresh(&mut self) -> Result<(), String> {
         let snapshot = load_snapshot(&self.root)?;
+        let mut fingerprints = HashMap::new();
         let mut patches = HashMap::new();
+        let mut stats = HashMap::new();
+        let mut changed = Snapshot::default();
         for entry in &snapshot.entries {
+            let fingerprint = self.fingerprint(entry);
+            let unchanged =
+                fingerprint.is_some() && self.fingerprints.get(&entry.key).copied() == fingerprint;
+            if let Some(fingerprint) = fingerprint {
+                fingerprints.insert(entry.key.clone(), fingerprint);
+            }
             if self.patches.contains_key(&entry.key)
                 || (!self.show_stat && !Self::fold_by_default(entry))
             {
-                patches.insert(entry.key.clone(), self.patch(entry)?);
+                let patch = if let Some(cached) = self.patches.get(&entry.key).filter(|_| unchanged)
+                {
+                    cached.clone()
+                } else {
+                    self.patch(entry)?
+                };
+                patches.insert(entry.key.clone(), patch);
+            }
+            if let Some(cached) = self.stats.get(&entry.key).filter(|_| unchanged) {
+                stats.insert(entry.key.clone(), cached.clone());
+            } else {
+                changed.entries.push(entry.clone());
             }
         }
-        self.stats = self.load_stats(&snapshot)?;
+        stats.extend(self.load_stats(&changed)?);
+        self.stats = stats;
+        self.fingerprints = fingerprints;
         self.expanded_folds.retain(|key| patches.contains_key(key));
         self.collapsed_files.retain(|key| patches.contains_key(key));
         self.snapshot = snapshot;
@@ -775,6 +868,102 @@ mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
+    fn refresh_reuses_unchanged_files_and_batches_statistics() {
+        let root = std::env::temp_dir().join(format!("glog-status-cache-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        for name in ["a", "b", "c"] {
+            std::fs::write(root.join(name), "before\n").unwrap();
+        }
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        for name in ["a", "b", "c"] {
+            std::fs::write(root.join(name), "after1\n").unwrap();
+        }
+        std::fs::write(root.join("new"), "untracked\n").unwrap();
+        let mut view = StatusView {
+            root: root.clone(),
+            ..StatusView::default()
+        };
+        view.refresh().unwrap();
+        assert_eq!(view.patch_reads.get(), 4);
+        assert_eq!(
+            view.stat_reads.get(),
+            1,
+            "numstat must be batched across files"
+        );
+        view.refresh().unwrap();
+        assert_eq!(
+            view.patch_reads.get(),
+            4,
+            "unchanged refresh must reuse patches and untracked stats"
+        );
+        assert_eq!(
+            view.stat_reads.get(),
+            1,
+            "unchanged refresh must reuse numstat"
+        );
+        // Same-length edits leave porcelain's XY and object IDs unchanged.
+        std::fs::write(root.join("a"), "after2\n").unwrap();
+        view.refresh().unwrap();
+        assert_eq!(
+            view.patch_reads.get(),
+            5,
+            "only the edited file needs a new patch"
+        );
+        assert_eq!(view.stat_reads.get(), 2);
+        let key = Key {
+            group: Group::Unstaged,
+            path: "a".into(),
+        };
+        assert!(view.patches[&key].contains("after2"));
+        git(&["add", "a"]);
+        view.refresh().unwrap();
+        let staged = Key {
+            group: Group::Staged,
+            path: "a".into(),
+        };
+        assert!(view.patches[&staged].contains("after2"));
+        assert!(!view.patches.contains_key(&key));
+        std::fs::write(root.join("a"), "after3\n").unwrap();
+        git(&["add", "a"]);
+        view.refresh().unwrap();
+        assert!(view.patches[&staged].contains("after3"));
+        std::fs::write(root.join("new"), "one\ntwo\n").unwrap();
+        view.refresh().unwrap();
+        assert_eq!(
+            view.stats[&Key {
+                group: Group::Untracked,
+                path: "new".into()
+            }],
+            "+2 −0"
+        );
+    }
+
+    #[test]
     fn image_rows_follow_status_folds_and_preserve_the_scrolled_row() {
         let key = Key {
             group: Group::Staged,
@@ -782,6 +971,7 @@ mod tests {
         };
         let mut view = StatusView::default();
         view.snapshot.entries.push(Entry {
+            record: String::new(),
             key: key.clone(),
             label: "M".into(),
             original: None,
