@@ -845,7 +845,12 @@ impl App {
             })
             .collect();
         for (source, line) in self.show_text.lines().enumerate() {
-            result.push((Vec::new(), source, line));
+            // The placeholder for unloaded untracked contents is internal.
+            if !(line.contains("glog-lazy-untracked:")
+                && crate::ansi::plain(line).starts_with("glog-lazy-untracked:"))
+            {
+                result.push((Vec::new(), source, line));
+            }
             if let Some((path, child)) = children.get(&(source + 1)) {
                 for (mut route, source, line) in child.searchable_show_lines() {
                     route.insert(0, (*path).clone());
@@ -886,16 +891,20 @@ impl App {
             .show_files
             .iter()
             .find(|f| (f.start..f.end).contains(&source));
-        // Searching gitlink metadata selects its summary without loading history.
-        let submodule_start = file.filter(|f| f.submodule.is_some()).map(|f| f.start);
-        if let Some(file) = file.filter(|f| f.submodule.is_none()) {
+        // Searching gitlink metadata selects its summary without loading
+        // history, and unloaded untracked headers select their folded row.
+        let unloaded = |f: &&crate::diff::FileSection| {
+            f.submodule.is_some() || f.lazy_untracked_path.is_some()
+        };
+        let folded_start = file.filter(unloaded).map(|f| f.start);
+        if let Some(file) = file.filter(|f| !unloaded(f)) {
             self.expanded_folds.insert(file.path_bytes.clone());
             self.rebuild_show_rows();
         }
         self.show_rows.iter().enumerate().position(|(index, row)| {
             !self.submodule_rows.contains_key(&index)
-                && if let Some(start) = submodule_start {
-                    row.source == start && row.summary
+                && if let Some(start) = folded_start {
+                    row.source == start && (row.summary || row.folded)
                 } else {
                     row.source == source && !row.summary
                 }
