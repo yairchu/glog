@@ -51,6 +51,10 @@ struct Snapshot {
     entries: Vec<Entry>,
 }
 
+// Status and diff have independent rename settings. Use the same detection
+// threshold so each status entry corresponds to its patch and numstat record.
+const RENAME_DETECTION: &str = "--find-renames=50%";
+
 fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
     let text = std::str::from_utf8(bytes)
         .map_err(|_| "Status contains a non-UTF-8 filename".to_owned())?;
@@ -180,6 +184,7 @@ fn load_snapshot(root: &std::path::Path) -> Result<Snapshot, String> {
             "--porcelain=v2",
             "--branch",
             "--untracked-files=all",
+            RENAME_DETECTION,
             "-z",
         ])
         .env("GIT_OPTIONAL_LOCKS", "0")
@@ -355,7 +360,7 @@ impl StatusView {
             .arg("--literal-pathspecs")
             .arg("-C")
             .arg(&self.root)
-            .args(["diff", "--no-ext-diff", "--no-textconv"])
+            .args(["diff", "--no-ext-diff", "--no-textconv", RENAME_DETECTION])
             .args(crate::git::DIFF_PREFIX_ARGS);
         if entry.key.group == Group::Staged {
             command.arg("--cached");
@@ -1424,6 +1429,86 @@ mod tests {
             ]
         );
         assert_eq!(parsed.entries[0].key.path, parsed.entries[1].key.path);
+    }
+
+    #[test]
+    fn rename_statistics_and_patches_agree_despite_git_configuration() {
+        let root = std::env::temp_dir().join(format!("glog-status-renames-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{:?}", output);
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("old pure.txt"), "unchanged\n".repeat(10)).unwrap();
+        let original = (0..10).map(|i| format!("line {i}\n")).collect::<String>();
+        std::fs::write(root.join("old edited.txt"), &original).unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        git(&["mv", "old pure.txt", "new pure.txt"]);
+        git(&["mv", "old edited.txt", "new edited.txt"]);
+        std::fs::write(
+            root.join("new edited.txt"),
+            original.replace("line 0", "replacement"),
+        )
+        .unwrap();
+        git(&["add", "."]);
+
+        for (status_renames, diff_renames) in [
+            ("true", "false"),
+            ("false", "true"),
+            ("false", "false"),
+            ("true", "true"),
+            ("copies", "copies"),
+        ] {
+            git(&["config", "status.renames", status_renames]);
+            git(&["config", "diff.renames", diff_renames]);
+            let mut view = StatusView {
+                root: root.clone(),
+                ..StatusView::default()
+            };
+            view.refresh().unwrap();
+            assert_eq!(
+                view.snapshot.entries.len(),
+                2,
+                "status={status_renames}, diff={diff_renames}"
+            );
+            for (path, expected) in [("new pure.txt", 0), ("new edited.txt", 1)] {
+                let entry = view
+                    .snapshot
+                    .entries
+                    .iter()
+                    .find(|entry| entry.key.path == path)
+                    .unwrap();
+                assert_eq!(entry.label, "renamed");
+                assert_eq!(
+                    view.stats[&entry.key],
+                    format!("+{expected} −{expected}"),
+                    "status={status_renames}, diff={diff_renames}, {path}"
+                );
+                let files = crate::diff::file_sections(&view.patches[&entry.key]);
+                assert_eq!(files.len(), 1);
+                assert_eq!(
+                    (files[0].additions, files[0].deletions),
+                    (expected, expected)
+                );
+            }
+        }
     }
 
     #[test]

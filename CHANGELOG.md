@@ -46,6 +46,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   long Status lines. File statistics always show green additions and red deletions.
   Live refreshes reuse unchanged patches and file statistics, invalidating them
   when effective Git attributes change. Tracked statistics are fetched in batches.
+  Status uses consistent rename detection for file entries, patches, and statistics
+  even when Git's status and diff rename settings disagree.
   Untracked statistics stream file contents without
   generating patches or invoking delta. Status shares Show’s default folding rules and
   `s` summary-mode setting, restoring the patch reading line when toggled back. Enter/z can fold any file
