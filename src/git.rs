@@ -950,6 +950,86 @@ mod tests {
     }
 
     #[test]
+    fn committed_submodule_images_use_recorded_blobs() {
+        let results = {
+            let directory = TestDirectory::new();
+            let _guard = CurrentDirGuard::enter(directory.path());
+            let git = |args: &[&str]| {
+                let output = Command::new("git")
+                    .args([
+                        "-c",
+                        "user.name=Test",
+                        "-c",
+                        "user.email=test@example.com",
+                        "-c",
+                        "commit.gpgsign=false",
+                    ])
+                    .args(args)
+                    .output()
+                    .unwrap();
+                assert!(output.status.success(), "{:?}", output);
+                String::from_utf8(output.stdout).unwrap().trim().to_owned()
+            };
+            git(&["init", "-q"]);
+            git(&["init", "-q", "module"]);
+            let picture = |value| {
+                image::RgbaImage::from_pixel(2, 2, image::Rgba([value, 10, 20, 255]))
+                    .save("module/picture.png")
+                    .unwrap();
+            };
+            picture(1);
+            git(&["-C", "module", "add", "."]);
+            git(&["-C", "module", "commit", "-qm", "before"]);
+            let before = git(&["-C", "module", "rev-parse", "HEAD:picture.png"]);
+            git(&["add", "module"]);
+            git(&["commit", "-qm", "base"]);
+            picture(2);
+            git(&["-C", "module", "commit", "-qam", "after"]);
+            let after = git(&["-C", "module", "rev-parse", "HEAD:picture.png"]);
+            git(&["add", "module"]);
+            git(&["commit", "-qm", "update"]);
+            // Previews must use recorded objects, even with another checkout.
+            git(&["-C", "module", "checkout", "-q", "HEAD~"]);
+            picture(3);
+            let expected = vec![
+                crate::images::Source::Blob(directory.path().join("module"), before),
+                crate::images::Source::Blob(directory.path().join("module"), after),
+            ];
+            let mut results = Vec::new();
+            for mut app in [
+                load_show_app(&["HEAD".into(), "--stat".into()]).unwrap(),
+                load_diff_app(&["HEAD~..HEAD".into(), "--stat".into()]).unwrap(),
+            ] {
+                app.images.enabled = true;
+                app.images.root = directory.path().to_owned();
+                app.show_cursor = app.show_rows.iter().position(|r| r.summary).unwrap();
+                app.toggle_show_file();
+                app.show_cursor = app
+                    .show_rows
+                    .iter()
+                    .position(|r| r.summary && r.text.contains("picture.png"))
+                    .unwrap();
+                app.toggle_show_file();
+                let previews: Vec<_> = app
+                    .show_rows
+                    .iter()
+                    .filter_map(|row| row.preview.as_ref())
+                    .filter(|preview| preview.row == 0)
+                    .map(|preview| preview.source.clone())
+                    .collect();
+                results.push((previews, expected.clone()));
+            }
+            results
+        };
+        for (previews, expected) in results {
+            assert_eq!(
+                previews, expected,
+                "nested Before/After previews must use submodule blobs"
+            );
+        }
+    }
+
+    #[test]
     fn relative_diffs_preview_the_working_image_from_a_subdirectory() {
         let results = {
             let directory = TestDirectory::new();
