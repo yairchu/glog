@@ -196,7 +196,7 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
 }
 
 fn load_snapshot(root: &std::path::Path) -> Result<Snapshot, String> {
-    let output = Command::new("git")
+    let output = crate::git::repository_env(&mut Command::new("git"), root)
         .arg("-C")
         .arg(root)
         .args([
@@ -421,7 +421,7 @@ impl StatusView {
     }
     fn diff_command(&self, entry: &Entry) -> Command {
         let mut command = crate::git::patch_command();
-        command
+        crate::git::repository_env(&mut command, &self.root)
             .arg("--literal-pathspecs")
             .arg("-C")
             .arg(&self.root)
@@ -618,12 +618,10 @@ impl StatusView {
             input.push(0);
         }
         let output = crate::git::pipe_through_bytes(
-            Command::new("git").arg("-C").arg(&self.root).args([
-                "check-attr",
-                "--all",
-                "-z",
-                "--stdin",
-            ]),
+            crate::git::repository_env(&mut Command::new("git"), &self.root)
+                .arg("-C")
+                .arg(&self.root)
+                .args(["check-attr", "--all", "-z", "--stdin"]),
             &input,
         )
         .ok_or("could not read Git attributes")?;

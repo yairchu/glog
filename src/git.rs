@@ -560,7 +560,7 @@ pub fn show_submodule(
     if !directory.join(".git").exists() {
         return Err(format!("Submodule {path} is not initialized locally"));
     }
-    let output = patch_command()
+    let output = repository_env(&mut patch_command(), &directory)
         .current_dir(&directory)
         .env("GIT_NO_LAZY_FETCH", "1")
         .args([
@@ -594,7 +594,7 @@ pub fn show_untracked_in(root: &std::path::Path, path: &std::path::Path) -> Resu
     let name = path.to_string_lossy();
     let mut output = Vec::new();
     if !untracked_regular_file_diff(&root.join(path), path, &mut output)? {
-        let untracked = patch_command()
+        let untracked = repository_env(&mut patch_command(), root)
             .current_dir(root)
             .args([
                 "--no-pager",
@@ -769,6 +769,44 @@ pub(crate) fn raw_path(bytes: &[u8]) -> std::path::PathBuf {
     {
         String::from_utf8_lossy(bytes).into_owned().into()
     }
+}
+
+/// Repository variables such as GIT_DIR take precedence over `-C` and the
+/// working directory. They describe the repository glog was started in, so
+/// like Git's own submodule commands, clear them (keeping `-c` configuration)
+/// for commands in another repository.
+const REPOSITORY_ENV: [&str; 13] = [
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_CONFIG",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_IMPLICIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_NO_REPLACE_OBJECTS",
+    "GIT_REPLACE_REF_BASE",
+    "GIT_PREFIX",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
+
+/// Prepares `command` to run in `directory`, which may be a submodule.
+pub(crate) fn repository_env<'a>(
+    command: &'a mut Command,
+    directory: &std::path::Path,
+) -> &'a mut Command {
+    static MAIN_ROOT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    if REPOSITORY_ENV
+        .iter()
+        .any(|name| env::var_os(name).is_some())
+        && MAIN_ROOT.get_or_init(|| repository_root().ok()).as_deref() != Some(directory)
+    {
+        for name in REPOSITORY_ENV {
+            command.env_remove(name);
+        }
+    }
+    command
 }
 
 /// Git terminates its raw repository path with exactly one newline.

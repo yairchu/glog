@@ -355,7 +355,7 @@ fn read_source(source: &Source) -> Option<Vec<u8>> {
                 .ok()?;
         }
         Source::Blob(root, oid) => {
-            let mut child = Command::new("git")
+            let mut child = crate::git::repository_env(&mut Command::new("git"), root)
                 .arg("-C")
                 .arg(root)
                 .args(["cat-file", "blob", oid])
