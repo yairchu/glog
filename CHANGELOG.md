@@ -69,7 +69,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   individual patches beneath their summaries, search reveals matching loaded
   patches, and switching back to the
   patch restores the reading line. Non-UTF-8 filenames retain distinct file
-  identities and default lockfile folding in Show and Diff.
+  identities and default lockfile folding in Show and Diff, including when
+  Git's `core.quotePath` setting is disabled.
 
 ### Changed
 

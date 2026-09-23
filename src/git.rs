@@ -15,6 +15,14 @@ const COAUTHOR: char = '\x1d';
 pub(crate) const DIFF_PREFIX_ARGS: [&str; 3] =
     ["--no-relative", "--src-prefix=a/", "--dst-prefix=b/"];
 
+pub(crate) fn patch_command() -> Command {
+    let mut command = Command::new("git");
+    // Patches pass through UTF-8 text (and optionally delta) before parsing.
+    // Quote non-ASCII path bytes so this conversion cannot lose file identities.
+    command.args(["-c", "core.quotePath=true"]);
+    command
+}
+
 #[cfg(windows)]
 const NULL_DEVICE: &str = "NUL";
 #[cfg(not(windows))]
@@ -454,7 +462,7 @@ pub fn show(commit: &Commit, paths: &[String]) -> Result<String, String> {
 }
 
 fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = patch_command()
         .args([
             "--no-pager",
             "show",
@@ -478,7 +486,7 @@ fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
 }
 
 fn show_diff(args: &[&str], paths: &[String]) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = patch_command()
         .args(args)
         .args(["--full-index", "--submodule=short"])
         .args(DIFF_PREFIX_ARGS)
@@ -494,7 +502,7 @@ fn show_diff(args: &[&str], paths: &[String]) -> Result<String, String> {
 }
 
 fn show_unstaged(paths: &[String]) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = patch_command()
         .args([
             "diff",
             "--color=always",
@@ -544,7 +552,7 @@ pub fn show_submodule(
     if !directory.join(".git").exists() {
         return Err(format!("Submodule {path} is not initialized locally"));
     }
-    let output = Command::new("git")
+    let output = patch_command()
         .current_dir(&directory)
         .env("GIT_NO_LAZY_FETCH", "1")
         .args([
@@ -577,7 +585,7 @@ pub fn show_untracked_in(root: &std::path::Path, path: &std::path::Path) -> Resu
     let name = path.to_string_lossy();
     let mut output = Vec::new();
     if !untracked_regular_file_diff(&root.join(path), path, &mut output)? {
-        let untracked = Command::new("git")
+        let untracked = patch_command()
             .current_dir(root)
             .args([
                 "--no-pager",
@@ -837,6 +845,84 @@ mod tests {
 
     static CURRENT_DIR_LOCK: Mutex<()> = Mutex::new(());
     static NEXT_TEST_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn patch_paths_ignore_disabled_git_quoting() {
+        let results = {
+            let directory = TestDirectory::new();
+            let _guard = CurrentDirGuard::enter(directory.path());
+            let git = |args: &[&str]| {
+                let output = Command::new("git").args(args).output().unwrap();
+                assert!(output.status.success(), "{:?}", output);
+                output.stdout
+            };
+            git(&["init", "-q"]);
+            git(&["config", "user.name", "Test"]);
+            git(&["config", "user.email", "test@example.com"]);
+            git(&["config", "commit.gpgsign", "false"]);
+            git(&["config", "core.quotePath", "false"]);
+            git(&["commit", "--allow-empty", "-qm", "base"]);
+            // Build the index directly: these names need not be supported by
+            // the host filesystem (notably on macOS).
+            let blob = pipe_through_bytes(
+                Command::new("git").args(["hash-object", "-w", "--stdin"]),
+                b"contents\n",
+            )
+            .unwrap();
+            let oid = String::from_utf8(blob).unwrap();
+            let mut index = Vec::new();
+            for path in [b"deps-\xfe.lock", b"deps-\xff.lock"] {
+                index.extend_from_slice(format!("100644 {}\t", oid.trim()).as_bytes());
+                index.extend_from_slice(path);
+                index.push(0);
+            }
+            pipe_through_bytes(
+                Command::new("git").args(["update-index", "-z", "--index-info"]),
+                &index,
+            )
+            .unwrap();
+            let staged = load_diff_app(&["--cached".into(), "--stat".into()]).unwrap();
+            git(&["commit", "-qm", "raw names"]);
+            let mut results = Vec::new();
+            for mut app in [
+                staged,
+                load_show_app(&["--stat".into()]).unwrap(),
+                load_diff_app(&["HEAD~..HEAD".into(), "--stat".into()]).unwrap(),
+                load_diff_app(&["--stat".into()]).unwrap(),
+            ] {
+                let paths: Vec<_> = crate::diff::file_sections(&app.show_text)
+                    .into_iter()
+                    .map(|file| file.path_bytes)
+                    .collect();
+                app.show_cursor = app.show_rows.iter().position(|row| row.summary).unwrap();
+                app.toggle_show_file();
+                let expanded = app
+                    .show_rows
+                    .iter()
+                    .filter(|row| row.summary && !row.folded)
+                    .count();
+                results.push((paths, Some(expanded)));
+            }
+            let (_, patch) = show_submodule(Some(directory.path()), ".", "HEAD~", "HEAD").unwrap();
+            results.push((
+                crate::diff::file_sections(&patch)
+                    .into_iter()
+                    .map(|file| file.path_bytes)
+                    .collect(),
+                None,
+            ));
+            results
+        };
+        for (paths, expanded) in results {
+            assert_eq!(
+                paths,
+                [b"deps-\xfe.lock".to_vec(), b"deps-\xff.lock".to_vec()]
+            );
+            if let Some(expanded) = expanded {
+                assert_eq!(expanded, 1, "only the selected summary should expand");
+            }
+        }
+    }
 
     struct TestDirectory(PathBuf);
 

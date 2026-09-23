@@ -406,7 +406,7 @@ impl StatusView {
         Ok(String::from_utf8_lossy(&output.stdout).into_owned())
     }
     fn diff_command(&self, entry: &Entry) -> Command {
-        let mut command = Command::new("git");
+        let mut command = crate::git::patch_command();
         command
             .arg("--literal-pathspecs")
             .arg("-C")
