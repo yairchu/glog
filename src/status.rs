@@ -67,6 +67,9 @@ struct Snapshot {
 // Status and diff have independent rename settings. Use the same detection
 // threshold so each status entry corresponds to its patch and numstat record.
 const RENAME_DETECTION: &str = "--find-renames=50%";
+// --find-renames cannot lower status.renames=copies, whereas it limits diff
+// to renames, so turn off copy detection for status explicitly.
+const STATUS_RENAMES_ONLY: &str = "status.renames=true";
 
 fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
     let mut snapshot = Snapshot::default();
@@ -197,6 +200,8 @@ fn load_snapshot(root: &std::path::Path) -> Result<Snapshot, String> {
         .arg("-C")
         .arg(root)
         .args([
+            "-c",
+            STATUS_RENAMES_ONLY,
             "status",
             "--porcelain=v2",
             "--branch",
