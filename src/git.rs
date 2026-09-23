@@ -2834,6 +2834,24 @@ mod tests {
         assert!(!open(&["--cached", "--", "note.txt"])
             .show_text
             .contains("picture.png"));
+        // Like git diff, paths may follow revisions without a separator.
+        for (args, before, after) in [
+            (vec!["note.txt"], "index", "worktree"),
+            (vec!["--cached", "note.txt"], "right", "index"),
+            (vec!["left", "right", "note.txt"], "left", "right"),
+        ] {
+            let patch = crate::ansi::plain(&open(&args).show_text);
+            assert!(patch.contains(&format!("-{before}\n")), "{args:?}: {patch}");
+            assert!(patch.contains(&format!("+{after}\n")), "{args:?}: {patch}");
+            assert!(!patch.contains("picture.png"), "{args:?}: {patch}");
+        }
+        let summary = open(&["left..right", "--stat", "note.txt"]);
+        assert!(summary.show_stat);
+        assert!(!summary.show_text.contains("picture.png"));
+        assert_eq!(
+            open(&["left", "right", "note.txt"]).commits[0].subject,
+            "Diff left right"
+        );
         let mut navigation = open(&["left..right"]);
         assert!(!navigation.move_selection(1));
         assert!(!navigation.move_selection(-1));
