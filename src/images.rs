@@ -440,6 +440,43 @@ mod tests {
     }
 
     #[test]
+    fn missing_partial_clone_blobs_are_not_fetched() {
+        let origin = Repo::new();
+        origin.image("picture.png", 1);
+        origin.git(&["add", "."]);
+        origin.git(&["commit", "-qm", "picture"]);
+        origin.git(&["config", "uploadpack.allowFilter", "true"]);
+        let oid = origin.git(&["rev-parse", "HEAD:picture.png"]);
+        let oid = oid.trim();
+        let clone = Repo(origin.0.with_extension("clone"));
+        let output = Command::new("git")
+            .args([
+                "clone",
+                "-q",
+                "--no-local",
+                "--no-checkout",
+                "--filter=blob:none",
+            ])
+            .arg(&origin.0)
+            .arg(&clone.0)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let present = || {
+            Command::new("git")
+                .arg("-C")
+                .arg(&clone.0)
+                .args(["cat-file", "-e", oid])
+                .env("GIT_NO_LAZY_FETCH", "1")
+                .status()
+                .unwrap()
+                .success()
+        };
+        assert!(!present());
+        assert!(read_source(&Source::Blob(clone.0.clone(), oid.to_owned())).is_none());
+        assert!(!present(), "previews must not fetch missing blobs");
+    }
+    #[test]
     fn reads_history_index_and_worktree_images_from_the_correct_sources() {
         let repo = Repo::new();
         let path = "picture space é.png";
