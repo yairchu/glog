@@ -44,6 +44,8 @@ pub struct App {
     pub show_cursor: usize,
     pub show_text: String,
     pub show_stat: bool,
+    // Status shares show_stat, so it can change while Show's rows are hidden.
+    show_rows_stat: bool,
     stat_bookmark: Option<(String, usize, Option<crate::images::Row>)>,
     stat_submodule_bookmark: Option<(String, usize)>,
     pub show_rows: Vec<ShowRow>,
@@ -98,6 +100,7 @@ impl App {
             show_cursor: 0,
             show_text: String::new(),
             show_stat: false,
+            show_rows_stat: false,
             stat_bookmark: None,
             stat_submodule_bookmark: None,
             show_rows: Vec::new(),
@@ -497,6 +500,9 @@ impl App {
                 self.show_text = text.clone();
                 if changed {
                     self.reset_show_folds();
+                } else if self.show_rows_stat != self.show_stat {
+                    self.show_stat = self.show_rows_stat;
+                    self.toggle_show_stat();
                 }
                 return;
             }
@@ -545,6 +551,7 @@ impl App {
     }
 
     fn rebuild_show_rows(&mut self) {
+        self.show_rows_stat = self.show_stat;
         let lines: Vec<_> = self.show_text.lines().collect();
         let mut rows = Vec::new();
         let mut source = 0;
