@@ -82,6 +82,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Fixed
 
+- Listed untracked files from the whole repository when running `glog diff`
+  from a subdirectory, labeling them by repository-relative path like tracked
+  changes, and refreshed watch sessions when those files change.
+
 - Preserved non-UTF-8 untracked filenames when fingerprinting watch sessions,
   preventing startup failures on filesystems that support these names.
 

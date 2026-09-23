@@ -308,9 +308,11 @@ pub fn watch_fingerprint() -> Result<u64, String> {
         &["show-ref", "--head", "--dereference"],
         true,
     )?;
+    let root = repository_root()?;
     for path in untracked_paths(&[])? {
         fingerprint.write(path.as_os_str().as_encoded_bytes());
         let display = path.display();
+        let path = root.join(&path);
         let metadata = fs::symlink_metadata(&path)
             .map_err(|error| format!("could not inspect untracked file {display}: {error}"))?;
         let file_type = metadata.file_type();
@@ -519,8 +521,9 @@ fn show_unstaged(paths: &[String]) -> Result<String, String> {
         return Err(stderr_message("git diff failed", &output.stderr));
     }
     let mut formatted = format_output(output.stdout)?;
+    let root = repository_root()?;
     for path in untracked_files(paths)? {
-        let metadata = fs::symlink_metadata(&path)
+        let metadata = fs::symlink_metadata(root.join(&path))
             .map_err(|error| format!("could not inspect untracked file {path}: {error}"))?;
         let old_path = git_quote_path(&format!("a/{path}"));
         let new_path = git_quote_path(&format!("b/{path}"));
@@ -576,8 +579,9 @@ pub fn show_submodule(
     Ok((directory, format_output(output.stdout)?))
 }
 
+/// Shows untracked `path`, relative to the repository root.
 pub fn show_untracked(path: &std::path::Path) -> Result<String, String> {
-    show_untracked_in(std::path::Path::new("."), path)
+    show_untracked_in(&repository_root()?, path)
 }
 
 /// Shows untracked `path`, relative to `root`, labeled by that relative path.
@@ -729,10 +733,25 @@ fn untracked_files(paths: &[String]) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// Lists untracked paths relative to the repository root, matching patch
+/// headers, while `paths` stay relative to the current directory.
 fn untracked_paths(paths: &[String]) -> Result<Vec<std::path::PathBuf>, String> {
+    // Unlike `git diff`, `ls-files` only covers the current directory by default.
+    let whole_repository = [":/".to_owned()];
     let output = Command::new("git")
-        .args(["ls-files", "--others", "--exclude-standard", "-z", "--"])
-        .args(paths)
+        .args([
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "--full-name",
+            "-z",
+            "--",
+        ])
+        .args(if paths.is_empty() {
+            &whole_repository[..]
+        } else {
+            paths
+        })
         .output()
         .map_err(|error| format!("could not list untracked files: {error}"))?;
     if !output.status.success() {
