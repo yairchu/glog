@@ -1642,6 +1642,37 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn status_preserves_repository_path_bytes_and_trailing_newlines() {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+        let directory = TestDirectory::new();
+        for name in [b"repo\n\n".as_slice(), b"repo-\xff".as_slice()] {
+            let root = directory.path().join(OsStr::from_bytes(name));
+            if let Err(error) = fs::create_dir(&root) {
+                // The default macOS filesystem rejects non-UTF-8 names.
+                #[cfg(target_os = "macos")]
+                if error.raw_os_error() == Some(92) {
+                    continue;
+                }
+                panic!("could not create repository fixture: {error}");
+            }
+            let _guard = CurrentDirGuard::enter(&root);
+            assert!(Command::new("git")
+                .args(["init", "-q"])
+                .status()
+                .unwrap()
+                .success());
+            fs::write("new.txt", "contents\n").unwrap();
+            let mut view = crate::status::StatusView::load()
+                .expect("Status must preserve the repository's exact path");
+            assert_eq!(view.summary(), "1 untracked file");
+            fs::write("other.txt", "more contents\n").unwrap();
+            view.refresh().unwrap();
+            assert_eq!(view.summary(), "2 untracked files");
+        }
+    }
+
     #[test]
     fn status_loads_from_subdirectory_and_refreshes_expanded_patches() {
         use ratatui::{backend::TestBackend, Terminal};
