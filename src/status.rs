@@ -1271,6 +1271,93 @@ mod tests {
     }
 
     #[test]
+    fn failed_submodule_refresh_keeps_nested_rows_usable() {
+        let root = std::env::temp_dir().join(format!(
+            "glog-failed-submodule-refresh-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let git = |at: &std::path::Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(at)
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&root, &["init", "-q"]);
+        let module = root.join("module");
+        git(&root, &["init", "-q", "module"]);
+        std::fs::write(module.join("file.txt"), "base\n").unwrap();
+        git(&module, &["add", "."]);
+        git(&module, &["commit", "-qm", "base"]);
+        std::fs::write(
+            root.join(".gitmodules"),
+            "[submodule \"module\"]\npath = module\nurl = ./unused\n",
+        )
+        .unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "base"]);
+        git(&root, &["submodule", "absorbgitdirs"]);
+        std::fs::write(module.join("file.txt"), "worktree\n").unwrap();
+
+        let mut view = StatusView {
+            root: root.clone(),
+            ..StatusView::default()
+        };
+        view.refresh().unwrap();
+        let module_key = Key {
+            group: Group::Unstaged,
+            path: "module".into(),
+        };
+        view.cursor = view
+            .rows
+            .iter()
+            .position(|row| row.key == RowKey::File(module_key.clone()))
+            .unwrap();
+        view.toggle();
+        assert!(view.submodules.contains_key(&module_key));
+
+        // A second expanded submodule that is no longer dirty.
+        let gone = Key {
+            group: Group::Unstaged,
+            path: "gone".into(),
+        };
+        view.submodules.insert(gone.clone(), StatusView::default());
+        view.rows.push(Row {
+            preview: None,
+            key: RowKey::Nested(gone, Box::new(RowKey::Group(Group::Unstaged))),
+            text: String::new(),
+            color: None,
+        });
+        // The remaining submodule then fails to refresh.
+        view.submodules.get_mut(&module_key).unwrap().root = root.join("missing");
+        assert!(view.refresh().is_err());
+
+        view.cursor = view.rows.len() - 1;
+        view.toggle();
+    }
+    #[test]
     fn dirty_submodules_expand_live_status_and_keep_nested_folds() {
         let root =
             std::env::temp_dir().join(format!("glog-dirty-submodule-{}", std::process::id()));
