@@ -298,6 +298,13 @@ enum RowKey {
     Nested(Key, Box<RowKey>),
 }
 impl RowKey {
+    fn outer_file(&self) -> Option<&Key> {
+        match self {
+            Self::File(key) | Self::Patch(key, _) | Self::Nested(key, _) => Some(key),
+            Self::Group(_) => None,
+        }
+    }
+
     fn same_patch(&self, other: &Self) -> bool {
         match (self, other) {
             (Self::Patch(left, _), Self::Patch(right, _)) => left == right,
@@ -524,19 +531,31 @@ impl StatusView {
         self.show_stat = next_stat;
         self.error = None;
         self.rebuild();
-        if !self.show_stat {
+        if self.show_stat {
+            // Nested rows disappear with their outer submodule. Keep the
+            // cursor on that summary so toggling back can restore its bookmark.
+            if let Some(key) = current.as_ref().and_then(|row| row.key.outer_file()) {
+                if let Some(index) = self
+                    .rows
+                    .iter()
+                    .position(|row| row.key == RowKey::File(key.clone()))
+                {
+                    self.cursor = index;
+                }
+            }
+        } else {
             if let Some(Row {
                 key: RowKey::File(key),
                 ..
             }) = current
             {
                 if let Some(bookmark) = &self.stat_bookmark {
-                    if matches!(&bookmark.key, RowKey::Patch(saved, _) if saved == &key) {
+                    if bookmark.key.outer_file() == Some(&key) {
                         self.cursor = self
                             .rows
                             .iter()
                             .position(|row| {
-                                matches!(&row.key, RowKey::Patch(current, _) if current == &key)
+                                row.key.same_patch(&bookmark.key)
                                     && row.text == bookmark.text
                                     && row.preview == bookmark.preview
                             })
