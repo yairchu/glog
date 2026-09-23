@@ -912,7 +912,17 @@ impl App {
             child.show_cursor = index;
             child.toggle_show_file();
             self.status = child.status.clone();
+            let cursor = child.show_cursor;
             self.rebuild_show_rows();
+            // Collapsing a child changes the flattened row indices. Follow its
+            // selected summary instead of retaining the old patch's row number.
+            if let Some(row) = self
+                .submodule_rows
+                .iter()
+                .find_map(|(row, (p, index))| (p == &path && *index == cursor).then_some(*row))
+            {
+                self.show_cursor = row;
+            }
             self.search_match = None;
             self.show_scroll = Some(ShowScroll::Cursor);
             return;

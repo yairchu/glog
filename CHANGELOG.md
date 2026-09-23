@@ -13,6 +13,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   submodule commit. Expanded nested patches and their reading position survive
   watch refreshes when the recorded submodule commits are unchanged. Toggling
   summary mode back restores the reading line inside expanded submodules.
+  Collapsing a nested patch keeps the cursor on that file's summary.
 
 - Added Left/Right shortcuts in Log to select the previous/newer or next/older
   commit while staying in Log, matching commit navigation in Show and Status.
