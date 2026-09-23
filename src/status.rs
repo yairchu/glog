@@ -1301,6 +1301,29 @@ mod tests {
         assert!(crate::ansi::plain(&view.rows[view.cursor].text).contains("dirty submodule"));
         view.toggle();
         assert!(view.error.is_none(), "{:?}", view.error);
+        // Like Show, nested views open as summaries regardless of the outer mode.
+        assert!(!view
+            .rows
+            .iter()
+            .any(|row| crate::ansi::plain(&row.text).contains("+staged")));
+        for group in ["Staged", "Unstaged"] {
+            let start = view
+                .rows
+                .iter()
+                .position(|row| {
+                    matches!(row.key, RowKey::Nested(..))
+                        && crate::ansi::plain(&row.text).contains(&format!("{group} ("))
+                })
+                .unwrap();
+            view.cursor = start
+                + view.rows[start..]
+                    .iter()
+                    .position(|row| {
+                        row.key.is_file() && crate::ansi::plain(&row.text).contains("file.txt")
+                    })
+                    .unwrap();
+            view.toggle();
+        }
         assert!(view
             .rows
             .iter()
