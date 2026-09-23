@@ -1849,6 +1849,64 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_filenames_do_not_break_the_status_view() {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+        let root =
+            std::env::temp_dir().join(format!("glog-status-non-utf8-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let git = |args: &[&OsStr]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{:?}", output);
+            String::from_utf8(output.stdout).unwrap()
+        };
+        git(&["init".as_ref(), "-q".as_ref()]);
+        std::fs::write(root.join("blob"), "contents\n").unwrap();
+        let blob = git(&["hash-object".as_ref(), "-w".as_ref(), "blob".as_ref()]);
+        std::fs::remove_file(root.join("blob")).unwrap();
+        // Some filesystems reject such names, so record the file only in the index.
+        let info = format!("100644,{},", blob.trim());
+        let mut cacheinfo = info.into_bytes();
+        cacheinfo.extend_from_slice(b"caf\xe9.txt");
+        git(&[
+            "update-index".as_ref(),
+            "--add".as_ref(),
+            "--cacheinfo".as_ref(),
+            OsStr::from_bytes(&cacheinfo),
+        ]);
+
+        let mut view = StatusView {
+            root: root.clone(),
+            ..StatusView::default()
+        };
+        view.refresh().unwrap();
+        let key = Key {
+            group: Group::Unstaged,
+            path: "caf\u{fffd}.txt".into(),
+        };
+        assert_eq!(view.stats[&key], "+0 −1");
+        view.cursor = view
+            .rows
+            .iter()
+            .position(|row| row.key == RowKey::File(key.clone()))
+            .unwrap();
+        view.toggle();
+        assert!(crate::ansi::plain(&view.patches[&key]).contains("-contents"));
+    }
+
     #[test]
     fn rename_records_keep_both_paths_without_splitting_whitespace() {
         let parsed = parse(
