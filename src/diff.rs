@@ -4,7 +4,9 @@ use crate::ansi;
 pub struct FileSection {
     pub start: usize,
     pub end: usize,
+    // Display text is separate from the lossless identity used for folds and I/O.
     pub path: String,
+    pub path_bytes: Vec<u8>,
     pub lockfile: bool,
     pub submodule: Option<(String, String)>,
     pub untracked: bool,
@@ -39,10 +41,23 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                 line.strip_prefix("glog-lazy-untracked:")
                     .and_then(hex_decode)
             });
-            let path = lazy_untracked_path
-                .clone()
+            let path_bytes = lazy_untracked_path
+                .as_ref()
+                .map(|path| path.as_bytes().to_vec())
                 .or_else(|| diff_path(&visible))
-                .unwrap_or_else(|| "changed file".to_owned());
+                .unwrap_or_else(|| b"changed file".to_vec());
+            let path = String::from_utf8(path_bytes.clone()).unwrap_or_else(|_| {
+                // Keep invalid bytes readable without using the display name
+                // as an identity or a filesystem path.
+                path_bytes
+                    .iter()
+                    .map(|&byte| match byte {
+                        b' '..=b'~' if byte != b'\\' => char::from(byte).to_string(),
+                        b'\\' => "\\\\".to_owned(),
+                        _ => format!("\\{byte:03o}"),
+                    })
+                    .collect()
+            });
             // Only the file header is metadata: hunk content can itself start
             // with `+++` or `---` (for example, an increment or a Markdown rule).
             let body_start = visible
@@ -78,6 +93,7 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                     .any(|line| line.starts_with("new file mode ")),
                 lazy_untracked_path,
                 path,
+                path_bytes,
                 additions,
                 deletions,
             }
@@ -135,7 +151,7 @@ fn hex_decode(hex: &str) -> Option<String> {
     String::from_utf8(bytes).ok()
 }
 
-fn diff_path(lines: &[String]) -> Option<String> {
+fn diff_path(lines: &[String]) -> Option<Vec<u8>> {
     // Combined headers contain a single repository-relative path, without
     // a/ or b/ prefixes (even when the real path begins with one of them).
     if let Some(path) = lines.first().and_then(|line| {
@@ -186,23 +202,23 @@ fn diff_path(lines: &[String]) -> Option<String> {
     let (candidate, _) = unquote_path(candidate)?;
     Some(
         candidate
-            .strip_prefix("b/")
-            .or_else(|| candidate.strip_prefix("a/"))
+            .strip_prefix(b"b/")
+            .or_else(|| candidate.strip_prefix(b"a/"))
             .unwrap_or(&candidate)
             .to_owned(),
     )
 }
 
-fn unquote_path(path: &str) -> Option<(String, usize)> {
+fn unquote_path(path: &str) -> Option<(Vec<u8>, usize)> {
     if !path.starts_with('"') {
-        return Some((path.to_owned(), path.len()));
+        return Some((path.as_bytes().to_vec(), path.len()));
     }
     let bytes = path.as_bytes();
     let mut output = Vec::new();
     let mut i = 1;
     while i < bytes.len() {
         match bytes[i] {
-            b'"' => return String::from_utf8(output).ok().map(|text| (text, i + 1)),
+            b'"' => return Some((output, i + 1)),
             b'\\' => {
                 i += 1;
                 let byte = *bytes.get(i)?;
@@ -303,6 +319,31 @@ mod tests {
         let files = file_sections(patch);
         assert_eq!(files.len(), 1);
         assert_eq!((files[0].additions, files[0].deletions), (3, 3));
+    }
+
+    #[test]
+    fn quoted_non_utf8_paths_survive_all_diff_headers() {
+        for (patch, expected) in [
+            (
+                r#"diff --git "a/deps-\377.lock" "b/deps-\377.lock""#,
+                &b"deps-\xff.lock"[..],
+            ),
+            (r#"diff --cc "deps-\377.lock""#, &b"deps-\xff.lock"[..]),
+            (
+                r#"diff --combined "deps-\376.lock""#,
+                &b"deps-\xfe.lock"[..],
+            ),
+            (
+                "diff --git a/old b/new\nrename to \"deps-\\377.lock\"",
+                &b"deps-\xff.lock"[..],
+            ),
+        ] {
+            let files = file_sections(patch);
+            assert_eq!(files.len(), 1);
+            assert_eq!(files[0].path_bytes, expected);
+            assert!(files[0].lockfile);
+            assert!(files[0].path.starts_with("deps-\\3"));
+        }
     }
 
     #[test]

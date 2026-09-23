@@ -528,7 +528,7 @@ fn show_unstaged(paths: &[String]) -> Result<String, String> {
 /// Read only local objects; never fetch or compare against the current checkout.
 pub fn show_submodule(
     root: Option<&std::path::Path>,
-    path: &str,
+    path: impl AsRef<std::path::Path>,
     old: &str,
     new: &str,
 ) -> Result<(std::path::PathBuf, String), String> {
@@ -537,7 +537,8 @@ pub fn show_submodule(
     } else {
         repository_root()?
     };
-    let directory = root.join(path);
+    let directory = root.join(path.as_ref());
+    let path = path.as_ref().display();
     // Without this check Git can walk up to the superproject for an empty,
     // uninitialized submodule directory.
     if !directory.join(".git").exists() {

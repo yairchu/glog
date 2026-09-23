@@ -46,8 +46,8 @@ pub struct App {
     pub show_stat: bool,
     // Status shares show_stat, so it can change while Show's rows are hidden.
     show_rows_stat: bool,
-    stat_bookmark: Option<(String, usize, Option<crate::images::Row>)>,
-    stat_submodule_bookmark: Option<(String, usize)>,
+    stat_bookmark: Option<(Vec<u8>, usize, Option<crate::images::Row>)>,
+    stat_submodule_bookmark: Option<(Vec<u8>, usize)>,
     pub show_rows: Vec<ShowRow>,
     // Start of each wrapped row, followed by the total screen height.
     pub show_row_starts: Vec<usize>,
@@ -58,7 +58,7 @@ pub struct App {
     pub search_reverse: bool,
     pub search_match: Option<(Mode, usize)>,
     // Several hidden gitlink lines share one visible summary row.
-    show_search_location: Option<(Vec<String>, usize)>,
+    show_search_location: Option<(Vec<Vec<u8>>, usize)>,
     pub show_help: bool,
     pub log_row_origin: u16,
     pub visible_log_rows: Vec<Option<usize>>,
@@ -80,9 +80,9 @@ pub struct App {
     cache: HashMap<String, String>,
     cache_order: VecDeque<String>,
     show_files: Vec<FileSection>,
-    expanded_folds: HashSet<String>,
-    submodules: HashMap<String, Box<App>>,
-    submodule_rows: HashMap<usize, (String, usize)>,
+    expanded_folds: HashSet<Vec<u8>>,
+    submodules: HashMap<Vec<u8>, Box<App>>,
+    submodule_rows: HashMap<usize, (Vec<u8>, usize)>,
     submodule_root: Option<std::path::PathBuf>,
 }
 
@@ -386,7 +386,7 @@ impl App {
             .filter_map(|file| {
                 file.submodule
                     .as_ref()
-                    .map(|ids| (file.path.clone(), ids.clone()))
+                    .map(|ids| (file.path_bytes.clone(), ids.clone()))
             })
             .collect();
         let mut children = std::mem::take(&mut self.submodules);
@@ -396,7 +396,7 @@ impl App {
         // and row indices when only the surrounding Show text has changed.
         children.retain(|path, _| {
             self.show_files.iter().any(|file| {
-                &file.path == path
+                &file.path_bytes == path
                     && file.submodule.as_ref() == old_submodules.get(path)
                     && file.submodule.is_some()
             })
@@ -409,7 +409,7 @@ impl App {
                 row.folded
                     && row
                         .file
-                        .is_some_and(|file| self.show_files[file].path == path)
+                        .is_some_and(|file| self.show_files[file].path_bytes == path)
             }) {
                 self.show_cursor = index;
                 self.toggle_show_file();
@@ -420,7 +420,7 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, row)| match (&cursor_file, row.file) {
-                (Some(old), Some(index)) => self.show_files[index].path == old.path,
+                (Some(old), Some(index)) => self.show_files[index].path_bytes == old.path_bytes,
                 (None, None) => true,
                 _ => false,
             })
@@ -568,7 +568,7 @@ impl App {
                 });
             }
             if self.show_stat || file.submodule.is_some() {
-                let expanded = self.expanded_folds.contains(&file.path);
+                let expanded = self.expanded_folds.contains(&file.path_bytes);
                 let detail = if let Some((old, new)) = &file.submodule {
                     let dirty = lines[file.start..file.end].iter().any(|line| {
                         crate::ansi::plain(line)
@@ -617,7 +617,8 @@ impl App {
                         });
                     }
                 }
-            } else if (file.lockfile || file.untracked) && !self.expanded_folds.contains(&file.path)
+            } else if (file.lockfile || file.untracked)
+                && !self.expanded_folds.contains(&file.path_bytes)
             {
                 rows.push(ShowRow {
                     text: String::new(),
@@ -699,7 +700,7 @@ impl App {
                         let file = &self.show_files[index];
                         crate::images::sources(
                             &lines[file.start..file.end].join("\n"),
-                            &file.path,
+                            git::raw_path(&file.path_bytes),
                             &if file.untracked
                                 && !lines[file.start..file.end]
                                     .iter()
@@ -744,10 +745,10 @@ impl App {
             let child = row
                 .file
                 .filter(|_| row.summary && !row.folded)
-                .and_then(|index| self.submodules.get(&self.show_files[index].path));
+                .and_then(|index| self.submodules.get(&self.show_files[index].path_bytes));
             nested_rows.push(row.clone());
             if let Some(child) = child {
-                let path = self.show_files[row.file.unwrap()].path.clone();
+                let path = self.show_files[row.file.unwrap()].path_bytes.clone();
                 for (index, child_row) in child.show_rows.iter().enumerate() {
                     let mut nested = child_row.clone();
                     nested.text = format!("  {}", nested.text);
@@ -778,7 +779,7 @@ impl App {
             self.stat_submodule_bookmark = nested_cursor.clone();
             self.stat_bookmark = file.as_ref().zip(current.as_ref()).map(|(file, row)| {
                 (
-                    file.path.clone(),
+                    file.path_bytes.clone(),
                     row.source.saturating_sub(file.start),
                     row.preview.clone(),
                 )
@@ -789,9 +790,9 @@ impl App {
         if !self.show_stat {
             if let Some(file) = &file {
                 if file.lazy_untracked_path.is_none()
-                    && (file.submodule.is_none() || self.submodules.contains_key(&file.path))
+                    && (file.submodule.is_none() || self.submodules.contains_key(&file.path_bytes))
                 {
-                    self.expanded_folds.insert(file.path.clone());
+                    self.expanded_folds.insert(file.path_bytes.clone());
                 }
             }
         }
@@ -806,7 +807,7 @@ impl App {
                     + self
                         .stat_bookmark
                         .as_ref()
-                        .filter(|(path, _, _)| *path == file.path)
+                        .filter(|(path, _, _)| *path == file.path_bytes)
                         .map_or(0, |(_, line, _)| *line)
             };
             let preview = current
@@ -816,7 +817,7 @@ impl App {
                 .or_else(|| {
                     self.stat_bookmark
                         .as_ref()
-                        .filter(|(path, _, _)| *path == file.path)
+                        .filter(|(path, _, _)| *path == file.path_bytes)
                         .and_then(|(_, _, preview)| preview.as_ref())
                 });
             self.show_cursor = self
@@ -824,7 +825,7 @@ impl App {
                 .iter()
                 .position(|row| {
                     row.file
-                        .is_some_and(|index| self.show_files[index].path == file.path)
+                        .is_some_and(|index| self.show_files[index].path_bytes == file.path_bytes)
                         && (self.show_stat
                             || (row.source == source && row.preview.as_ref() == preview))
                 })
@@ -833,7 +834,7 @@ impl App {
                 let nested = nested_cursor.as_ref().or_else(|| {
                     self.stat_submodule_bookmark
                         .as_ref()
-                        .filter(|(path, _)| *path == file.path)
+                        .filter(|(path, _)| *path == file.path_bytes)
                 });
                 if let Some(index) = nested.and_then(|location| {
                     self.submodule_rows
@@ -848,15 +849,15 @@ impl App {
         self.show_scroll = Some(ShowScroll::Cursor);
     }
 
-    fn searchable_show_lines(&self) -> Vec<(Vec<String>, usize, &str)> {
+    fn searchable_show_lines(&self) -> Vec<(Vec<Vec<u8>>, usize, &str)> {
         let mut result = Vec::new();
         let children: HashMap<_, _> = self
             .show_files
             .iter()
             .filter_map(|file| {
                 self.submodules
-                    .get(&file.path)
-                    .map(|child| (file.end, (&file.path, child)))
+                    .get(&file.path_bytes)
+                    .map(|child| (file.end, (&file.path_bytes, child)))
             })
             .collect();
         for (source, line) in self.show_text.lines().enumerate() {
@@ -871,7 +872,7 @@ impl App {
         result
     }
 
-    fn show_location(&self, row: usize) -> (Vec<String>, usize) {
+    fn show_location(&self, row: usize) -> (Vec<Vec<u8>>, usize) {
         if let Some((path, index)) = self.submodule_rows.get(&row) {
             let (mut route, source) = self.submodules[path].show_location(*index);
             route.insert(0, path.clone());
@@ -884,7 +885,7 @@ impl App {
         }
     }
 
-    fn reveal_show_location(&mut self, route: &[String], source: usize) -> Option<usize> {
+    fn reveal_show_location(&mut self, route: &[Vec<u8>], source: usize) -> Option<usize> {
         if let Some((path, rest)) = route.split_first() {
             let index = self
                 .submodules
@@ -904,7 +905,7 @@ impl App {
         // Searching gitlink metadata selects its summary without loading history.
         let submodule_start = file.filter(|f| f.submodule.is_some()).map(|f| f.start);
         if let Some(file) = file.filter(|f| f.submodule.is_none()) {
-            self.expanded_folds.insert(file.path.clone());
+            self.expanded_folds.insert(file.path_bytes.clone());
             self.rebuild_show_rows();
         }
         self.show_rows.iter().enumerate().position(|(index, row)| {
@@ -949,11 +950,16 @@ impl App {
         if !self.show_stat && !file.lockfile && !file.untracked && file.submodule.is_none() {
             return;
         }
-        let path = file.path.clone();
+        let path = file.path_bytes.clone();
         let source = file.start;
         if let Some((old, new)) = &file.submodule {
             if !self.submodules.contains_key(&path) {
-                match git::show_submodule(self.submodule_root.as_deref(), &path, old, new) {
+                match git::show_submodule(
+                    self.submodule_root.as_deref(),
+                    git::raw_path(&path),
+                    old,
+                    new,
+                ) {
                     Ok((root, text)) => {
                         let mut child = App::new(Vec::new());
                         child.images.enabled = self.images.enabled;
@@ -1019,7 +1025,7 @@ impl App {
             .show_files
             .iter()
             .filter(|file| file.lockfile)
-            .map(|file| file.path.clone())
+            .map(|file| file.path_bytes.clone())
             .collect();
         if lockfiles
             .iter()
@@ -1031,7 +1037,7 @@ impl App {
                 !self
                     .show_files
                     .iter()
-                    .any(|file| file.lockfile && file.path == *path)
+                    .any(|file| file.lockfile && file.path_bytes == *path)
             });
         }
         self.search_match = None;

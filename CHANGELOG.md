@@ -68,7 +68,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   and the Show `s` toggle, including combined merge diffs. Enter/z expands
   individual patches beneath their summaries, search reveals matching loaded
   patches, and switching back to the
-  patch restores the reading line.
+  patch restores the reading line. Non-UTF-8 filenames retain distinct file
+  identities and default lockfile folding in Show and Diff.
 
 ### Changed
 
