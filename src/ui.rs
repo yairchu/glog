@@ -625,6 +625,19 @@ mod tests {
     }
 
     #[test]
+    fn status_footer_shows_app_messages() {
+        let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Status;
+        app.status_view = Some(crate::status::StatusView::default());
+        app.status = Some("Watch refresh failed: boom".to_owned());
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let footer: String = (0..80)
+            .map(|x| terminal.backend().buffer()[(x, 5)].symbol())
+            .collect();
+        assert!(footer.starts_with("Watch refresh failed: boom"), "{footer}");
+    }
+    #[test]
     fn stat_view_renders_compact_summaries_and_keeps_expanded_header() {
         let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
         let mut app = App::new(Vec::new());
