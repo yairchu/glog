@@ -333,6 +333,8 @@ fn read_source(source: &Source) -> Option<Vec<u8>> {
                 .arg("-C")
                 .arg(root)
                 .args(["cat-file", "blob", oid])
+                // Previews show local objects only, never fetching from remotes.
+                .env("GIT_NO_LAZY_FETCH", "1")
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
                 .spawn()
