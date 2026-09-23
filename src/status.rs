@@ -401,7 +401,8 @@ impl StatusView {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
         }
         let mut view = Self {
-            root: PathBuf::from(String::from_utf8_lossy(&output.stdout).trim_end_matches('\n')),
+            // Git appends one newline; preceding newlines belong to the path.
+            root: raw_path(output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout)),
             ..Self::default()
         };
         view.refresh()?;
