@@ -7,6 +7,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Added on-demand inline expansion of committed submodule pointer changes in
+  Show and Diff, with nested file summaries and patches from locally available
+  recorded commits, including combined merge diffs whose parents record the same
+  submodule commit.
+
 - Added Left/Right shortcuts in Log to select the previous/newer or next/older
   commit while staying in Log, matching commit navigation in Show and Status.
 

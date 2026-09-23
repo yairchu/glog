@@ -76,6 +76,9 @@ pub struct App {
     cache_order: VecDeque<String>,
     show_files: Vec<FileSection>,
     expanded_folds: HashSet<String>,
+    submodules: HashMap<String, Box<App>>,
+    submodule_rows: HashMap<usize, (String, usize)>,
+    submodule_root: Option<std::path::PathBuf>,
 }
 
 impl App {
@@ -123,6 +126,9 @@ impl App {
             cache_order: VecDeque::new(),
             show_files: Vec::new(),
             expanded_folds: HashSet::new(),
+            submodules: HashMap::new(),
+            submodule_rows: HashMap::new(),
+            submodule_root: None,
         }
     }
 
@@ -482,6 +488,7 @@ impl App {
 
     fn reset_show_folds(&mut self) {
         self.show_files = diff::file_sections(&self.show_text);
+        self.submodules.clear();
         self.expanded_folds.clear();
         self.stat_bookmark = None;
         self.rebuild_show_rows();
@@ -517,9 +524,11 @@ impl App {
                     preview: None,
                 });
             }
-            if self.show_stat {
+            if self.show_stat || file.submodule.is_some() {
                 let expanded = self.expanded_folds.contains(&file.path);
-                let detail = if file.lazy_untracked_path.is_some() {
+                let detail = if let Some((old, new)) = &file.submodule {
+                    format!("submodule {} → {}", &old[..8], &new[..8])
+                } else if file.lazy_untracked_path.is_some() {
                     "contents not loaded".to_owned()
                 } else if lines[file.start..file.end].iter().any(|line| {
                     let plain = crate::ansi::plain(line);
@@ -543,7 +552,7 @@ impl App {
                     summary: true,
                     preview: None,
                 });
-                if expanded {
+                if expanded && file.submodule.is_none() {
                     for (index, line) in lines[file.start..file.end].iter().enumerate() {
                         rows.push(ShowRow {
                             text: (*line).to_owned(),
@@ -676,7 +685,29 @@ impl App {
             }
             rows = expanded;
         }
-        self.show_rows = rows;
+        // Insert child rows after image expansion so row routing uses final indices.
+        self.submodule_rows.clear();
+        let mut nested_rows = Vec::new();
+        for row in rows {
+            let child = row
+                .file
+                .filter(|_| row.summary && !row.folded)
+                .and_then(|index| self.submodules.get(&self.show_files[index].path));
+            nested_rows.push(row.clone());
+            if let Some(child) = child {
+                let path = self.show_files[row.file.unwrap()].path.clone();
+                for (index, child_row) in child.show_rows.iter().enumerate() {
+                    let mut nested = child_row.clone();
+                    nested.text = format!("  {}", nested.text);
+                    nested.source = row.source;
+                    nested.file = row.file;
+                    self.submodule_rows
+                        .insert(nested_rows.len(), (path.clone(), index));
+                    nested_rows.push(nested);
+                }
+            }
+        }
+        self.show_rows = nested_rows;
         self.show_cursor = self.show_cursor.min(self.show_rows.len().saturating_sub(1));
         self.show_row_starts.clear();
     }
@@ -701,7 +732,9 @@ impl App {
         self.show_stat = !self.show_stat;
         if !self.show_stat {
             if let Some(file) = &file {
-                if file.lazy_untracked_path.is_none() {
+                if file.lazy_untracked_path.is_none()
+                    && (file.submodule.is_none() || self.submodules.contains_key(&file.path))
+                {
                     self.expanded_folds.insert(file.path.clone());
                 }
             }
@@ -745,7 +778,86 @@ impl App {
         self.show_scroll = Some(ShowScroll::Cursor);
     }
 
+    fn searchable_show_lines(&self) -> Vec<(Vec<String>, usize, &str)> {
+        let mut result = Vec::new();
+        let children: HashMap<_, _> = self
+            .show_files
+            .iter()
+            .filter_map(|file| {
+                self.submodules
+                    .get(&file.path)
+                    .map(|child| (file.end, (&file.path, child)))
+            })
+            .collect();
+        for (source, line) in self.show_text.lines().enumerate() {
+            result.push((Vec::new(), source, line));
+            if let Some((path, child)) = children.get(&(source + 1)) {
+                for (mut route, source, line) in child.searchable_show_lines() {
+                    route.insert(0, (*path).clone());
+                    result.push((route, source, line));
+                }
+            }
+        }
+        result
+    }
+
+    fn show_location(&self, row: usize) -> (Vec<String>, usize) {
+        if let Some((path, index)) = self.submodule_rows.get(&row) {
+            let (mut route, source) = self.submodules[path].show_location(*index);
+            route.insert(0, path.clone());
+            (route, source)
+        } else {
+            (
+                Vec::new(),
+                self.show_rows.get(row).map_or(0, |row| row.source),
+            )
+        }
+    }
+
+    fn reveal_show_location(&mut self, route: &[String], source: usize) -> Option<usize> {
+        if let Some((path, rest)) = route.split_first() {
+            let index = self
+                .submodules
+                .get_mut(path)?
+                .reveal_show_location(rest, source)?;
+            self.expanded_folds.insert(path.clone());
+            self.rebuild_show_rows();
+            return self
+                .submodule_rows
+                .iter()
+                .find_map(|(row, (p, i))| (p == path && *i == index).then_some(*row));
+        }
+        let file = self
+            .show_files
+            .iter()
+            .find(|f| (f.start..f.end).contains(&source));
+        // Searching gitlink metadata selects its summary without loading history.
+        let submodule_start = file.filter(|f| f.submodule.is_some()).map(|f| f.start);
+        if let Some(file) = file.filter(|f| f.submodule.is_none()) {
+            self.expanded_folds.insert(file.path.clone());
+            self.rebuild_show_rows();
+        }
+        self.show_rows.iter().enumerate().position(|(index, row)| {
+            !self.submodule_rows.contains_key(&index)
+                && if let Some(start) = submodule_start {
+                    row.source == start && row.summary
+                } else {
+                    row.source == source && !row.summary
+                }
+        })
+    }
+
     pub fn toggle_show_file(&mut self) {
+        if let Some((path, index)) = self.submodule_rows.get(&self.show_cursor).cloned() {
+            let child = self.submodules.get_mut(&path).unwrap();
+            child.show_cursor = index;
+            child.toggle_show_file();
+            self.status = child.status.clone();
+            self.rebuild_show_rows();
+            self.search_match = None;
+            self.show_scroll = Some(ShowScroll::Cursor);
+            return;
+        }
         let Some(file_index) = self
             .show_rows
             .get(self.show_cursor)
@@ -754,11 +866,34 @@ impl App {
             return;
         };
         let file = &self.show_files[file_index];
-        if !self.show_stat && !file.lockfile && !file.untracked {
+        if !self.show_stat && !file.lockfile && !file.untracked && file.submodule.is_none() {
             return;
         }
         let path = file.path.clone();
         let source = file.start;
+        if let Some((old, new)) = &file.submodule {
+            if !self.submodules.contains_key(&path) {
+                match git::show_submodule(self.submodule_root.as_deref(), &path, old, new) {
+                    Ok((root, text)) => {
+                        let mut child = App::new(Vec::new());
+                        child.submodule_root = Some(root);
+                        child.show_stat = true;
+                        child.show_text = if text.is_empty() {
+                            "No file changes between these commits.\n".to_owned()
+                        } else {
+                            text
+                        };
+                        child.ensure_show_rows();
+                        self.submodules.insert(path.clone(), Box::new(child));
+                        self.status = None;
+                    }
+                    Err(error) => {
+                        self.status = Some(error);
+                        return;
+                    }
+                }
+            }
+        }
         let loaded = if let Some(untracked_path) = file.lazy_untracked_path.clone() {
             match git::show_untracked(&untracked_path) {
                 Ok(text) => {
@@ -787,7 +922,10 @@ impl App {
         self.show_cursor = self
             .show_rows
             .iter()
-            .position(|row| row.source == source && row.folded)
+            .enumerate()
+            .position(|(index, row)| {
+                row.source == source && row.folded && !self.submodule_rows.contains_key(&index)
+            })
             .or_else(|| self.show_rows.iter().position(|row| row.source == source))
             .unwrap_or(self.show_cursor);
         self.show_scroll = Some(ShowScroll::Cursor);
@@ -966,40 +1104,36 @@ impl App {
                 }
             }
             Mode::Show => {
-                let lines: Vec<_> = self.show_text.lines().collect();
+                let lines = self.searchable_show_lines();
                 let n = lines.len();
-                let start = self
+                let current = self
                     .search_match
                     .filter(|(mode, _)| *mode == Mode::Show)
-                    .and_then(|(_, index)| self.show_rows.get(index))
-                    .or_else(|| self.show_rows.get(self.show_cursor))
-                    .map_or(0, |row| row.source);
-                for step in 1..=n {
+                    .map_or(self.show_cursor, |(_, index)| index);
+                let (route, source) = self.show_location(current);
+                let start = lines
+                    .iter()
+                    .position(|(r, s, _)| *r == route && *s == source)
+                    .unwrap_or(0);
+                let found = (1..=n).find_map(|step| {
                     let i = if reverse {
                         (start + n - step % n) % n
                     } else {
                         (start + step) % n
                     };
-                    if lines[i].to_lowercase().contains(&query) {
-                        if let Some(file) = self.show_files.iter().find(|file| {
-                            (self.show_stat || file.lockfile || file.untracked)
-                                && (file.start..file.end).contains(&i)
-                        }) {
-                            self.expanded_folds.insert(file.path.clone());
-                            self.rebuild_show_rows();
-                        }
-                        if let Some(visible) = self
-                            .show_rows
-                            .iter()
-                            .position(|row| row.source == i && !row.summary)
-                        {
-                            self.show_cursor = visible;
-                            self.search_match = Some((Mode::Show, visible));
-                            self.show_scroll = Some(ShowScroll::Search);
-                        }
-                        self.status = None;
-                        return;
+                    crate::ansi::plain(lines[i].2)
+                        .to_lowercase()
+                        .contains(&query)
+                        .then(|| (lines[i].0.clone(), lines[i].1))
+                });
+                if let Some((route, source)) = found {
+                    if let Some(visible) = self.reveal_show_location(&route, source) {
+                        self.show_cursor = visible;
+                        self.search_match = Some((Mode::Show, visible));
+                        self.show_scroll = Some(ShowScroll::Search);
                     }
+                    self.status = None;
+                    return;
                 }
             }
         }

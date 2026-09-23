@@ -441,6 +441,7 @@ fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
             "--color=always",
             "--no-ext-diff",
             "--full-index",
+            "--submodule=short",
         ])
         .args(DIFF_PREFIX_ARGS)
         .arg(hash)
@@ -458,7 +459,7 @@ fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
 fn show_diff(args: &[&str], paths: &[String]) -> Result<String, String> {
     let output = Command::new("git")
         .args(args)
-        .arg("--full-index")
+        .args(["--full-index", "--submodule=short"])
         .args(DIFF_PREFIX_ARGS)
         .arg("--")
         .args(paths)
@@ -473,7 +474,13 @@ fn show_diff(args: &[&str], paths: &[String]) -> Result<String, String> {
 
 fn show_unstaged(paths: &[String]) -> Result<String, String> {
     let output = Command::new("git")
-        .args(["diff", "--color=always", "--no-ext-diff", "--full-index"])
+        .args([
+            "diff",
+            "--color=always",
+            "--no-ext-diff",
+            "--full-index",
+            "--submodule=short",
+        ])
         .args(DIFF_PREFIX_ARGS)
         .arg("--")
         .args(paths)
@@ -495,6 +502,58 @@ fn show_unstaged(paths: &[String]) -> Result<String, String> {
         ));
     }
     Ok(formatted)
+}
+
+/// Read only local objects; never fetch or compare against the current checkout.
+pub fn show_submodule(
+    root: Option<&std::path::Path>,
+    path: &str,
+    old: &str,
+    new: &str,
+) -> Result<(std::path::PathBuf, String), String> {
+    let root = if let Some(root) = root {
+        root.to_owned()
+    } else {
+        let output = Command::new("git")
+            .args(["rev-parse", "--show-toplevel"])
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(stderr_message(
+                "could not locate repository",
+                &output.stderr,
+            ));
+        }
+        std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim_end())
+    };
+    let directory = root.join(path);
+    // Without this check Git can walk up to the superproject for an empty,
+    // uninitialized submodule directory.
+    if !directory.join(".git").exists() {
+        return Err(format!("Submodule {path} is not initialized locally"));
+    }
+    let output = Command::new("git")
+        .current_dir(&directory)
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .args([
+            "--no-pager",
+            "diff",
+            "--color=always",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--full-index",
+            "--submodule=short",
+        ])
+        .args(DIFF_PREFIX_ARGS)
+        .args([old, new, "--"])
+        .output()
+        .map_err(|e| format!("could not read submodule {path}: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "Submodule {path}: cannot compare recorded commits (history may be missing locally)"
+        ));
+    }
+    Ok((directory, format_output(output.stdout)?))
 }
 
 pub fn show_untracked(path: &str) -> Result<String, String> {
@@ -756,6 +815,137 @@ mod tests {
         fn drop(&mut self) {
             env::set_current_dir(&self.original).unwrap();
         }
+    }
+
+    #[test]
+    fn submodule_expansion_uses_recorded_commits_and_nested_folds() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        git(&["init", "-q", "module space"]);
+        for (name, value) in [
+            ("user.name", "Test"),
+            ("user.email", "test@example.com"),
+            ("commit.gpgsign", "false"),
+        ] {
+            git(&["-C", "module space", "config", name, value]);
+        }
+        fs::write("module space/file.txt", "before\n").unwrap();
+        git(&["-C", "module space", "add", "."]);
+        git(&["-C", "module space", "commit", "-qm", "first"]);
+        let old = git(&["-C", "module space", "rev-parse", "HEAD"]);
+        fs::write(
+            ".gitmodules",
+            "[submodule \"module space\"]\n\tpath = module space\n\turl = ./unused-local-url\n",
+        )
+        .unwrap();
+        git(&["add", "module space", ".gitmodules"]);
+        git(&["commit", "-qm", "base"]);
+        git(&["submodule", "absorbgitdirs"]);
+        fs::write("module space/file.txt", "after\n").unwrap();
+        git(&["-C", "module space", "commit", "-qam", "second"]);
+        let new = git(&["-C", "module space", "rev-parse", "HEAD"]);
+        git(&["add", "module space"]);
+        git(&["commit", "-qm", "update"]);
+        // Both merge parents record the old gitlink; the merge records the new
+        // one. Git emits a combined diff with no mode on its index header.
+        let old_tree = git(&["rev-parse", "HEAD~^{tree}"]);
+        let new_tree = git(&["rev-parse", "HEAD^{tree}"]);
+        let left = git(&["commit-tree", &old_tree, "-p", "HEAD~", "-m", "left"]);
+        let right = git(&["commit-tree", &old_tree, "-p", "HEAD~", "-m", "right"]);
+        let merge = git(&[
+            "commit-tree",
+            &new_tree,
+            "-p",
+            &left,
+            "-p",
+            &right,
+            "-m",
+            "merge",
+        ]);
+        // User configuration must not change the parseable gitlink format.
+        git(&["config", "diff.submodule", "log"]);
+        git(&["config", "diff.noprefix", "true"]);
+        git(&["-C", "module space", "checkout", "-q", &old]);
+        fs::write("module space/file.txt", "unrelated checkout edit\n").unwrap();
+        fs::create_dir("subdirectory").unwrap();
+        env::set_current_dir(directory.path().join("subdirectory")).unwrap();
+        for mut app in [
+            load_diff_app(&["HEAD~..HEAD".into()]).unwrap(),
+            load_diff_app(&["HEAD~..HEAD".into(), "--stat".into()]).unwrap(),
+            load_show_app(&["HEAD".into()]).unwrap(),
+            load_show_app(&["HEAD".into(), "--stat".into()]).unwrap(),
+            load_show_app(std::slice::from_ref(&merge)).unwrap(),
+            load_show_app(&[merge, "--stat".into()]).unwrap(),
+        ] {
+            app.show_cursor = app
+                .show_rows
+                .iter()
+                .position(|r| r.folded && r.text.contains("module space"))
+                .unwrap();
+            assert!(!app.show_rows.iter().any(|r| r.text.contains("file.txt")));
+            app.toggle_show_file();
+            assert!(app.status.is_none(), "{:?}", app.status);
+            let parent = app.show_cursor;
+            app.show_cursor = app
+                .show_rows
+                .iter()
+                .position(|r| r.folded && r.text.contains("file.txt"))
+                .unwrap();
+            app.toggle_show_file();
+            let text = app
+                .show_rows
+                .iter()
+                .map(|r| crate::ansi::plain(&r.text))
+                .collect::<Vec<_>>()
+                .join("\n");
+            assert!(text.contains("-before"), "{text}");
+            assert!(text.contains("+after"), "{text}");
+            assert!(!text.contains("unrelated checkout edit"));
+            app.show_cursor = parent;
+            app.toggle_show_file();
+            assert!(!app.show_rows.iter().any(|r| r.text.contains("file.txt")));
+            app.toggle_show_file();
+            assert!(app.show_rows.iter().any(|r| r.text.contains("file.txt")));
+            // Search should reveal already-loaded contents even after folding
+            // both the nested file and its submodule.
+            app.show_cursor = app
+                .show_rows
+                .iter()
+                .position(|r| r.summary && r.text.contains("file.txt"))
+                .unwrap();
+            app.toggle_show_file();
+            app.show_cursor = parent;
+            app.toggle_show_file();
+            app.begin_search(false);
+            app.search_input = Some("+after".to_owned());
+            app.submit_search();
+            assert!(app.status.is_none(), "{:?}", app.status);
+            assert!(crate::ansi::plain(&app.show_rows[app.show_cursor].text).contains("+after"));
+        }
+        assert!(show_submodule(None, "module space", &old, &"1".repeat(40))
+            .unwrap_err()
+            .contains("history may be missing"));
+        fs::rename(
+            directory.path().join("module space/.git"),
+            directory.path().join("module-git"),
+        )
+        .unwrap();
+        assert!(show_submodule(None, "module space", &old, &new)
+            .unwrap_err()
+            .contains("not initialized"));
     }
 
     #[test]

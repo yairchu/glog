@@ -137,6 +137,15 @@ and compact per-file summaries showing additions and deletions. Each file starts
 collapsed; `Enter`/`z` expands its patch beneath the summary and collapses it again.
 Binary files are labeled, and lazy untracked files show “contents not loaded”
 until expanded. Search reveals matches inside collapsed patches already loaded.
+
+Committed submodule pointer changes start collapsed, showing the old and new
+commit IDs. Press `Enter`/`z` to load nested file summaries, then expand each file
+with the same keys. This uses the recorded commits, independent of the submodule's
+checkout, and requires an initialized submodule with both commits available locally.
+Missing history is reported without fetching. Dirty working-tree contents and
+submodule additions/deletions are not expanded. Combined merge diffs are expandable
+when all parents record the same submodule commit.
+
 Merge commits with combined diffs also have expandable summaries; their counts
 count each displayed changed line once across all parents.
 

@@ -6,6 +6,7 @@ pub struct FileSection {
     pub end: usize,
     pub path: String,
     pub lockfile: bool,
+    pub submodule: Option<(String, String)>,
     pub untracked: bool,
     pub lazy_untracked_path: Option<String>,
     pub additions: usize,
@@ -70,6 +71,7 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
             FileSection {
                 start: *start,
                 end,
+                submodule: submodule_change(&visible),
                 lockfile: is_lockfile(&path),
                 untracked: visible
                     .iter()
@@ -81,6 +83,44 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
             }
         })
         .collect()
+}
+
+fn submodule_change(lines: &[String]) -> Option<(String, String)> {
+    let index = lines.iter().find_map(|line| line.strip_prefix("index "))?;
+    let (pair, mode) = index
+        .split_once(' ')
+        .map_or((index, None), |(pair, mode)| (pair, Some(mode)));
+    let (parents, new) = pair.split_once("..")?;
+    let mut parents = parents.split(',');
+    let old = parents.next()?;
+    let mut count = 1;
+    for parent in parents {
+        if parent != old {
+            return None;
+        }
+        count += 1;
+    }
+    let valid = |id: &str| matches!(id.len(), 40 | 64) && id.bytes().all(|b| b.is_ascii_hexdigit());
+    if !valid(old) || !valid(new) || old == new {
+        return None;
+    }
+    if count == 1 {
+        if mode != Some("160000") {
+            return None;
+        }
+    } else {
+        // Combined diffs omit the mode when all parents and the result agree.
+        // Require the gitlink body as well as identical parent object IDs.
+        if !lines.first().is_some_and(|line| {
+            line.starts_with("diff --cc ") || line.starts_with("diff --combined ")
+        }) || mode.is_some_and(|mode| mode != "160000")
+            || !lines.contains(&format!("{}Subproject commit {old}", "-".repeat(count)))
+            || !lines.contains(&format!("{}Subproject commit {new}", "+".repeat(count)))
+        {
+            return None;
+        }
+    }
+    Some((old.to_owned(), new.to_owned()))
 }
 
 fn hex_decode(hex: &str) -> Option<String> {
@@ -202,6 +242,45 @@ pub(crate) fn is_lockfile(path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn combined_submodules_expand_when_all_parents_agree() {
+        let old = "c0fc5ab718a00684a0f94f3d36c0bc2f03e54730";
+        let new = "1fa60bfed003c5f4d3eae6343043fee41bfa1bdf";
+        for header in ["diff --cc", "diff --combined"] {
+            for count in [2, 3] {
+                let parents = vec![old; count].join(",");
+                let patch = format!("{header} Radical1Presets\nindex {parents}..{new}\n--- a/Radical1Presets\n+++ b/Radical1Presets\n{} {} +1,1 {}\n{}Subproject commit {old}\n{}Subproject commit {new}\n",
+                    "@".repeat(count + 1), vec!["-1,1"; count].join(" "), "@".repeat(count + 1), "-".repeat(count), "+".repeat(count));
+                let files = file_sections(&patch);
+                assert_eq!(files[0].path, "Radical1Presets");
+                assert_eq!(files[0].submodule, Some((old.to_owned(), new.to_owned())));
+                let different_parent =
+                    patch.replacen(&format!("index {old}"), &format!("index {new}"), 1);
+                assert!(file_sections(&different_parent)[0].submodule.is_none());
+                let regular_file = patch.replace("Subproject commit ", "ordinary content ");
+                assert!(file_sections(&regular_file)[0].submodule.is_none());
+            }
+        }
+    }
+
+    #[test]
+    fn recognizes_only_two_distinct_full_gitlink_ids() {
+        for length in [40, 64] {
+            let old = "1".repeat(length);
+            let new = "2".repeat(length);
+            let patch = format!("diff --git a/module b/module\nindex {old}..{new} 160000\n");
+            assert_eq!(file_sections(&patch)[0].submodule, Some((old, new)));
+        }
+        for index in [
+            format!("{}..{} 160000", "1".repeat(40), "1".repeat(40)),
+            format!("{}..{} 100644", "1".repeat(40), "2".repeat(40)),
+            "1111111..2222222 160000".to_owned(),
+        ] {
+            let patch = format!("diff --git a/module b/module\nindex {index}\n");
+            assert!(file_sections(&patch)[0].submodule.is_none());
+        }
+    }
 
     #[test]
     fn combined_sections_count_each_changed_line_once_across_parents() {
