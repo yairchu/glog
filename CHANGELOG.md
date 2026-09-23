@@ -52,6 +52,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   even when Git's status and diff rename settings disagree. Non-UTF-8 filenames
   retain distinct patches, statistics, and folding state even when their
   displayed names are identical.
+  Unreadable untracked files show individual errors while other entries keep refreshing.
   Dirty submodules can be expanded into their live staged, unstaged, and untracked
   changes, including nested file patches. Diff submodule summaries retain the
   dirty indicator alongside the commit comparison.

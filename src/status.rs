@@ -441,16 +441,24 @@ impl StatusView {
             command.arg(original);
         }
     }
-    fn load_stats(&self, snapshot: &Snapshot) -> Result<HashMap<Key, String>, String> {
+    fn load_stats(
+        &self,
+        snapshot: &Snapshot,
+        failed: &mut HashSet<Key>,
+    ) -> Result<HashMap<Key, String>, String> {
         let mut stats = HashMap::new();
         for entry in snapshot
             .entries
             .iter()
             .filter(|entry| entry.key.group == Group::Untracked)
         {
-            let detail = untracked_stats(&self.root.join(&entry.raw_path)).map_err(|error| {
-                format!("could not inspect {}: {error}", entry.key.path.display())
-            })?;
+            let detail = match untracked_stats(&self.root.join(&entry.raw_path)) {
+                Ok(detail) => detail,
+                Err(error) => {
+                    failed.insert(entry.key.clone());
+                    format!("statistics unavailable: {error}")
+                }
+            };
             stats.insert(entry.key.clone(), detail);
         }
         for group in [Group::Staged, Group::Unstaged, Group::Conflicts] {
@@ -684,6 +692,7 @@ impl StatusView {
         let mut patches = HashMap::new();
         let mut stats = HashMap::new();
         let mut changed = Snapshot::default();
+        let mut failed = HashSet::new();
         for entry in &snapshot.entries {
             let fingerprint = self.fingerprint(entry, &attributes);
             let unchanged =
@@ -698,7 +707,14 @@ impl StatusView {
                 {
                     cached.clone()
                 } else {
-                    self.patch(entry)?
+                    match self.patch(entry) {
+                        Ok(patch) => patch,
+                        Err(error) if entry.key.group == Group::Untracked => {
+                            failed.insert(entry.key.clone());
+                            format!("Patch unavailable: {error}\n")
+                        }
+                        Err(error) => return Err(error),
+                    }
                 };
                 patches.insert(entry.key.clone(), patch);
             }
@@ -708,7 +724,11 @@ impl StatusView {
                 changed.entries.push(entry.clone());
             }
         }
-        stats.extend(self.load_stats(&changed)?);
+        stats.extend(self.load_stats(&changed, &mut failed)?);
+        // Retry failed reads even if file metadata has not changed.
+        for key in failed {
+            fingerprints.remove(&key);
+        }
         self.submodules.retain(|key, _| {
             snapshot
                 .entries
@@ -1159,20 +1179,20 @@ mod tests {
             .position(|row| row.key == RowKey::File(key.clone()))
             .unwrap();
         view.toggle();
-        assert!(view.patches[&key].contains("+contents"));
+        assert!(crate::ansi::plain(&view.patches[&key]).contains("+contents"));
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
         std::fs::write(root.join("other.txt"), "another change\n").unwrap();
         view.refresh()
             .expect("an expanded unreadable file must not block other changes");
         assert_eq!(view.summary(), "2 untracked files");
         assert!(
-            !view.patches[&key].contains("+contents"),
+            !crate::ansi::plain(&view.patches[&key]).contains("+contents"),
             "do not display a stale patch"
         );
         assert!(view.patches[&key].contains("unavailable"));
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         view.refresh().unwrap();
-        assert!(view.patches[&key].contains("+contents"));
+        assert!(crate::ansi::plain(&view.patches[&key]).contains("+contents"));
     }
 
     #[test]
