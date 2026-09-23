@@ -36,8 +36,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   patches using Kitty graphics (automatically enabled in Kitty and Ghostty).
   Previews load lazily, scroll and fold with the diff, and display the correct
   historical, staged, or working-tree contents, regardless of Git diff prefix
-  or relative-path settings. `GLOG_IMAGES=off` disables them;
-  `GLOG_IMAGES=kitty` explicitly enables them, including through configured tmux.
+  or relative-path settings. Merge commits preview each parent and the result.
+  `GLOG_IMAGES=off` disables them; `GLOG_IMAGES=kitty` explicitly enables them,
+  including through configured tmux.
 
 - Added `glog status` and a live Status detail view with branch/upstream
   information, clean-tree state, expandable conflict/staged/unstaged/untracked
@@ -81,6 +82,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   `glog diff` and `glog diff --cached` remain available without watch mode.
 
 ### Fixed
+
+- Kept search from expanding untracked files in `glog diff` whose contents are
+  not loaded yet, which showed an internal placeholder line. Matching their
+  header now selects the file.
 
 - Listed untracked files from the whole repository when running `glog diff`
   from a subdirectory, labeling them by repository-relative path like tracked

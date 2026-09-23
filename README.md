@@ -307,7 +307,8 @@ many untracked artifacts still open quickly.
 
 Binary PNG, JPEG, GIF, BMP, ICO, and WebP changes show labeled Before/After
 previews inside expanded diffs in Show, Diff, and Status. Added files show only
-After; deleted files show only Before. Previews scroll and fold with the patch,
+After; deleted files show only Before. Merge commits show each parent's image
+and the result. Previews scroll and fold with the patch,
 preserve aspect ratio, and load in the background when visible. Animated images
 show a still frame. Corrupt, unsupported, or oversized images keep the binary
 notice and show an unavailable-preview message.
