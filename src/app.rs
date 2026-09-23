@@ -1414,15 +1414,14 @@ mod tests {
         // Git's quoted output also works on filesystems that cannot create
         // these names. The third name contains a literal backslash.
         let paths = [r"deps-\377.lock", r"deps-\376.lock", r"deps-\\377.lock"];
-        let text: String = paths
-            .iter()
-            .enumerate()
-            .map(|(index, path)| {
-                format!(
-                    "diff --git \"a/{path}\" \"b/{path}\"\n--- \"a/{path}\"\n+++ \"b/{path}\"\n@@ -1 +1 @@\n-old\n+new-{index}\n"
-                )
-            })
-            .collect();
+        let mut text = String::new();
+        for (index, path) in paths.iter().enumerate() {
+            writeln!(
+                text,
+                "diff --git \"a/{path}\" \"b/{path}\"\n--- \"a/{path}\"\n+++ \"b/{path}\"\n@@ -1 +1 @@\n-old\n+new-{index}"
+            )
+            .unwrap();
+        }
         for summary in [false, true] {
             let mut app = App::new(Vec::new());
             app.show_stat = summary;

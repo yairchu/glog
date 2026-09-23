@@ -1815,21 +1815,20 @@ mod tests {
     #[cfg(unix)]
     fn exact_repository_paths(parent: &Path) -> Vec<PathBuf> {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
-        [b"repo\n\n".as_slice(), b"repo ", b"repo-\xff"]
-            .into_iter()
-            .filter_map(|name| {
-                let root = parent.join(OsStr::from_bytes(name));
-                if let Err(error) = fs::create_dir(&root) {
-                    // The default macOS filesystem rejects non-UTF-8 names.
-                    #[cfg(target_os = "macos")]
-                    if error.raw_os_error() == Some(92) {
-                        return None;
-                    }
-                    panic!("could not create repository fixture: {error}");
+        let mut roots = Vec::new();
+        for name in [b"repo\n\n".as_slice(), b"repo ", b"repo-\xff"] {
+            let root = parent.join(OsStr::from_bytes(name));
+            if let Err(error) = fs::create_dir(&root) {
+                // The default macOS filesystem rejects non-UTF-8 names.
+                #[cfg(target_os = "macos")]
+                if error.raw_os_error() == Some(92) {
+                    continue;
                 }
-                Some(root)
-            })
-            .collect()
+                panic!("could not create repository fixture: {error}");
+            }
+            roots.push(root);
+        }
+        roots
     }
 
     #[cfg(unix)]
