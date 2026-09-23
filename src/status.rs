@@ -1031,8 +1031,24 @@ impl StatusView {
             let index = self.offset + usize::from(relative);
             if index < self.rows.len() && usize::from(relative) < self.height {
                 self.cursor = index;
-                self.toggle();
+                if self.folded(&self.rows[index].key) {
+                    self.toggle();
+                }
             }
+        }
+    }
+    /// Whether a row is a collapsed section or file that a click expands.
+    fn folded(&self, key: &RowKey) -> bool {
+        match key {
+            RowKey::Group(group) => self.collapsed.contains(group),
+            RowKey::File(file) => !self.rows.iter().any(
+                |row| matches!(&row.key, RowKey::Patch(k, _) | RowKey::Nested(k, _) if k == file),
+            ),
+            RowKey::Patch(_, _) => false,
+            RowKey::Nested(file, nested) => self
+                .submodules
+                .get(file)
+                .is_some_and(|child| child.folded(nested)),
         }
     }
     pub fn enable_images(&mut self, enabled: bool) {
