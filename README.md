@@ -8,7 +8,7 @@ With no arguments, `glog` shows committed history, loaded once, without inspecti
 
 ## Install and run
 
-Requires Rust 1.80+ and an installed `git` executable.
+Requires the latest stable Rust toolchain and an installed `git` executable.
 
 ```bash
 cargo build --release

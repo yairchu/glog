@@ -2,7 +2,6 @@
 name = "glog-tui"
 version = "0.2.1"
 edition = "2021"
-rust-version = "1.80"
 description = "An interactive git log and git show browser"
 license = "MIT"
 repository = "https://github.com/yairchu/glog"
@@ -19,9 +18,5 @@ path = "src/main.rs"
 crossterm = "0.28"
 ratatui = { version = "0.29", features = ["unstable-rendered-line-info"] }
 
-# Ratatui's loose transitive bounds otherwise select newer releases whose
-# minimum supported Rust versions exceed glog's Rust 1.80 MSRV.
-instability = "=0.3.2"
-unicode-segmentation = "=1.12.0"
 base64 = "0.22"
 image = { version = "0.24", default-features = false, features = ["png", "jpeg", "gif", "bmp", "ico", "webp"] }

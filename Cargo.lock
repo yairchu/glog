@@ -185,9 +185,7 @@ dependencies = [
  "base64",
  "crossterm",
  "image",
- "instability",
  "ratatui",
- "unicode-segmentation",
 ]
 
 [[package]]
