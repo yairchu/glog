@@ -11,7 +11,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   Show and Diff, with nested file summaries and patches from locally available
   recorded commits, including combined merge diffs whose parents record the same
   submodule commit. Expanded nested patches and their reading position survive
-  watch refreshes when the recorded submodule commits are unchanged.
+  watch refreshes when the recorded submodule commits are unchanged. Toggling
+  summary mode back restores the reading line inside expanded submodules.
 
 - Added Left/Right shortcuts in Log to select the previous/newer or next/older
   commit while staying in Log, matching commit navigation in Show and Status.

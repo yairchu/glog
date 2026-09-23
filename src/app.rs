@@ -45,6 +45,7 @@ pub struct App {
     pub show_text: String,
     pub show_stat: bool,
     stat_bookmark: Option<(String, usize, Option<crate::images::Row>)>,
+    stat_submodule_bookmark: Option<(String, usize)>,
     pub show_rows: Vec<ShowRow>,
     // Start of each wrapped row, followed by the total screen height.
     pub show_row_starts: Vec<usize>,
@@ -96,6 +97,7 @@ impl App {
             show_text: String::new(),
             show_stat: false,
             stat_bookmark: None,
+            stat_submodule_bookmark: None,
             show_rows: Vec::new(),
             show_row_starts: Vec::new(),
             show_scroll: None,
@@ -520,6 +522,7 @@ impl App {
         self.submodules.clear();
         self.expanded_folds.clear();
         self.stat_bookmark = None;
+        self.stat_submodule_bookmark = None;
         self.rebuild_show_rows();
     }
 
@@ -743,12 +746,16 @@ impl App {
 
     pub fn toggle_show_stat(&mut self) {
         self.ensure_show_rows();
+        let nested_cursor = self.submodule_rows.get(&self.show_cursor).cloned();
         let current = self.show_rows.get(self.show_cursor).cloned();
         let file = current
             .as_ref()
             .and_then(|row| row.file)
             .map(|index| self.show_files[index].clone());
         if !self.show_stat {
+            // Child rows keep their own indices while the parent is collapsed.
+            // The flattened row's source points only to the gitlink header.
+            self.stat_submodule_bookmark = nested_cursor.clone();
             self.stat_bookmark = file.as_ref().zip(current.as_ref()).map(|(file, row)| {
                 (
                     file.path.clone(),
@@ -802,6 +809,20 @@ impl App {
                             || (row.source == source && row.preview.as_ref() == preview))
                 })
                 .unwrap_or(self.show_cursor.min(self.show_rows.len().saturating_sub(1)));
+            if !self.show_stat {
+                let nested = nested_cursor.as_ref().or_else(|| {
+                    self.stat_submodule_bookmark
+                        .as_ref()
+                        .filter(|(path, _)| *path == file.path)
+                });
+                if let Some(index) = nested.and_then(|location| {
+                    self.submodule_rows
+                        .iter()
+                        .find_map(|(row, current)| (current == location).then_some(*row))
+                }) {
+                    self.show_cursor = index;
+                }
+            }
         }
         self.search_match = None;
         self.show_scroll = Some(ShowScroll::Cursor);
@@ -1400,6 +1421,62 @@ mod tests {
                 format!("▶ README.md | {expected}"),
                 "{content}"
             );
+        }
+    }
+
+    #[test]
+    fn stat_hotkey_preserves_nested_submodule_reading_lines() {
+        fn wrap(child: App) -> App {
+            let mut app = App::new(Vec::new());
+            app.show_text = format!(
+                "diff --git a/module b/module\nindex {}..{} 160000\n",
+                "1".repeat(40),
+                "2".repeat(40)
+            );
+            app.ensure_show_rows();
+            app.submodules.insert("module".into(), Box::new(child));
+            app.expanded_folds.insert("module".into());
+            app.rebuild_show_rows();
+            app
+        }
+
+        for depth in [1, 2] {
+            for summary in [false, true] {
+                let mut app = App::new(Vec::new());
+                app.show_stat = true;
+                app.show_text = "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1 +1 @@\n-before\n+after\n".into();
+                app.ensure_show_rows();
+                app.toggle_show_file();
+                for _ in 0..depth {
+                    app = wrap(app);
+                }
+                app.show_cursor = app
+                    .show_rows
+                    .iter()
+                    .position(|row| {
+                        if summary {
+                            row.summary && row.text.contains("file.txt")
+                        } else {
+                            row.text.contains("+after")
+                        }
+                    })
+                    .unwrap();
+                let expected = app.show_rows[app.show_cursor].text.clone();
+                app.toggle_show_stat();
+                assert!(app.show_rows[app.show_cursor].summary);
+                assert_eq!(app.show_rows.len(), 1);
+                app.toggle_show_stat();
+                assert_eq!(
+                    app.show_rows[app.show_cursor].text, expected,
+                    "depth={depth}, summary={summary}"
+                );
+                // Leaving summary mode while already inside an expanded child
+                // must also preserve that child's selection.
+                app.show_stat = true;
+                app.rebuild_show_rows();
+                app.toggle_show_stat();
+                assert_eq!(app.show_rows[app.show_cursor].text, expected);
+            }
         }
     }
 
