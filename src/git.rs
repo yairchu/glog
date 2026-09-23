@@ -1862,6 +1862,62 @@ mod tests {
         }
     }
 
+    #[test]
+    fn status_load_failure_still_opens_status_and_retries() {
+        use crate::{
+            app::{App, Mode},
+            input,
+        };
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::{backend::TestBackend, Terminal};
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write("tracked.txt", "contents\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        let mut app = App::new(load_watch_log().unwrap());
+        app.watch = true;
+        app.selected = 1;
+        app.mode = Mode::Show;
+        app.load_show();
+        assert!(app.show_text.contains("initial"));
+        fs::write(".git/index", "corrupt").unwrap();
+        input::handle(
+            Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
+            &mut app,
+        );
+        assert_eq!(app.mode, Mode::Status);
+        assert_eq!(app.selected, 0);
+        let view = app.status_view.as_mut().unwrap();
+        assert!(view.error.is_some());
+        let mut terminal = Terminal::new(TestBackend::new(80, 10)).unwrap();
+        let heading = |view: &mut crate::status::StatusView,
+                       terminal: &mut Terminal<TestBackend>| {
+            terminal
+                .draw(|frame| view.draw(frame, frame.area()))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            (0..80).map(|x| buffer[(x, 0)].symbol()).collect::<String>()
+        };
+        assert!(heading(view, &mut terminal).contains("Working tree status unavailable"));
+        fs::remove_file(".git/index").unwrap();
+        git(&["reset", "-q"]);
+        view.refresh().unwrap();
+        assert_eq!(view.error, None);
+        assert!(heading(view, &mut terminal).contains("Working tree clean"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn images_preserve_exact_repository_paths() {
