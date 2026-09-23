@@ -1165,6 +1165,11 @@ mod tests {
             .iter()
             .position(|row| crate::ansi::plain(&row.text).contains("+worktree"))
             .unwrap();
+        let reading_line = view.rows[view.cursor].text.clone();
+        view.toggle_stat();
+        view.refresh().unwrap();
+        view.toggle_stat();
+        assert_eq!(view.rows[view.cursor].text, reading_line);
         std::fs::write(module.join("file.txt"), "inserted\nworktree\n").unwrap();
         view.refresh().unwrap();
         assert!(crate::ansi::plain(&view.rows[view.cursor].text).contains("+worktree"));
