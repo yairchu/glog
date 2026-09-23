@@ -56,7 +56,7 @@ pub fn sources(
     path: impl AsRef<Path>,
     root: &Path,
     worktree: bool,
-) -> Vec<(&'static str, Source)> {
+) -> Vec<(String, Source)> {
     let path = path.as_ref();
     let extension = path
         .extension()
@@ -77,27 +77,43 @@ pub fn sources(
     let deleted = lines
         .iter()
         .any(|line| line.starts_with("deleted file mode "));
+    // Combined merge diffs list one old ID per parent: "index a,b..c".
     let ids = lines.iter().find_map(|line| {
         let ids = line.strip_prefix("index ")?.split_whitespace().next()?;
         let (old, new) = ids.split_once("..")?;
+        let old: Vec<_> = old.split(',').collect();
         let valid =
             |id: &str| (4..=64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_hexdigit());
-        (valid(old) && valid(new)).then_some((old, new))
+        (old.iter().all(|id| valid(id)) && valid(new)).then_some((old, new))
     });
+    let nonzero = |id: &str| id.bytes().any(|b| b != b'0');
     let mut result = Vec::new();
     if let Some((old, new)) = ids {
-        if !added && old.bytes().any(|b| b != b'0') {
-            result.push(("Before", Source::Blob(root.to_owned(), old.to_owned())));
+        if !added {
+            let combined = old.len() > 1;
+            for (parent, id) in old.into_iter().enumerate() {
+                if nonzero(id) {
+                    let label = if combined {
+                        format!("Parent {}", parent + 1)
+                    } else {
+                        "Before".to_owned()
+                    };
+                    result.push((label, Source::Blob(root.to_owned(), id.to_owned())));
+                }
+            }
         }
         if !deleted {
             if worktree {
-                result.push(("After", Source::file(root.join(path))));
-            } else if new.bytes().any(|b| b != b'0') {
-                result.push(("After", Source::Blob(root.to_owned(), new.to_owned())));
+                result.push(("After".to_owned(), Source::file(root.join(path))));
+            } else if nonzero(new) {
+                result.push((
+                    "After".to_owned(),
+                    Source::Blob(root.to_owned(), new.to_owned()),
+                ));
             }
         }
     } else if added && worktree {
-        result.push(("After", Source::file(root.join(path))));
+        result.push(("After".to_owned(), Source::file(root.join(path))));
     }
     result
 }
