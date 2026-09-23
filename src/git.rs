@@ -1990,6 +1990,56 @@ mod tests {
     }
 
     #[test]
+    fn single_commit_diff_previews_recorded_images_after_worktree_edits() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        let save_image = |color| {
+            image::RgbaImage::from_pixel(2, 2, image::Rgba(color))
+                .save("picture.png")
+                .unwrap();
+        };
+        save_image([255, 0, 0, 255]);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "red"]);
+        let before = git(&["rev-parse", "HEAD:picture.png"]);
+        save_image([0, 0, 255, 255]);
+        git(&["commit", "-qam", "blue"]);
+        let after = git(&["rev-parse", "HEAD:picture.png"]);
+        save_image([0, 255, 0, 255]);
+
+        for revision in ["HEAD^!", "HEAD^-", "HEAD^..HEAD"] {
+            let mut app = load_diff_app(&[revision.into()]).unwrap();
+            app.images.enabled = true;
+            app.images.root = directory.path().to_owned();
+            app.show_rows.clear();
+            app.ensure_show_rows();
+            let sources: Vec<_> = app
+                .show_rows
+                .iter()
+                .filter_map(|row| row.preview.as_ref())
+                .filter(|preview| preview.row == 0)
+                .map(|preview| preview.source.clone())
+                .collect();
+            assert_eq!(sources, vec![
+                crate::images::Source::Blob(directory.path().to_owned(), before.clone()),
+                crate::images::Source::Blob(directory.path().to_owned(), after.clone()),
+            ], "{revision} must preview the committed red and blue images, not the green working file");
+        }
+    }
+
+    #[test]
     fn diff_compares_revisions_paths_and_image_sources() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
