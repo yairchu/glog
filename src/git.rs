@@ -227,7 +227,7 @@ pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
         }
     } else {
         CommitKind::Comparison {
-            worktree: !cached && revisions.len() == 1 && !revisions[0].contains(".."),
+            worktree: !cached && comparison_uses_worktree(&revisions)?,
         }
     };
     let mut entry = match kind {
@@ -256,6 +256,25 @@ pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
         app.ensure_show_rows();
     }
     Ok(app)
+}
+
+fn comparison_uses_worktree(revisions: &[&String]) -> Result<bool, String> {
+    // One argument can expand to multiple endpoints (HEAD^!, HEAD^-),
+    // while HEAD^@ can expand to just one parent or none for a root commit.
+    // Like git diff, use the working tree when there are fewer than two.
+    let output = Command::new("git")
+        .args(["rev-parse", "--revs-only", "--end-of-options"])
+        .args(revisions)
+        .arg("--")
+        .output()
+        .map_err(|error| format!("could not resolve diff revisions: {error}"))?;
+    if !output.status.success() {
+        return Err(stderr_message(
+            "could not resolve diff revisions",
+            &output.stderr,
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).lines().count() < 2)
 }
 
 pub fn watch_fingerprint() -> Result<u64, String> {
@@ -2087,6 +2106,11 @@ mod tests {
             (vec!["left...right"], "base", "right", false),
             (vec!["left..."], "base", "right", false),
             (vec!["...left"], "base", "left", false),
+            (vec!["left^!"], "base", "left", false),
+            (vec!["right^-"], "base", "right", false),
+            (vec!["right^@"], "base", "worktree", true),
+            (vec!["base^!"], "base", "worktree", true),
+            (vec!["base^@"], "index", "worktree", true),
             (vec!["left"], "left", "worktree", true),
             (vec!["--cached", "left"], "left", "index", false),
         ] {
