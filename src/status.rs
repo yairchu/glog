@@ -2118,6 +2118,63 @@ mod tests {
         }
     }
 
+    #[test]
+    fn copy_detection_settings_keep_status_entries_matched_to_their_patches() {
+        let root = std::env::temp_dir().join(format!("glog-status-copies-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        git(&["config", "diff.renames", "copies"]);
+        let original = "original\n".repeat(10);
+        std::fs::write(root.join("a.txt"), &original).unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        std::fs::write(root.join("b.txt"), &original).unwrap();
+        std::fs::write(root.join("a.txt"), format!("edited\n{original}")).unwrap();
+        git(&["add", "."]);
+
+        let mut view = StatusView {
+            root,
+            ..StatusView::default()
+        };
+        view.refresh().unwrap();
+        let staged: Vec<_> = view
+            .snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.key.group == Group::Staged)
+            .collect();
+        assert_eq!(staged.len(), 2);
+        for entry in staged {
+            let patch = view.patch(entry).unwrap();
+            let files = crate::diff::file_sections(&patch);
+            assert_eq!(files.len(), 1, "{:?}: {patch}", entry.key.path);
+            assert_eq!(files[0].path, entry.key.path);
+            assert_eq!(
+                view.stats[&entry.key],
+                format!("+{} −{}", files[0].additions, files[0].deletions)
+            );
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn colliding_display_names_keep_distinct_status_contents_and_folds() {
