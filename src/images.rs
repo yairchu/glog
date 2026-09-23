@@ -150,7 +150,10 @@ impl Images {
             enabled,
             root,
             tmux,
-            next_id: (std::process::id() % 65535) * 128 + 1,
+            // Instances sharing a terminal, such as tmux panes, share its image
+            // IDs. Sequential IDs from a random start rarely overlap, whereas
+            // PID-based ranges collide between neighbouring PIDs.
+            next_id: random_u32() % 0xffffff + 1,
             ..Self::default()
         }
     }
@@ -312,6 +315,13 @@ impl Images {
         self.entries.clear();
         self.flush(writer)
     }
+}
+
+fn random_u32() -> u32 {
+    use std::hash::{BuildHasher, Hasher};
+    std::collections::hash_map::RandomState::new()
+        .build_hasher()
+        .finish() as u32
 }
 
 fn read_source(source: &Source) -> Option<Vec<u8>> {
