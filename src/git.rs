@@ -796,7 +796,7 @@ fn parse_untracked_paths(output: &[u8]) -> Vec<std::path::PathBuf> {
         .collect()
 }
 
-fn format_output(output: Vec<u8>) -> Result<String, String> {
+pub(crate) fn format_output(output: Vec<u8>) -> Result<String, String> {
     let plain = String::from_utf8_lossy(&output).into_owned();
     if delta_enabled() {
         if let Some(formatted) = run_delta(&output) {

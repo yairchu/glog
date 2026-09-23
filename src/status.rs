@@ -417,7 +417,7 @@ impl StatusView {
         if !output.status.success() {
             return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
         }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        crate::git::format_output(output.stdout)
     }
     fn diff_command(&self, entry: &Entry) -> Command {
         let mut command = crate::git::patch_command();
