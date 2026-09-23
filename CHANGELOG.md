@@ -86,6 +86,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   from a subdirectory, labeling them by repository-relative path like tracked
   changes, and refreshed watch sessions when those files change.
 
+- Expanded untracked files with non-UTF-8 names in `glog diff`, instead of
+  failing to find them, keeping similarly named files distinct.
+
 - Preserved non-UTF-8 untracked filenames when fingerprinting watch sessions,
   preventing startup failures on filesystems that support these names.
 

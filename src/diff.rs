@@ -10,7 +10,7 @@ pub struct FileSection {
     pub lockfile: bool,
     pub submodule: Option<(String, String)>,
     pub untracked: bool,
-    pub lazy_untracked_path: Option<String>,
+    pub lazy_untracked_path: Option<Vec<u8>>,
     pub additions: usize,
     pub deletions: usize,
 }
@@ -42,8 +42,7 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                     .and_then(hex_decode)
             });
             let path_bytes = lazy_untracked_path
-                .as_ref()
-                .map(|path| path.as_bytes().to_vec())
+                .clone()
                 .or_else(|| diff_path(&visible))
                 .unwrap_or_else(|| b"changed file".to_vec());
             let path = String::from_utf8(path_bytes.clone()).unwrap_or_else(|_| {
@@ -139,16 +138,15 @@ fn submodule_change(lines: &[String]) -> Option<(String, String)> {
     Some((old.to_owned(), new.to_owned()))
 }
 
-fn hex_decode(hex: &str) -> Option<String> {
+fn hex_decode(hex: &str) -> Option<Vec<u8>> {
     if !hex.len().is_multiple_of(2) {
         return None;
     }
-    let bytes = (0..hex.len())
+    (0..hex.len())
         .step_by(2)
         .map(|index| u8::from_str_radix(&hex[index..index + 2], 16))
         .collect::<Result<Vec<_>, _>>()
-        .ok()?;
-    String::from_utf8(bytes).ok()
+        .ok()
 }
 
 fn diff_path(lines: &[String]) -> Option<Vec<u8>> {
@@ -394,7 +392,10 @@ mod tests {
     fn decodes_a_lazy_untracked_path() {
         let text = "diff --git a/new.txt b/new.txt\nnew file mode 100644\nglog-lazy-untracked:6e65772e747874\n";
         let sections = file_sections(text);
-        assert_eq!(sections[0].lazy_untracked_path.as_deref(), Some("new.txt"));
+        assert_eq!(
+            sections[0].lazy_untracked_path.as_deref(),
+            Some(&b"new.txt"[..])
+        );
     }
 
     #[test]

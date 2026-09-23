@@ -983,7 +983,7 @@ impl App {
             }
         }
         let loaded = if let Some(untracked_path) = file.lazy_untracked_path.clone() {
-            match git::show_untracked(std::path::Path::new(&untracked_path)) {
+            match git::show_untracked(&git::raw_path(&untracked_path)) {
                 Ok(text) => {
                     let mut lines: Vec<_> = self.show_text.lines().map(str::to_owned).collect();
                     lines.splice(file.start..file.end, text.lines().map(str::to_owned));

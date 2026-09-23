@@ -401,7 +401,7 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
 #[cfg(test)]
 fn working_tree_entries() -> Result<Vec<Commit>, String> {
     let unstaged =
-        has_diff(&["diff", "--quiet", "--no-ext-diff"])? || !untracked_files(&[])?.is_empty();
+        has_diff(&["diff", "--quiet", "--no-ext-diff"])? || !untracked_paths(&[])?.is_empty();
     let staged = has_diff(&["diff", "--cached", "--quiet", "--no-ext-diff"])?;
     let mut entries = Vec::new();
     if unstaged {
@@ -522,15 +522,20 @@ fn show_unstaged(paths: &[String]) -> Result<String, String> {
     }
     let mut formatted = format_output(output.stdout)?;
     let root = repository_root()?;
-    for path in untracked_files(paths)? {
-        let metadata = fs::symlink_metadata(root.join(&path))
-            .map_err(|error| format!("could not inspect untracked file {path}: {error}"))?;
-        let old_path = git_quote_path(&format!("a/{path}"));
-        let new_path = git_quote_path(&format!("b/{path}"));
+    for path in untracked_paths(paths)? {
+        let metadata = fs::symlink_metadata(root.join(&path)).map_err(|error| {
+            format!(
+                "could not inspect untracked file {}: {error}",
+                path.display()
+            )
+        })?;
+        let bytes = path.as_os_str().as_encoded_bytes();
+        let old_path = git_quote_path(&[b"a/", bytes].concat());
+        let new_path = git_quote_path(&[b"b/", bytes].concat());
         let mode = file_mode(&metadata);
         formatted.push_str(&format!(
             "\x1b[1mdiff --git {old_path} {new_path}\x1b[m\n\x1b[1mnew file mode {mode:o}\x1b[m\nglog-lazy-untracked:{}\n",
-            hex_encode(path.as_bytes())
+            hex_encode(bytes)
         ));
     }
     Ok(formatted)
@@ -635,8 +640,9 @@ fn untracked_regular_file_diff(
         .read_to_end(&mut contents)
         .map_err(|error| format!("could not read untracked file {name}: {error}"))?;
 
-    let old_path = git_quote_path(&format!("a/{name}"));
-    let new_path = git_quote_path(&format!("b/{name}"));
+    let bytes = path.as_os_str().as_encoded_bytes();
+    let old_path = git_quote_path(&[b"a/", bytes].concat());
+    let new_path = git_quote_path(&[b"b/", bytes].concat());
     let mode = file_mode(&metadata);
     output.extend_from_slice(
         format!(
@@ -676,15 +682,15 @@ fn untracked_regular_file_diff(
     Ok(true)
 }
 
-fn git_quote_path(path: &str) -> String {
+fn git_quote_path(path: &[u8]) -> String {
     if path
-        .bytes()
-        .all(|byte| (b' '..=b'~').contains(&byte) && byte != b'"' && byte != b'\\')
+        .iter()
+        .all(|&byte| (b' '..=b'~').contains(&byte) && byte != b'"' && byte != b'\\')
     {
-        return path.to_owned();
+        return String::from_utf8_lossy(path).into_owned();
     }
     let mut quoted = String::from("\"");
-    for byte in path.bytes() {
+    for &byte in path {
         match byte {
             b'"' => quoted.push_str("\\\""),
             b'\\' => quoted.push_str("\\\\"),
@@ -724,13 +730,6 @@ fn file_mode(metadata: &fs::Metadata) -> u32 {
 #[cfg(not(unix))]
 fn file_mode(_metadata: &fs::Metadata) -> u32 {
     0o100644
-}
-
-fn untracked_files(paths: &[String]) -> Result<Vec<String>, String> {
-    Ok(untracked_paths(paths)?
-        .iter()
-        .map(|path| path.to_string_lossy().into_owned())
-        .collect())
 }
 
 /// Lists untracked paths relative to the repository root, matching patch
@@ -2207,9 +2206,9 @@ mod tests {
         assert_eq!(paths, ["a.lock", "nested/a.lock", "outside.txt"]);
         for file in files.iter().filter(|file| file.untracked) {
             let path = file.lazy_untracked_path.as_deref().unwrap();
-            assert!(show_untracked(std::path::Path::new(path))
+            assert!(show_untracked(&raw_path(path))
                 .unwrap()
-                .contains(&format!("b/{path}")));
+                .contains(&format!("b/{}", file.path)));
         }
     }
 
