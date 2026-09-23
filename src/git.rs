@@ -568,10 +568,16 @@ pub fn show_submodule(
 }
 
 pub fn show_untracked(path: &std::path::Path) -> Result<String, String> {
+    show_untracked_in(std::path::Path::new("."), path)
+}
+
+/// Shows untracked `path`, relative to `root`, labeled by that relative path.
+pub fn show_untracked_in(root: &std::path::Path, path: &std::path::Path) -> Result<String, String> {
     let name = path.to_string_lossy();
     let mut output = Vec::new();
-    if !untracked_regular_file_diff(path, &mut output)? {
+    if !untracked_regular_file_diff(&root.join(path), path, &mut output)? {
         let untracked = Command::new("git")
+            .current_dir(root)
             .args([
                 "--no-pager",
                 "diff",
@@ -593,11 +599,12 @@ pub fn show_untracked(path: &std::path::Path) -> Result<String, String> {
 }
 
 fn untracked_regular_file_diff(
+    full_path: &std::path::Path,
     path: &std::path::Path,
     output: &mut Vec<u8>,
 ) -> Result<bool, String> {
     let name = path.to_string_lossy();
-    let metadata = fs::symlink_metadata(path)
+    let metadata = fs::symlink_metadata(full_path)
         .map_err(|error| format!("could not inspect untracked file {name}: {error}"))?;
     if !metadata.file_type().is_file() {
         return Ok(false);
@@ -607,7 +614,7 @@ fn untracked_regular_file_diff(
     // --no-index` once per untracked file is painfully slow for generated
     // trees containing thousands of files, even when every binary file only
     // contributes a three-line notice.
-    let mut file = fs::File::open(path)
+    let mut file = fs::File::open(full_path)
         .map_err(|error| format!("could not read untracked file {name}: {error}"))?;
     let mut contents = Vec::with_capacity(8_000);
     Read::by_ref(&mut file)
@@ -2640,10 +2647,12 @@ mod tests {
         let _current_dir = CurrentDirGuard::enter(repository.path());
         let mut output = Vec::new();
 
-        assert!(
-            untracked_regular_file_diff(std::path::Path::new("generated.bin"), &mut output)
-                .unwrap()
-        );
+        assert!(untracked_regular_file_diff(
+            std::path::Path::new("generated.bin"),
+            std::path::Path::new("generated.bin"),
+            &mut output
+        )
+        .unwrap());
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("diff --git a/generated.bin b/generated.bin"));
         assert!(output.contains("new file mode 100644"));

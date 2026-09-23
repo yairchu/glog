@@ -393,7 +393,7 @@ impl StatusView {
         #[cfg(test)]
         self.patch_reads.set(self.patch_reads.get() + 1);
         if entry.key.group == Group::Untracked {
-            return crate::git::show_untracked(&self.root.join(&entry.raw_path));
+            return crate::git::show_untracked_in(&self.root, &entry.raw_path);
         }
         let mut command = self.diff_command(entry);
         command.args(["--color=always", "--full-index", "--submodule=short"]);
