@@ -75,6 +75,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Fixed
 
+- Preserved non-UTF-8 untracked filenames when fingerprinting watch sessions,
+  preventing startup failures on filesystems that support these names.
+
 - Preserved reading position and expanded files when watch mode refreshes,
   keeping the selected commit in place and following surviving lines in changed
   working-tree patches.

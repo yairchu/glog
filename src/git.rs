@@ -300,10 +300,11 @@ pub fn watch_fingerprint() -> Result<u64, String> {
         &["show-ref", "--head", "--dereference"],
         true,
     )?;
-    for path in untracked_files(&[])? {
-        fingerprint.write(path.as_bytes());
+    for path in untracked_paths(&[])? {
+        fingerprint.write(path.as_os_str().as_encoded_bytes());
+        let display = path.display();
         let metadata = fs::symlink_metadata(&path)
-            .map_err(|error| format!("could not inspect untracked file {path}: {error}"))?;
+            .map_err(|error| format!("could not inspect untracked file {display}: {error}"))?;
         let file_type = metadata.file_type();
         fingerprint.write_u64(metadata.len());
         fingerprint.write_u8(u8::from(file_type.is_file()));
@@ -312,15 +313,15 @@ pub fn watch_fingerprint() -> Result<u64, String> {
         fingerprint.write_u8(u8::from(metadata.permissions().readonly()));
         let modified = metadata
             .modified()
-            .map_err(|error| format!("could not inspect untracked file {path}: {error}"))?
+            .map_err(|error| format!("could not inspect untracked file {display}: {error}"))?
             .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| format!("invalid modification time for {path}: {error}"))?;
+            .map_err(|error| format!("invalid modification time for {display}: {error}"))?;
         fingerprint.write_u64(modified.as_secs());
         fingerprint.write_u32(modified.subsec_nanos());
         if file_type.is_symlink() {
             let target = fs::read_link(&path)
-                .map_err(|error| format!("could not read untracked symlink {path}: {error}"))?;
-            fingerprint.write(target.to_string_lossy().as_bytes());
+                .map_err(|error| format!("could not read untracked symlink {display}: {error}"))?;
+            fingerprint.write(target.as_os_str().as_encoded_bytes());
         }
     }
     Ok(fingerprint.finish())
@@ -716,6 +717,13 @@ fn file_mode(_metadata: &fs::Metadata) -> u32 {
 }
 
 fn untracked_files(paths: &[String]) -> Result<Vec<String>, String> {
+    Ok(untracked_paths(paths)?
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect())
+}
+
+fn untracked_paths(paths: &[String]) -> Result<Vec<std::path::PathBuf>, String> {
     let output = Command::new("git")
         .args(["ls-files", "--others", "--exclude-standard", "-z", "--"])
         .args(paths)
@@ -724,17 +732,24 @@ fn untracked_files(paths: &[String]) -> Result<Vec<String>, String> {
     if !output.status.success() {
         return Err(stderr_message("git ls-files failed", &output.stderr));
     }
-    Ok(parse_untracked_paths(&output.stdout)
-        .iter()
-        .map(|path| path.to_string_lossy().into_owned())
-        .collect())
+    Ok(parse_untracked_paths(&output.stdout))
 }
 
 fn parse_untracked_paths(output: &[u8]) -> Vec<std::path::PathBuf> {
     output
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
-        .map(|path| String::from_utf8_lossy(path).into_owned().into())
+        .map(|path| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStrExt;
+                std::ffi::OsStr::from_bytes(path).into()
+            }
+            #[cfg(not(unix))]
+            {
+                String::from_utf8_lossy(path).into_owned().into()
+            }
+        })
         .collect()
 }
 
