@@ -724,12 +724,18 @@ fn untracked_files(paths: &[String]) -> Result<Vec<String>, String> {
     if !output.status.success() {
         return Err(stderr_message("git ls-files failed", &output.stderr));
     }
-    Ok(output
-        .stdout
+    Ok(parse_untracked_paths(&output.stdout)
+        .iter()
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect())
+}
+
+fn parse_untracked_paths(output: &[u8]) -> Vec<std::path::PathBuf> {
+    output
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
-        .map(|path| String::from_utf8_lossy(path).into_owned())
-        .collect())
+        .map(|path| String::from_utf8_lossy(path).into_owned().into())
+        .collect()
 }
 
 fn format_output(output: Vec<u8>) -> Result<String, String> {
@@ -841,6 +847,43 @@ mod tests {
         fn drop(&mut self) {
             env::set_current_dir(&self.original).unwrap();
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn untracked_paths_preserve_bytes_for_watch_fingerprints() {
+        use std::os::unix::ffi::OsStrExt;
+        // Exercise Git's NUL-delimited output even on filesystems that cannot
+        // create these names (including the default macOS filesystem).
+        let paths = parse_untracked_paths(b"caf\xe9.txt\0ordinary.txt\0");
+        assert_eq!(paths.len(), 2);
+        assert_eq!(paths[0].as_os_str().as_bytes(), b"caf\xe9.txt");
+        assert_eq!(paths[1].as_os_str().as_bytes(), b"ordinary.txt");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn watch_fingerprint_accepts_non_utf8_untracked_files() {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        let path = OsStr::from_bytes(b"caf\xe9.txt");
+        if let Err(error) = fs::write(path, "first\n") {
+            // Darwin EILSEQ: this filesystem rejects non-UTF-8 names.
+            #[cfg(target_os = "macos")]
+            if error.raw_os_error() == Some(92) {
+                return;
+            }
+            panic!("could not create filename fixture: {error}");
+        }
+        let before = watch_fingerprint().unwrap();
+        fs::write(path, "different contents\n").unwrap();
+        assert_ne!(before, watch_fingerprint().unwrap());
     }
 
     #[test]
