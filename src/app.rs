@@ -1446,6 +1446,58 @@ mod tests {
     }
 
     #[test]
+    fn repeated_search_advances_through_submodule_metadata() {
+        for depth in [0, 1] {
+            for summary in [false, true] {
+                let mut app = App::new(Vec::new());
+                app.show_stat = summary;
+                app.show_text = format!(
+                    "diff --git a/before b/before\n--- a/before\n+++ b/before\n@@ -1 +1 @@\n-old\n+Subproject before\ndiff --git a/module b/module\nindex {}..{} 160000\n--- a/module\n+++ b/module\n@@ -1 +1 @@\n-Subproject commit {}\n+Subproject commit {}\ndiff --git a/after b/after\n--- a/after\n+++ b/after\n@@ -1 +1 @@\n-old\n+Subproject after\n",
+                    "1".repeat(40), "2".repeat(40), "1".repeat(40), "2".repeat(40)
+                );
+                app.ensure_show_rows();
+                for _ in 0..depth {
+                    let mut parent = App::new(Vec::new());
+                    parent.show_text = format!(
+                        "diff --git a/outer b/outer\nindex {}..{} 160000\n",
+                        "3".repeat(40),
+                        "4".repeat(40)
+                    );
+                    parent.ensure_show_rows();
+                    parent.submodules.insert("outer".into(), Box::new(app));
+                    parent.expanded_folds.insert("outer".into());
+                    parent.rebuild_show_rows();
+                    app = parent;
+                }
+                app.mode = Mode::Show;
+                app.begin_search(false);
+                app.search_input = Some("Subproject".into());
+                app.submit_search();
+                assert!(app.show_rows[app.show_cursor]
+                    .text
+                    .contains("Subproject before"));
+                for reverse in [false, true] {
+                    app.repeat_search(reverse);
+                    assert!(app.show_rows[app.show_cursor].summary);
+                    let summary_row = app.show_cursor;
+                    app.repeat_search(reverse);
+                    assert_eq!(app.show_cursor, summary_row);
+                    app.repeat_search(reverse);
+                    let expected = if reverse {
+                        "Subproject before"
+                    } else {
+                        "Subproject after"
+                    };
+                    assert!(
+                        app.show_rows[app.show_cursor].text.contains(expected),
+                        "depth={depth}, summary={summary}, reverse={reverse}: expected {expected}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn submodule_summary_preserves_worktree_dirty_marker() {
         let mut app = App::new(Vec::new());
         let old = "1".repeat(40);
