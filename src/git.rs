@@ -2434,6 +2434,51 @@ mod tests {
     }
 
     #[test]
+    fn search_selects_unloaded_untracked_files_without_revealing_placeholders() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        fs::write("tracked.txt", "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "first"]);
+        fs::write("tracked.txt", "two\n").unwrap();
+        fs::write("new.txt", "untracked\n").unwrap();
+        for args in [vec![], vec!["--stat".to_owned()]] {
+            let mut app = load_diff_app(&args).unwrap();
+            // "7874" appears only in the hex-encoded placeholder path.
+            app.search = Some("7874".into());
+            app.next_match(false);
+            assert!(
+                !app.show_rows
+                    .iter()
+                    .any(|row| row.text.contains("glog-lazy-untracked:")),
+                "{args:?}"
+            );
+            app.search = Some("new.txt".into());
+            app.next_match(false);
+            let row = &app.show_rows[app.show_cursor];
+            assert!(row.folded, "{args:?}: {}", row.text);
+            assert!(row.text.contains("new.txt"), "{args:?}: {}", row.text);
+            assert!(
+                !app.show_rows
+                    .iter()
+                    .any(|row| row.text.contains("glog-lazy-untracked:")),
+                "{args:?}"
+            );
+        }
+    }
+    #[test]
     fn diff_opens_requested_changes_and_switches_to_committed_history() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
