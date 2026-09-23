@@ -488,6 +488,42 @@ mod tests {
         assert!(read_source(&Source::Blob(clone.0.clone(), oid.to_owned())).is_none());
         assert!(!present(), "previews must not fetch missing blobs");
     }
+
+    #[test]
+    fn merge_commits_preview_each_parent_and_the_result() {
+        let repo = Repo::new();
+        let path = "picture.png";
+        repo.image(path, 1);
+        repo.git(&["add", "."]);
+        repo.git(&["commit", "-qm", "base"]);
+        repo.git(&["checkout", "-qb", "side"]);
+        let side = repo.image(path, 2);
+        repo.git(&["commit", "-qam", "side"]);
+        repo.git(&["checkout", "-q", "-"]);
+        let main = repo.image(path, 3);
+        repo.git(&["commit", "-qam", "main"]);
+        let output = Command::new("git")
+            .arg("-C")
+            .arg(&repo.0)
+            .args(["merge", "-q", "side"])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "the images must conflict");
+        let merged = repo.image(path, 4);
+        repo.git(&["add", "."]);
+        repo.git(&["commit", "-qm", "merge"]);
+        let patch = repo.git(&["show", "--full-index", "--format=", "HEAD"]);
+        assert!(patch.starts_with("diff --cc"), "{patch}");
+        let previews = sources(&patch, path, &repo.0, false);
+        let labels: Vec<_> = previews
+            .iter()
+            .map(|(label, _)| label.to_string())
+            .collect();
+        assert_eq!(labels, ["Parent 1", "Parent 2", "After"]);
+        for ((_, source), expected) in previews.iter().zip([main, side, merged]) {
+            assert_eq!(read_source(source).unwrap(), expected);
+        }
+    }
     #[test]
     fn reads_history_index_and_worktree_images_from_the_correct_sources() {
         let repo = Repo::new();
