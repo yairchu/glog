@@ -2112,6 +2112,50 @@ mod tests {
     }
 
     #[test]
+    fn unstaged_patches_label_untracked_files_relative_to_the_repository() {
+        let directory = TestDirectory::new();
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .current_dir(directory.path())
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write(directory.path().join("a.lock"), "original\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        fs::write(directory.path().join("a.lock"), "modified\n").unwrap();
+        fs::create_dir(directory.path().join("nested")).unwrap();
+        fs::write(directory.path().join("nested/a.lock"), "nested\n").unwrap();
+        fs::write(directory.path().join("outside.txt"), "outside\n").unwrap();
+        let _guard = CurrentDirGuard::enter(&directory.path().join("nested"));
+
+        let entry = working_tree_entries()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.kind == CommitKind::Unstaged)
+            .unwrap();
+        let text = show(&entry, &[]).unwrap();
+        let files = crate::diff::file_sections(&text);
+        let paths: Vec<_> = files.iter().map(|file| file.path.as_str()).collect();
+        assert_eq!(paths, ["a.lock", "nested/a.lock", "outside.txt"]);
+        for file in files.iter().filter(|file| file.untracked) {
+            let path = file.lazy_untracked_path.as_deref().unwrap();
+            assert!(show_untracked(std::path::Path::new(path))
+                .unwrap()
+                .contains(&format!("b/{path}")));
+        }
+    }
+
+    #[test]
     fn show_opens_exact_commit_and_loads_history_on_navigation() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
