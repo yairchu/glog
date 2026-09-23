@@ -1107,6 +1107,74 @@ mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
 
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_untracked_files_do_not_block_status_or_refresh() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("glog-unreadable-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(
+                    self.0.join("unreadable.txt"),
+                    std::fs::Permissions::from_mode(0o600),
+                );
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        let path = root.join("unreadable.txt");
+        std::fs::write(&path, "contents\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Privileged test runners may bypass permission bits.
+        if std::fs::File::open(&path).is_ok() {
+            return;
+        }
+        let mut view = StatusView {
+            root: root.clone(),
+            ..StatusView::default()
+        };
+        view.refresh()
+            .expect("an unreadable file must not prevent Status loading");
+        assert_eq!(view.summary(), "1 untracked file");
+        let key = Key {
+            group: Group::Untracked,
+            path: "unreadable.txt".into(),
+        };
+        assert!(view.stats[&key].contains("unavailable"));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        view.refresh().unwrap();
+        assert_eq!(view.stats[&key], "+1 −0");
+        view.cursor = view
+            .rows
+            .iter()
+            .position(|row| row.key == RowKey::File(key.clone()))
+            .unwrap();
+        view.toggle();
+        assert!(view.patches[&key].contains("+contents"));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        std::fs::write(root.join("other.txt"), "another change\n").unwrap();
+        view.refresh()
+            .expect("an expanded unreadable file must not block other changes");
+        assert_eq!(view.summary(), "2 untracked files");
+        assert!(
+            !view.patches[&key].contains("+contents"),
+            "do not display a stale patch"
+        );
+        assert!(view.patches[&key].contains("unavailable"));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        view.refresh().unwrap();
+        assert!(view.patches[&key].contains("+contents"));
+    }
+
     #[test]
     fn dirty_submodules_expand_live_status_and_keep_nested_folds() {
         let root =
