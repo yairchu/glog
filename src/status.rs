@@ -2376,6 +2376,46 @@ mod tests {
     }
 
     #[test]
+    fn clicks_move_the_cursor_and_only_expand_folded_rows() {
+        let snapshot = parse(b"1 .M N... 100644 100644 100644 a b file.txt\0").unwrap();
+        let key = snapshot.entries[0].key.clone();
+        let mut view = StatusView {
+            snapshot,
+            height: 20,
+            ..StatusView::default()
+        };
+        view.patches
+            .insert(key.clone(), "one\nreading\nafter".into());
+        view.rebuild();
+        let row = |view: &StatusView, key: &RowKey| {
+            view.rows.iter().position(|row| &row.key == key).unwrap() as u16
+        };
+        let reading = view
+            .rows
+            .iter()
+            .position(|row| row.text == "reading")
+            .unwrap();
+        view.click(reading as u16);
+        assert_eq!(view.cursor, reading);
+        assert_eq!(view.rows[view.cursor].text, "reading");
+        view.click(row(&view, &RowKey::File(key.clone())));
+        assert!(view.rows[view.cursor].key == RowKey::File(key.clone()));
+        assert!(view.rows.iter().any(|row| row.text == "reading"));
+        view.click(row(&view, &RowKey::Group(Group::Unstaged)));
+        assert!(!view.collapsed.contains(&Group::Unstaged));
+
+        // Folded rows still expand on click, as in Show.
+        view.toggle();
+        assert!(view.collapsed.contains(&Group::Unstaged));
+        view.click(row(&view, &RowKey::Group(Group::Unstaged)));
+        assert!(!view.collapsed.contains(&Group::Unstaged));
+        view.cursor = row(&view, &RowKey::File(key.clone())).into();
+        view.toggle();
+        assert!(!view.rows.iter().any(|row| row.text == "reading"));
+        view.click(row(&view, &RowKey::File(key.clone())));
+        assert!(view.rows.iter().any(|row| row.text == "reading"));
+    }
+    #[test]
     fn working_tree_detail_keyboard_mouse_and_conflict_sections() {
         use crate::{
             app::{App, Mode},
