@@ -54,8 +54,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   displayed names are identical.
   Repository paths retain non-UTF-8 bytes and trailing newlines when opening Status.
   Unreadable untracked files show individual errors while other entries keep refreshing.
-  Dirty submodules can be expanded into their live staged, unstaged, and untracked
-  changes, including nested file patches. Diff submodule summaries retain the
+  Dirty submodules can be expanded into summaries of their live staged, unstaged,
+  and untracked changes, like submodules in Show, with nested file patches
+  expanding individually. Diff submodule summaries retain the
   dirty indicator alongside the commit comparison.
   Untracked statistics stream file contents without
   generating patches or invoking delta. Status shares Show’s default folding rules and

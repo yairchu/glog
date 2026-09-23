@@ -370,7 +370,8 @@ impl StatusView {
         }
         let mut child = Self {
             root,
-            show_stat: self.show_stat,
+            // Like Show, nested views open as summaries; files expand individually.
+            show_stat: true,
             images_enabled: self.images_enabled,
             ..Self::default()
         };
