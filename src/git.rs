@@ -980,6 +980,70 @@ mod tests {
         }
     }
 
+    #[test]
+    fn watch_summary_honors_the_starting_repository_environment() {
+        // GIT_DIR would redirect Git in concurrently running tests, so set it
+        // only for a child process running just this test.
+        const CHILD: &str = "GLOG_TEST_REPOSITORY_ENV_CHILD";
+        if env::var_os(CHILD).is_some() {
+            let log = load_watch_log().unwrap();
+            assert_eq!(log[0].subject, "Working tree · 2 changed files");
+            assert_eq!(log.len(), 2);
+            return;
+        }
+        let directory = TestDirectory::new();
+        let git_dir = directory.path().join("dotfiles.git");
+        let work_tree = directory.path().join("home");
+        let index = directory.path().join("index");
+        fs::create_dir(&work_tree).unwrap();
+        let git = |index_file: Option<&Path>, args: &[&str]| {
+            let mut command = Command::new("git");
+            command
+                .arg("--git-dir")
+                .arg(&git_dir)
+                .arg("--work-tree")
+                .arg(&work_tree)
+                .args(args);
+            if let Some(index_file) = index_file {
+                command.env("GIT_INDEX_FILE", index_file);
+            }
+            let output = command.output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(None, &["init", "-q"]);
+        git(None, &["config", "user.name", "Test"]);
+        git(None, &["config", "user.email", "test@example.com"]);
+        git(None, &["config", "commit.gpgsign", "false"]);
+        fs::write(work_tree.join(".profile"), "base\n").unwrap();
+        git(None, &["add", ".profile"]);
+        git(None, &["commit", "-qm", "base"]);
+        fs::write(work_tree.join(".profile"), "edited\n").unwrap();
+        // Only the alternate index tracks this file; in the default one it
+        // would count as untracked.
+        fs::write(work_tree.join(".extra"), "extra\n").unwrap();
+        fs::copy(git_dir.join("index"), &index).unwrap();
+        git(Some(&index), &["add", ".extra"]);
+        let output = Command::new(env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "git::tests::watch_summary_honors_the_starting_repository_environment",
+            ])
+            .current_dir(&work_tree)
+            .env(CHILD, "1")
+            .env("GIT_DIR", &git_dir)
+            .env("GIT_WORK_TREE", &work_tree)
+            .env("GIT_INDEX_FILE", &index)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{stdout}");
+        assert!(stdout.contains("1 passed"), "{stdout}");
+    }
+
     struct TestDirectory(PathBuf);
 
     impl TestDirectory {
