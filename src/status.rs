@@ -2196,6 +2196,79 @@ mod tests {
         }
     }
 
+    #[test]
+    fn tracked_patches_use_delta_like_untracked_ones() {
+        let root = std::env::temp_dir().join(format!("glog-status-delta-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            output.stdout
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("file.txt"), "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        std::fs::write(root.join("file.txt"), "two\n").unwrap();
+
+        let mut view = StatusView {
+            root: root.clone(),
+            ..StatusView::default()
+        };
+        view.refresh().unwrap();
+        let entry = view
+            .snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.key.group == Group::Unstaged)
+            .unwrap();
+        let raw = git(&[
+            "-c",
+            "core.quotePath=true",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            RENAME_DETECTION,
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--no-relative",
+            "--color=always",
+            "--full-index",
+            "--submodule=short",
+            "--",
+            "file.txt",
+        ]);
+        let delta_enabled = !matches!(
+            std::env::var("GLOG_DELTA").as_deref(),
+            Ok("0" | "false" | "no" | "off")
+        );
+        let expected = delta_enabled
+            .then(|| {
+                crate::git::pipe_through(
+                    Command::new("delta").args(["--paging=never", "--color-only"]),
+                    &raw,
+                )
+            })
+            .flatten()
+            .unwrap_or_else(|| String::from_utf8_lossy(&raw).into_owned());
+        assert_eq!(view.patch(entry).unwrap(), expected);
+    }
+
     #[cfg(unix)]
     #[test]
     fn colliding_display_names_keep_distinct_status_contents_and_folds() {
