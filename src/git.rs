@@ -1041,7 +1041,13 @@ mod tests {
                     .iter()
                     .filter_map(|row| row.preview.as_ref())
                     .filter(|preview| preview.row == 0)
-                    .map(|preview| preview.source.clone())
+                    // Git reports roots in its own spelling, e.g. C:/ on Windows.
+                    .map(|preview| match &preview.source {
+                        crate::images::Source::Blob(root, id) => {
+                            crate::images::Source::Blob(root.canonicalize().unwrap(), id.clone())
+                        }
+                        source => source.clone(),
+                    })
                     .collect();
                 results.push((previews, expected.clone()));
             }
