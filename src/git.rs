@@ -949,6 +949,133 @@ mod tests {
     }
 
     #[test]
+    fn relative_diffs_preview_the_working_image_from_a_subdirectory() {
+        let results = {
+            let directory = TestDirectory::new();
+            let _guard = CurrentDirGuard::enter(directory.path());
+            let git = |args: &[&str]| {
+                let output = Command::new("git").args(args).output().unwrap();
+                assert!(output.status.success(), "{:?}", output);
+            };
+            git(&["init", "-q"]);
+            git(&["config", "user.name", "Test"]);
+            git(&["config", "user.email", "test@example.com"]);
+            git(&["config", "commit.gpgsign", "false"]);
+            fs::create_dir("nested").unwrap();
+            let picture = |path: &str, value| {
+                image::RgbaImage::from_pixel(2, 2, image::Rgba([value, 10, 20, 255]))
+                    .save(path)
+                    .unwrap();
+            };
+            picture("nested/picture.png", 1);
+            git(&["add", "."]);
+            git(&["commit", "-qm", "base"]);
+            picture("nested/picture.png", 2);
+            let expected = fs::read("nested/picture.png").unwrap();
+            // A wrong repository-relative lookup can silently show another image.
+            picture("picture.png", 3);
+            env::set_current_dir(directory.path().join("nested")).unwrap();
+            let mut results = Vec::new();
+            for relative in ["false", "true"] {
+                git(&["config", "diff.relative", relative]);
+                for args in [vec!["--stat".into()], vec!["--stat".into(), "HEAD".into()]] {
+                    let mut app = load_diff_app(&args).unwrap();
+                    app.images.enabled = true;
+                    app.images.root = directory.path().to_owned();
+                    app.show_cursor = app.show_rows.iter().position(|r| r.summary).unwrap();
+                    app.toggle_show_file();
+                    let after =
+                        app.show_rows
+                            .iter()
+                            .find_map(|row| match &row.preview.as_ref()?.source {
+                                crate::images::Source::File(path, _, _) => fs::read(path).ok(),
+                                _ => None,
+                            });
+                    results.push((relative, args, after, expected.clone()));
+                }
+            }
+            results
+        };
+        // Keep regression assertions outside the cwd guard to avoid poisoning it.
+        for (relative, args, after, expected) in results {
+            assert_eq!(
+                after,
+                Some(expected),
+                "diff.relative={relative}, {args:?}: After must show nested/picture.png"
+            );
+        }
+    }
+
+    #[test]
+    fn watch_refresh_preserves_expanded_submodule_patch_and_reading_line() {
+        let (before, after, expanded, decorations, fingerprint_changed) = {
+            let directory = TestDirectory::new();
+            let _guard = CurrentDirGuard::enter(directory.path());
+            let git = |args: &[&str]| {
+                let output = Command::new("git").args(args).output().unwrap();
+                assert!(output.status.success(), "{:?}", output);
+            };
+            git(&["init", "-q"]);
+            git(&["init", "-q", "module"]);
+            for root in [".", "module"] {
+                git(&["-C", root, "config", "user.name", "Test"]);
+                git(&["-C", root, "config", "user.email", "test@example.com"]);
+                git(&["-C", root, "config", "commit.gpgsign", "false"]);
+            }
+            fs::write("module/file.txt", "before\n").unwrap();
+            git(&["-C", "module", "add", "."]);
+            git(&["-C", "module", "commit", "-qm", "before"]);
+            fs::write(
+                ".gitmodules",
+                "[submodule \"module\"]\n\tpath = module\n\turl = ./unused-local-url\n",
+            )
+            .unwrap();
+            git(&["add", ".gitmodules", "module"]);
+            git(&["commit", "-qm", "base"]);
+            git(&["submodule", "absorbgitdirs"]);
+            fs::write("module/file.txt", "after\n").unwrap();
+            git(&["-C", "module", "commit", "-qam", "after"]);
+            git(&["add", "module"]);
+            git(&["commit", "-qm", "update"]);
+            let mut app = load_show_app(&[]).unwrap();
+            app.watch = true;
+            for path in ["module", "file.txt"] {
+                app.show_cursor = app
+                    .show_rows
+                    .iter()
+                    .position(|row| row.folded && row.text.contains(path))
+                    .unwrap();
+                app.toggle_show_file();
+            }
+            app.show_cursor = app
+                .show_rows
+                .iter()
+                .position(|row| crate::ansi::plain(&row.text).contains("+after"))
+                .unwrap();
+            let before = crate::ansi::plain(&app.show_rows[app.show_cursor].text);
+            let fingerprint = watch_fingerprint().unwrap();
+            // Changing only decorations must not discard loaded child patches.
+            git(&["tag", "review-tag"]);
+            let fingerprint_changed = watch_fingerprint().unwrap() != fingerprint;
+            app.replace_commits(load_watch_log().unwrap());
+            let after = crate::ansi::plain(&app.show_rows[app.show_cursor].text);
+            let expanded = app
+                .show_rows
+                .iter()
+                .any(|row| row.summary && !row.folded && row.text.contains("file.txt"));
+            let decorations = app.show_text.contains("review-tag");
+            (before, after, expanded, decorations, fingerprint_changed)
+        };
+        assert!(fingerprint_changed, "the tag must trigger a watch refresh");
+        assert!(decorations, "Show must display the new tag");
+        assert!(expanded, "watch refresh must keep the nested file expanded");
+        assert_eq!(
+            after, before,
+            "watch refresh must preserve the reading line"
+        );
+    }
+
+    #[test]
     fn binary_summaries_and_previews_ignore_configured_diff_prefixes() {
         let results = {
             let directory = TestDirectory::new();
