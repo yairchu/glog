@@ -701,15 +701,7 @@ impl App {
                         crate::images::sources(
                             &lines[file.start..file.end].join("\n"),
                             git::raw_path(&file.path_bytes),
-                            &if file.untracked
-                                && !lines[file.start..file.end]
-                                    .iter()
-                                    .any(|line| crate::ansi::plain(line).starts_with("index "))
-                            {
-                                std::env::current_dir().unwrap_or_else(|_| self.images.root.clone())
-                            } else {
-                                self.images.root.clone()
-                            },
+                            &self.images.root,
                             self.commits.get(self.selected).is_some_and(|c| {
                                 matches!(
                                     c.kind,
