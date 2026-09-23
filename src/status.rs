@@ -560,25 +560,23 @@ impl StatusView {
                     self.cursor = index;
                 }
             }
-        } else {
-            if let Some(Row {
-                key: RowKey::File(key),
-                ..
-            }) = current
-            {
-                if let Some(bookmark) = &self.stat_bookmark {
-                    if bookmark.key.outer_file() == Some(&key) {
-                        self.cursor = self
-                            .rows
-                            .iter()
-                            .position(|row| {
-                                row.key.same_patch(&bookmark.key)
-                                    && row.text == bookmark.text
-                                    && row.preview == bookmark.preview
-                            })
-                            .or_else(|| self.rows.iter().position(|row| row.key == bookmark.key))
-                            .unwrap_or(self.cursor);
-                    }
+        } else if let Some(Row {
+            key: RowKey::File(key),
+            ..
+        }) = current
+        {
+            if let Some(bookmark) = &self.stat_bookmark {
+                if bookmark.key.outer_file() == Some(&key) {
+                    self.cursor = self
+                        .rows
+                        .iter()
+                        .position(|row| {
+                            row.key.same_patch(&bookmark.key)
+                                && row.text == bookmark.text
+                                && row.preview == bookmark.preview
+                        })
+                        .or_else(|| self.rows.iter().position(|row| row.key == bookmark.key))
+                        .unwrap_or(self.cursor);
                 }
             }
         }
@@ -1815,7 +1813,10 @@ mod tests {
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "commit.gpgsign", "false"]);
         std::fs::write(root.join("old pure.txt"), "unchanged\n".repeat(10)).unwrap();
-        let original = (0..10).map(|i| format!("line {i}\n")).collect::<String>();
+        let original = (0..10)
+            .map(|i| format!("line {i}\n"))
+            .collect::<Vec<_>>()
+            .concat();
         std::fs::write(root.join("old edited.txt"), &original).unwrap();
         git(&["add", "."]);
         git(&["commit", "-qm", "base"]);
