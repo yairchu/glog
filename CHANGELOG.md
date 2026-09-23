@@ -8,8 +8,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 ### Added
 
 - Added on-demand inline expansion of committed submodule pointer changes in
-  Show and Diff, with nested file summaries and patches from locally available
-  recorded commits, including combined merge diffs whose parents record the same
+  Show and Diff, with nested file summaries, patches, and image previews from
+  locally available recorded commits, including combined merge diffs whose parents record the same
   submodule commit. Expanded nested patches and their reading position survive
   watch refreshes when the recorded submodule commits are unchanged. Toggling
   summary mode back restores the reading line inside expanded submodules.

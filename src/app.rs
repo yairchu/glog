@@ -945,6 +945,8 @@ impl App {
                 match git::show_submodule(self.submodule_root.as_deref(), &path, old, new) {
                     Ok((root, text)) => {
                         let mut child = App::new(Vec::new());
+                        child.images.enabled = self.images.enabled;
+                        child.images.root = root.clone();
                         child.submodule_root = Some(root);
                         child.show_stat = true;
                         child.show_text = if text.is_empty() {

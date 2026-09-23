@@ -991,9 +991,10 @@ mod tests {
             // Previews must use recorded objects, even with another checkout.
             git(&["-C", "module", "checkout", "-q", "HEAD~"]);
             picture(3);
+            let module_root = directory.path().join("module").canonicalize().unwrap();
             let expected = vec![
-                crate::images::Source::Blob(directory.path().join("module"), before),
-                crate::images::Source::Blob(directory.path().join("module"), after),
+                crate::images::Source::Blob(module_root.clone(), before),
+                crate::images::Source::Blob(module_root, after),
             ];
             let mut results = Vec::new();
             for mut app in [
