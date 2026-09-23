@@ -361,6 +361,7 @@ pub struct StatusView {
     pub height: usize,
     pub origin: u16,
     pub error: Option<String>,
+    unloaded: bool,
 }
 impl StatusView {
     fn load_submodule(&self, key: &Key) -> Result<Self, String> {
@@ -386,12 +387,17 @@ impl StatusView {
     }
 
     pub fn load() -> Result<Self, String> {
-        let mut view = Self {
-            root: crate::git::repository_root()?,
-            ..Self::default()
-        };
+        let mut view = Self::default();
         view.refresh()?;
         Ok(view)
+    }
+    /// A view whose first load failed; refreshing retries it.
+    pub fn unavailable(error: String) -> Self {
+        Self {
+            error: Some(error),
+            unloaded: true,
+            ..Self::default()
+        }
     }
     fn patch(&self, entry: &Entry) -> Result<String, String> {
         #[cfg(test)]
@@ -507,6 +513,11 @@ impl StatusView {
         Ok(stats)
     }
     pub fn toggle_stat(&mut self) {
+        if self.unloaded {
+            // Keep the load error visible; the next refresh applies the mode.
+            self.show_stat = !self.show_stat;
+            return;
+        }
         let current = self.rows.get(self.cursor).cloned();
         if !self.show_stat {
             self.stat_bookmark = current.clone();
@@ -672,6 +683,9 @@ impl StatusView {
     }
 
     pub fn refresh(&mut self) -> Result<(), String> {
+        if self.root.as_os_str().is_empty() {
+            self.root = crate::git::repository_root()?;
+        }
         let snapshot = load_snapshot(&self.root)?;
         let attributes = self.attributes(&snapshot)?;
         let mut fingerprints = HashMap::new();
@@ -740,6 +754,7 @@ impl StatusView {
         self.snapshot = snapshot;
         self.patches = patches;
         self.error = None;
+        self.unloaded = false;
         self.rebuild();
         Ok(())
     }
@@ -1055,7 +1070,9 @@ impl StatusView {
                 self.snapshot.upstream, self.snapshot.ahead_behind
             ));
         }
-        if self.snapshot.entries.is_empty() {
+        if self.unloaded {
+            heading = "Working tree status unavailable".to_owned();
+        } else if self.snapshot.entries.is_empty() {
             heading.push_str(" · Working tree clean");
         }
         frame.render_widget(

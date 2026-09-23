@@ -158,20 +158,12 @@ impl App {
     }
 
     pub fn open_status(&mut self) {
-        if self.status_view.is_none() {
-            match crate::status::StatusView::load() {
-                Ok(view) => self.status_view = Some(view),
-                Err(error) => {
-                    self.status = Some(error);
-                    return;
-                }
-            }
-        }
-        if let Some(view) = &mut self.status_view {
-            view.enable_images(self.images.enabled);
-            if view.show_stat != self.show_stat {
-                view.toggle_stat();
-            }
+        let view = self.status_view.get_or_insert_with(|| {
+            crate::status::StatusView::load().unwrap_or_else(crate::status::StatusView::unavailable)
+        });
+        view.enable_images(self.images.enabled);
+        if view.show_stat != self.show_stat {
+            view.toggle_stat();
         }
         self.search_input = None;
         self.mode = Mode::Status;
