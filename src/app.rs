@@ -1448,6 +1448,62 @@ mod tests {
     }
 
     #[test]
+    fn collapsing_nested_patch_keeps_cursor_on_its_file_summary() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        for depth in [1, 2] {
+            for summary in [false, true] {
+                for key in [KeyCode::Enter, KeyCode::Char('z')] {
+                    let mut app = App::new(Vec::new());
+                    app.show_stat = true;
+                    app.show_text = "diff --git a/first.txt b/first.txt\n--- a/first.txt\n+++ b/first.txt\n@@ -1 +1 @@\n-before\n+after\ndiff --git a/second.txt b/second.txt\n--- a/second.txt\n+++ b/second.txt\n@@ -1 +1 @@\n-old\n+new\n".into();
+                    app.ensure_show_rows();
+                    app.toggle_show_file();
+                    for _ in 0..depth {
+                        let mut parent = App::new(Vec::new());
+                        parent.show_stat = summary;
+                        parent.show_text = format!(
+                            "diff --git a/module b/module\nindex {}..{} 160000\n",
+                            "1".repeat(40),
+                            "2".repeat(40)
+                        );
+                        parent.ensure_show_rows();
+                        parent.submodules.insert("module".into(), Box::new(app));
+                        parent.expanded_folds.insert("module".into());
+                        parent.rebuild_show_rows();
+                        app = parent;
+                    }
+                    app.mode = Mode::Show;
+                    app.show_cursor = app
+                        .show_rows
+                        .iter()
+                        .position(|row| row.text.contains("+after"))
+                        .unwrap();
+                    crate::input::handle(
+                        Event::Key(KeyEvent::new(key, KeyModifiers::NONE)),
+                        &mut app,
+                    );
+                    let row = &app.show_rows[app.show_cursor];
+                    assert!(
+                        row.summary && row.folded && row.text.contains("first.txt"),
+                        "depth={depth}, summary={summary}, key={key:?}: selected {row:?}"
+                    );
+                    assert!(!app.show_rows.iter().any(|row| row.text.contains("+after")));
+
+                    // The next press must reopen the same file, not its sibling.
+                    crate::input::handle(
+                        Event::Key(KeyEvent::new(key, KeyModifiers::NONE)),
+                        &mut app,
+                    );
+                    let row = &app.show_rows[app.show_cursor];
+                    assert!(row.summary && !row.folded && row.text.contains("first.txt"));
+                    assert!(app.show_rows.iter().any(|row| row.text.contains("+after")));
+                }
+            }
+        }
+    }
+
+    #[test]
     fn stat_hotkey_preserves_nested_submodule_reading_lines() {
         fn wrap(child: App) -> App {
             let mut app = App::new(Vec::new());
