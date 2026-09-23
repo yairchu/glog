@@ -357,10 +357,10 @@ fn read_source(source: &Source) -> Option<Vec<u8>> {
 
 fn decode(source: &Source) -> Option<Decoded> {
     let bytes = read_source(source)?;
-    let mut reader = image::io::Reader::new(Cursor::new(&bytes))
+    let mut reader = image::ImageReader::new(Cursor::new(&bytes))
         .with_guessed_format()
         .ok()?;
-    let dimensions = image::io::Reader::new(Cursor::new(&bytes))
+    let dimensions = image::ImageReader::new(Cursor::new(&bytes))
         .with_guessed_format()
         .ok()?
         .into_dimensions()
@@ -368,7 +368,7 @@ fn decode(source: &Source) -> Option<Decoded> {
     if u64::from(dimensions.0) * u64::from(dimensions.1) > 16_000_000 {
         return None;
     }
-    let mut limits = image::io::Limits::default();
+    let mut limits = image::Limits::default();
     limits.max_image_width = Some(8192);
     limits.max_image_height = Some(8192);
     limits.max_alloc = Some(64 * 1024 * 1024);
