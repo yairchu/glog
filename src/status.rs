@@ -1111,6 +1111,57 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn untracked_patches_label_files_relative_to_the_repository() {
+        let root = std::env::temp_dir().join(format!("glog-untracked-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        std::fs::write(root.join("new.txt"), "contents\n").unwrap();
+        std::fs::write(root.join("blob.bin"), b"header\0payload").unwrap();
+        std::os::unix::fs::symlink("new.txt", root.join("link")).unwrap();
+        let mut view = StatusView {
+            root: root.clone(),
+            ..StatusView::default()
+        };
+        view.refresh().unwrap();
+        for (name, expected) in [
+            ("new.txt", "+++ b/new.txt"),
+            ("blob.bin", "Binary files /dev/null and b/blob.bin differ"),
+            ("link", "+++ b/link"),
+        ] {
+            let key = Key {
+                group: Group::Untracked,
+                path: name.into(),
+            };
+            view.cursor = view
+                .rows
+                .iter()
+                .position(|row| row.key == RowKey::File(key.clone()))
+                .unwrap();
+            view.toggle();
+            let patch = crate::ansi::plain(&view.patches[&key]);
+            assert!(
+                patch.contains(&format!("diff --git a/{name} b/{name}")),
+                "{patch}"
+            );
+            assert!(patch.contains(expected), "{patch}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn unreadable_untracked_files_do_not_block_status_or_refresh() {
         use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!("glog-unreadable-{}", std::process::id()));
