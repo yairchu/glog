@@ -55,6 +55,8 @@ pub struct App {
     pub search_input: Option<String>,
     pub search_reverse: bool,
     pub search_match: Option<(Mode, usize)>,
+    // Several hidden gitlink lines share one visible summary row.
+    show_search_location: Option<(Vec<String>, usize)>,
     pub show_help: bool,
     pub log_row_origin: u16,
     pub visible_log_rows: Vec<Option<usize>>,
@@ -106,6 +108,7 @@ impl App {
             search_input: None,
             search_reverse: false,
             search_match: None,
+            show_search_location: None,
             show_help: false,
             log_row_origin: 0,
             visible_log_rows: Vec::new(),
@@ -518,6 +521,7 @@ impl App {
     }
 
     fn reset_show_folds(&mut self) {
+        self.show_search_location = None;
         self.show_files = diff::file_sections(&self.show_text);
         self.submodules.clear();
         self.expanded_folds.clear();
@@ -1177,11 +1181,12 @@ impl App {
             Mode::Show => {
                 let lines = self.searchable_show_lines();
                 let n = lines.len();
-                let current = self
-                    .search_match
-                    .filter(|(mode, _)| *mode == Mode::Show)
-                    .map_or(self.show_cursor, |(_, index)| index);
-                let (route, source) = self.show_location(current);
+                let previous = self.search_match.filter(|(mode, _)| *mode == Mode::Show);
+                let (route, source) = previous
+                    .and(self.show_search_location.clone())
+                    .unwrap_or_else(|| {
+                        self.show_location(previous.map_or(self.show_cursor, |(_, index)| index))
+                    });
                 let start = lines
                     .iter()
                     .position(|(r, s, _)| *r == route && *s == source)
@@ -1201,6 +1206,7 @@ impl App {
                     if let Some(visible) = self.reveal_show_location(&route, source) {
                         self.show_cursor = visible;
                         self.search_match = Some((Mode::Show, visible));
+                        self.show_search_location = Some((route, source));
                         self.show_scroll = Some(ShowScroll::Search);
                     }
                     self.status = None;
