@@ -371,8 +371,30 @@ impl App {
             .unwrap_or(old_cursor) as isize
             - self.show_offset as isize;
         let expanded = self.expanded_folds.clone();
+        let nested_cursor = self.submodule_rows.get(&old_cursor).cloned();
+        let old_submodules: HashMap<_, _> = self
+            .show_files
+            .iter()
+            .filter_map(|file| {
+                file.submodule
+                    .as_ref()
+                    .map(|ids| (file.path.clone(), ids.clone()))
+            })
+            .collect();
+        let mut children = std::mem::take(&mut self.submodules);
         self.show_text = text;
         self.reset_show_folds();
+        // Child patches describe immutable recorded commits. Retain their folds
+        // and row indices when only the surrounding Show text has changed.
+        children.retain(|path, _| {
+            self.show_files.iter().any(|file| {
+                &file.path == path
+                    && file.submodule.as_ref() == old_submodules.get(path)
+                    && file.submodule.is_some()
+            })
+        });
+        let nested_cursor = nested_cursor.filter(|(path, _)| children.contains_key(path));
+        self.submodules = children;
         // Reopen by path, loading fresh contents for lazy untracked files too.
         for path in expanded {
             if let Some(index) = self.show_rows.iter().position(|row| {
@@ -407,7 +429,7 @@ impl App {
                 .saturating_sub(row.file.map_or(0, |index| self.show_files[index].start))
                 .abs_diff(relative_source)
         };
-        self.show_cursor = candidates
+        let restored_cursor = candidates
             .iter()
             .filter(|(_, row)| {
                 cursor_row.as_ref().is_some_and(|old| {
@@ -416,7 +438,14 @@ impl App {
             })
             .min_by_key(|(_, row)| distance(row))
             .or_else(|| candidates.iter().min_by_key(|(_, row)| distance(row)))
-            .map(|(index, _)| *index)
+            .map(|(index, _)| *index);
+        self.show_cursor = nested_cursor
+            .and_then(|location| {
+                self.submodule_rows
+                    .iter()
+                    .find_map(|(row, current)| (*current == location).then_some(*row))
+            })
+            .or(restored_cursor)
             .unwrap_or(old_cursor.min(self.show_rows.len().saturating_sub(1)));
         self.search_match = None;
         self.show_scroll = Some(ShowScroll::PreserveCursorPosition(screen_position));

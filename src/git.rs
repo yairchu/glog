@@ -11,8 +11,9 @@ const FIELD: char = '\x1f';
 const COAUTHOR: char = '\x1d';
 
 // Patch paths are parsed relative to the repository, independent of user
-// preferences such as diff.noprefix and diff.mnemonicPrefix.
-pub(crate) const DIFF_PREFIX_ARGS: [&str; 2] = ["--src-prefix=a/", "--dst-prefix=b/"];
+// preferences such as diff.relative, diff.noprefix and diff.mnemonicPrefix.
+pub(crate) const DIFF_PREFIX_ARGS: [&str; 3] =
+    ["--no-relative", "--src-prefix=a/", "--dst-prefix=b/"];
 
 #[cfg(windows)]
 const NULL_DEVICE: &str = "NUL";

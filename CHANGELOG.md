@@ -10,7 +10,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Added on-demand inline expansion of committed submodule pointer changes in
   Show and Diff, with nested file summaries and patches from locally available
   recorded commits, including combined merge diffs whose parents record the same
-  submodule commit.
+  submodule commit. Expanded nested patches and their reading position survive
+  watch refreshes when the recorded submodule commits are unchanged.
 
 - Added Left/Right shortcuts in Log to select the previous/newer or next/older
   commit while staying in Log, matching commit navigation in Show and Status.
@@ -33,7 +34,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   patches using Kitty graphics (automatically enabled in Kitty and Ghostty).
   Previews load lazily, scroll and fold with the diff, and display the correct
   historical, staged, or working-tree contents, regardless of Git diff prefix
-  settings. `GLOG_IMAGES=off` disables them;
+  or relative-path settings. `GLOG_IMAGES=off` disables them;
   `GLOG_IMAGES=kitty` explicitly enables them, including through configured tmux.
 
 - Added `glog status` and a live Status detail view with branch/upstream
