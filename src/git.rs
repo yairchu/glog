@@ -1339,6 +1339,66 @@ mod tests {
     }
 
     #[test]
+    fn diffs_preview_untracked_images_from_a_subdirectory() {
+        let (after, expected) = {
+            let directory = TestDirectory::new();
+            let _guard = CurrentDirGuard::enter(directory.path());
+            let git = |args: &[&str]| {
+                let output = Command::new("git").args(args).output().unwrap();
+                assert!(output.status.success(), "{:?}", output);
+            };
+            git(&["init", "-q"]);
+            git(&["config", "user.name", "Test"]);
+            git(&["config", "user.email", "test@example.com"]);
+            git(&["config", "commit.gpgsign", "false"]);
+            fs::write("tracked.txt", "tracked\n").unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-qm", "base"]);
+            let picture = |path: &str, value| {
+                image::RgbaImage::from_pixel(2, 2, image::Rgba([value, 10, 20, 255]))
+                    .save(path)
+                    .unwrap();
+            };
+            fs::create_dir_all("nested/nested").unwrap();
+            picture("nested/picture.png", 1);
+            let expected = fs::read("nested/picture.png").unwrap();
+            // A lookup relative to the current directory can silently show another image.
+            picture("nested/nested/picture.png", 2);
+            env::set_current_dir(directory.path().join("nested")).unwrap();
+            let mut app = load_diff_app(&["--stat".into()]).unwrap();
+            app.images.enabled = true;
+            app.images.root = directory.path().to_owned();
+            let plain = |row: &crate::app::ShowRow| crate::ansi::plain(&row.text);
+            app.show_cursor = app
+                .show_rows
+                .iter()
+                .position(|row| {
+                    row.summary
+                        && plain(row).contains("nested/picture.png")
+                        && !plain(row).contains("nested/nested/")
+                })
+                .unwrap();
+            let file = app.show_rows[app.show_cursor].file;
+            app.toggle_show_file();
+            let after = app
+                .show_rows
+                .iter()
+                .filter(|row| row.file == file)
+                .find_map(|row| match &row.preview.as_ref()?.source {
+                    crate::images::Source::File(path, _, _) => fs::read(path).ok(),
+                    _ => None,
+                });
+            (after, expected)
+        };
+        // Keep regression assertions outside the cwd guard to avoid poisoning it.
+        assert_eq!(
+            after,
+            Some(expected),
+            "After must show the untracked nested/picture.png"
+        );
+    }
+
+    #[test]
     fn watch_refresh_preserves_expanded_submodule_patch_and_reading_line() {
         let (before, after, expanded, decorations, fingerprint_changed) = {
             let directory = TestDirectory::new();
