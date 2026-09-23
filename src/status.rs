@@ -734,24 +734,30 @@ impl StatusView {
         for key in failed {
             fingerprints.remove(&key);
         }
-        self.submodules.retain(|key, _| {
+        let dirty = |key: &Key| {
             snapshot
                 .entries
                 .iter()
                 .any(|entry| &entry.key == key && entry.dirty_submodule())
-        });
-        for child in self.submodules.values_mut() {
-            child.refresh()?;
+        };
+        for (key, child) in &mut self.submodules {
+            if dirty(key) {
+                child.refresh()?;
+            }
         }
+        let mut loaded = Vec::new();
         for entry in &snapshot.entries {
             if entry.dirty_submodule()
                 && patches.contains_key(&entry.key)
                 && !self.submodules.contains_key(&entry.key)
             {
-                self.submodules
-                    .insert(entry.key.clone(), self.load_submodule(&entry.key)?);
+                loaded.push((entry.key.clone(), self.load_submodule(&entry.key)?));
             }
         }
+        // Existing rows may refer to any current submodule until the rebuild
+        // below, so only drop submodules once nothing can fail.
+        self.submodules.retain(|key, _| dirty(key));
+        self.submodules.extend(loaded);
         self.stats = stats;
         self.fingerprints = fingerprints;
         self.expanded_folds.retain(|key| patches.contains_key(key));
