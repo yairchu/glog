@@ -118,7 +118,8 @@ glog log diff             # log for a branch named "diff"
 ```
 
 Revision comparisons follow Git’s diff semantics; omitted range endpoints use
-HEAD. Use `-- pathspec...` to limit any diff to selected paths. Only plain
+HEAD. Use `-- pathspec...` to limit any diff to selected paths; as with
+`git diff`, the `--` may be omitted when the paths exist. Only plain
 `glog diff` (optionally with path filters) includes untracked files.
 
 If the requested changes are empty, glog prints a brief message and exits

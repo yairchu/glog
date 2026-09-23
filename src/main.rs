@@ -145,7 +145,7 @@ const HELP: &str = "glog — an interactive git log and git show browser
 Usage: glog [--watch]
        glog [log] [git log arguments] [--] [pathspec...]
        glog show [--stat] [commit] [-- pathspec...]
-       glog diff [--cached] [--stat] [revision [revision]] [-- pathspec...]
+       glog diff [--cached] [--stat] [revision [revision]] [[--] pathspec...]
        glog status
 
 Options:

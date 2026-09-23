@@ -23,8 +23,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Added revision comparisons to `glog diff`: `A..`, `..A`, `A..B`, `A B`,
   `A...B`, a single revision against the working tree, and `--cached A` against
-  the index. Diff also accepts `-- pathspec...` filters, with summary mode,
-  folding, and image previews available for comparisons. Explicit comparisons
+  the index. Diff also accepts pathspec filters, after `--` or, as in
+  `git diff`, directly after the revisions when the paths exist. Summary mode,
+  folding, and image previews are available for comparisons. Explicit comparisons
   open a standalone diff with a command context header, no tabs, and no
   adjacent-commit navigation.
 

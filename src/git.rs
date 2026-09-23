@@ -207,10 +207,13 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
 
 /// Open a diff without traversing committed history.
 pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
-    let separator = args
-        .iter()
-        .position(|arg| arg == "--")
-        .unwrap_or(args.len());
+    let (separator, paths_start) = match args.iter().position(|arg| arg == "--") {
+        Some(separator) => (separator, separator + 1),
+        None => {
+            let start = diff_paths_start(args)?;
+            (start, start)
+        }
+    };
     let stat = args[..separator].iter().any(|arg| arg == "--stat");
     let options: Vec<_> = args[..separator]
         .iter()
@@ -223,7 +226,7 @@ pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
         || revisions.len() > if cached { 1 } else { 2 }
     {
         return Err(
-            "usage: glog diff [--cached] [--stat] [revision [revision]] [-- pathspec...]"
+            "usage: glog diff [--cached] [--stat] [revision [revision]] [[--] pathspec...]"
                 .to_owned(),
         );
     }
@@ -246,7 +249,7 @@ pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
     if matches!(kind, CommitKind::Comparison { .. }) {
         entry.diff_args = options;
     }
-    let paths = args.get(separator + 1..).unwrap_or_default().to_vec();
+    let paths = args[paths_start..].to_vec();
     let text = show(&entry, &paths)?;
     let mut app = crate::app::App::new(if text.is_empty() {
         Vec::new()
@@ -264,6 +267,46 @@ pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
         app.ensure_show_rows();
     }
     Ok(app)
+}
+
+/// Without `--`, git diff starts its paths at the first argument that is not
+/// a revision. As in Git, they must all exist and cannot be followed by options.
+fn diff_paths_start(args: &[String]) -> Result<usize, String> {
+    let candidates: Vec<_> = (0..args.len())
+        .filter(|&index| !args[index].starts_with('-'))
+        .collect();
+    if candidates.is_empty() {
+        return Ok(args.len());
+    }
+    let output = Command::new("git")
+        .args(["rev-parse", "--no-revs"])
+        .args(candidates.iter().map(|&index| &args[index]))
+        .output()
+        .map_err(|error| format!("could not resolve diff revisions: {error}"))?;
+    if !output.status.success() {
+        return Err(stderr_message(
+            "could not resolve diff revisions",
+            &output.stderr,
+        ));
+    }
+    // Git echoes the paths, which are the trailing candidates.
+    let first = (0..=candidates.len())
+        .find(|&first| {
+            let mut expected = Vec::new();
+            for &index in &candidates[first..] {
+                expected.extend_from_slice(args[index].as_bytes());
+                expected.push(b'\n');
+            }
+            expected == output.stdout
+        })
+        .ok_or("could not separate diff revisions from paths")?;
+    let start = candidates.get(first).copied().unwrap_or(args.len());
+    if let Some(option) = args[start..].iter().find(|arg| arg.starts_with('-')) {
+        return Err(format!(
+            "option '{option}' must come before non-option arguments"
+        ));
+    }
+    Ok(start)
 }
 
 fn comparison_uses_worktree(revisions: &[&String]) -> Result<bool, String> {
@@ -2864,6 +2907,8 @@ mod tests {
             vec!["--watch"],
             vec!["left", "right", "base"],
             vec!["--cached", "left", "right"],
+            vec!["left..right", "note.txt", "--stat"],
+            vec!["left..right", "missing.txt"],
         ] {
             assert!(
                 load_diff_app(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err()
