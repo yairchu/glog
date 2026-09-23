@@ -1873,6 +1873,83 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn colliding_display_names_keep_distinct_status_contents_and_folds() {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+        let root =
+            std::env::temp_dir().join(format!("glog-status-collisions-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let git = |args: &[&OsStr]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8(output.stdout).unwrap()
+        };
+        git(&["init".as_ref(), "-q".as_ref()]);
+        // Index-only paths work even when the filesystem rejects these names.
+        for (name, contents) in [
+            (b"caf\xe8.txt", "first\n"),
+            (b"caf\xe9.txt", "second\nextra\n"),
+        ] {
+            std::fs::write(root.join("blob"), contents).unwrap();
+            let blob = git(&["hash-object".as_ref(), "-w".as_ref(), "blob".as_ref()]);
+            let mut info = format!("100644,{},", blob.trim()).into_bytes();
+            info.extend_from_slice(name);
+            git(&[
+                "update-index".as_ref(),
+                "--add".as_ref(),
+                "--cacheinfo".as_ref(),
+                OsStr::from_bytes(&info),
+            ]);
+        }
+        std::fs::remove_file(root.join("blob")).unwrap();
+        let mut view = StatusView {
+            root,
+            ..StatusView::default()
+        };
+        view.refresh().unwrap();
+        let entries: Vec<_> = view
+            .snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.key.group == Group::Unstaged)
+            .cloned()
+            .collect();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(view.stats[&entries[0].key], "+0 −1");
+        assert_eq!(view.stats[&entries[1].key], "+0 −2");
+        assert_ne!(entries[0].key, entries[1].key);
+        assert!(crate::ansi::plain(&view.patches[&entries[0].key]).contains("-first"));
+        assert!(crate::ansi::plain(&view.patches[&entries[1].key]).contains("-second"));
+        view.cursor = view
+            .rows
+            .iter()
+            .position(|row| row.key == RowKey::File(entries[0].key.clone()))
+            .unwrap();
+        view.toggle();
+        view.refresh().unwrap();
+        assert!(!view
+            .rows
+            .iter()
+            .any(|row| matches!(&row.key, RowKey::Patch(key, _) if key == &entries[0].key)));
+        assert!(view
+            .rows
+            .iter()
+            .any(|row| matches!(&row.key, RowKey::Patch(key, _) if key == &entries[1].key)));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn non_utf8_filenames_do_not_break_the_status_view() {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
         let root =
