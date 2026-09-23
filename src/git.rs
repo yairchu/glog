@@ -1644,6 +1644,93 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn images_preserve_exact_repository_paths() {
+        let directory = TestDirectory::new();
+        for root in exact_repository_paths(directory.path()) {
+            let (actual, expected) = {
+                let _guard = CurrentDirGuard::enter(&root);
+                assert!(Command::new("git")
+                    .args(["init", "-q"])
+                    .status()
+                    .unwrap()
+                    .success());
+                let setting = env::var_os("GLOG_IMAGES");
+                env::set_var("GLOG_IMAGES", "kitty");
+                let images = crate::images::Images::from_env();
+                match setting {
+                    Some(value) => env::set_var("GLOG_IMAGES", value),
+                    None => env::remove_var("GLOG_IMAGES"),
+                }
+                (images.root, env::current_dir().unwrap())
+            };
+            assert_eq!(actual, expected, "image sources must use the exact root");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn submodules_preserve_exact_repository_paths() {
+        let directory = TestDirectory::new();
+        for root in exact_repository_paths(directory.path()) {
+            let result = {
+                let _guard = CurrentDirGuard::enter(&root);
+                let git = |args: &[&str]| {
+                    let output = Command::new("git")
+                        .args([
+                            "-c",
+                            "user.name=Test",
+                            "-c",
+                            "user.email=test@example.com",
+                            "-c",
+                            "commit.gpgsign=false",
+                        ])
+                        .args(args)
+                        .output()
+                        .unwrap();
+                    assert!(output.status.success(), "{:?}", output);
+                    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+                };
+                git(&["init", "-q"]);
+                git(&["init", "-q", "module"]);
+                fs::write("module/file.txt", "before\n").unwrap();
+                git(&["-C", "module", "add", "."]);
+                git(&["-C", "module", "commit", "-qm", "before"]);
+                let old = git(&["-C", "module", "rev-parse", "HEAD"]);
+                fs::write("module/file.txt", "after\n").unwrap();
+                git(&["-C", "module", "commit", "-qam", "after"]);
+                let new = git(&["-C", "module", "rev-parse", "HEAD"]);
+                show_submodule(None, "module", &old, &new)
+            };
+            let (module, patch) = result.expect("submodule lookup must use the exact root");
+            assert_eq!(module, root.join("module").canonicalize().unwrap());
+            let plain = crate::ansi::plain(&patch);
+            assert!(plain.contains("-before"));
+            assert!(plain.contains("+after"));
+        }
+    }
+
+    #[cfg(unix)]
+    fn exact_repository_paths(parent: &Path) -> Vec<PathBuf> {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+        [b"repo\n\n".as_slice(), b"repo ", b"repo-\xff"]
+            .into_iter()
+            .filter_map(|name| {
+                let root = parent.join(OsStr::from_bytes(name));
+                if let Err(error) = fs::create_dir(&root) {
+                    // The default macOS filesystem rejects non-UTF-8 names.
+                    #[cfg(target_os = "macos")]
+                    if error.raw_os_error() == Some(92) {
+                        return None;
+                    }
+                    panic!("could not create repository fixture: {error}");
+                }
+                Some(root)
+            })
+            .collect()
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn status_preserves_repository_path_bytes_and_trailing_newlines() {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
         let directory = TestDirectory::new();
