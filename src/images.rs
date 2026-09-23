@@ -53,11 +53,12 @@ pub struct Row {
 /// is not stored in Git, so its After image always comes from the working file.
 pub fn sources(
     patch: &str,
-    path: &str,
+    path: impl AsRef<Path>,
     root: &Path,
     worktree: bool,
 ) -> Vec<(&'static str, Source)> {
-    let extension = Path::new(path)
+    let path = path.as_ref();
+    let extension = path
         .extension()
         .and_then(|x| x.to_str())
         .unwrap_or("")

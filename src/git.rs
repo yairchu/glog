@@ -778,6 +778,10 @@ fn run_delta(input: &[u8]) -> Option<String> {
 }
 
 pub(crate) fn pipe_through(command: &mut Command, input: &[u8]) -> Option<String> {
+    pipe_through_bytes(command, input).map(|output| String::from_utf8_lossy(&output).into_owned())
+}
+
+pub(crate) fn pipe_through_bytes(command: &mut Command, input: &[u8]) -> Option<Vec<u8>> {
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -791,10 +795,7 @@ pub(crate) fn pipe_through(command: &mut Command, input: &[u8]) -> Option<String
         writer.join().ok()?.ok()?;
         Some(output)
     })?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    output.status.success().then_some(output.stdout)
 }
 
 fn stderr_message(prefix: &str, stderr: &[u8]) -> String {

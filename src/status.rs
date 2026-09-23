@@ -33,7 +33,7 @@ impl Group {
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Key {
     group: Group,
-    path: String,
+    path: PathBuf,
 }
 #[derive(Clone, Debug)]
 struct Entry {
@@ -41,7 +41,7 @@ struct Entry {
     key: Key,
     label: String,
     original: Option<String>,
-    // Keys display lossy UTF-8; Git and the filesystem need the exact bytes.
+    // Preserve exact bytes for Git and filesystem operations.
     raw_path: PathBuf,
     raw_original: Option<PathBuf>,
 }
@@ -114,12 +114,12 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
         if record.starts_with('#') {
             continue;
         }
-        if let Some(path) = record.strip_prefix("? ") {
+        if record.starts_with("? ") {
             snapshot.entries.push(Entry {
                 record: record.to_owned(),
                 key: Key {
                     group: Group::Untracked,
-                    path: path.to_owned(),
+                    path: raw_path(&raw[2..]),
                 },
                 label: "new".into(),
                 original: None,
@@ -138,7 +138,6 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
         if fields.len() != expected || fields[1].len() != 2 {
             return Err("Malformed Git status record".into());
         }
-        let path = fields.last().unwrap().to_string();
         let path_bytes = raw.splitn(expected, |&byte| byte == b' ').last().unwrap();
         let raw_path = raw_path(path_bytes);
         let raw_original = if record.starts_with("2 ") {
@@ -153,7 +152,7 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
                 record: record.to_owned(),
                 key: Key {
                     group: Group::Conflicts,
-                    path,
+                    path: raw_path.clone(),
                 },
                 label: match fields[1] {
                     "DD" => "both deleted",
@@ -188,7 +187,7 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
                     record: record.to_owned(),
                     key: Key {
                         group,
-                        path: path.clone(),
+                        path: raw_path.clone(),
                     },
                     label: label.into(),
                     original: original.clone(),
@@ -375,7 +374,10 @@ impl StatusView {
     fn load_submodule(&self, key: &Key) -> Result<Self, String> {
         let root = self.root.join(&key.path);
         if !root.join(".git").exists() {
-            return Err(format!("Submodule {} is not initialized locally", key.path));
+            return Err(format!(
+                "Submodule {} is not initialized locally",
+                key.path.display()
+            ));
         }
         let mut child = Self {
             root,
@@ -446,8 +448,9 @@ impl StatusView {
             .iter()
             .filter(|entry| entry.key.group == Group::Untracked)
         {
-            let detail = untracked_stats(&self.root.join(&entry.raw_path))
-                .map_err(|error| format!("could not inspect {}: {error}", entry.key.path))?;
+            let detail = untracked_stats(&self.root.join(&entry.raw_path)).map_err(|error| {
+                format!("could not inspect {}: {error}", entry.key.path.display())
+            })?;
             stats.insert(entry.key.clone(), detail);
         }
         for group in [Group::Staged, Group::Unstaged, Group::Conflicts] {
@@ -469,7 +472,7 @@ impl StatusView {
             if !output.status.success() {
                 return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
             }
-            let mut totals = HashMap::<String, (usize, usize, bool)>::new();
+            let mut totals = HashMap::<PathBuf, (usize, usize, bool)>::new();
             let mut records = output.stdout.split(|&byte| byte == 0);
             while let Some(record) = records.next() {
                 let mut fields = record.splitn(3, |&byte| byte == b'\t');
@@ -482,9 +485,7 @@ impl StatusView {
                     records.next();
                     path = records.next().ok_or("Missing numstat rename destination")?;
                 }
-                let total = totals
-                    .entry(String::from_utf8_lossy(path).into_owned())
-                    .or_default();
+                let total = totals.entry(raw_path(path)).or_default();
                 if a == b"-" || d == b"-" {
                     total.2 = true;
                 } else {
@@ -585,11 +586,11 @@ impl StatusView {
         entry.dirty_submodule()
             || entry.key.group == Group::Untracked
             || entry.label == "added"
-            || crate::diff::is_lockfile(&entry.key.path)
+            || crate::diff::is_lockfile(&entry.key.path.to_string_lossy())
     }
     // Ask Git for effective attributes in one batch, covering worktree/index
     // fallback, nested .gitattributes, info/attributes and global attributes.
-    fn attributes(&self, snapshot: &Snapshot) -> Result<HashMap<String, u64>, String> {
+    fn attributes(&self, snapshot: &Snapshot) -> Result<HashMap<PathBuf, u64>, String> {
         let mut paths: Vec<_> = snapshot
             .entries
             .iter()
@@ -606,7 +607,7 @@ impl StatusView {
             input.extend_from_slice(path.as_os_str().as_encoded_bytes());
             input.push(0);
         }
-        let output = crate::git::pipe_through(
+        let output = crate::git::pipe_through_bytes(
             Command::new("git").arg("-C").arg(&self.root).args([
                 "check-attr",
                 "--all",
@@ -616,12 +617,15 @@ impl StatusView {
             &input,
         )
         .ok_or("could not read Git attributes")?;
-        let mut hashes = HashMap::<String, DefaultHasher>::new();
-        let mut fields = output.split_terminator('\0');
+        let mut hashes = HashMap::<PathBuf, DefaultHasher>::new();
+        let mut fields = output.split(|&byte| byte == 0);
         while let Some(path) = fields.next() {
+            if path.is_empty() {
+                break;
+            }
             let name = fields.next().ok_or("Missing Git attribute name")?;
             let value = fields.next().ok_or("Missing Git attribute value")?;
-            let hash = hashes.entry(path.to_owned()).or_default();
+            let hash = hashes.entry(raw_path(path)).or_default();
             name.hash(hash);
             value.hash(hash);
         }
@@ -635,14 +639,13 @@ impl StatusView {
     // edits even when the XY status stays unchanged. Directories (submodules
     // and nested repositories) need fresh diffs because child edits need not
     // change the directory's metadata.
-    fn fingerprint(&self, entry: &Entry, attributes: &HashMap<String, u64>) -> Option<u64> {
+    fn fingerprint(&self, entry: &Entry, attributes: &HashMap<PathBuf, u64>) -> Option<u64> {
         let mut hash = DefaultHasher::new();
         entry.record.hash(&mut hash);
-        entry.original.hash(&mut hash);
-        let paths = std::iter::once((&entry.key.path, &entry.raw_path))
-            .chain(entry.original.iter().zip(entry.raw_original.iter()));
-        for (name, path) in paths {
-            attributes.get(name).hash(&mut hash);
+        entry.raw_original.hash(&mut hash);
+        let paths = std::iter::once(&entry.raw_path).chain(entry.raw_original.iter());
+        for path in paths {
+            attributes.get(path).hash(&mut hash);
             match std::fs::symlink_metadata(self.root.join(path)) {
                 Ok(metadata) => {
                     if metadata.is_dir() {
@@ -785,9 +788,13 @@ impl StatusView {
                         || self.expanded_folds.contains(&entry.key));
                 let name = match &entry.original {
                     Some(original) => {
-                        format!("{} → {}", visible(original), visible(&entry.key.path))
+                        format!(
+                            "{} → {}",
+                            visible(original),
+                            visible(&entry.key.path.to_string_lossy())
+                        )
                     }
-                    None => visible(&entry.key.path),
+                    None => visible(&entry.key.path.to_string_lossy()),
                 };
                 let detail = self
                     .stats
@@ -1616,7 +1623,8 @@ mod tests {
         assert!(!view
             .patches
             .keys()
-            .any(|key| key.path == "Cargo.lock" || key.group == Group::Untracked));
+            .any(|key| key.path == std::path::Path::new("Cargo.lock")
+                || key.group == Group::Untracked));
         let key = Key {
             group: Group::Unstaged,
             path: "file.txt".into(),
@@ -1853,7 +1861,7 @@ mod tests {
                     .snapshot
                     .entries
                     .iter()
-                    .find(|entry| entry.key.path == path)
+                    .find(|entry| entry.key.path == std::path::Path::new(path))
                     .unwrap();
                 assert_eq!(entry.label, "renamed");
                 assert_eq!(
@@ -1913,6 +1921,11 @@ mod tests {
             ]);
         }
         std::fs::remove_file(root.join("blob")).unwrap();
+        std::fs::write(
+            root.join(".git/info/attributes"),
+            b"caf\xe8.txt custom=first\ncaf\xe9.txt custom=second\n",
+        )
+        .unwrap();
         let mut view = StatusView {
             root,
             ..StatusView::default()
@@ -1929,6 +1942,11 @@ mod tests {
         assert_eq!(view.stats[&entries[0].key], "+0 −1");
         assert_eq!(view.stats[&entries[1].key], "+0 −2");
         assert_ne!(entries[0].key, entries[1].key);
+        let attributes = view.attributes(&view.snapshot).unwrap();
+        assert_ne!(
+            attributes[&entries[0].key.path],
+            attributes[&entries[1].key.path]
+        );
         assert!(crate::ansi::plain(&view.patches[&entries[0].key]).contains("-first"));
         assert!(crate::ansi::plain(&view.patches[&entries[1].key]).contains("-second"));
         view.cursor = view
@@ -1994,7 +2012,7 @@ mod tests {
         view.refresh().unwrap();
         let key = Key {
             group: Group::Unstaged,
-            path: "caf\u{fffd}.txt".into(),
+            path: raw_path(b"caf\xe9.txt"),
         };
         assert_eq!(view.stats[&key], "+0 −1");
         view.cursor = view
@@ -2012,10 +2030,13 @@ mod tests {
             b"2 R. N... 100644 100644 100644 a b R100 new\nname.txt\0old name.txt\0? other.txt\0",
         )
         .unwrap();
-        assert_eq!(parsed.entries[0].key.path, "new\nname.txt");
+        assert_eq!(parsed.entries[0].key.path, PathBuf::from("new\nname.txt"));
         assert_eq!(parsed.entries[0].original.as_deref(), Some("old name.txt"));
         assert_eq!(parsed.entries.len(), 2);
-        assert_eq!(visible(&parsed.entries[0].key.path), "new\\nname.txt");
+        assert_eq!(
+            visible(&parsed.entries[0].key.path.to_string_lossy()),
+            "new\\nname.txt"
+        );
         assert!(parse(b"2 R. N... 100644 100644 100644 a b R100 new.txt\0").is_err());
     }
 

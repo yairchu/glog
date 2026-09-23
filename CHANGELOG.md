@@ -49,7 +49,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   Live refreshes reuse unchanged patches and file statistics, invalidating them
   when effective Git attributes change. Tracked statistics are fetched in batches.
   Status uses consistent rename detection for file entries, patches, and statistics
-  even when Git's status and diff rename settings disagree.
+  even when Git's status and diff rename settings disagree. Non-UTF-8 filenames
+  retain distinct patches, statistics, and folding state even when their
+  displayed names are identical.
   Dirty submodules can be expanded into their live staged, unstaged, and untracked
   changes, including nested file patches. Diff submodule summaries retain the
   dirty indicator alongside the commit comparison.
