@@ -2024,6 +2024,80 @@ mod tests {
         }
     }
 
+    #[test]
+    fn staged_rename_keeps_unstaged_patches_separate_from_recreated_source() {
+        let root =
+            std::env::temp_dir().join(format!("glog-status-rename-source-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(&root)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.name", "Test"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(root.join("old.txt"), "original\n".repeat(10)).unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        git(&["mv", "old.txt", "new.txt"]);
+        std::fs::write(root.join("old.txt"), "recreated source\n").unwrap();
+        git(&["add", "-N", "old.txt"]);
+        std::fs::write(
+            root.join("new.txt"),
+            format!("edited\n{}", "original\n".repeat(9)),
+        )
+        .unwrap();
+
+        let mut view = StatusView {
+            root,
+            ..StatusView::default()
+        };
+        view.refresh().unwrap();
+        for (group, path, added, deleted) in [
+            (Group::Unstaged, "new.txt", 1, 1),
+            (Group::Unstaged, "old.txt", 1, 0),
+            (Group::Staged, "new.txt", 0, 0),
+        ] {
+            let key = Key {
+                group,
+                path: path.into(),
+            };
+            let entry = view
+                .snapshot
+                .entries
+                .iter()
+                .find(|entry| entry.key == key)
+                .unwrap();
+            let patch = view.patch(entry).unwrap();
+            let files = crate::diff::file_sections(&patch);
+            assert_eq!(files.len(), 1, "{group:?} {path}: {patch}");
+            assert_eq!(files[0].path, path);
+            assert_eq!((files[0].additions, files[0].deletions), (added, deleted));
+            assert_eq!(view.stats[&key], format!("+{added} −{deleted}"));
+            if group == Group::Staged {
+                assert_eq!(entry.original.as_deref(), Some("old.txt"));
+                assert!(patch.contains("rename from old.txt"));
+                assert!(patch.contains("rename to new.txt"));
+            } else {
+                assert!(entry.original.is_none());
+                assert!(entry.raw_original.is_none());
+            }
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn colliding_display_names_keep_distinct_status_contents_and_folds() {
