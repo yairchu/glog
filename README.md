@@ -146,6 +146,12 @@ Missing history is reported without fetching. Dirty working-tree contents and
 submodule additions/deletions are not expanded. Combined merge diffs are expandable
 when all parents record the same submodule commit.
 
+Status labels submodules with modified or untracked contents as dirty. Press
+`Enter`/`z` to expand their live Staged, Unstaged, and Untracked sections, then
+expand individual files with the same keys. Nested changes refresh along with
+Status, preserving expanded files. Diff summaries retain the dirty indicator;
+their expansion still compares the recorded commits.
+
 Merge commits with combined diffs also have expandable summaries; their counts
 count each displayed changed line once across all parents.
 

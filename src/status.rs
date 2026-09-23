@@ -42,6 +42,15 @@ struct Entry {
     label: String,
     original: Option<String>,
 }
+impl Entry {
+    fn dirty_submodule(&self) -> bool {
+        self.key.group == Group::Unstaged
+            && self.record.split(' ').nth(2).is_some_and(|state| {
+                state.starts_with('S')
+                    && (state.ends_with('U') || state.as_bytes().get(2) == Some(&b'M'))
+            })
+    }
+}
 #[derive(Default)]
 struct Snapshot {
     branch: String,
@@ -286,6 +295,24 @@ enum RowKey {
     Group(Group),
     File(Key),
     Patch(Key, usize),
+    Nested(Key, Box<RowKey>),
+}
+impl RowKey {
+    fn same_patch(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Patch(left, _), Self::Patch(right, _)) => left == right,
+            (Self::Nested(left, a), Self::Nested(right, b)) => left == right && a.same_patch(b),
+            _ => false,
+        }
+    }
+
+    fn is_file(&self) -> bool {
+        match self {
+            Self::File(_) => true,
+            Self::Nested(_, row) => row.is_file(),
+            _ => false,
+        }
+    }
 }
 #[derive(Clone)]
 struct Row {
@@ -296,6 +323,7 @@ struct Row {
 }
 #[derive(Default)]
 pub struct StatusView {
+    submodules: HashMap<Key, StatusView>,
     images_enabled: bool,
     root: PathBuf,
     snapshot: Snapshot,
@@ -320,6 +348,20 @@ pub struct StatusView {
     pub error: Option<String>,
 }
 impl StatusView {
+    fn load_submodule(&self, key: &Key) -> Result<Self, String> {
+        let root = self.root.join(&key.path);
+        if !root.join(".git").exists() {
+            return Err(format!("Submodule {} is not initialized locally", key.path));
+        }
+        let mut child = Self {
+            root,
+            show_stat: self.show_stat,
+            images_enabled: self.images_enabled,
+            ..Self::default()
+        };
+        child.refresh()?;
+        Ok(child)
+    }
     pub fn summary(&self) -> String {
         self.snapshot.summary()
     }
@@ -346,7 +388,7 @@ impl StatusView {
             return crate::git::show_untracked(&self.root.join(&entry.key.path).to_string_lossy());
         }
         let mut command = self.diff_command(entry);
-        command.args(["--color=always", "--full-index"]);
+        command.args(["--color=always", "--full-index", "--submodule=short"]);
         self.diff_paths(&mut command, entry);
         let output = command.output().map_err(|error| error.to_string())?;
         if !output.status.success() {
@@ -506,7 +548,8 @@ impl StatusView {
         }
     }
     fn fold_by_default(entry: &Entry) -> bool {
-        entry.key.group == Group::Untracked
+        entry.dirty_submodule()
+            || entry.key.group == Group::Untracked
             || entry.label == "added"
             || crate::diff::is_lockfile(&entry.key.path)
     }
@@ -627,6 +670,24 @@ impl StatusView {
             }
         }
         stats.extend(self.load_stats(&changed)?);
+        self.submodules.retain(|key, _| {
+            snapshot
+                .entries
+                .iter()
+                .any(|entry| &entry.key == key && entry.dirty_submodule())
+        });
+        for child in self.submodules.values_mut() {
+            child.refresh()?;
+        }
+        for entry in &snapshot.entries {
+            if entry.dirty_submodule()
+                && patches.contains_key(&entry.key)
+                && !self.submodules.contains_key(&entry.key)
+            {
+                self.submodules
+                    .insert(entry.key.clone(), self.load_submodule(&entry.key)?);
+            }
+        }
         self.stats = stats;
         self.fingerprints = fingerprints;
         self.expanded_folds.retain(|key| patches.contains_key(key));
@@ -702,7 +763,11 @@ impl StatusView {
                     text: format!(
                         "  {} {}  {}{}",
                         if expanded { "▼" } else { "▶" },
-                        entry.label,
+                        if entry.dirty_submodule() {
+                            "dirty submodule"
+                        } else {
+                            &entry.label
+                        },
                         name,
                         detail
                     ),
@@ -746,22 +811,38 @@ impl StatusView {
                             }
                         }
                     }
+                    if let Some(child) = self.submodules.get(&entry.key) {
+                        for row in &child.rows {
+                            self.rows.push(Row {
+                                key: RowKey::Nested(entry.key.clone(), Box::new(row.key.clone())),
+                                text: format!("    {}", row.text),
+                                color: row.color,
+                                preview: row.preview.clone(),
+                            });
+                        }
+                    }
                 }
             }
         }
         let position = old.as_ref().and_then(|old| {
+            if let Some(index) = self
+                .rows
+                .iter()
+                .enumerate()
+                .filter(|(_, row)| {
+                    row.key.same_patch(&old.key)
+                        && row.text == old.text
+                        && row.preview == old.preview
+                })
+                .min_by_key(|(index, _)| index.abs_diff(self.cursor))
+                .map(|(index, _)| index)
+            {
+                return Some(index);
+            }
             if let RowKey::Patch(key, _) = &old.key {
                 self.rows
                     .iter()
-                    .enumerate()
-                    .filter(|(_, row)| {
-                        matches!(&row.key, RowKey::Patch(current, _) if current == key)
-                            && row.text == old.text
-                            && row.preview == old.preview
-                    })
-                    .min_by_key(|(index, _)| index.abs_diff(self.cursor))
-                    .map(|(index, _)| index)
-                    .or_else(|| self.rows.iter().position(|row| row.key == old.key))
+                    .position(|row| row.key == old.key)
                     .or_else(|| {
                         self.rows
                             .iter()
@@ -788,6 +869,25 @@ impl StatusView {
             return;
         };
         match row.key.clone() {
+            RowKey::Nested(key, nested) => {
+                let child = self.submodules.get_mut(&key).unwrap();
+                if let Some(index) = child.rows.iter().position(|row| row.key == *nested) {
+                    child.cursor = index;
+                    child.toggle();
+                    let target = child
+                        .rows
+                        .get(child.cursor)
+                        .map(|row| RowKey::Nested(key, Box::new(row.key.clone())));
+                    self.error = child.error.clone();
+                    self.rebuild();
+                    if let Some(index) =
+                        target.and_then(|target| self.rows.iter().position(|row| row.key == target))
+                    {
+                        self.cursor = index;
+                    }
+                }
+                return;
+            }
             RowKey::Group(group) => {
                 if !self
                     .snapshot
@@ -823,6 +923,18 @@ impl StatusView {
                 if expand {
                     if let Some(entry) = self.snapshot.entries.iter().find(|entry| entry.key == key)
                     {
+                        if entry.dirty_submodule() && !self.submodules.contains_key(&key) {
+                            match self.load_submodule(&key) {
+                                Ok(child) => {
+                                    self.submodules.insert(key.clone(), child);
+                                }
+                                Err(error) => {
+                                    self.expanded_folds.remove(&key);
+                                    self.error = Some(error);
+                                    return;
+                                }
+                            }
+                        }
                         match self.patch(entry) {
                             Ok(patch) => {
                                 self.patches.insert(key.clone(), patch);
@@ -857,6 +969,9 @@ impl StatusView {
     pub fn enable_images(&mut self, enabled: bool) {
         if self.images_enabled != enabled {
             self.images_enabled = enabled;
+            for child in self.submodules.values_mut() {
+                child.enable_images(enabled);
+            }
             self.rebuild();
         }
     }
@@ -916,7 +1031,7 @@ impl StatusView {
         {
             let mut line = crate::ansi::normalized_line(&row.text);
             if let Some(color) = row.color {
-                line = if matches!(row.key, RowKey::File(_)) {
+                line = if row.key.is_file() {
                     crate::ui::summary_line(&row.text)
                 } else {
                     Line::raw(row.text.clone())
@@ -948,6 +1063,205 @@ impl StatusView {
 mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn dirty_submodules_expand_live_status_and_keep_nested_folds() {
+        let root =
+            std::env::temp_dir().join(format!("glog-dirty-submodule-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        let git = |at: &std::path::Path, args: &[&str]| {
+            let output = Command::new("git")
+                .arg("-C")
+                .arg(at)
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&root, &["init", "-q"]);
+        let module = root.join("module space");
+        git(&root, &["init", "-q", "module space"]);
+        std::fs::write(module.join("file.txt"), "base\n").unwrap();
+        git(&module, &["add", "."]);
+        git(&module, &["commit", "-qm", "base"]);
+        std::fs::write(
+            root.join(".gitmodules"),
+            "[submodule \"module space\"]\npath = module space\nurl = ./unused\n",
+        )
+        .unwrap();
+        git(&root, &["add", "."]);
+        git(&root, &["commit", "-qm", "base"]);
+        git(&root, &["submodule", "absorbgitdirs"]);
+        std::fs::write(module.join("file.txt"), "staged\n").unwrap();
+        git(&module, &["add", "."]);
+        std::fs::write(module.join("file.txt"), "worktree\n").unwrap();
+        std::fs::write(module.join("new.txt"), "untracked contents\n").unwrap();
+
+        let mut view = StatusView {
+            root: root.clone(),
+            ..StatusView::default()
+        };
+        view.refresh().unwrap();
+        assert!(
+            view.submodules.is_empty(),
+            "nested contents must load on demand"
+        );
+        let key = Key {
+            group: Group::Unstaged,
+            path: "module space".into(),
+        };
+        view.cursor = view
+            .rows
+            .iter()
+            .position(|row| row.key == RowKey::File(key.clone()))
+            .unwrap();
+        assert!(crate::ansi::plain(&view.rows[view.cursor].text).contains("dirty submodule"));
+        view.toggle();
+        assert!(view.error.is_none(), "{:?}", view.error);
+        assert!(view
+            .rows
+            .iter()
+            .any(|row| crate::ansi::plain(&row.text).contains("+staged")));
+        assert!(view
+            .rows
+            .iter()
+            .any(|row| crate::ansi::plain(&row.text).contains("+worktree")));
+        assert!(view
+            .rows
+            .iter()
+            .any(|row| crate::ansi::plain(&row.text).contains("Untracked (1)")));
+        view.cursor = view
+            .rows
+            .iter()
+            .position(|row| row.key.is_file() && crate::ansi::plain(&row.text).contains("new.txt"))
+            .unwrap();
+        view.toggle();
+        assert!(view
+            .rows
+            .iter()
+            .any(|row| crate::ansi::plain(&row.text).contains("+untracked contents")));
+
+        view.cursor = view
+            .rows
+            .iter()
+            .position(|row| crate::ansi::plain(&row.text).contains("+worktree"))
+            .unwrap();
+        std::fs::write(module.join("file.txt"), "inserted\nworktree\n").unwrap();
+        view.refresh().unwrap();
+        assert!(crate::ansi::plain(&view.rows[view.cursor].text).contains("+worktree"));
+        assert!(view
+            .rows
+            .iter()
+            .any(|row| crate::ansi::plain(&row.text).contains("+inserted")));
+        view.toggle();
+        assert!(view.rows[view.cursor].key.is_file());
+        assert!(crate::ansi::plain(&view.rows[view.cursor].text).contains("file.txt"));
+        view.refresh().unwrap();
+        assert!(!view
+            .rows
+            .iter()
+            .any(|row| crate::ansi::plain(&row.text).contains("+worktree")));
+        assert!(view
+            .rows
+            .iter()
+            .any(|row| crate::ansi::plain(&row.text).contains("+untracked contents")));
+
+        // Untracked-only dirtiness still has a nested view, even without a tracked patch.
+        git(&module, &["reset", "--hard", "-q", "HEAD"]);
+        view.refresh().unwrap();
+        assert!(view
+            .rows
+            .iter()
+            .any(|row| crate::ansi::plain(&row.text).contains("dirty submodule")));
+        assert!(view
+            .rows
+            .iter()
+            .any(|row| crate::ansi::plain(&row.text).contains("+untracked contents")));
+        std::fs::remove_file(module.join("new.txt")).unwrap();
+        view.refresh().unwrap();
+        assert!(view.submodules.is_empty());
+        assert_eq!(view.summary(), "Clean");
+
+        // A new dirty state is expandable again after the old entry disappears.
+        std::fs::write(module.join("new.txt"), "new contents\n").unwrap();
+        view.refresh().unwrap();
+        view.cursor = view
+            .rows
+            .iter()
+            .position(|row| row.key == RowKey::File(key.clone()))
+            .unwrap();
+        view.toggle();
+        assert!(view
+            .rows
+            .iter()
+            .any(|row| row.key.is_file() && crate::ansi::plain(&row.text).contains("new.txt")));
+
+        // Keep a pointer change present while the submodule becomes clean and dirty.
+        std::fs::write(module.join("file.txt"), "committed\n").unwrap();
+        git(&module, &["commit", "-qam", "next"]);
+        std::fs::remove_file(module.join("new.txt")).unwrap();
+        view.refresh().unwrap();
+        assert!(view.submodules.is_empty());
+        assert_ne!(view.summary(), "Clean");
+        std::fs::write(module.join("new.txt"), "dirty again\n").unwrap();
+        view.refresh().unwrap();
+        assert!(view.submodules.contains_key(&key));
+
+        // Staging the pointer must not mix the submodule's live changes into Staged.
+        git(&root, &["add", "module space"]);
+        let mut summary = StatusView {
+            root,
+            show_stat: true,
+            ..StatusView::default()
+        };
+        summary.refresh().unwrap();
+        let staged = Key {
+            group: Group::Staged,
+            path: key.path.clone(),
+        };
+        summary.cursor = summary
+            .rows
+            .iter()
+            .position(|row| row.key == RowKey::File(staged.clone()))
+            .unwrap();
+        summary.toggle();
+        assert!(!summary.submodules.contains_key(&staged));
+        summary.cursor = summary
+            .rows
+            .iter()
+            .position(|row| row.key == RowKey::File(key.clone()))
+            .unwrap();
+        summary.toggle();
+        summary.cursor = summary
+            .rows
+            .iter()
+            .position(|row| row.key.is_file() && row.text.contains("new.txt"))
+            .unwrap();
+        summary.toggle();
+        assert!(summary
+            .rows
+            .iter()
+            .any(|row| crate::ansi::plain(&row.text).contains("+dirty again")));
+    }
 
     #[test]
     fn untracked_statistics_stream_text_and_stop_at_binary_prefix() {

@@ -559,7 +559,16 @@ impl App {
             if self.show_stat || file.submodule.is_some() {
                 let expanded = self.expanded_folds.contains(&file.path);
                 let detail = if let Some((old, new)) = &file.submodule {
-                    format!("submodule {} → {}", &old[..8], &new[..8])
+                    let dirty = lines[file.start..file.end].iter().any(|line| {
+                        crate::ansi::plain(line)
+                            .starts_with(&format!("+Subproject commit {new}-dirty"))
+                    });
+                    format!(
+                        "submodule {} → {}{}",
+                        &old[..8],
+                        &new[..8],
+                        if dirty { " (dirty)" } else { "" }
+                    )
                 } else if file.lazy_untracked_path.is_some() {
                     "contents not loaded".to_owned()
                 } else if lines[file.start..file.end].iter().any(|line| {
@@ -1422,6 +1431,20 @@ mod tests {
                 "{content}"
             );
         }
+    }
+
+    #[test]
+    fn submodule_summary_preserves_worktree_dirty_marker() {
+        let mut app = App::new(Vec::new());
+        let old = "1".repeat(40);
+        let new = "2".repeat(40);
+        app.show_text = format!(
+            "diff --git a/module b/module\nindex {old}..{new} 160000\n--- a/module\n+++ b/module\n@@ -1 +1 @@\n-Subproject commit {old}\n+Subproject commit {new}-dirty\n"
+        );
+        app.ensure_show_rows();
+        assert!(app.show_rows[0].text.ends_with(" (dirty)"));
+        app.toggle_show_stat();
+        assert!(app.show_rows[0].text.ends_with(" (dirty)"));
     }
 
     #[test]
