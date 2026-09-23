@@ -172,6 +172,9 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
                     b'T' => "type changed",
                     _ => "changed",
                 };
+                // A rename source belongs only to the XY side that renamed
+                // the file, not to modifications on the other side.
+                let renamed = matches!(code, b'R' | b'C');
                 snapshot.entries.push(Entry {
                     record: record.to_owned(),
                     key: Key {
@@ -179,9 +182,9 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
                         path: raw_path.clone(),
                     },
                     label: label.into(),
-                    original: original.clone(),
+                    original: original.clone().filter(|_| renamed),
                     raw_path: raw_path.clone(),
-                    raw_original: raw_original.clone(),
+                    raw_original: raw_original.clone().filter(|_| renamed),
                 });
             }
         }
