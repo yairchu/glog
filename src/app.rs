@@ -1655,6 +1655,34 @@ mod tests {
     }
 
     #[test]
+    fn summary_mode_changed_in_status_applies_when_returning_to_show() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let text = "message\ndiff --git a/one.rs b/one.rs\n--- a/one.rs\n+++ b/one.rs\n-old\n+reading-here\n";
+        let mut app = App::new(vec![commit("x")]);
+        app.insert_cache(app.commits[0].hash.clone(), text.to_owned());
+        app.mode = Mode::Show;
+        app.load_show();
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.text == "+reading-here")
+            .unwrap();
+        // Pressing `s` in Status updates the shared setting while Show is hidden.
+        app.mode = Mode::Status;
+        app.show_stat = true;
+        app.mode = Mode::Show;
+        app.load_show();
+        assert!(app.show_rows[app.show_cursor].summary);
+        assert!(!app.show_rows.iter().any(|row| row.text == "+reading-here"));
+        crate::input::handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('s'), KeyModifiers::NONE)),
+            &mut app,
+        );
+        assert!(!app.show_stat);
+        assert_eq!(app.show_rows[app.show_cursor].text, "+reading-here");
+    }
+
+    #[test]
     fn lockfiles_start_folded_and_can_be_expanded() {
         let mut app = App::new(Vec::new());
         app.show_text = "commit metadata\ndiff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n-old\n+new\ndiff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n-old dep\n+new dep\n"
