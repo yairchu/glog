@@ -41,6 +41,9 @@ struct Entry {
     key: Key,
     label: String,
     original: Option<String>,
+    // Keys display lossy UTF-8; Git and the filesystem need the exact bytes.
+    raw_path: PathBuf,
+    raw_original: Option<PathBuf>,
 }
 impl Entry {
     fn dirty_submodule(&self) -> bool {
@@ -64,12 +67,25 @@ struct Snapshot {
 // threshold so each status entry corresponds to its patch and numstat record.
 const RENAME_DETECTION: &str = "--find-renames=50%";
 
+fn raw_path(bytes: &[u8]) -> PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        std::ffi::OsStr::from_bytes(bytes).into()
+    }
+    #[cfg(not(unix))]
+    {
+        String::from_utf8_lossy(bytes).into_owned().into()
+    }
+}
+
 fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
-    let text = std::str::from_utf8(bytes)
-        .map_err(|_| "Status contains a non-UTF-8 filename".to_owned())?;
     let mut snapshot = Snapshot::default();
-    let mut records = text.split('\0').filter(|record| !record.is_empty());
-    while let Some(record) = records.next() {
+    let mut records = bytes
+        .split(|&byte| byte == 0)
+        .filter(|record| !record.is_empty());
+    while let Some(raw) = records.next() {
+        let record = &*String::from_utf8_lossy(raw);
         if let Some(branch) = record.strip_prefix("# branch.head ") {
             snapshot.branch = branch.to_owned();
             continue;
@@ -107,34 +123,31 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
                 },
                 label: "new".into(),
                 original: None,
+                raw_path: raw_path(&raw[2..]),
+                raw_original: None,
             });
             continue;
         }
-        let fields: Vec<_> = record
-            .splitn(
-                match record.as_bytes()[0] {
-                    b'1' => 9,
-                    b'2' => 10,
-                    b'u' => 11,
-                    _ => return Err("Unrecognized Git status record".into()),
-                },
-                ' ',
-            )
-            .collect();
         let expected = match record.as_bytes()[0] {
             b'1' => 9,
             b'2' => 10,
-            _ => 11,
+            b'u' => 11,
+            _ => return Err("Unrecognized Git status record".into()),
         };
+        let fields: Vec<_> = record.splitn(expected, ' ').collect();
         if fields.len() != expected || fields[1].len() != 2 {
             return Err("Malformed Git status record".into());
         }
         let path = fields.last().unwrap().to_string();
-        let original = if record.starts_with("2 ") {
-            Some(records.next().ok_or("Missing rename source")?.to_owned())
+        let path_bytes = raw.splitn(expected, |&byte| byte == b' ').last().unwrap();
+        let raw_path = raw_path(path_bytes);
+        let raw_original = if record.starts_with("2 ") {
+            Some(records.next().ok_or("Missing rename source")?)
         } else {
             None
         };
+        let original = raw_original.map(|raw| String::from_utf8_lossy(raw).into_owned());
+        let raw_original = raw_original.map(self::raw_path);
         if record.starts_with("u ") {
             snapshot.entries.push(Entry {
                 record: record.to_owned(),
@@ -154,6 +167,8 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
                 }
                 .to_owned(),
                 original,
+                raw_path,
+                raw_original,
             });
             continue;
         }
@@ -177,6 +192,8 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
                     },
                     label: label.into(),
                     original: original.clone(),
+                    raw_path: raw_path.clone(),
+                    raw_original: raw_original.clone(),
                 });
             }
         }
@@ -392,7 +409,7 @@ impl StatusView {
         #[cfg(test)]
         self.patch_reads.set(self.patch_reads.get() + 1);
         if entry.key.group == Group::Untracked {
-            return crate::git::show_untracked(&self.root.join(&entry.key.path).to_string_lossy());
+            return crate::git::show_untracked(&self.root.join(&entry.raw_path));
         }
         let mut command = self.diff_command(entry);
         command.args(["--color=always", "--full-index", "--submodule=short"]);
@@ -417,8 +434,8 @@ impl StatusView {
         command
     }
     fn diff_paths(&self, command: &mut Command, entry: &Entry) {
-        command.arg("--").arg(&entry.key.path);
-        if let Some(original) = &entry.original {
+        command.arg("--").arg(&entry.raw_path);
+        if let Some(original) = &entry.raw_original {
             command.arg(original);
         }
     }
@@ -429,7 +446,7 @@ impl StatusView {
             .iter()
             .filter(|entry| entry.key.group == Group::Untracked)
         {
-            let detail = untracked_stats(&self.root.join(&entry.key.path))
+            let detail = untracked_stats(&self.root.join(&entry.raw_path))
                 .map_err(|error| format!("could not inspect {}: {error}", entry.key.path))?;
             stats.insert(entry.key.clone(), detail);
         }
@@ -579,7 +596,7 @@ impl StatusView {
             .entries
             .iter()
             .filter(|entry| entry.key.group != Group::Untracked)
-            .flat_map(|entry| std::iter::once(&entry.key.path).chain(entry.original.iter()))
+            .flat_map(|entry| std::iter::once(&entry.raw_path).chain(entry.raw_original.iter()))
             .collect();
         paths.sort_unstable();
         paths.dedup();
@@ -588,7 +605,7 @@ impl StatusView {
         }
         let mut input = Vec::new();
         for path in paths {
-            input.extend_from_slice(path.as_bytes());
+            input.extend_from_slice(path.as_os_str().as_encoded_bytes());
             input.push(0);
         }
         let output = crate::git::pipe_through(
@@ -624,8 +641,10 @@ impl StatusView {
         let mut hash = DefaultHasher::new();
         entry.record.hash(&mut hash);
         entry.original.hash(&mut hash);
-        for path in std::iter::once(&entry.key.path).chain(entry.original.iter()) {
-            attributes.get(path).hash(&mut hash);
+        let paths = std::iter::once((&entry.key.path, &entry.raw_path))
+            .chain(entry.original.iter().zip(entry.raw_original.iter()));
+        for (name, path) in paths {
+            attributes.get(name).hash(&mut hash);
             match std::fs::symlink_metadata(self.root.join(path)) {
                 Ok(metadata) => {
                     if metadata.is_dir() {
@@ -1499,6 +1518,8 @@ mod tests {
             key: key.clone(),
             label: "M".into(),
             original: None,
+            raw_path: "image.png".into(),
+            raw_original: None,
         });
         view.patches.insert(key.clone(), "diff --git a/image.png b/image.png\nindex abcd1234..abcd5678 100644\nBinary files a/image.png and b/image.png differ\n".into());
         view.enable_images(true);

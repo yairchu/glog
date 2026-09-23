@@ -576,7 +576,8 @@ pub fn show_submodule(
     Ok((directory, format_output(output.stdout)?))
 }
 
-pub fn show_untracked(path: &str) -> Result<String, String> {
+pub fn show_untracked(path: &std::path::Path) -> Result<String, String> {
+    let name = path.to_string_lossy();
     let mut output = Vec::new();
     if !untracked_regular_file_diff(path, &mut output)? {
         let untracked = Command::new("git")
@@ -588,9 +589,10 @@ pub fn show_untracked(path: &str) -> Result<String, String> {
                 "--no-ext-diff",
             ])
             .args(DIFF_PREFIX_ARGS)
-            .args(["--", NULL_DEVICE, path])
+            .args(["--", NULL_DEVICE])
+            .arg(path)
             .output()
-            .map_err(|error| format!("could not diff untracked file {path}: {error}"))?;
+            .map_err(|error| format!("could not diff untracked file {name}: {error}"))?;
         if !matches!(untracked.status.code(), Some(0 | 1)) {
             return Err(stderr_message("git diff failed", &untracked.stderr));
         }
@@ -599,9 +601,13 @@ pub fn show_untracked(path: &str) -> Result<String, String> {
     format_output(output)
 }
 
-fn untracked_regular_file_diff(path: &str, output: &mut Vec<u8>) -> Result<bool, String> {
+fn untracked_regular_file_diff(
+    path: &std::path::Path,
+    output: &mut Vec<u8>,
+) -> Result<bool, String> {
+    let name = path.to_string_lossy();
     let metadata = fs::symlink_metadata(path)
-        .map_err(|error| format!("could not inspect untracked file {path}: {error}"))?;
+        .map_err(|error| format!("could not inspect untracked file {name}: {error}"))?;
     if !metadata.file_type().is_file() {
         return Ok(false);
     }
@@ -611,15 +617,15 @@ fn untracked_regular_file_diff(path: &str, output: &mut Vec<u8>) -> Result<bool,
     // trees containing thousands of files, even when every binary file only
     // contributes a three-line notice.
     let mut file = fs::File::open(path)
-        .map_err(|error| format!("could not read untracked file {path}: {error}"))?;
+        .map_err(|error| format!("could not read untracked file {name}: {error}"))?;
     let mut contents = Vec::with_capacity(8_000);
     Read::by_ref(&mut file)
         .take(8_000)
         .read_to_end(&mut contents)
-        .map_err(|error| format!("could not read untracked file {path}: {error}"))?;
+        .map_err(|error| format!("could not read untracked file {name}: {error}"))?;
 
-    let old_path = git_quote_path(&format!("a/{path}"));
-    let new_path = git_quote_path(&format!("b/{path}"));
+    let old_path = git_quote_path(&format!("a/{name}"));
+    let new_path = git_quote_path(&format!("b/{name}"));
     let mode = file_mode(&metadata);
     output.extend_from_slice(
         format!(
@@ -635,7 +641,7 @@ fn untracked_regular_file_diff(path: &str, output: &mut Vec<u8>) -> Result<bool,
     }
 
     file.read_to_end(&mut contents)
-        .map_err(|error| format!("could not read untracked file {path}: {error}"))?;
+        .map_err(|error| format!("could not read untracked file {name}: {error}"))?;
 
     let line_count = contents.iter().filter(|byte| **byte == b'\n').count()
         + usize::from(!contents.is_empty() && contents.last() != Some(&b'\n'));
@@ -2442,7 +2448,10 @@ mod tests {
         let _current_dir = CurrentDirGuard::enter(repository.path());
         let mut output = Vec::new();
 
-        assert!(untracked_regular_file_diff("generated.bin", &mut output).unwrap());
+        assert!(
+            untracked_regular_file_diff(std::path::Path::new("generated.bin"), &mut output)
+                .unwrap()
+        );
         let output = String::from_utf8(output).unwrap();
         assert!(output.contains("diff --git a/generated.bin b/generated.bin"));
         assert!(output.contains("new file mode 100644"));
@@ -2524,7 +2533,7 @@ mod tests {
         assert!(show(&commits[0], &[])
             .unwrap()
             .contains("glog-lazy-untracked:"));
-        assert!(show_untracked("new.txt")
+        assert!(show_untracked(std::path::Path::new("new.txt"))
             .unwrap()
             .contains("UNTRACKED LONGER"));
         assert!(show(&commits[1], &[]).unwrap().contains("staged"));
