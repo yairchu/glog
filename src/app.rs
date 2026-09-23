@@ -166,6 +166,8 @@ impl App {
             view.toggle_stat();
         }
         self.search_input = None;
+        // Messages from the previous view, such as search results, do not apply.
+        self.status = None;
         self.mode = Mode::Status;
     }
 

@@ -100,7 +100,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Show => draw_show(frame, app, chunks[1]),
     }
     let help = if app.mode == Mode::Status {
-        app.status_view.as_ref().and_then(|view| view.error.clone()).unwrap_or_else(|| "↑/k ↓/j  Enter/z fold  s summary  ←/→ commit  Shift-←/→ pan  Tab Log  Esc Log  Ctrl-L redraw  h help  q quit · WATCH".to_owned())
+        app.status_view.as_ref().and_then(|view| view.error.clone()).or_else(|| app.status.clone()).unwrap_or_else(|| "↑/k ↓/j  Enter/z fold  s summary  ←/→ commit  Shift-←/→ pan  Tab Log  Esc Log  Ctrl-L redraw  h help  q quit · WATCH".to_owned())
     } else if let Some(input) = &app.search_input {
         let prefix = if app.search_reverse { '?' } else { '/' };
         format!("{prefix}{input}█")
