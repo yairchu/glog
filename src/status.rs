@@ -1,3 +1,4 @@
+use crate::git::raw_path;
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -66,18 +67,6 @@ struct Snapshot {
 // Status and diff have independent rename settings. Use the same detection
 // threshold so each status entry corresponds to its patch and numstat record.
 const RENAME_DETECTION: &str = "--find-renames=50%";
-
-fn raw_path(bytes: &[u8]) -> PathBuf {
-    #[cfg(unix)]
-    {
-        use std::os::unix::ffi::OsStrExt;
-        std::ffi::OsStr::from_bytes(bytes).into()
-    }
-    #[cfg(not(unix))]
-    {
-        String::from_utf8_lossy(bytes).into_owned().into()
-    }
-}
 
 fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
     let mut snapshot = Snapshot::default();
@@ -393,16 +382,8 @@ impl StatusView {
     }
 
     pub fn load() -> Result<Self, String> {
-        let output = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
-            .output()
-            .map_err(|error| error.to_string())?;
-        if !output.status.success() {
-            return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
-        }
         let mut view = Self {
-            // Git appends one newline; preceding newlines belong to the path.
-            root: raw_path(output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout)),
+            root: crate::git::repository_root()?,
             ..Self::default()
         };
         view.refresh()?;

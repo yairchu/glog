@@ -535,17 +535,7 @@ pub fn show_submodule(
     let root = if let Some(root) = root {
         root.to_owned()
     } else {
-        let output = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !output.status.success() {
-            return Err(stderr_message(
-                "could not locate repository",
-                &output.stderr,
-            ));
-        }
-        std::path::PathBuf::from(String::from_utf8_lossy(&output.stdout).trim_end())
+        repository_root()?
     };
     let directory = root.join(path);
     // Without this check Git can walk up to the superproject for an empty,
@@ -735,21 +725,40 @@ fn untracked_paths(paths: &[String]) -> Result<Vec<std::path::PathBuf>, String> 
     Ok(parse_untracked_paths(&output.stdout))
 }
 
+pub(crate) fn raw_path(bytes: &[u8]) -> std::path::PathBuf {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        std::ffi::OsStr::from_bytes(bytes).into()
+    }
+    #[cfg(not(unix))]
+    {
+        String::from_utf8_lossy(bytes).into_owned().into()
+    }
+}
+
+/// Git terminates its raw repository path with exactly one newline.
+pub(crate) fn repository_root() -> Result<std::path::PathBuf, String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(|error| format!("could not locate repository: {error}"))?;
+    if !output.status.success() {
+        return Err(stderr_message(
+            "could not locate repository",
+            &output.stderr,
+        ));
+    }
+    Ok(raw_path(
+        output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout),
+    ))
+}
+
 fn parse_untracked_paths(output: &[u8]) -> Vec<std::path::PathBuf> {
     output
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
-        .map(|path| {
-            #[cfg(unix)]
-            {
-                use std::os::unix::ffi::OsStrExt;
-                std::ffi::OsStr::from_bytes(path).into()
-            }
-            #[cfg(not(unix))]
-            {
-                String::from_utf8_lossy(path).into_owned().into()
-            }
-        })
+        .map(raw_path)
         .collect()
 }
 

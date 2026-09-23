@@ -145,19 +145,7 @@ impl Images {
         if !enabled {
             return Self::default();
         }
-        let root = Command::new("git")
-            .args(["rev-parse", "--show-toplevel"])
-            .output()
-            .ok()
-            .filter(|o| o.status.success())
-            .map(|o| {
-                PathBuf::from(
-                    String::from_utf8_lossy(&o.stdout)
-                        .trim_end_matches('\n')
-                        .to_owned(),
-                )
-            })
-            .unwrap_or_default();
+        let root = crate::git::repository_root().unwrap_or_default();
         Self {
             enabled,
             root,
