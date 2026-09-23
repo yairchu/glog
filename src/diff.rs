@@ -398,6 +398,14 @@ mod tests {
     }
 
     #[test]
+    fn decodes_a_non_utf8_lazy_untracked_path() {
+        let text = "diff --git \"a/a\\377.txt\" \"b/a\\377.txt\"\nnew file mode 100644\nglog-lazy-untracked:61ff2e747874\n";
+        let sections = file_sections(text);
+        assert!(sections[0].lazy_untracked_path.is_some());
+        assert_eq!(sections[0].path_bytes, b"a\xff.txt");
+    }
+
+    #[test]
     fn recognizes_common_non_dot_lockfiles() {
         assert!(is_lockfile("web/package-lock.json"));
         assert!(is_lockfile("pnpm-lock.yaml"));

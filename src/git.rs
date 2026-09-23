@@ -1024,6 +1024,45 @@ mod tests {
         assert_ne!(before, watch_fingerprint().unwrap());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn diff_expands_non_utf8_untracked_files_independently() {
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        for (name, contents) in [(b"a\xff.txt", "first\n"), (b"a\xfe.txt", "second\n")] {
+            if let Err(error) = fs::write(OsStr::from_bytes(name), contents) {
+                // Darwin EILSEQ: this filesystem rejects non-UTF-8 names.
+                #[cfg(target_os = "macos")]
+                if error.raw_os_error() == Some(92) {
+                    return;
+                }
+                panic!("could not create filename fixture: {error}");
+            }
+        }
+        let mut app = load_diff_app(&[]).unwrap();
+        let files = crate::diff::file_sections(&app.show_text);
+        assert_eq!(files.len(), 2);
+        assert_ne!(files[0].path_bytes, files[1].path_bytes);
+        for file in 0..2 {
+            app.show_cursor = app
+                .show_rows
+                .iter()
+                .position(|row| row.folded && row.file == Some(file))
+                .unwrap();
+            app.toggle_show_file();
+            assert!(app.status.is_none(), "{:?}", app.status);
+        }
+        let text = crate::ansi::plain(&app.show_text);
+        assert!(text.contains("+first"), "{text}");
+        assert!(text.contains("+second"), "{text}");
+    }
+
     #[test]
     fn submodule_expansion_uses_recorded_commits_and_nested_folds() {
         let directory = TestDirectory::new();
