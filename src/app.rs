@@ -1404,6 +1404,52 @@ mod tests {
     }
 
     #[test]
+    fn non_utf8_show_paths_keep_independent_folds() {
+        // Git's quoted output also works on filesystems that cannot create
+        // these names. The third name contains a literal backslash.
+        let paths = [r"deps-\377.lock", r"deps-\376.lock", r"deps-\\377.lock"];
+        let text: String = paths
+            .iter()
+            .enumerate()
+            .map(|(index, path)| {
+                format!(
+                    "diff --git \"a/{path}\" \"b/{path}\"\n--- \"a/{path}\"\n+++ \"b/{path}\"\n@@ -1 +1 @@\n-old\n+new-{index}\n"
+                )
+            })
+            .collect();
+        for summary in [false, true] {
+            let mut app = App::new(Vec::new());
+            app.show_stat = summary;
+            app.show_text = text.clone();
+            app.ensure_show_rows();
+            assert_eq!(app.show_rows.iter().filter(|row| row.folded).count(), 3);
+            assert!(!app
+                .show_rows
+                .iter()
+                .any(|row| row.text.contains("changed file")));
+            for index in 0..paths.len() {
+                app.show_cursor = app
+                    .show_rows
+                    .iter()
+                    .position(|row| row.file == Some(index) && row.folded)
+                    .unwrap();
+                app.toggle_show_file();
+                for other in 0..paths.len() {
+                    assert_eq!(
+                        app.show_rows
+                            .iter()
+                            .any(|row| row.text == format!("+new-{other}")),
+                        other == index,
+                        "summary={summary}, expanded={index}, other={other}"
+                    );
+                }
+                app.toggle_show_file();
+                assert_eq!(app.show_rows.iter().filter(|row| row.folded).count(), 3);
+            }
+        }
+    }
+
+    #[test]
     fn stat_summaries_expand_collapse_and_search_regular_files() {
         let mut app = App::new(Vec::new());
         app.mode = Mode::Show;
