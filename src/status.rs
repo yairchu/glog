@@ -219,7 +219,7 @@ fn load_snapshot(root: &std::path::Path) -> Result<Snapshot, String> {
 }
 
 pub fn working_tree_summary() -> Result<String, String> {
-    Ok(load_snapshot(std::path::Path::new("."))?.summary())
+    Ok(load_snapshot(&crate::git::repository_root()?)?.summary())
 }
 
 impl Snapshot {
