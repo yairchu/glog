@@ -277,7 +277,6 @@ impl App {
             .commits
             .get(self.selected)
             .map(|commit| (commit.kind, commit.hash.clone()));
-        let old_start = self.log_selected_start();
         // Commit contents are immutable, but the decorations in cached Show text
         // follow mutable refs. Invalidate affected views even while Log is open.
         let decorations: HashMap<_, _> = commits
@@ -299,13 +298,8 @@ impl App {
         });
         self.selected =
             preserved.unwrap_or_else(|| self.selected.min(self.commits.len().saturating_sub(1)));
-        if preserved.is_some() {
-            self.log_offset = self
-                .log_offset
-                .saturating_add_signed(self.log_selected_start() as isize - old_start as isize);
-        } else {
-            self.log_offset = 0;
-        }
+        // Keep the viewport so a refresh visibly moves changed history; drawing
+        // scrolls only if the selected commit would leave the screen.
         if self.mode == Mode::Show {
             if preserved.is_some() {
                 self.refresh_show();
@@ -317,20 +311,6 @@ impl App {
                 self.load_show();
             }
         }
-    }
-
-    fn log_selected_start(&self) -> usize {
-        let separator = self
-            .commits
-            .iter()
-            .position(|commit| commit.kind == CommitKind::Revision)
-            .is_some_and(|index| index > 0 && self.selected >= index);
-        self.commits
-            .iter()
-            .take(self.selected)
-            .map(|commit| commit.graph.len())
-            .sum::<usize>()
-            + usize::from(separator)
     }
 
     fn refresh_show(&mut self) {
@@ -1308,33 +1288,54 @@ mod tests {
     }
 
     #[test]
-    fn watch_refresh_preserves_log_viewport_when_commits_are_prepended() {
+    fn watch_refresh_keeps_log_viewport_and_follows_the_selected_commit() {
         use ratatui::{backend::TestBackend, Terminal};
 
         let commits: Vec<_> = (0..12).map(|i| commit(&format!("commit {i}"))).collect();
-        let mut app = App::new(commits.clone());
-        app.watch = true;
-        app.selected = 5;
-        app.log_offset = 4;
         let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
-        terminal
-            .draw(|frame| crate::ui::draw(frame, &mut app))
-            .unwrap();
-        let before = terminal.backend().buffer().clone();
-        let selected_hash = app.commits[app.selected].hash.clone();
-
         // This is the same refresh entry point used by the watch event loop.
-        app.replace_commits([vec![commit("new head")], commits].concat());
-        terminal
-            .draw(|frame| crate::ui::draw(frame, &mut app))
-            .unwrap();
+        let mut refresh = |selected: usize, offset: usize, refreshed: Vec<Commit>| {
+            let mut app = App::new(commits.clone());
+            app.watch = true;
+            app.selected = selected;
+            app.log_offset = offset;
+            terminal
+                .draw(|frame| crate::ui::draw(frame, &mut app))
+                .unwrap();
+            let selected_hash = app.commits[app.selected].hash.clone();
+            app.replace_commits(refreshed);
+            terminal
+                .draw(|frame| crate::ui::draw(frame, &mut app))
+                .unwrap();
+            (app, selected_hash)
+        };
+        let prepended = [vec![commit("new head")], commits.clone()].concat();
 
-        assert_eq!(app.commits[app.selected].hash, selected_hash);
-        assert_eq!(
-            terminal.backend().buffer(),
-            &before,
-            "new commits above the viewport must not move the text being read"
+        // At the top, new commits appear instead of hiding above the viewport.
+        let (app, hash) = refresh(1, 0, prepended.clone());
+        assert_eq!(app.commits[app.selected].hash, hash);
+        assert_eq!(app.log_offset, 0);
+        assert_eq!(app.visible_log_rows[0], Some(0));
+
+        // Scrolled into history, the viewport also stays, so the refresh shows.
+        let (app, hash) = refresh(5, 4, prepended.clone());
+        assert_eq!(app.commits[app.selected].hash, hash);
+        assert_eq!(app.log_offset, 4);
+
+        // The viewport scrolls only as far as needed to keep the selection visible.
+        let (app, _) = refresh(11, 0, commits.clone());
+        let height = 12 - app.log_offset;
+        let (app, hash) = refresh(height - 1, 0, prepended);
+        assert_eq!(app.commits[app.selected].hash, hash);
+        assert_eq!(app.log_offset, 1);
+
+        // A vanished selection keeps the viewport instead of jumping to the top.
+        let (app, _) = refresh(
+            5,
+            4,
+            commits[..5].iter().chain(&commits[6..]).cloned().collect(),
         );
+        assert_eq!(app.log_offset, 4);
     }
 
     #[test]

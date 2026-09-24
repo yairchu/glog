@@ -108,8 +108,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   when expanded, instead of removing their section.
 
 - Preserved reading position and expanded files when watch mode refreshes,
-  keeping the selected commit in place and following surviving lines in changed
-  working-tree patches.
+  keeping the selected commit selected and following surviving lines in changed
+  working-tree patches. Log keeps its scroll position, so changed history
+  visibly moves, and scrolls only to keep the selected commit on screen.
 
 ## 0.2.1 - 2026-09-15
 
