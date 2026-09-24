@@ -990,6 +990,7 @@ impl App {
 
     pub fn toggle_all_lockfiles(&mut self) {
         let current_source = self.show_rows.get(self.show_cursor).map(|row| row.source);
+        let nested_cursor = self.submodule_rows.get(&self.show_cursor).cloned();
         let lockfiles: Vec<_> = self
             .show_files
             .iter()
@@ -1012,10 +1013,19 @@ impl App {
         self.search_match = None;
         self.rebuild_show_rows();
         if let Some(source) = current_source {
-            self.show_cursor = self
-                .show_rows
-                .iter()
-                .rposition(|row| row.source <= source)
+            // Nested rows share their gitlink's source, so follow them by
+            // their child location and skip them when matching by source.
+            self.show_cursor = nested_cursor
+                .and_then(|location| {
+                    self.submodule_rows
+                        .iter()
+                        .find_map(|(row, current)| (*current == location).then_some(*row))
+                })
+                .or_else(|| {
+                    self.show_rows.iter().enumerate().rposition(|(index, row)| {
+                        row.source <= source && !self.submodule_rows.contains_key(&index)
+                    })
+                })
                 .unwrap_or(0);
             self.show_scroll = Some(ShowScroll::Cursor);
         }
@@ -1037,16 +1047,16 @@ impl App {
                 .find(|file| file.start > current_source)
         };
         if let Some(target) = target {
-            self.show_cursor = self
-                .show_rows
-                .iter()
-                .position(|row| row.source == target.start && row.folded)
-                .or_else(|| {
-                    self.show_rows
-                        .iter()
-                        .position(|row| row.source == target.start)
-                })
-                .unwrap_or(self.show_cursor);
+            let rows = || {
+                self.show_rows
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, _)| !self.submodule_rows.contains_key(index))
+            };
+            self.show_cursor = rows()
+                .find(|(_, row)| row.source == target.start && row.folded)
+                .or_else(|| rows().find(|(_, row)| row.source == target.start))
+                .map_or(self.show_cursor, |(index, _)| index);
         }
     }
 
@@ -1673,6 +1683,66 @@ mod tests {
                 app.rebuild_show_rows();
                 app.toggle_show_stat();
                 assert_eq!(app.show_rows[app.show_cursor].text, expected);
+            }
+        }
+    }
+
+    #[test]
+    fn file_jumps_and_lockfile_toggle_skip_expanded_submodule_rows() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let mut child = App::new(Vec::new());
+        child.show_text = "diff --git a/inner.txt b/inner.txt\n--- a/inner.txt\n+++ b/inner.txt\n@@ -1 +1 @@\n-old\n+inner\ndiff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -1 +1 @@\n-old\n+child-lock\n".into();
+        child.ensure_show_rows();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = format!(
+            "diff --git a/before.txt b/before.txt\n--- a/before.txt\n+++ b/before.txt\n@@ -1 +1 @@\n-old\n+before\ndiff --git a/module b/module\nindex {}..{} 160000\ndiff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -1 +1 @@\n-old\n+parent-lock\n",
+            "1".repeat(40),
+            "2".repeat(40)
+        );
+        app.ensure_show_rows();
+        app.submodules.insert("module".into(), Box::new(child));
+        app.expanded_folds.insert("module".into());
+        app.rebuild_show_rows();
+        let press = |app: &mut App, key| {
+            crate::input::handle(
+                Event::Key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE)),
+                app,
+            )
+        };
+        let module = app
+            .show_rows
+            .iter()
+            .position(|row| row.summary && row.text.contains("module"))
+            .unwrap();
+
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.text == "+before")
+            .unwrap();
+        press(&mut app, ']');
+        assert_eq!(app.show_cursor, module);
+        press(&mut app, ']');
+        assert!(app.show_rows[app.show_cursor].text.contains("Cargo.lock"));
+        assert!(!app.submodule_rows.contains_key(&app.show_cursor));
+        press(&mut app, '[');
+        assert_eq!(app.show_cursor, module);
+
+        for selected in ["module", "+inner"] {
+            app.show_cursor = app
+                .show_rows
+                .iter()
+                .position(|row| row.text.contains(selected))
+                .unwrap();
+            let expected = app.show_rows[app.show_cursor].text.clone();
+            for _ in 0..2 {
+                press(&mut app, 'L');
+                assert_eq!(
+                    app.show_rows[app.show_cursor].text, expected,
+                    "selected={selected}"
+                );
             }
         }
     }
