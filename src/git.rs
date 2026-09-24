@@ -1025,6 +1025,24 @@ mod tests {
 
     #[test]
     fn watch_summary_honors_the_starting_repository_environment() {
+        watch_summary_with_repository_environment(
+            "watch_summary_honors_the_starting_repository_environment",
+            false,
+        );
+    }
+
+    #[test]
+    fn watch_summary_honors_a_relative_repository_environment() {
+        watch_summary_with_repository_environment(
+            "watch_summary_honors_a_relative_repository_environment",
+            true,
+        );
+    }
+
+    /// Runs `test` in a dotfiles-style repository selected by GIT_DIR,
+    /// GIT_WORK_TREE and GIT_INDEX_FILE, relative to a work tree subdirectory
+    /// if `relative`.
+    fn watch_summary_with_repository_environment(test: &str, relative: bool) {
         // GIT_DIR would redirect Git in concurrently running tests, so set it
         // only for a child process running just this test.
         const CHILD: &str = "GLOG_TEST_REPOSITORY_ENV_CHILD";
@@ -1070,18 +1088,26 @@ mod tests {
         fs::write(work_tree.join(".extra"), "extra\n").unwrap();
         fs::copy(git_dir.join("index"), &index).unwrap();
         git(Some(&index), &["add", ".extra"]);
-        let output = Command::new(env::current_exe().unwrap())
-            .args([
-                "--exact",
-                "git::tests::watch_summary_honors_the_starting_repository_environment",
-            ])
-            .current_dir(&work_tree)
-            .env(CHILD, "1")
-            .env("GIT_DIR", &git_dir)
-            .env("GIT_WORK_TREE", &work_tree)
-            .env("GIT_INDEX_FILE", &index)
-            .output()
-            .unwrap();
+        let mut child = Command::new(env::current_exe().unwrap());
+        child
+            .args(["--exact", &format!("git::tests::{test}")])
+            .env(CHILD, "1");
+        if relative {
+            let subdirectory = work_tree.join("sub");
+            fs::create_dir(&subdirectory).unwrap();
+            child
+                .current_dir(subdirectory)
+                .env("GIT_DIR", "../../dotfiles.git")
+                .env("GIT_WORK_TREE", "..")
+                .env("GIT_INDEX_FILE", "../../index");
+        } else {
+            child
+                .current_dir(&work_tree)
+                .env("GIT_DIR", &git_dir)
+                .env("GIT_WORK_TREE", &work_tree)
+                .env("GIT_INDEX_FILE", &index);
+        }
+        let output = child.output().unwrap();
         let stdout = String::from_utf8_lossy(&output.stdout);
         assert!(output.status.success(), "{stdout}");
         assert!(stdout.contains("1 passed"), "{stdout}");
