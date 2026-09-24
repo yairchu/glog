@@ -1100,7 +1100,10 @@ mod tests {
         fs::create_dir(&work_tree).unwrap();
         let git = |index_file: Option<&Path>, args: &[&str]| {
             let mut command = Command::new("git");
+            // This test does not hold CURRENT_DIR_LOCK, so the inherited working
+            // directory may belong to another test and be deleted mid-command.
             command
+                .current_dir(directory.path())
                 .arg("--git-dir")
                 .arg(&git_dir)
                 .arg("--work-tree")
