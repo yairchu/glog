@@ -45,18 +45,7 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                 .clone()
                 .or_else(|| diff_path(&visible))
                 .unwrap_or_else(|| b"changed file".to_vec());
-            let path = String::from_utf8(path_bytes.clone()).unwrap_or_else(|_| {
-                // Keep invalid bytes readable without using the display name
-                // as an identity or a filesystem path.
-                path_bytes
-                    .iter()
-                    .map(|&byte| match byte {
-                        b' '..=b'~' if byte != b'\\' => char::from(byte).to_string(),
-                        b'\\' => "\\\\".to_owned(),
-                        _ => format!("\\{byte:03o}"),
-                    })
-                    .collect()
-            });
+            let path = display_path(&path_bytes);
             // Only the file header is metadata: hunk content can itself start
             // with `+++` or `---` (for example, an increment or a Markdown rule).
             let body_start = visible
@@ -207,6 +196,36 @@ fn diff_path(lines: &[String]) -> Option<Vec<u8>> {
     )
 }
 
+/// Display text for a filename, escaped like Git's quoted paths but without
+/// the surrounding quotes, so control characters cannot reach the terminal
+/// and distinct names stay distinct. Non-ASCII UTF-8 is shown as is.
+pub(crate) fn display_path(bytes: &[u8]) -> String {
+    let mut output = String::new();
+    let octal = |output: &mut String, bytes: &[u8]| {
+        for byte in bytes {
+            output.push_str(&format!("\\{byte:03o}"));
+        }
+    };
+    for chunk in bytes.utf8_chunks() {
+        for ch in chunk.valid().chars() {
+            match ch {
+                '\x07' => output.push_str("\\a"),
+                '\x08' => output.push_str("\\b"),
+                '\t' => output.push_str("\\t"),
+                '\n' => output.push_str("\\n"),
+                '\x0b' => output.push_str("\\v"),
+                '\x0c' => output.push_str("\\f"),
+                '\r' => output.push_str("\\r"),
+                '\\' => output.push_str("\\\\"),
+                ch if ch.is_control() => octal(&mut output, ch.encode_utf8(&mut [0; 4]).as_bytes()),
+                ch => output.push(ch),
+            }
+        }
+        octal(&mut output, chunk.invalid());
+    }
+    output
+}
+
 fn unquote_path(path: &str) -> Option<(Vec<u8>, usize)> {
     if !path.starts_with('"') {
         return Some((path.as_bytes().to_vec(), path.len()));
@@ -308,7 +327,8 @@ mod tests {
             assert_eq!((files[0].additions, files[0].deletions), (2, 2));
         }
         let files = file_sections(r#"diff --cc "b/quoted\tname.txt""#);
-        assert_eq!(files[0].path, "b/quoted\tname.txt");
+        assert_eq!(files[0].path_bytes, b"b/quoted\tname.txt");
+        assert_eq!(files[0].path, r"b/quoted\tname.txt");
     }
 
     #[test]
@@ -317,6 +337,29 @@ mod tests {
         let files = file_sections(patch);
         assert_eq!(files.len(), 1);
         assert_eq!((files[0].additions, files[0].deletions), (3, 3));
+    }
+
+    #[test]
+    fn display_paths_escape_control_characters_and_invalid_bytes() {
+        assert_eq!(display_path("café/a b.txt".as_bytes()), "café/a b.txt");
+        assert_eq!(
+            display_path(b"tab\there\nnew\\line"),
+            r"tab\there\nnew\\line"
+        );
+        assert_eq!(display_path(b"bell\x07\x1b[31m\x7f"), r"bell\a\033[31m\177");
+        // C1 controls such as CSI can also drive terminals.
+        assert_eq!(display_path("csi\u{9b}".as_bytes()), r"csi\302\233");
+        assert_eq!(display_path(b"caf\xe9.txt"), r"caf\351.txt");
+        // A literal backslash sequence must not look like an escaped byte.
+        assert_ne!(display_path(br"caf\351.txt"), display_path(b"caf\xe9.txt"));
+    }
+
+    #[test]
+    fn show_summaries_escape_control_characters_in_paths() {
+        let text = "diff --git \"a/tab\\there\" \"b/tab\\there\"\n--- \"a/tab\\there\"\n+++ \"b/tab\\there\"\n@@ -1 +1 @@\n-a\n+b\n";
+        let sections = file_sections(text);
+        assert_eq!(sections[0].path_bytes, b"tab\there");
+        assert_eq!(sections[0].path, r"tab\there");
     }
 
     #[test]

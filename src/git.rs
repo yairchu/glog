@@ -824,6 +824,22 @@ pub(crate) fn raw_path(bytes: &[u8]) -> std::path::PathBuf {
     }
 }
 
+/// The inverse of `raw_path`.
+pub(crate) fn path_bytes(path: &std::path::Path) -> std::borrow::Cow<'_, [u8]> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::ffi::OsStrExt;
+        path.as_os_str().as_bytes().into()
+    }
+    #[cfg(not(unix))]
+    {
+        match path.to_string_lossy() {
+            std::borrow::Cow::Borrowed(text) => text.as_bytes().into(),
+            std::borrow::Cow::Owned(text) => text.into_bytes().into(),
+        }
+    }
+}
+
 /// Repository variables such as GIT_DIR take precedence over `-C` and the
 /// working directory. They describe the repository glog was started in, so
 /// like Git's own submodule commands, clear them (keeping `-c` configuration)

@@ -52,8 +52,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   when effective Git attributes change. Tracked statistics are fetched in batches.
   Status uses consistent rename detection for file entries, patches, and statistics
   even when Git's status and diff rename settings disagree. Non-UTF-8 filenames
-  retain distinct patches, statistics, and folding state even when their
-  displayed names are identical.
+  retain distinct patches, statistics, and folding state.
   Repository paths retain non-UTF-8 bytes and trailing newlines when opening Status.
   Unreadable untracked files show individual errors while other entries keep refreshing.
   Dirty submodules can be expanded into summaries of their live staged, unstaged,
@@ -72,7 +71,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   patches, and switching back to the
   patch restores the reading line. Non-UTF-8 filenames retain distinct file
   identities and default lockfile folding in Show and Diff, including when
-  Git's `core.quotePath` setting is disabled.
+  Git's `core.quotePath` setting is disabled. Show, Diff, and Status display
+  filenames with Git-style escapes for control characters, backslashes, and
+  non-UTF-8 bytes, so distinct names look distinct.
 
 ### Changed
 

@@ -41,6 +41,7 @@ struct Entry {
     record: String,
     key: Key,
     label: String,
+    // Display text; `raw_original` keeps the exact bytes.
     original: Option<String>,
     // Preserve exact bytes for Git and filesystem operations.
     raw_path: PathBuf,
@@ -137,7 +138,7 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
         } else {
             None
         };
-        let original = raw_original.map(|raw| String::from_utf8_lossy(raw).into_owned());
+        let original = raw_original.map(crate::diff::display_path);
         let raw_original = raw_original.map(self::raw_path);
         if record.starts_with("u ") {
             snapshot.entries.push(Entry {
@@ -816,15 +817,10 @@ impl StatusView {
                         && !Self::fold_by_default(entry)
                         && !self.collapsed_files.contains(&entry.key))
                         || self.expanded_folds.contains(&entry.key));
+                let path = crate::diff::display_path(&crate::git::path_bytes(&entry.key.path));
                 let name = match &entry.original {
-                    Some(original) => {
-                        format!(
-                            "{} → {}",
-                            visible(original),
-                            visible(&entry.key.path.to_string_lossy())
-                        )
-                    }
-                    None => visible(&entry.key.path.to_string_lossy()),
+                    Some(original) => format!("{original} → {path}"),
+                    None => path,
                 };
                 let detail = self
                     .stats
@@ -2423,6 +2419,13 @@ mod tests {
         assert_eq!(view.stats[&entries[0].key], "+0 −1");
         assert_eq!(view.stats[&entries[1].key], "+0 −2");
         assert_ne!(entries[0].key, entries[1].key);
+        // Distinct names must also look distinct.
+        for name in [r"caf\350.txt", r"caf\351.txt"] {
+            assert!(
+                view.rows.iter().any(|row| row.text.contains(name)),
+                "{name}"
+            );
+        }
         let attributes = view.attributes(&view.snapshot).unwrap();
         assert_ne!(
             attributes[&entries[0].key.path],
@@ -2515,7 +2518,7 @@ mod tests {
         assert_eq!(parsed.entries[0].original.as_deref(), Some("old name.txt"));
         assert_eq!(parsed.entries.len(), 2);
         assert_eq!(
-            visible(&parsed.entries[0].key.path.to_string_lossy()),
+            crate::diff::display_path(&crate::git::path_bytes(&parsed.entries[0].key.path)),
             "new\\nname.txt"
         );
         assert!(parse(b"2 R. N... 100644 100644 100644 a b R100 new.txt\0").is_err());
