@@ -172,10 +172,12 @@ impl App {
     }
 
     pub fn has_log_view(&self) -> bool {
-        !self
-            .commits
-            .get(self.selected)
-            .is_some_and(|commit| matches!(commit.kind, CommitKind::Comparison { .. }))
+        !self.commits.get(self.selected).is_some_and(|commit| {
+            matches!(
+                commit.kind,
+                CommitKind::Comparison { .. } | CommitKind::Staged | CommitKind::Unstaged
+            )
+        })
     }
 
     pub fn switch_mode(&mut self) {
@@ -254,15 +256,7 @@ impl App {
         if !self.has_log_view() {
             return false;
         }
-        let leaving_direct_diff = self.pending_history.is_some()
-            && self.commits.get(self.selected).is_some_and(|commit| {
-                matches!(commit.kind, CommitKind::Staged | CommitKind::Unstaged)
-            });
         self.load_history();
-        // Loading history from a direct diff already selects HEAD. Do not skip it.
-        if leaving_direct_diff && self.pending_history.is_none() {
-            return !self.commits.is_empty();
-        }
         if self.commits.is_empty() {
             return false;
         }

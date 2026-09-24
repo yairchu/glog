@@ -123,11 +123,10 @@ HEAD. Use `-- pathspec...` to limit any diff to selected paths; as with
 `glog diff` (optionally with path filters) includes untracked files.
 
 If the requested changes are empty, glog prints a brief message and exits
-successfully without opening the terminal UI. Explicit revision comparisons
-open a standalone diff with the command shown as a context header, without tabs
-or adjacent-commit navigation.
-For plain `glog diff` and `glog diff --cached`, switching to Log loads committed
-history and selects HEAD; before the first commit, Log is empty.
+successfully without opening the terminal UI. Every `diff` opens a standalone
+view with the command shown as a context header, without tabs or
+adjacent-commit navigation; use `glog --watch` or `glog status` to move between
+working-tree changes and history.
 The `diff` commands work without watch mode. Changes are read when opened and
 untracked-file contents are read when expanded; this is not a session-wide
 snapshot and does not refresh automatically. The `diff` command accepts only

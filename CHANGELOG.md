@@ -25,8 +25,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   `A...B`, a single revision against the working tree, and `--cached A` against
   the index. Diff also accepts pathspec filters, after `--` or, as in
   `git diff`, directly after the revisions when the paths exist. Summary mode,
-  folding, and image previews are available for comparisons. Explicit comparisons
-  open a standalone diff with a command context header, no tabs, and no
+  folding, and image previews are available for comparisons. Comparisons open
+  a standalone diff with a command context header, no tabs, and no
   adjacent-commit navigation.
 
 - Show branch names and tags beside the commit hash in Show using Git's native
@@ -81,6 +81,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Limited the Working tree Log item to watch sessions. Ordinary Log now loads
   committed history only, without inspecting working-tree changes. Direct
   `glog diff` and `glog diff --cached` remain available without watch mode.
+
+- Made `glog diff` and `glog diff --cached` standalone views, like revision
+  comparisons: they show the command as a context header and no longer switch
+  to Log. Use `glog --watch` or `glog status` to move between working-tree
+  changes and history.
 
 ### Fixed
 

@@ -259,9 +259,6 @@ pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
     app.show_stat = stat;
     app.show_paths = paths;
     if !app.commits.is_empty() {
-        if app.has_log_view() {
-            app.pending_history = Some(Vec::new());
-        }
         app.mode = crate::app::Mode::Show;
         app.show_text = text;
         app.ensure_show_rows();
@@ -1891,7 +1888,8 @@ mod tests {
             .iter()
             .position(|commit| commit.kind == kind)
             .unwrap();
-        app.switch_mode();
+        app.mode = crate::app::Mode::Show;
+        app.load_show();
         app.show_cursor = app.show_rows.iter().position(|row| row.folded).unwrap();
         app.toggle_show_file();
         let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
@@ -2712,7 +2710,7 @@ mod tests {
         }
     }
     #[test]
-    fn diff_opens_requested_changes_and_switches_to_committed_history() {
+    fn diff_opens_requested_changes_standalone() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
         let git = |args: &[&str]| {
@@ -2732,12 +2730,10 @@ mod tests {
         fs::write("new.txt", "untracked\n").unwrap();
         assert!(load_log(&[]).unwrap().is_empty());
         assert_eq!(load_watch_log().unwrap()[0].kind, CommitKind::WorkingTree);
-        let mut app = load_diff_app(&[]).unwrap();
+        let app = load_diff_app(&[]).unwrap();
         assert_eq!(app.mode, crate::app::Mode::Show);
         assert_eq!(app.commits[0].kind, CommitKind::Unstaged);
         assert!(app.show_text.contains("glog-lazy-untracked:"));
-        app.switch_mode();
-        assert!(app.commits.is_empty()); // Unborn HEAD has no committed history.
         git(&["add", "new.txt"]);
         assert!(load_diff_app(&[]).unwrap().commits.is_empty());
         assert_eq!(
@@ -2759,17 +2755,17 @@ mod tests {
             assert_eq!(app.commits.len(), 1);
             assert_eq!(app.commits[0].kind, kind);
             assert!(crate::ansi::plain(&app.show_text).contains(content));
-            assert!(app.pending_history.is_some());
-            app.switch_mode();
-            assert_eq!(app.commits.len(), 1);
-            assert_eq!(app.selected, 0);
-            assert_eq!(app.commits[app.selected].kind, CommitKind::Revision);
+            // Direct diffs are standalone, like explicit comparisons.
+            assert!(!app.has_log_view());
             assert!(app.pending_history.is_none());
+            let original = app.show_text.clone();
+            app.switch_mode();
+            assert_eq!(app.mode, crate::app::Mode::Show);
+            assert_eq!(app.show_text, original);
             for direction in [-1, 1] {
-                let mut direct = load_diff_app(args).unwrap();
-                assert!(direct.move_selection(direction));
-                assert_eq!(direct.commits[direct.selected].kind, CommitKind::Revision);
-                assert_eq!(direct.commits[direct.selected].subject, "first");
+                assert!(!app.move_selection(direction));
+                assert_eq!(app.commits.len(), 1);
+                assert_eq!(app.commits[0].kind, kind);
             }
         }
         for (args, kind) in [
@@ -3341,7 +3337,8 @@ mod tests {
         assert!(show(&commits[1], &[]).unwrap().contains("staged"));
 
         let mut app = crate::app::App::new(commits.clone());
-        app.switch_mode();
+        app.mode = crate::app::Mode::Show;
+        app.load_show();
         assert!(!app.show_text.contains("UNTRACKED"));
         app.show_cursor = app
             .show_rows
