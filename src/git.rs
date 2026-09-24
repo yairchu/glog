@@ -2487,6 +2487,24 @@ mod tests {
     }
 
     #[test]
+    fn untracked_nested_repositories_report_why_they_have_no_patch() {
+        let directory = TestDirectory::new();
+        for repository in [directory.path().to_owned(), directory.path().join("nested")] {
+            let status = Command::new("git")
+                .args(["init", "-q"])
+                .arg(&repository)
+                .status()
+                .unwrap();
+            assert!(status.success());
+        }
+        fs::write(directory.path().join("nested/file.txt"), "nested\n").unwrap();
+
+        let error = show_untracked_in(directory.path(), Path::new("nested/")).unwrap_err();
+        assert!(error.contains("nested/"), "{error}");
+        assert!(error.contains("repository"), "{error}");
+    }
+
+    #[test]
     fn unstaged_patches_label_untracked_files_relative_to_the_repository() {
         let directory = TestDirectory::new();
         let git = |args: &[&str]| {
