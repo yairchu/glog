@@ -1269,6 +1269,61 @@ mod tests {
         view.refresh().unwrap();
         assert!(crate::ansi::plain(&view.patches[&key]).contains("+contents"));
     }
+    #[cfg(unix)]
+    #[test]
+    fn refresh_keeps_errors_from_failed_actions() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("glog-action-error-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        struct Cleanup(PathBuf);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = std::fs::set_permissions(
+                    self.0.join("unreadable.txt"),
+                    std::fs::Permissions::from_mode(0o600),
+                );
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let _cleanup = Cleanup(root.clone());
+        assert!(Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        let path = root.join("unreadable.txt");
+        std::fs::write(&path, "contents\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        // Privileged test runners may bypass permission bits.
+        if std::fs::File::open(&path).is_ok() {
+            return;
+        }
+        let mut view = StatusView {
+            root: root.clone(),
+            ..StatusView::default()
+        };
+        view.refresh().unwrap();
+        let key = Key {
+            group: Group::Untracked,
+            path: "unreadable.txt".into(),
+        };
+        view.cursor = view
+            .rows
+            .iter()
+            .position(|row| row.key == RowKey::File(key.clone()))
+            .unwrap();
+        view.toggle();
+        let error = view
+            .error
+            .clone()
+            .expect("expanding must report the failure");
+        // Refreshing skips the collapsed file rather than retrying it, so
+        // nothing has resolved the failure the message explains.
+        view.refresh().unwrap();
+        assert_eq!(view.error.as_ref(), Some(&error));
+    }
 
     #[test]
     fn failed_submodule_refresh_keeps_nested_rows_usable() {
