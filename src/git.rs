@@ -840,17 +840,48 @@ pub(crate) fn repository_env<'a>(
     directory: &std::path::Path,
 ) -> &'a mut Command {
     static MAIN_ROOT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
-    if REPOSITORY_ENV
+    if !REPOSITORY_ENV
         .iter()
         .any(|name| env::var_os(name).is_some())
-        && MAIN_ROOT.get_or_init(|| repository_root().ok()).as_deref() != Some(directory)
     {
+        return command;
+    }
+    if MAIN_ROOT.get_or_init(|| repository_root().ok()).as_deref() != Some(directory) {
         for name in REPOSITORY_ENV {
             command.env_remove(name);
+        }
+        return command;
+    }
+    // Git resolves relative paths in these after changing to `directory`, so
+    // anchor them to the directory glog was started in.
+    let Ok(current) = env::current_dir() else {
+        return command;
+    };
+    for name in REPOSITORY_PATH_ENV {
+        if let Some(value) = env::var_os(name) {
+            command.env(name, current.join(value));
+        }
+    }
+    if let Some(value) = env::var_os("GIT_ALTERNATE_OBJECT_DIRECTORIES") {
+        let paths = env::split_paths(&value).map(|path| current.join(path));
+        if let Ok(value) = env::join_paths(paths) {
+            command.env("GIT_ALTERNATE_OBJECT_DIRECTORIES", value);
         }
     }
     command
 }
+
+/// The variables in [`REPOSITORY_ENV`] holding a single path.
+const REPOSITORY_PATH_ENV: [&str; 8] = [
+    "GIT_CONFIG",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_DIR",
+    "GIT_WORK_TREE",
+    "GIT_GRAFT_FILE",
+    "GIT_INDEX_FILE",
+    "GIT_SHALLOW_FILE",
+    "GIT_COMMON_DIR",
+];
 
 /// Git terminates its raw repository path with exactly one newline.
 pub(crate) fn repository_root() -> Result<std::path::PathBuf, String> {
