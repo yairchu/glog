@@ -5,6 +5,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+## 0.3.0 - 2026-09-24
+
 ### Added
 
 - Added on-demand inline expansion of committed submodule pointer changes in
@@ -195,7 +197,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Initial release of the interactive `git log` and `git show` browser.
 
-[Unreleased]: https://github.com/yairchu/glog/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/yairchu/glog/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/yairchu/glog/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/yairchu/glog/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/yairchu/glog/compare/v0.1.3...v0.2.0
 [0.1.3]: https://github.com/yairchu/glog/compare/v0.1.2...v0.1.3
