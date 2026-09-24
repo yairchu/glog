@@ -223,9 +223,8 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
         }
         if app.mode == app::Mode::Status && last_status.elapsed() >= Duration::from_secs(1) {
             if let Some(view) = &mut app.status_view {
-                if let Err(error) = view.refresh() {
-                    view.error = Some(error);
-                }
+                // The view records a failed refresh in its footer.
+                let _ = view.refresh();
             }
             last_status = Instant::now();
         }

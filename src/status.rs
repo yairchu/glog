@@ -367,6 +367,9 @@ pub struct StatusView {
     pub height: usize,
     pub origin: u16,
     pub error: Option<String>,
+    // Whether `error` came from a refresh, which a later successful refresh
+    // resolves. Errors from actions stay until the next action.
+    refresh_failed: bool,
     unloaded: bool,
 }
 impl StatusView {
@@ -401,6 +404,7 @@ impl StatusView {
     pub fn unavailable(error: String) -> Self {
         Self {
             error: Some(error),
+            refresh_failed: true,
             unloaded: true,
             ..Self::default()
         }
@@ -541,6 +545,7 @@ impl StatusView {
                         }
                         Err(error) => {
                             self.error = Some(error);
+                            self.refresh_failed = false;
                             return;
                         }
                     }
@@ -687,6 +692,21 @@ impl StatusView {
     }
 
     pub fn refresh(&mut self) -> Result<(), String> {
+        let result = self.reload();
+        match &result {
+            Ok(()) if self.refresh_failed => {
+                self.error = None;
+                self.refresh_failed = false;
+            }
+            Ok(()) => {}
+            Err(error) => {
+                self.error = Some(error.clone());
+                self.refresh_failed = true;
+            }
+        }
+        result
+    }
+    fn reload(&mut self) -> Result<(), String> {
         if self.root.as_os_str().is_empty() {
             self.root = crate::git::repository_root()?;
         }
@@ -763,7 +783,6 @@ impl StatusView {
         self.collapsed_files.retain(|key| patches.contains_key(key));
         self.snapshot = snapshot;
         self.patches = patches;
-        self.error = None;
         self.unloaded = false;
         self.rebuild();
         Ok(())
@@ -948,6 +967,7 @@ impl StatusView {
                         .get(child.cursor)
                         .map(|row| RowKey::Nested(key, Box::new(row.key.clone())));
                     self.error = child.error.clone();
+                    self.refresh_failed = false;
                     self.rebuild();
                     if let Some(index) =
                         target.and_then(|target| self.rows.iter().position(|row| row.key == target))
@@ -1000,6 +1020,7 @@ impl StatusView {
                                 Err(error) => {
                                     self.expanded_folds.remove(&key);
                                     self.error = Some(error);
+                                    self.refresh_failed = false;
                                     return;
                                 }
                             }
@@ -1011,6 +1032,7 @@ impl StatusView {
                             Err(error) => {
                                 self.expanded_folds.remove(&key);
                                 self.error = Some(error);
+                                self.refresh_failed = false;
                                 return;
                             }
                         }
