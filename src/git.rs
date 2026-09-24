@@ -635,6 +635,13 @@ pub fn show_untracked(path: &std::path::Path) -> Result<String, String> {
 /// Shows untracked `path`, relative to `root`, labeled by that relative path.
 pub fn show_untracked_in(root: &std::path::Path, path: &std::path::Path) -> Result<String, String> {
     let name = path.to_string_lossy();
+    // Git lists untracked nested repositories as directories, which have no
+    // content of their own to diff.
+    if fs::symlink_metadata(root.join(path)).is_ok_and(|metadata| metadata.is_dir()) {
+        return Err(format!(
+            "{name} is an untracked nested repository; add it as a submodule to see its changes"
+        ));
+    }
     let mut output = Vec::new();
     if !untracked_regular_file_diff(&root.join(path), path, &mut output)? {
         let untracked = repository_env(&mut patch_command(), root)
@@ -651,7 +658,13 @@ pub fn show_untracked_in(root: &std::path::Path, path: &std::path::Path) -> Resu
             .arg(path)
             .output()
             .map_err(|error| format!("could not diff untracked file {name}: {error}"))?;
-        if !matches!(untracked.status.code(), Some(0 | 1)) {
+        // Exit code 1 means the files differ, but Git also uses it for
+        // errors such as unreadable paths.
+        let reported_error = untracked
+            .stderr
+            .split(|&byte| byte == b'\n')
+            .any(|line| line.starts_with(b"error:"));
+        if !matches!(untracked.status.code(), Some(0 | 1)) || reported_error {
             return Err(stderr_message("git diff failed", &untracked.stderr));
         }
         output = untracked.stdout;

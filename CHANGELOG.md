@@ -98,6 +98,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Preserved non-UTF-8 untracked filenames when fingerprinting watch sessions,
   preventing startup failures on filesystems that support these names.
 
+- Explained why untracked nested repositories in `glog diff` have no patch
+  when expanded, instead of removing their section.
+
 - Preserved reading position and expanded files when watch mode refreshes,
   keeping the selected commit in place and following surviving lines in changed
   working-tree patches.
