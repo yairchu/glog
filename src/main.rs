@@ -6,6 +6,7 @@ mod images;
 mod input;
 mod log_folds;
 mod log_format;
+mod merge_history;
 mod status;
 mod ui;
 

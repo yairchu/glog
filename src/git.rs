@@ -172,6 +172,20 @@ pub fn merged_commits(hash: &str) -> Result<HashSet<String>, String> {
         .collect())
 }
 
+/// Bulk folding reads original parent links once, without log path rewriting.
+pub fn merged_commits_many(
+    hashes: &[&str],
+) -> Result<std::collections::HashMap<String, HashSet<String>>, String> {
+    let output = pipe_through(
+        Command::new("git")
+            .args(["rev-list", "--topo-order", "--parents", "--stdin"])
+            .env("GIT_NO_LAZY_FETCH", "1"),
+        hashes.join("\n").as_bytes(),
+    )
+    .ok_or("could not read merge ancestry")?;
+    crate::merge_history::members(&output, hashes)
+}
+
 /// Parent links through commits omitted by log filters, for graph projection.
 /// Stop below the oldest displayed commit: its ancestors cannot be displayed
 /// earlier in Git's topological graph order, and may be a very large history.
@@ -1137,6 +1151,15 @@ mod tests {
             [&x, &y].into_iter().cloned().collect()
         );
         let commits = load_log(&["--all".into()]).unwrap();
+        let merge_hashes: Vec<_> = commits
+            .iter()
+            .filter(|c| c.parents.len() > 1)
+            .map(|c| c.hash.as_str())
+            .collect();
+        let batch = merged_commits_many(&merge_hashes).unwrap();
+        for hash in merge_hashes {
+            assert_eq!(batch[hash], merged_commits(hash).unwrap());
+        }
         let index = |hash: &str| commits.iter().position(|c| c.hash == hash).unwrap();
         let mut app = App::new(commits.clone());
         let key = |app: &mut App, code| {

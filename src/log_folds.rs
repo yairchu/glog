@@ -56,6 +56,9 @@ impl LogFolds {
         self.members.retain(|hash, _| hashes.contains(hash));
         self.seen.retain(|hash| hashes.contains(hash));
         let result = (|| {
+            if self.start_collapsed {
+                self.load_all_members(commits, true)?;
+            }
             for commit in commits {
                 if self.start_collapsed
                     && !self.seen.contains(&commit.hash)
@@ -88,6 +91,22 @@ impl LogFolds {
         Ok(())
     }
 
+    fn load_all_members(&mut self, commits: &[Commit], only_new: bool) -> Result<(), String> {
+        let missing: Vec<_> = commits
+            .iter()
+            .filter(|c| c.parents.len() > 1)
+            .filter(|c| !self.members.contains_key(&c.hash))
+            .filter(|c| !only_new || !self.seen.contains(&c.hash))
+            .collect();
+        if let [commit] = missing.as_slice() {
+            self.load_members(commit)?;
+        } else if !missing.is_empty() {
+            let hashes: Vec<_> = missing.iter().map(|c| c.hash.as_str()).collect();
+            self.members.extend(git::merged_commits_many(&hashes)?);
+        }
+        Ok(())
+    }
+
     pub fn toggle(&mut self, index: usize, commits: &[Commit]) -> Result<(), String> {
         let Some(commit) = commits.get(index).filter(|c| c.parents.len() > 1) else {
             return Ok(());
@@ -116,6 +135,7 @@ impl LogFolds {
     }
 
     pub fn toggle_all(&mut self, selected: usize, commits: &[Commit]) -> Result<usize, String> {
+        self.load_all_members(commits, false)?;
         let loaded: HashSet<_> = commits.iter().map(|c| &c.hash).collect();
         let mut eligible = HashSet::new();
         for commit in commits.iter().filter(|c| c.parents.len() > 1) {

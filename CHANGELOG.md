@@ -12,6 +12,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   with merges folded, including in watch mode. Folded merges show commit counts; navigation skips hidden
   commits, search reveals matching commits, and watch refreshes preserve fold
   choices. Nested merges fold independently, and revision/path filters still apply.
+  Bulk folding shares one ancestry read across merges and caches the results.
 
 ## 0.3.0 - 2026-09-24
 
