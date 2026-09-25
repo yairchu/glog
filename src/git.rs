@@ -41,6 +41,7 @@ pub struct Commit {
     pub author_date: String,
     pub collaborators: Collaborators,
     pub graph: Vec<String>,
+    pub parents: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -117,7 +118,7 @@ fn log_command(user_args: &[String]) -> Result<Command, String> {
         "--decorate=short",
         "--color=always",
         "--no-abbrev-commit",
-        "--pretty=format:%x1e%H%x1f%h%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)%x1f%s",
+        "--pretty=format:%x1e%H%x1f%h%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)%x1f%P%x1f%s",
     ]);
     command.args(&user_args[separator..]);
     Ok(command)
@@ -144,6 +145,72 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
         parse_log(&String::from_utf8_lossy(&output.stdout))?
     };
     Ok(commits)
+}
+
+/// Use actual ancestry, not adjacency in the displayed (possibly filtered) log.
+/// ^@ expands all original parents; excluding ^1 leaves only the side history,
+/// even when Git has rewritten %P for path filters or the first parent is omitted.
+pub fn merged_commits(hash: &str) -> Result<HashSet<String>, String> {
+    let output = Command::new("git")
+        .args([
+            "rev-list",
+            &format!("{hash}^@"),
+            &format!("^{hash}^1"),
+            "--",
+        ])
+        .output()
+        .map_err(|error| format!("could not read merged commits: {error}"))?;
+    if !output.status.success() {
+        return Err(stderr_message(
+            "could not read merged commits",
+            &output.stderr,
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect())
+}
+
+/// Parent links through commits omitted by log filters, for graph projection.
+/// Stop below the oldest displayed commit: its ancestors cannot be displayed
+/// earlier in Git's topological graph order, and may be a very large history.
+pub fn log_ancestry(
+    commits: &[Commit],
+) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+    let revisions: Vec<_> = commits
+        .iter()
+        .filter(|c| c.kind == CommitKind::Revision)
+        .collect();
+    let mut input = String::new();
+    for commit in &revisions {
+        input.push_str(&commit.hash);
+        input.push('\n');
+    }
+    if let Some(last) = revisions.last() {
+        for parent in &last.parents {
+            input.push('^');
+            input.push_str(parent);
+            input.push('\n');
+        }
+    }
+    let output = pipe_through(
+        Command::new("git")
+            .args(["rev-list", "--parents", "--stdin"])
+            .env("GIT_NO_LAZY_FETCH", "1"),
+        input.as_bytes(),
+    )
+    .ok_or("could not read ancestry for the folded log graph")?;
+    Ok(output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            Some((
+                fields.next()?.to_owned(),
+                fields.map(str::to_owned).collect(),
+            ))
+        })
+        .collect())
 }
 
 /// Watch mode includes one stable working-tree item ahead of committed history.
@@ -414,8 +481,8 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
     let mut commits = Vec::new();
     for line in output.lines() {
         if let Some(marker) = line.find(RECORD) {
-            let fields: Vec<_> = line[marker + 1..].splitn(8, FIELD).collect();
-            if fields.len() == 8 {
+            let fields: Vec<_> = line[marker + 1..].splitn(9, FIELD).collect();
+            if fields.len() == 9 {
                 pending_graph.push(line[..marker].to_owned());
                 commits.push(Commit {
                     kind: CommitKind::Revision,
@@ -427,7 +494,8 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
                     author_email: fields[4].to_owned(),
                     author_date: fields[5].to_owned(),
                     collaborators: Collaborators::parse(fields[6], fields[4]),
-                    subject: fields[7].to_owned(),
+                    parents: fields[7].split_whitespace().map(str::to_owned).collect(),
+                    subject: fields[8].to_owned(),
                     graph: std::mem::take(&mut pending_graph),
                 });
             }
@@ -470,6 +538,7 @@ fn pseudo_commit(kind: CommitKind, short_hash: &str, subject: &str) -> Commit {
         collaborators: Collaborators::default(),
         subject: subject.to_owned(),
         graph: vec!["* ".to_owned()],
+        parents: Vec::new(),
     }
 }
 
@@ -1001,6 +1070,247 @@ mod tests {
 
     static CURRENT_DIR_LOCK: Mutex<()> = Mutex::new(());
     static NEXT_TEST_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn merge_folding_preserves_topology_navigation_search_and_refresh() {
+        use crate::{
+            app::{App, Mode},
+            input, ui,
+        };
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::{backend::TestBackend, Terminal};
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        let tree = git(&["mktree"]);
+        let commit = |name: &str, parents: &[&str]| {
+            let mut args = vec!["commit-tree", &tree, "-m", name];
+            for parent in parents {
+                args.extend(["-p", parent]);
+            }
+            git(&args)
+        };
+        let base = commit("base", &[]);
+        let main = commit("mainline", &[&base]);
+        let feature = commit("feature start", &[&base]);
+        let inner = commit("needle inner change", &[&feature]);
+        let nested = commit("nested merge", &[&feature, &inner]);
+        let tip = commit("feature tip", &[&nested]);
+        let merge = commit("outer merge", &[&main, &tip]);
+        let x = commit("octopus X", &[&main]);
+        let y = commit("octopus Y", &[&main]);
+        let octopus = commit("octopus merge", &[&merge, &x, &y]);
+        let unrelated = commit("unrelated branch", &[&base]);
+        git(&["update-ref", "refs/heads/main", &octopus]);
+        git(&["update-ref", "refs/heads/unrelated", &unrelated]);
+        git(&["symbolic-ref", "HEAD", "refs/heads/main"]);
+        assert_eq!(
+            merged_commits(&merge).unwrap(),
+            [&feature, &inner, &nested, &tip]
+                .into_iter()
+                .cloned()
+                .collect()
+        );
+        assert_eq!(
+            merged_commits(&octopus).unwrap(),
+            [&x, &y].into_iter().cloned().collect()
+        );
+        let commits = load_log(&["--all".into()]).unwrap();
+        let index = |hash: &str| commits.iter().position(|c| c.hash == hash).unwrap();
+        let mut app = App::new(commits.clone());
+        let key = |app: &mut App, code| {
+            input::handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), app)
+        };
+        assert!((0..commits.len()).all(|i| app.log_folds.visible(i)));
+        app.selected = index(&merge);
+        key(&mut app, KeyCode::Char('z'));
+        for hash in [&feature, &inner, &nested, &tip] {
+            assert!(!app.log_folds.visible(index(hash)));
+        }
+        for hash in [&base, &main, &unrelated, &x, &y, &octopus] {
+            assert!(app.log_folds.visible(index(hash)));
+        }
+        assert_eq!(
+            app.log_folds.label(&commits[index(&merge)]),
+            " · 4 merged commits"
+        );
+        let mut terminal = Terminal::new(TestBackend::new(140, 24)).unwrap();
+        terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect::<String>();
+        assert!(terminal.backend().buffer().content.chunks(140).any(|row| {
+            let row = row.iter().map(|c| c.symbol()).collect::<String>();
+            row.contains('▶') && row.contains(&commits[index(&merge)].short_hash)
+        }));
+        assert!(screen.contains("outer merge · 4 merged commits"));
+        assert!(!screen.contains("needle inner change"));
+        assert!(app
+            .visible_log_rows
+            .iter()
+            .flatten()
+            .all(|&i| app.log_folds.visible(i)));
+        let next = (app.selected + 1..commits.len())
+            .find(|&i| app.log_folds.visible(i))
+            .unwrap();
+        key(&mut app, KeyCode::Down);
+        assert_eq!(app.selected, next);
+        app.selected = index(&merge);
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Show);
+        assert!(app.show_text.contains("outer merge"));
+        key(&mut app, KeyCode::Right);
+        assert_eq!(app.selected, next);
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(app.mode, Mode::Log);
+
+        // Start folded, then retain explicit expansion and nested folds on refresh.
+        let mut app = App::new(commits.clone());
+        app.log_folds.start_collapsed = true;
+        app.log_folds.refresh(&app.commits).unwrap();
+        app.selected = index(&merge);
+        key(&mut app, KeyCode::Char('z'));
+        assert!(app.log_folds.visible(index(&nested)));
+        assert!(!app.log_folds.visible(index(&inner)));
+        app.replace_commits(commits.clone());
+        assert!(app.log_folds.visible(index(&nested)));
+        assert!(!app.log_folds.visible(index(&inner)));
+        key(&mut app, KeyCode::Char('z')); // close outer again
+        app.search = Some("needle".into());
+        app.next_match(false);
+        assert_eq!(app.selected, index(&inner));
+        assert!(app.log_folds.visible(app.selected));
+        assert!(app.log_folds.visible(index(&nested)));
+        assert!(!app.log_folds.visible(index(&x))); // independent fold stays closed
+        app.replace_commits(commits.clone());
+        assert_eq!(app.selected, index(&inner));
+        assert!(app.log_folds.visible(app.selected));
+
+        // A wholly folded main branch is a single lane, not the original graph
+        // with dangling branch connectors left behind.
+        let mut app = App::new(load_log(&["main".into()]).unwrap());
+        app.log_folds.start_collapsed = true;
+        app.log_folds.refresh(&app.commits).unwrap();
+        let visible: Vec<_> = app
+            .commits
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| app.log_folds.visible(*i))
+            .collect();
+        assert_eq!(
+            visible
+                .iter()
+                .map(|(_, c)| c.hash.as_str())
+                .collect::<Vec<_>>(),
+            [&octopus, &merge, &main, &base]
+        );
+        assert!(visible
+            .iter()
+            .all(|(i, c)| app.log_folds.graph(*i, c) == ["* "]));
+
+        // Limited history may omit the first parent. Membership still comes
+        // from Git's complete ancestry, and never loads rows outside the filter.
+        for args in [
+            vec![merge.clone(), "-3".into()],
+            vec!["--all".into(), "--grep=outer\\|feature".into()],
+        ] {
+            let filtered = load_log(&args).unwrap();
+            let mut app = App::new(filtered.clone());
+            app.selected = filtered.iter().position(|c| c.hash == merge).unwrap();
+            app.toggle_log_merge();
+            for (i, c) in app.commits.iter().enumerate() {
+                assert_eq!(
+                    app.log_folds.visible(i),
+                    !merged_commits(&merge).unwrap().contains(&c.hash)
+                );
+            }
+            app.toggle_log_merge();
+            assert_eq!(app.commits.len(), filtered.len());
+            assert!((0..filtered.len()).all(|i| app.log_folds.visible(i)));
+        }
+        let mut app = App::new(load_log(&["--first-parent".into(), "main".into()]).unwrap());
+        app.toggle_log_merge();
+        assert!(app.status.as_ref().unwrap().contains("No merged commits"));
+        assert!((0..app.commits.len()).all(|i| app.log_folds.visible(i)));
+
+        // Filtered-out intermediate parents must still connect to visible bases.
+        let mut app = App::new(
+            load_log(&[
+                "--all".into(),
+                "--grep=outer\\|feature\\|base\\|unrelated".into(),
+            ])
+            .unwrap(),
+        );
+        app.selected = app.commits.iter().position(|c| c.hash == merge).unwrap();
+        assert!(!app.commits.iter().any(|c| c.hash == main));
+        app.toggle_log_merge();
+        assert!(app.status.is_none(), "{:?}", app.status);
+        let base_index = app.commits.iter().position(|c| c.hash == base).unwrap();
+        assert!(app
+            .log_folds
+            .graph(base_index, &app.commits[base_index])
+            .iter()
+            .any(|row| row.contains('+')));
+
+        // Actual watch updates introduce folded merges without moving selection
+        // away from the Working tree or overriding an explicitly expanded merge.
+        let mut app = App::new(load_watch_log().unwrap());
+        app.watch = true;
+        app.log_folds.start_collapsed = true;
+        app.log_folds.refresh(&app.commits).unwrap();
+        app.selected = app.commits.iter().position(|c| c.hash == merge).unwrap();
+        app.toggle_log_merge();
+        app.top();
+        let newest_side = commit("new side", &[&octopus]);
+        let newest_merge = commit("new merge", &[&octopus, &newest_side]);
+        git(&["update-ref", "refs/heads/main", &newest_merge]);
+        app.replace_commits(load_watch_log().unwrap());
+        assert_eq!(app.commits[app.selected].kind, CommitKind::WorkingTree);
+        let side_index = app
+            .commits
+            .iter()
+            .position(|c| c.hash == newest_side)
+            .unwrap();
+        assert!(!app.log_folds.visible(side_index));
+        assert!(app
+            .log_folds
+            .visible(app.commits.iter().position(|c| c.hash == feature).unwrap()));
+        app.bottom();
+        assert_eq!(app.commits[app.selected].hash, base);
+        app.move_by(-2, 100);
+        assert_eq!(app.commits[app.selected].kind, CommitKind::WorkingTree);
+        app.move_by(2, 100);
+        assert_eq!(app.commits[app.selected].hash, base);
+        app.search = Some("new side".into());
+        app.next_match(true);
+        assert_eq!(app.commits[app.selected].hash, newest_side);
+        assert!(app.log_folds.visible(app.selected));
+    }
 
     #[test]
     fn patch_paths_ignore_disabled_git_quoting() {
@@ -3228,7 +3538,7 @@ mod tests {
 
     #[test]
     fn parses_full_identity_and_graph_lines() {
-        let input = "|\\\n* \u{1e}abcdef\u{1f}abcdef0\u{1f}HEAD -> main\u{1f}Alice\u{1f}alice@example.com\u{1f}2026-09-14\u{1f}\u{1f}hello\n| * \u{1e}123456\u{1f}1234567\u{1f}\u{1f}Bob\u{1f}bob@example.com\u{1f}2026-09-13\u{1f}\u{1f}world\n";
+        let input = "|\\\n* \u{1e}abcdef\u{1f}abcdef0\u{1f}HEAD -> main\u{1f}Alice\u{1f}alice@example.com\u{1f}2026-09-14\u{1f}\u{1f}123456\u{1f}hello\n| * \u{1e}123456\u{1f}1234567\u{1f}\u{1f}Bob\u{1f}bob@example.com\u{1f}2026-09-13\u{1f}\u{1f}\u{1f}world\n";
         let commits = parse_log(input).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].hash, "abcdef");

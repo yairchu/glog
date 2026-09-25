@@ -89,6 +89,7 @@ pub fn handle(event: Event, app: &mut App) {
             KeyCode::Char('q') => app.quit = true,
             KeyCode::Tab => app.switch_mode(),
             KeyCode::Enter if app.mode == Mode::Log => app.switch_mode(),
+            KeyCode::Char('z') if app.mode == Mode::Log => app.toggle_log_merge(),
             KeyCode::Enter | KeyCode::Char('z') if app.mode == Mode::Show => app.toggle_show_file(),
             KeyCode::Char('s') if app.mode == Mode::Show => app.toggle_show_stat(),
             KeyCode::Char('L') if app.mode == Mode::Show => app.toggle_all_lockfiles(),

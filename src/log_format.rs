@@ -25,6 +25,7 @@ struct Part {
 
 #[derive(Clone, Debug)]
 pub struct LogFormat {
+    pub fold_merges: bool,
     parts: Vec<Part>,
 }
 
@@ -87,7 +88,10 @@ impl LogFormat {
         } else {
             return Err("log format must contain at least one supported field".into());
         }
-        Ok(Self { parts })
+        Ok(Self {
+            parts,
+            fold_merges: false,
+        })
     }
 
     pub fn toggle(&mut self, field: Field) {
@@ -217,6 +221,7 @@ impl LogFormat {
 pub fn parse_args(args: &[String]) -> Result<(LogFormat, Vec<String>), String> {
     let mut format = LogFormat::default();
     let mut git_args = Vec::new();
+    let mut fold_merges = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         // Git consumes the next argument as a pattern even when it looks like
@@ -258,12 +263,15 @@ pub fn parse_args(args: &[String]) -> Result<(LogFormat, Vec<String>), String> {
             } else {
                 LogFormat::parse(value)?
             };
+        } else if arg == "--fold-merges" {
+            fold_merges = true;
         } else if arg == "--oneline" {
             format = LogFormat::parse("%h (%D) %s")?;
         } else {
             git_args.push(arg.clone());
         }
     }
+    format.fold_merges = fold_merges;
     Ok((format, git_args))
 }
 
@@ -271,9 +279,36 @@ pub fn parse_args(args: &[String]) -> Result<(LogFormat, Vec<String>), String> {
 pub(crate) mod tests {
     use super::*;
 
+    #[test]
+    fn fold_merges_is_a_display_option_not_a_pattern_or_path() {
+        for args in [
+            vec!["--fold-merges", "--oneline", "--all"],
+            vec!["--format=%h %s", "--fold-merges", "--all"],
+            vec!["--fold-merges", "--format=%h %s", "--all"],
+        ] {
+            let (format, git) =
+                parse_args(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).unwrap();
+            assert!(format.fold_merges);
+            assert_eq!(git, ["--all"]);
+        }
+        for args in [
+            vec!["--grep", "--fold-merges"],
+            vec!["--", "--fold-merges"],
+            vec!["--format", "--fold-merges %s"],
+        ] {
+            let args: Vec<_> = args.into_iter().map(str::to_owned).collect();
+            let (format, git) = parse_args(&args).unwrap();
+            assert!(!format.fold_merges);
+            if args[0] != "--format" {
+                assert_eq!(git, args);
+            }
+        }
+    }
+
     pub fn commit() -> Commit {
         Commit {
             kind: CommitKind::Revision,
+            parents: Vec::new(),
             diff_args: Vec::new(),
             hash: "abcdef0123456789".into(),
             short_hash: "abcdef0".into(),

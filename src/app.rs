@@ -35,6 +35,7 @@ pub struct App {
     pub images: crate::images::Images,
     pub status_view: Option<crate::status::StatusView>,
     pub commits: Vec<Commit>,
+    pub log_folds: crate::log_folds::LogFolds,
     pub log_format: crate::log_format::LogFormat,
     pub selected: usize,
     pub mode: Mode,
@@ -92,6 +93,7 @@ impl App {
             images: crate::images::Images::default(),
             status_view: None,
             commits,
+            log_folds: crate::log_folds::LogFolds::default(),
             log_format: crate::log_format::LogFormat::default(),
             selected: 0,
             mode: Mode::Log,
@@ -213,11 +215,7 @@ impl App {
                     return;
                 }
                 let amount = if delta.abs() == 1 { 1 } else { page.max(1) };
-                self.selected = if delta < 0 {
-                    self.selected.saturating_sub(amount)
-                } else {
-                    (self.selected + amount).min(self.commits.len() - 1)
-                };
+                self.selected = self.log_selection(delta, amount);
             }
             Mode::Show => {
                 let amount = if delta.abs() == 1 { 1 } else { page.max(1) };
@@ -260,16 +258,37 @@ impl App {
         if self.commits.is_empty() {
             return false;
         }
-        let selected = if delta < 0 {
-            self.selected.saturating_sub(1)
-        } else {
-            (self.selected + 1).min(self.commits.len() - 1)
-        };
+        let selected = self.log_selection(delta, 1);
         if selected == self.selected {
             return false;
         }
         self.selected = selected;
         true
+    }
+
+    fn log_selection(&self, delta: isize, amount: usize) -> usize {
+        let mut selected = self.selected;
+        let mut remaining = amount;
+        let indices: Box<dyn Iterator<Item = usize>> = if delta < 0 {
+            Box::new((0..self.selected).rev())
+        } else {
+            Box::new(self.selected + 1..self.commits.len())
+        };
+        for index in indices {
+            if self.log_folds.visible(index) {
+                selected = index;
+                remaining -= 1;
+                if remaining == 0 {
+                    break;
+                }
+            }
+        }
+        selected
+    }
+
+    pub fn toggle_log_merge(&mut self) {
+        self.status = self.log_folds.toggle(self.selected, &self.commits).err();
+        self.search_match = None;
     }
 
     pub fn replace_commits(&mut self, commits: Vec<Commit>) {
@@ -298,6 +317,16 @@ impl App {
         });
         self.selected =
             preserved.unwrap_or_else(|| self.selected.min(self.commits.len().saturating_sub(1)));
+        if let Err(error) = self.log_folds.refresh(&self.commits) {
+            self.status = Some(error);
+        }
+        // Keep the selected commit visible even if a newly arrived merge
+        // would fold it under --fold-merges.
+        self.log_folds.reveal(self.selected, &self.commits);
+        // Searches index the old history and must restart from the selection.
+        if self.search_match.is_some_and(|(mode, _)| mode == Mode::Log) {
+            self.search_match = None;
+        }
         // Keep the viewport so a refresh visibly moves changed history; drawing
         // scrolls only if the selected commit would leave the screen.
         if self.mode == Mode::Show {
@@ -430,7 +459,11 @@ impl App {
     pub fn top(&mut self) {
         match self.mode {
             Mode::Status => {}
-            Mode::Log => self.selected = 0,
+            Mode::Log => {
+                self.selected = (0..self.commits.len())
+                    .find(|&i| self.log_folds.visible(i))
+                    .unwrap_or(0)
+            }
             Mode::Show => {
                 self.show_cursor = 0;
                 self.show_offset = 0;
@@ -440,7 +473,12 @@ impl App {
     pub fn bottom(&mut self) {
         match self.mode {
             Mode::Status => {}
-            Mode::Log => self.selected = self.commits.len().saturating_sub(1),
+            Mode::Log => {
+                self.selected = (0..self.commits.len())
+                    .rev()
+                    .find(|&i| self.log_folds.visible(i))
+                    .unwrap_or(0)
+            }
             Mode::Show => {
                 self.show_cursor = self.show_rows.len().saturating_sub(1);
                 self.show_scroll = Some(ShowScroll::Bottom);
@@ -1163,6 +1201,7 @@ impl App {
                     if c.hash.to_lowercase().contains(&query)
                         || self.log_format.text(c).to_lowercase().contains(&query)
                     {
+                        self.log_folds.reveal(i, &self.commits);
                         self.selected = i;
                         self.search_match = Some((Mode::Log, i));
                         self.status = None;
@@ -1218,6 +1257,7 @@ mod tests {
     fn commit(subject: &str) -> Commit {
         Commit {
             kind: CommitKind::Revision,
+            parents: Vec::new(),
             diff_args: Vec::new(),
             hash: subject.repeat(40).chars().take(40).collect(),
             short_hash: subject.to_owned(),

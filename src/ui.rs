@@ -107,7 +107,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if let Some(status) = &app.status {
         status.clone()
     } else if app.mode == Mode::Log {
-        "↑/k ↓/j  ←/→ commit  Enter show  a author  d date  r refs  x hash  s subject  / ? search  h help  q quit".to_owned()
+        "↑/k ↓/j  ←/→ commit  Enter show  z fold merge  a author  d date  r refs  x hash  s subject  / ? search  h help  q quit".to_owned()
     } else if !has_log {
         "↑/k ↓/j  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search  h help  q quit"
             .to_owned()
@@ -147,7 +147,7 @@ fn draw_help(frame: &mut Frame, has_log: bool) {
         "  Author badges: +꩜ Codex  +❋ Claude Code  +N other coauthors",
         "Views and search",
         "  Enter             open commit / toggle section or file",
-        "  z                 toggle current file fold (Show)",
+        "  z                 fold merge (Log) / file (Show)",
         "  L                 expand / fold all lockfiles (Show)",
         "  s                 toggle file summary / patch (Show/Status)",
         "  Escape            return to Log / cancel",
@@ -162,6 +162,7 @@ fn draw_help(frame: &mut Frame, has_log: bool) {
     .into_iter()
     .filter(|line| {
         has_log
+            || line.starts_with("  z ")
             || !(line.contains("Log")
                 || line.contains("previous / next commit")
                 || line.contains("Author badges"))
@@ -169,6 +170,8 @@ fn draw_help(frame: &mut Frame, has_log: bool) {
     .map(|line| {
         if !has_log && line.contains("open commit") {
             "  Enter             toggle section or file"
+        } else if !has_log && line.starts_with("  z ") {
+            "  z                 toggle current file fold (Show)"
         } else {
             line
         }
@@ -196,17 +199,27 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     let separator_before = app
         .commits
         .iter()
-        .position(|commit| commit.kind == crate::git::CommitKind::Revision)
+        .enumerate()
+        .find(|(i, commit)| {
+            app.log_folds.visible(*i) && commit.kind == crate::git::CommitKind::Revision
+        })
+        .map(|(i, _)| i)
         .filter(|index| *index > 0);
     let selected_start_row: usize = app
         .commits
         .iter()
+        .enumerate()
         .take(app.selected)
-        .map(|commit| commit.graph.len())
+        .filter(|(i, _)| app.log_folds.visible(*i))
+        .map(|(i, commit)| app.log_folds.graph(i, commit).len())
         .sum::<usize>()
         + usize::from(separator_before.is_some_and(|index| app.selected >= index));
-    let selected_subject_row =
-        selected_start_row + app.commits[app.selected].graph.len().saturating_sub(1);
+    let selected_subject_row = selected_start_row
+        + app
+            .log_folds
+            .graph(app.selected, &app.commits[app.selected])
+            .len()
+            .saturating_sub(1);
     if selected_subject_row < app.log_offset {
         app.log_offset = selected_start_row;
     } else if selected_subject_row >= app.log_offset + height.max(1) {
@@ -215,6 +228,9 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut lines = Vec::new();
     let mut graph_row = 0;
     'commits: for (index, commit) in app.commits.iter().enumerate() {
+        if !app.log_folds.visible(index) {
+            continue;
+        }
         if separator_before == Some(index) {
             if graph_row >= app.log_offset {
                 if lines.len() >= height {
@@ -230,7 +246,8 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             graph_row += 1;
         }
-        for (part, graph) in commit.graph.iter().enumerate() {
+        let graph_rows = app.log_folds.graph(index, commit);
+        for (part, graph) in graph_rows.iter().enumerate() {
             if graph_row < app.log_offset {
                 graph_row += 1;
                 continue;
@@ -239,8 +256,21 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 break 'commits;
             }
             let mut line = ansi::parse_line(graph);
-            if part + 1 == commit.graph.len() {
+            if part + 1 == graph_rows.len() {
+                if let Some(marker) = app.log_folds.marker(commit) {
+                    if let Some(span) = line
+                        .spans
+                        .iter_mut()
+                        .find(|span| span.content.contains('*'))
+                    {
+                        span.content = span.content.replacen('*', marker, 1).into();
+                    }
+                }
                 line.spans.extend(app.log_format.spans(commit));
+                line.spans.push(Span::styled(
+                    app.log_folds.label(commit),
+                    Style::default().fg(Color::Yellow),
+                ));
             }
             if let Some(query) = &app.search {
                 let current = app.search_match == Some((Mode::Log, index));
@@ -608,9 +638,35 @@ mod tests {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{backend::TestBackend, Terminal};
 
+    #[test]
+    fn merge_disclosure_replaces_the_graph_node_without_shifting_fields() {
+        for (graph, column) in [("\x1b[32m*\x1b[m ", 0), ("| \x1b[32m*\x1b[m ", 2)] {
+            let mut entry = commit("merge subject", 1);
+            entry.graph = vec!["|\\ ".into(), graph.into()];
+            let mut app = App::new(vec![entry]);
+            let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let before = terminal.backend().buffer().clone();
+            app.commits[0].parents = vec!["first".into(), "second".into()];
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let after = terminal.backend().buffer();
+            assert_eq!(before[(column, 2)].symbol(), "*");
+            assert_eq!(after[(column, 2)].symbol(), "▼");
+            assert_eq!(before[(column, 2)].style(), after[(column, 2)].style());
+            for y in 0..8 {
+                for x in 0..100 {
+                    if (x, y) != (column, 2) {
+                        assert_eq!(before[(x, y)], after[(x, y)], "cell {x},{y}");
+                    }
+                }
+            }
+        }
+    }
+
     fn commit(subject: &str, graph_rows: usize) -> Commit {
         Commit {
             kind: CommitKind::Revision,
+            parents: Vec::new(),
             diff_args: Vec::new(),
             hash: subject.repeat(40).chars().take(40).collect(),
             short_hash: subject.to_owned(),

@@ -4,6 +4,7 @@ mod diff;
 mod git;
 mod images;
 mod input;
+mod log_folds;
 mod log_format;
 mod status;
 mod ui;
@@ -45,7 +46,7 @@ fn main() -> ExitCode {
     } else if command != Command::Log {
         Ok(false)
     } else {
-        parse_watch(command_args)
+        parse_watch(command_args, log_format.fold_merges)
     } {
         Ok(watch) => watch,
         Err(error) => {
@@ -88,6 +89,13 @@ fn main() -> ExitCode {
         eprintln!("glog: {message}");
         return ExitCode::SUCCESS;
     }
+
+    app.log_folds.start_collapsed = log_format.fold_merges;
+    if let Err(error) = app.log_folds.refresh(&app.commits) {
+        eprintln!("glog: {error}");
+        return ExitCode::FAILURE;
+    }
+    app.log_folds.reveal(app.selected, &app.commits);
 
     let mut terminal = match start_terminal() {
         Ok(terminal) => terminal,
@@ -142,7 +150,7 @@ fn parse_information(args: &[String]) -> Option<&'static str> {
 
 const HELP: &str = "glog — an interactive git log and git show browser
 
-Usage: glog [--watch]
+Usage: glog [--watch] [--fold-merges]
        glog [log] [git log arguments] [--] [pathspec...]
        glog show [--stat] [commit] [-- pathspec...]
        glog diff [--cached] [--stat] [revision [revision]] [[--] pathspec...]
@@ -153,6 +161,7 @@ Options:
                 Format Log rows (%h %H %ad %an %ae %d %D %s %%)
   --date=STYLE  Format author dates using Git (e.g. short, relative, iso)
   --oneline     Use the compact hash, refs, and subject layout
+  --fold-merges Start Log with merge histories collapsed; z expands a merge
   --watch       Include a Working tree item and refresh the default HEAD view
   -h, --help    Print help
   -V, --version Print version
@@ -247,8 +256,13 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
     Ok(())
 }
 
-fn parse_watch(args: &[String]) -> Result<bool, String> {
-    match args {
+fn parse_watch(args: &[String], fold_merges: bool) -> Result<bool, String> {
+    let args: Vec<_> = args
+        .iter()
+        .filter(|arg| !fold_merges || arg.as_str() != "--fold-merges")
+        .cloned()
+        .collect();
+    match args.as_slice() {
         [flag] if flag == "--watch" => Ok(true),
         _ if args.iter().any(|arg| arg == "--watch") => {
             Err("--watch currently supports only the default HEAD view".to_owned())
@@ -310,11 +324,18 @@ mod tests {
     }
 
     #[test]
-    fn watch_must_be_the_only_argument() {
-        assert!(parse_watch(&[]).is_ok_and(|watch| !watch));
-        assert!(parse_watch(&["--watch".to_owned()]).is_ok_and(|watch| watch));
-        assert!(parse_watch(&["--watch".to_owned(), "--all".to_owned()]).is_err());
-        assert!(parse_watch(&["main".to_owned(), "--watch".to_owned()]).is_err());
+    fn watch_limits_traversal_but_allows_merge_folding() {
+        assert!(parse_watch(&[], false).is_ok_and(|watch| !watch));
+        assert!(parse_watch(&["--watch".into(), "--fold-merges".into()], true).unwrap());
+        assert!(!parse_watch(&["--fold-merges".into()], true).unwrap());
+        assert!(parse_watch(
+            &["--watch".into(), "--fold-merges".into(), "--all".into()],
+            true
+        )
+        .is_err());
+        assert!(parse_watch(&["--watch".to_owned()], false).is_ok_and(|watch| watch));
+        assert!(parse_watch(&["--watch".to_owned(), "--all".to_owned()], false).is_err());
+        assert!(parse_watch(&["main".to_owned(), "--watch".to_owned()], false).is_err());
     }
 
     #[test]

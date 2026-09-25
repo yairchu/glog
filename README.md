@@ -80,6 +80,31 @@ glog --since="2 weeks ago"
 glog main -- src/
 ```
 
+### Folding merge histories
+
+In Log, select a merge and press `z` to collapse or expand the commits it brought
+in. Enter still opens the merge's Show view. A collapsed merge displays a `▶`
+and the number of folded commits; its first-parent history remains visible.
+Nested merges can be folded independently.
+
+Start with merges folded using:
+
+```bash
+glog --fold-merges
+glog --watch --fold-merges
+glog --fold-merges --all
+```
+
+Navigation skips folded commits, including Left/Right in Show. Searching Log
+still searches the full loaded history and expands folds containing a match.
+Watch refreshes preserve fold choices and the selected commit; new merges start
+folded when `--fold-merges` is enabled. The graph is redrawn around hidden commits.
+Folding respects the loaded revision, path, and count filters: it does not fetch
+or load excluded commits. In particular, `--first-parent` omits side history,
+so use `--fold-merges` instead when you want to expand that history later.
+
+### Show and Diff
+
 Open directly in Show with `glog show`, optionally naming a commit (hash, branch,
 tag, or revision expression):
 
@@ -168,7 +193,9 @@ change:
 glog --watch
 ```
 
-For its initial implementation, `--watch` must be the only argument. Combinations such as `glog --watch --all` fail with a concise error rather than providing partial watch semantics.
+For its initial implementation, `--watch` accepts only the optional
+`--fold-merges` display flag. Combinations such as `glog --watch --all` fail with
+a concise error rather than providing partial watch semantics.
 
 ## Working-tree status
 
@@ -269,7 +296,7 @@ to case, and the primary author is excluded. Full credits remain in Show.
 | `←`, `→` | select previous/newer or next/older commit | previous/newer or next/older commit |
 | `[`, `]` | — | previous/next changed file |
 | `Enter` | open selected commit | expand/fold current folded file |
-| `z` | — | expand/fold current folded file |
+| `z` | expand/fold selected merge history | expand/fold current folded file |
 | `L` | — | expand/fold all lockfiles |
 | `s` | toggle subject | toggle file summary / patch |
 | `g` / `<` / `Home`, `G` / `>` / `End` | first/last commit | top/bottom |
