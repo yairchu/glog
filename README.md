@@ -85,7 +85,9 @@ glog main -- src/
 In Log, select a merge and press `z` to collapse or expand the commits it brought
 in. Enter still opens the merge's Show view. A collapsed merge displays a `▶`
 and the number of folded commits; its first-parent history remains visible.
-Nested merges can be folded independently.
+Nested merges can be folded independently. Press `m` to fold all merge histories,
+or expand them when all are folded. If folding hides the selected commit, selection
+moves to its containing merge.
 
 Start with merges folded using:
 
@@ -298,6 +300,7 @@ to case, and the primary author is excluded. Full credits remain in Show.
 | `Enter` | open selected commit | expand/fold current folded file |
 | `z` | expand/fold selected merge history | expand/fold current folded file |
 | `L` | — | expand/fold all lockfiles |
+| `m` | expand/fold all merge histories | — |
 | `s` | toggle subject | toggle file summary / patch |
 | `g` / `<` / `Home`, `G` / `>` / `End` | first/last commit | top/bottom |
 | `/`, `?`, `n`, `N` | search forward/backward; repeat/opposite | search forward/backward; repeat/opposite |

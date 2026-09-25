@@ -107,7 +107,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if let Some(status) = &app.status {
         status.clone()
     } else if app.mode == Mode::Log {
-        "↑/k ↓/j  ←/→ commit  Enter show  z fold merge  a author  d date  r refs  x hash  s subject  / ? search  h help  q quit".to_owned()
+        "↑/k ↓/j  ←/→ commit  Enter show  z fold merge  a author  d date  r refs  x hash  s subject  m fold all  / ? search  h help  q quit".to_owned()
     } else if !has_log {
         "↑/k ↓/j  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search  h help  q quit"
             .to_owned()
@@ -148,6 +148,7 @@ fn draw_help(frame: &mut Frame, has_log: bool) {
         "Views and search",
         "  Enter             open commit / toggle section or file",
         "  z                 fold merge (Log) / file (Show)",
+        "  m                 expand / fold all merges (Log)",
         "  L                 expand / fold all lockfiles (Show)",
         "  s                 toggle file summary / patch (Show/Status)",
         "  Escape            return to Log / cancel",

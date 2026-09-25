@@ -8,8 +8,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 ### Added
 
 - Added merge-history folding in Log: `z` collapses or expands a merge's
-  introduced commits, and `--fold-merges` starts with merges folded, including
-  in watch mode. Folded merges show commit counts; navigation skips hidden
+  introduced commits, `m` toggles all merge histories, and `--fold-merges` starts
+  with merges folded, including in watch mode. Folded merges show commit counts; navigation skips hidden
   commits, search reveals matching commits, and watch refreshes preserve fold
   choices. Nested merges fold independently, and revision/path filters still apply.
 

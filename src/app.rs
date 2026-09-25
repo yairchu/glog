@@ -291,6 +291,17 @@ impl App {
         self.search_match = None;
     }
 
+    pub fn toggle_all_log_merges(&mut self) {
+        match self.log_folds.toggle_all(self.selected, &self.commits) {
+            Ok(selected) => {
+                self.selected = selected;
+                self.status = None;
+            }
+            Err(error) => self.status = Some(error),
+        }
+        self.search_match = None;
+    }
+
     pub fn replace_commits(&mut self, commits: Vec<Commit>) {
         let selected = self
             .commits

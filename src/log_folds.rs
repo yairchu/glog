@@ -115,6 +115,44 @@ impl LogFolds {
         Ok(())
     }
 
+    pub fn toggle_all(&mut self, selected: usize, commits: &[Commit]) -> Result<usize, String> {
+        let loaded: HashSet<_> = commits.iter().map(|c| &c.hash).collect();
+        let mut eligible = HashSet::new();
+        for commit in commits.iter().filter(|c| c.parents.len() > 1) {
+            self.load_members(commit)?;
+            if self.members[&commit.hash]
+                .iter()
+                .any(|hash| loaded.contains(hash))
+            {
+                eligible.insert(commit.hash.clone());
+            }
+        }
+        let next = if eligible.is_subset(&self.collapsed) {
+            HashSet::new()
+        } else {
+            eligible
+        };
+        let previous = std::mem::replace(&mut self.collapsed, next);
+        if let Err(error) = self.prepare_graph(commits) {
+            self.collapsed = previous;
+            return Err(error);
+        }
+        self.graph_ready = true;
+        self.rebuild(commits);
+        if !self.visible(selected) {
+            if let Some(commit) = commits.get(selected) {
+                if let Some(owner) = (0..commits.len()).rev().find(|&i| {
+                    self.visible(i)
+                        && self.collapsed.contains(&commits[i].hash)
+                        && self.members[&commits[i].hash].contains(&commit.hash)
+                }) {
+                    return Ok(owner);
+                }
+            }
+        }
+        Ok(selected)
+    }
+
     fn prepare_graph(&mut self, commits: &[Commit]) -> Result<(), String> {
         if self.collapsed.is_empty() {
             return Ok(());

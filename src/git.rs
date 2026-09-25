@@ -1211,6 +1211,27 @@ mod tests {
         assert_eq!(app.selected, index(&inner));
         assert!(app.log_folds.visible(app.selected));
 
+        // The global shortcut collapses mixed/nested folds and selects the
+        // containing visible merge, then expands every fold on the next press.
+        key(&mut app, KeyCode::Char('m'));
+        assert_eq!(app.selected, index(&merge));
+        for hash in [&inner, &nested, &feature, &tip, &x, &y] {
+            assert!(!app.log_folds.visible(index(hash)));
+        }
+        app.replace_commits(commits.clone());
+        assert_eq!(app.selected, index(&merge));
+        assert!(!app.log_folds.visible(index(&inner)));
+        key(&mut app, KeyCode::Char('m'));
+        assert!((0..commits.len()).all(|i| app.log_folds.visible(i)));
+        let subject = app.log_format.text(&commits[index(&merge)]);
+        key(&mut app, KeyCode::Char('s'));
+        assert!(!app
+            .log_format
+            .text(&commits[index(&merge)])
+            .contains("outer merge"));
+        key(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.log_format.text(&commits[index(&merge)]), subject);
+
         // A wholly folded main branch is a single lane, not the original graph
         // with dangling branch connectors left behind.
         let mut app = App::new(load_log(&["main".into()]).unwrap());
