@@ -144,6 +144,19 @@ mod tests {
     }
 
     #[test]
+    fn excluded_first_parent_does_not_turn_a_side_parent_into_mainline() {
+        // Two nested merges, as returned by a -4 log with a excluded from
+        // the ancestry walk because it is the oldest displayed row's parent.
+        let folded = members("n m c\nc m\nm a b\nb a\n", &["n", "m"]).unwrap();
+        assert_eq!(folded["n"], HashSet::from(["c".to_owned()]));
+        assert_eq!(folded["m"], HashSet::from(["b".to_owned()]));
+
+        // An octopus merge must retain every loaded side parent as well.
+        let folded = members("m a b c\nb a\nc a\n", &["m"]).unwrap();
+        assert_eq!(folded["m"], HashSet::from(["b".into(), "c".into()]));
+    }
+
+    #[test]
     fn bulk_handles_a_long_chain_of_short_branches() {
         let merges = 10_000;
         let mut parents = vec![Vec::new(); merges * 3 + 1];
