@@ -700,6 +700,31 @@ mod tests {
     }
 
     #[test]
+    fn folding_after_a_failed_refresh_folds_on_the_first_press() {
+        let commits = vec![
+            // Its side parent is beyond the loaded history, and resolving it
+            // fails because these hashes are in no repository.
+            commit("unknown", &["merge", "root"]),
+            commit("merge", &["main", "side"]),
+            commit("side", &["base"]),
+            commit("main", &["base"]),
+            commit("base", &["root"]),
+        ];
+        let mut folds = LogFolds::default();
+        folds
+            .members
+            .insert("merge".into(), HashSet::from(["side".into()]));
+        folds.toggle(1, &commits).unwrap();
+        assert!(folds.refresh(&commits).is_err());
+        // The failure leaves the Log unfolded, so z must fold what is shown.
+        assert!(folds.visible(2));
+        assert_eq!(folds.marker(&commits[1]), Some("▼"));
+        folds.toggle(1, &commits).unwrap();
+        assert!(!folds.visible(2));
+        assert_eq!(folds.marker(&commits[1]), Some("▶"));
+    }
+
+    #[test]
     fn crossing_routes_do_not_turn_into_a_shared_parent() {
         assert_eq!(
             plain(&transitions(&[(0, 2, 0), (2, 0, 1)], 2)),
