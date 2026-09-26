@@ -92,9 +92,9 @@ fn main() -> ExitCode {
     }
 
     app.log_folds.start_collapsed = log_format.fold_merges;
+    // As on watch refreshes, a failure leaves the Log unfolded and says why.
     if let Err(error) = app.log_folds.refresh(&app.commits) {
-        eprintln!("glog: {error}");
-        return ExitCode::FAILURE;
+        app.status = Some(error);
     }
     app.log_folds.reveal(app.selected, &app.commits);
 
