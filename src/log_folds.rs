@@ -735,6 +735,27 @@ mod tests {
     }
 
     #[test]
+    fn filtered_out_side_parents_are_not_resolved_by_bulk_folding() {
+        // As in a --grep log, the side tip is omitted but an older side commit
+        // matched. These hashes are in no repository, so a walk would fail.
+        let commits = vec![
+            commit("merge", &["main", "omitted tip"]),
+            commit("older side", &["base"]),
+            commit("main", &["base"]),
+            commit("base", &[]),
+        ];
+        let mut folds = LogFolds {
+            start_collapsed: true,
+            ..LogFolds::default()
+        };
+        folds.refresh(&commits).unwrap();
+        assert_eq!(folds.marker(&commits[0]), None);
+        assert!(folds.visible(1));
+        let error = folds.toggle_all(0, &commits).unwrap_err();
+        assert!(error.contains("No foldable merges"), "{error}");
+    }
+
+    #[test]
     fn crossing_routes_do_not_turn_into_a_shared_parent() {
         assert_eq!(
             plain(&transitions(&[(0, 2, 0), (2, 0, 1)], 2)),
