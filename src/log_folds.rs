@@ -637,6 +637,28 @@ mod tests {
     }
 
     #[test]
+    fn new_commits_on_top_keep_existing_merge_members() {
+        let commits = vec![
+            commit("merge", &["main", "side"]),
+            commit("side", &["base"]),
+            commit("main", &["base"]),
+            commit("base", &[]),
+        ];
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        folds
+            .members
+            .insert("merge".into(), HashSet::from(["side".into()]));
+        folds.toggle(0, &commits).unwrap();
+        // These hashes are in no repository, so reloading members would fail.
+        let mut refreshed = vec![commit("new", &["merge"])];
+        refreshed.extend(commits);
+        folds.refresh(&refreshed).unwrap();
+        assert!(!folds.visible(2));
+        assert_eq!(folds.marker(&refreshed[1]), Some("▶"));
+    }
+
+    #[test]
     fn crossing_routes_do_not_turn_into_a_shared_parent() {
         assert_eq!(
             plain(&transitions(&[(0, 2, 0), (2, 0, 1)], 2)),
