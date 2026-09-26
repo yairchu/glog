@@ -15,7 +15,10 @@ pub struct LogFolds {
     graphs: HashMap<usize, Vec<String>>,
     counts: HashMap<String, usize>,
     ancestry: HashMap<String, Vec<String>>,
-    ancestry_for: Vec<(String, Vec<String>)>,
+    ancestry_ready: bool,
+    // Positions of the loaded commits, valid until the next refresh.
+    index: HashMap<String, usize>,
+    indexed: bool,
     graph_ready: bool,
 }
 
@@ -54,6 +57,8 @@ impl LogFolds {
     }
 
     pub fn refresh(&mut self, commits: &[Commit]) -> Result<(), String> {
+        self.indexed = false;
+        self.sync(commits);
         let hashes: HashSet<_> = commits.iter().map(|c| c.hash.clone()).collect();
         self.collapsed.retain(|hash| hashes.contains(hash));
         self.members.retain(|hash, _| hashes.contains(hash));
@@ -154,18 +159,18 @@ impl LogFolds {
     }
 
     pub fn toggle_all(&mut self, selected: usize, commits: &[Commit]) -> Result<usize, String> {
+        self.sync(commits);
         self.load_all_members(commits, false)?;
-        let loaded: HashSet<_> = commits.iter().map(|c| &c.hash).collect();
-        let mut eligible = HashSet::new();
-        for commit in commits.iter().filter(|c| c.parents.len() > 1) {
-            self.load_members(commit)?;
-            if self.members[&commit.hash]
-                .iter()
-                .any(|hash| loaded.contains(hash))
-            {
-                eligible.insert(commit.hash.clone());
-            }
-        }
+        let eligible: HashSet<_> = commits
+            .iter()
+            .filter(|c| c.parents.len() > 1)
+            .filter(|c| {
+                self.members[&c.hash]
+                    .iter()
+                    .any(|hash| self.index.contains_key(hash))
+            })
+            .map(|c| c.hash.clone())
+            .collect();
         if eligible.is_empty() {
             return Err(
                 "No foldable merges in this history; revision and path filters still apply".into(),
@@ -198,35 +203,43 @@ impl LogFolds {
         Ok(selected)
     }
 
+    // Index the commit list once per refresh rather than on every keypress.
+    fn sync(&mut self, commits: &[Commit]) {
+        if !self.indexed {
+            self.index = commits
+                .iter()
+                .enumerate()
+                .map(|(index, c)| (c.hash.clone(), index))
+                .collect();
+            self.indexed = true;
+            self.ancestry_ready = false;
+        }
+    }
+
     fn prepare_graph(&mut self, commits: &[Commit]) -> Result<(), String> {
-        if self.collapsed.is_empty() {
+        self.sync(commits);
+        if self.collapsed.is_empty() || self.ancestry_ready {
             return Ok(());
         }
-        let key: Vec<_> = commits
+        let revisions: Vec<_> = commits
             .iter()
             .filter(|c| c.kind == CommitKind::Revision)
-            .map(|c| (c.hash.clone(), c.parents.clone()))
             .collect();
-        if key == self.ancestry_for {
-            return Ok(());
-        }
-        let loaded: HashSet<_> = key.iter().map(|(hash, _)| hash).collect();
-        let boundary: HashSet<_> = key
+        let boundary: HashSet<_> = revisions
             .last()
             .into_iter()
-            .flat_map(|(_, parents)| parents)
+            .flat_map(|c| &c.parents)
             .collect();
-        let missing = key
+        let missing = revisions
             .iter()
-            .flat_map(|(_, parents)| parents)
-            .any(|p| !loaded.contains(p) && !boundary.contains(p));
-        let ancestry = if missing {
+            .flat_map(|c| &c.parents)
+            .any(|p| !self.index.contains_key(p) && !boundary.contains(p));
+        self.ancestry = if missing {
             git::log_ancestry(commits)?
         } else {
             HashMap::new()
         };
-        self.ancestry = ancestry;
-        self.ancestry_for = key;
+        self.ancestry_ready = true;
         Ok(())
     }
 
@@ -247,12 +260,12 @@ impl LogFolds {
     }
 
     fn rebuild(&mut self, commits: &[Commit]) {
+        self.sync(commits);
         self.hidden.clear();
         self.graphs.clear();
         if !self.graph_ready {
             return;
         }
-        let loaded: HashSet<_> = commits.iter().map(|c| &c.hash).collect();
         self.counts = self
             .collapsed
             .iter()
@@ -260,7 +273,7 @@ impl LogFolds {
                 let count = self.members.get(hash).map_or(0, |members| {
                     members
                         .iter()
-                        .filter(|member| loaded.contains(member))
+                        .filter(|member| self.index.contains_key(*member))
                         .count()
                 });
                 (hash.clone(), count)
@@ -272,21 +285,13 @@ impl LogFolds {
             .filter_map(|hash| self.members.get(hash))
             .flatten()
             .collect();
-        self.hidden = commits
-            .iter()
-            .enumerate()
-            .filter(|(_, c)| hidden_hashes.contains(&c.hash))
-            .map(|(index, _)| index)
+        self.hidden = hidden_hashes
+            .into_iter()
+            .filter_map(|hash| self.index.get(hash).copied())
             .collect();
-        self.graphs.clear();
         if self.hidden.is_empty() {
             return;
         }
-        let by_hash: HashMap<_, _> = commits
-            .iter()
-            .enumerate()
-            .map(|(index, c)| (c.hash.as_str(), index))
-            .collect();
         // Each lane keeps a colour from Git's default palette while it lasts.
         let mut lanes = Vec::<(String, usize)>::new();
         let mut colours = 0..;
@@ -334,7 +339,7 @@ impl LogFolds {
                 if !visited.insert(parent) {
                     continue;
                 }
-                let Some(&parent_index) = by_hash.get(parent.as_str()) else {
+                let Some(&parent_index) = self.index.get(parent) else {
                     if let Some(parents) = self.ancestry.get(parent) {
                         todo.extend(parents.iter().rev());
                     }
