@@ -118,17 +118,15 @@ impl LogFolds {
             }
             Ok(())
         })();
-        // Loaded side parents cheaply identify most foldable merges; members
-        // cover filters that omit the side parent but load its history.
+        // Known members decide exactly. Otherwise a loaded side parent outside
+        // the first parent's loaded ancestry cheaply identifies most foldable
+        // merges; members cover filters that omit the side parent.
         self.foldable = commits
             .iter()
             .filter(|c| c.parents.len() > 1)
-            .filter(|c| {
-                c.parents[1..].iter().any(|p| hashes.contains(p))
-                    || self
-                        .members
-                        .get(&c.hash)
-                        .is_some_and(|members| members.iter().any(|h| hashes.contains(h)))
+            .filter(|c| match self.members.get(&c.hash) {
+                Some(members) => members.iter().any(|h| hashes.contains(h)),
+                None => self.has_side_parent_row(c, commits),
             })
             .map(|c| c.hash.clone())
             .collect();
@@ -137,6 +135,29 @@ impl LogFolds {
         self.graph_ready = result.is_ok() && graph.is_ok();
         self.rebuild(commits);
         result.and(graph)
+    }
+
+    /// Whether a loaded side parent is not reachable from the first parent
+    /// through loaded rows. Parent links lead down the topological order, so
+    /// a path to the side parent only passes rows above it.
+    fn has_side_parent_row(&self, merge: &Commit, commits: &[Commit]) -> bool {
+        merge.parents[1..]
+            .iter()
+            .filter_map(|parent| self.index.get(parent).copied())
+            .any(|side| {
+                let mut todo: Vec<_> = merge.parents[..1].iter().collect();
+                let mut visited = HashSet::new();
+                while let Some(hash) = todo.pop() {
+                    match self.index.get(hash).copied() {
+                        Some(index) if index == side => return false,
+                        Some(index) if index < side && visited.insert(index) => {
+                            todo.extend(&commits[index].parents)
+                        }
+                        _ => {}
+                    }
+                }
+                true
+            })
     }
 
     fn load_members(&mut self, commit: &Commit) -> Result<(), String> {
@@ -179,6 +200,7 @@ impl LogFolds {
                 .iter()
                 .any(|c| self.members[&commit.hash].contains(&c.hash))
             {
+                self.foldable.remove(&commit.hash);
                 return Err(
                     "No merged commits in this history; revision and path filters still apply"
                         .into(),
