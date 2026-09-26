@@ -137,6 +137,13 @@ mod tests {
     }
 
     #[test]
+    fn parents_below_the_walk_boundary_are_outside_the_history() {
+        // rev-list lists parents it was told not to walk, like c here.
+        let members = members("m a b\na c\nb c\n", &["m"]).unwrap();
+        assert_eq!(members["m"], HashSet::from(["b".to_owned()]));
+    }
+
+    #[test]
     fn bulk_handles_a_long_chain_of_short_branches() {
         let merges = 10_000;
         let mut parents = vec![Vec::new(); merges * 3 + 1];
