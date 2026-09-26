@@ -100,19 +100,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Show => draw_show(frame, app, chunks[1]),
     }
     let help = if app.mode == Mode::Status {
-        app.status_view.as_ref().and_then(|view| view.error.clone()).or_else(|| app.status.clone()).unwrap_or_else(|| "↑/k ↓/j  Enter/z fold  s summary  ←/→ commit  Shift-←/→ pan  Tab Log  Esc Log  Ctrl-L redraw  h help  q quit · WATCH".to_owned())
+        app.status_view.as_ref().and_then(|view| view.error.clone()).or_else(|| app.status.clone()).unwrap_or_else(|| "h help  q quit  ↑/k ↓/j  Enter/z fold  s summary  ←/→ commit  Shift-←/→ pan  Tab Log  Esc Log  Ctrl-L redraw · WATCH".to_owned())
     } else if let Some(input) = &app.search_input {
         let prefix = if app.search_reverse { '?' } else { '/' };
         format!("{prefix}{input}█")
     } else if let Some(status) = &app.status {
         status.clone()
     } else if app.mode == Mode::Log {
-        "↑/k ↓/j  ←/→ commit  Enter show  z fold merge  a author  d date  r refs  x hash  s subject  m fold all  / ? search  h help  q quit".to_owned()
+        "h help  q quit  ↑/k ↓/j  ←/→ commit  Enter show  z fold merge  m fold all  a author  d date  r refs  / ? search".to_owned()
     } else if !has_log {
-        "↑/k ↓/j  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search  h help  q quit"
+        "h help  q quit  ↑/k ↓/j  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search"
             .to_owned()
     } else {
-        "↑/k ↓/j  ←/→ commit  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search  h help  q quit"
+        "h help  q quit  ↑/k ↓/j  ←/→ commit  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search"
             .to_owned()
     };
     frame.render_widget(
