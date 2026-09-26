@@ -79,6 +79,19 @@ impl LogFolds {
             // Recompute existing folds after invalidation without changing
             // which merges the user explicitly expanded or collapsed.
             self.load_all_members(commits, true)?;
+            // A filter may omit the side tip but retain older introduced
+            // commits. Resolve those merges together using the bounded walk.
+            let unknown: Vec<_> = commits
+                .iter()
+                .filter(|c| c.parents.len() > 1)
+                .filter(|c| !self.members.contains_key(&c.hash))
+                .filter(|c| c.parents[1..].iter().all(|p| !hashes.contains(p)))
+                .map(|c| c.hash.as_str())
+                .collect();
+            if !unknown.is_empty() {
+                self.members
+                    .extend(git::merged_commits_many(&unknown, commits)?);
+            }
             for commit in commits {
                 if self.start_collapsed
                     && !self.seen.contains(&commit.hash)
@@ -545,22 +558,14 @@ mod tests {
     }
 
     #[test]
-    fn only_merges_with_loaded_side_history_show_a_disclosure_marker() {
-        // As with --first-parent, the side parent is outside the loaded log.
-        let commits = vec![
-            commit("merge", &["main", "side"]),
-            commit("main", &["base"]),
-            commit("base", &[]),
-        ];
-        let mut folds = LogFolds::default();
-        folds.refresh(&commits).unwrap();
-        assert_eq!(folds.marker(&commits[0]), None);
+    fn loaded_side_history_shows_a_disclosure_marker() {
         let commits = vec![
             commit("merge", &["main", "side"]),
             commit("side", &["base"]),
             commit("main", &["base"]),
             commit("base", &[]),
         ];
+        let mut folds = LogFolds::default();
         folds.refresh(&commits).unwrap();
         assert_eq!(folds.marker(&commits[0]), Some("▼"));
     }
