@@ -1100,6 +1100,113 @@ mod tests {
     static NEXT_TEST_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
+    fn watch_merge_folds_refresh_members_after_deepening() {
+        use crate::app::App;
+        let directory = TestDirectory::new();
+        let source = directory.path().join("source");
+        let clone = directory.path().join("clone");
+        fs::create_dir(&source).unwrap();
+        let git = |dir: &Path, args: &[&str]| {
+            let output = Command::new("git")
+                .current_dir(dir)
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&source, &["init", "-q"]);
+        let tree = git(&source, &["mktree"]);
+        let commit = |name: &str, parents: &[&str]| {
+            let mut args = vec!["commit-tree", &tree, "-m", name];
+            for parent in parents {
+                args.extend(["-p", parent]);
+            }
+            git(&source, &args)
+        };
+        let base = commit("base", &[]);
+        let main = commit("main", &[&base]);
+        let older = commit("older side", &[&base]);
+        let side = commit("side tip", &[&older]);
+        let merge = commit("first merge", &[&main, &side]);
+        let second_side = commit("second side", &[&merge]);
+        let second_merge = commit("second merge", &[&merge, &second_side]);
+        git(&source, &["update-ref", "refs/heads/main", &second_merge]);
+        git(&source, &["symbolic-ref", "HEAD", "refs/heads/main"]);
+        git(
+            directory.path(),
+            &[
+                "clone",
+                "-q",
+                "--depth=3",
+                &format!("file://{}", source.display()),
+                clone.to_str().unwrap(),
+            ],
+        );
+        let _cwd = CurrentDirGuard::enter(&clone);
+        let initial = load_watch_log().unwrap();
+        assert!(!initial.iter().any(|c| c.hash == older));
+        let mut apps: Vec<_> = [false, true]
+            .into_iter()
+            .map(|start_collapsed| {
+                let mut app = App::new(initial.clone());
+                app.log_folds.start_collapsed = start_collapsed;
+                app.log_folds.refresh(&app.commits).unwrap();
+                if !start_collapsed {
+                    app.toggle_all_log_merges();
+                }
+                // An explicit expansion must survive cache invalidation too.
+                app.selected = app
+                    .commits
+                    .iter()
+                    .position(|c| c.hash == second_merge)
+                    .unwrap();
+                app.toggle_log_merge();
+                app.top();
+                app
+            })
+            .collect();
+        git(&clone, &["fetch", "-q", "--unshallow"]);
+        for app in &mut apps {
+            app.replace_commits(load_watch_log().unwrap());
+            let index = |hash: &str| app.commits.iter().position(|c| c.hash == hash).unwrap();
+            let merge_index = index(&merge);
+            assert_eq!(app.log_folds.marker(&app.commits[merge_index]), Some("▶"));
+            assert!(
+                !app.log_folds.visible(index(&older)),
+                "deepened side history must remain folded"
+            );
+            assert_eq!(
+                app.log_folds.label(&app.commits[merge_index]),
+                " · 2 merged commits"
+            );
+            assert!(app.log_folds.visible(index(&second_side)));
+            assert_eq!(
+                app.log_folds.marker(&app.commits[index(&second_merge)]),
+                Some("▼")
+            );
+            app.selected = merge_index;
+            app.toggle_log_merge();
+            app.toggle_log_merge();
+            let older_index = app.commits.iter().position(|c| c.hash == older).unwrap();
+            assert!(!app.log_folds.visible(older_index));
+        }
+    }
+
+    #[test]
     fn merge_folding_preserves_topology_navigation_search_and_refresh() {
         use crate::{
             app::{App, Mode},
