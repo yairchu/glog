@@ -654,11 +654,14 @@ mod tests {
         for (graph, column) in [("\x1b[32m*\x1b[m ", 0), ("| \x1b[32m*\x1b[m ", 2)] {
             let mut entry = commit("merge subject", 1);
             entry.graph = vec!["|\\ ".into(), graph.into()];
-            let mut app = App::new(vec![entry]);
+            let side = commit("side", 1);
+            let side_hash = side.hash.clone();
+            let mut app = App::new(vec![entry, side]);
             let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
             let before = terminal.backend().buffer().clone();
-            app.commits[0].parents = vec!["first".into(), "second".into()];
+            app.commits[0].parents = vec!["first".into(), side_hash];
+            app.log_folds.refresh(&app.commits).unwrap();
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
             let after = terminal.backend().buffer();
             assert_eq!(before[(column, 2)].symbol(), "*");

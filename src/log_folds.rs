@@ -9,6 +9,7 @@ pub struct LogFolds {
     pub start_collapsed: bool,
     seen: HashSet<String>,
     collapsed: HashSet<String>,
+    foldable: HashSet<String>,
     members: HashMap<String, HashSet<String>>,
     hidden: HashSet<usize>,
     graphs: HashMap<usize, Vec<String>>,
@@ -33,8 +34,10 @@ impl LogFolds {
         }
         if self.graph_ready && self.collapsed.contains(&commit.hash) {
             Some("▶")
-        } else {
+        } else if self.foldable.contains(&commit.hash) {
             Some("▼")
+        } else {
+            None
         }
     }
 
@@ -76,6 +79,20 @@ impl LogFolds {
             }
             Ok(())
         })();
+        // Loaded side parents cheaply identify most foldable merges; members
+        // cover filters that omit the side parent but load its history.
+        self.foldable = commits
+            .iter()
+            .filter(|c| c.parents.len() > 1)
+            .filter(|c| {
+                c.parents[1..].iter().any(|p| hashes.contains(p))
+                    || self
+                        .members
+                        .get(&c.hash)
+                        .is_some_and(|members| members.iter().any(|h| hashes.contains(h)))
+            })
+            .map(|c| c.hash.clone())
+            .collect();
         // Even on an I/O error, indices must refer to the new commit list.
         let graph = self.prepare_graph(commits);
         self.graph_ready = graph.is_ok();
@@ -124,6 +141,7 @@ impl LogFolds {
                 );
             }
             self.collapsed.insert(commit.hash.clone());
+            self.foldable.insert(commit.hash.clone());
         }
         if let Err(error) = self.prepare_graph(commits) {
             self.collapsed = previous;
@@ -147,6 +165,7 @@ impl LogFolds {
                 eligible.insert(commit.hash.clone());
             }
         }
+        self.foldable.extend(eligible.iter().cloned());
         let next = if eligible.is_subset(&self.collapsed) {
             HashSet::new()
         } else {
