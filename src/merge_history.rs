@@ -19,14 +19,14 @@ pub fn members(history: &str, merges: &[&str]) -> Result<HashMap<String, HashSet
         .iter()
         .enumerate()
         .map(|(index, row)| {
+            // Parents below the walk's boundary are not listed as rows.
             row[1..]
                 .iter()
+                .filter_map(|parent| indices.get(parent).copied())
                 .map(|parent| {
-                    indices
-                        .get(parent)
-                        .copied()
-                        .filter(|&parent| parent > index)
-                        .ok_or_else(|| "incomplete or unordered merge ancestry".to_owned())
+                    (parent > index)
+                        .then_some(parent)
+                        .ok_or_else(|| "unordered merge ancestry".to_owned())
                 })
                 .collect()
         })

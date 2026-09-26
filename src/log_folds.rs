@@ -119,7 +119,8 @@ impl LogFolds {
             self.load_members(commit)?;
         } else if !missing.is_empty() {
             let hashes: Vec<_> = missing.iter().map(|c| c.hash.as_str()).collect();
-            self.members.extend(git::merged_commits_many(&hashes)?);
+            self.members
+                .extend(git::merged_commits_many(&hashes, commits)?);
         }
         Ok(())
     }

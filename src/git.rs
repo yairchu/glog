@@ -173,14 +173,24 @@ pub fn merged_commits(hash: &str) -> Result<HashSet<String>, String> {
 }
 
 /// Bulk folding reads original parent links once, without log path rewriting.
+/// The walk stops below the oldest displayed commit, as in `log_ancestry`: no
+/// displayed commit, nor any path from a first parent to it, lies below it.
+/// Membership is therefore exact only for the displayed commits.
 pub fn merged_commits_many(
     hashes: &[&str],
+    commits: &[Commit],
 ) -> Result<std::collections::HashMap<String, HashSet<String>>, String> {
+    let mut input = String::new();
+    for hash in hashes {
+        input.push_str(hash);
+        input.push('\n');
+    }
+    push_walk_boundary(&mut input, commits);
     let output = pipe_through(
         Command::new("git")
             .args(["rev-list", "--topo-order", "--parents", "--stdin"])
             .env("GIT_NO_LAZY_FETCH", "1"),
-        hashes.join("\n").as_bytes(),
+        input.as_bytes(),
     )
     .ok_or("could not read merge ancestry")?;
     crate::merge_history::members(&output, hashes)
@@ -201,13 +211,7 @@ pub fn log_ancestry(
         input.push_str(&commit.hash);
         input.push('\n');
     }
-    if let Some(last) = revisions.last() {
-        for parent in &last.parents {
-            input.push('^');
-            input.push_str(parent);
-            input.push('\n');
-        }
-    }
+    push_walk_boundary(&mut input, commits);
     let output = pipe_through(
         Command::new("git")
             .args(["rev-list", "--parents", "--stdin"])
@@ -225,6 +229,16 @@ pub fn log_ancestry(
             ))
         })
         .collect())
+}
+
+/// Exclude the ancestors of the oldest displayed commit from a --stdin walk.
+fn push_walk_boundary(input: &mut String, commits: &[Commit]) {
+    let last = commits.iter().rfind(|c| c.kind == CommitKind::Revision);
+    for parent in last.into_iter().flat_map(|c| &c.parents) {
+        input.push('^');
+        input.push_str(parent);
+        input.push('\n');
+    }
 }
 
 /// Watch mode includes one stable working-tree item ahead of committed history.
@@ -1156,7 +1170,7 @@ mod tests {
             .filter(|c| c.parents.len() > 1)
             .map(|c| c.hash.as_str())
             .collect();
-        let batch = merged_commits_many(&merge_hashes).unwrap();
+        let batch = merged_commits_many(&merge_hashes, &commits).unwrap();
         for hash in merge_hashes {
             assert_eq!(batch[hash], merged_commits(hash).unwrap());
         }
@@ -1284,6 +1298,19 @@ mod tests {
             vec!["--all".into(), "--grep=outer\\|feature".into()],
         ] {
             let filtered = load_log(&args).unwrap();
+            let loaded: HashSet<_> = filtered.iter().map(|c| c.hash.clone()).collect();
+            let merges: Vec<_> = filtered
+                .iter()
+                .filter(|c| c.parents.len() > 1)
+                .map(|c| c.hash.as_str())
+                .collect();
+            let batch = merged_commits_many(&merges, &filtered).unwrap();
+            for hash in merges {
+                assert_eq!(
+                    &batch[hash] & &loaded,
+                    &merged_commits(hash).unwrap() & &loaded
+                );
+            }
             let mut app = App::new(filtered.clone());
             app.selected = filtered.iter().position(|c| c.hash == merge).unwrap();
             app.toggle_log_merge();
