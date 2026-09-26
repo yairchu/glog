@@ -75,6 +75,13 @@ impl LogFolds {
         self.collapsed.retain(|hash| hashes.contains(hash));
         self.members.retain(|hash, _| hashes.contains(hash));
         self.seen.retain(|hash| hashes.contains(hash));
+        // Below a merge in the loaded first-parent chain, every row is
+        // mainline history, so no walk could find a loaded merged commit.
+        for commit in first_parent_tail(commits) {
+            if commit.parents.len() > 1 {
+                self.members.entry(commit.hash.clone()).or_default();
+            }
+        }
         let result = (|| {
             // Recompute existing folds after invalidation without changing
             // which merges the user explicitly expanded or collapsed.
@@ -412,6 +419,21 @@ impl LogFolds {
             lanes = next;
         }
     }
+}
+
+/// The trailing revisions whose loaded first parent is the next revision, as
+/// in a --first-parent log. Each is an ancestor of every row above it in the
+/// tail, through first parents, even when path filters rewrite them.
+fn first_parent_tail(commits: &[Commit]) -> Vec<&Commit> {
+    let revisions: Vec<_> = commits
+        .iter()
+        .filter(|c| c.kind == CommitKind::Revision)
+        .collect();
+    let start = revisions
+        .windows(2)
+        .rposition(|pair| pair[0].parents.first() != Some(&pair[1].hash))
+        .map_or(0, |break_at| break_at + 1);
+    revisions[start..].to_vec()
 }
 
 // Git's default graph colours, cycled per lane.
