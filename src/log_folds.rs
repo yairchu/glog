@@ -487,6 +487,24 @@ mod tests {
     }
 
     #[test]
+    fn folded_graph_colours_lanes_like_git() {
+        let commits = vec![
+            commit("merge", &["main", "side"]),
+            commit("unrelated", &["base"]),
+            commit("side", &["base"]),
+            commit("main", &["base"]),
+            commit("base", &[]),
+        ];
+        let mut folds = LogFolds::default();
+        folds
+            .members
+            .insert("merge".into(), HashSet::from(["side".into()]));
+        folds.toggle(0, &commits).unwrap();
+        let row = &folds.graph(1, &commits[1])[0];
+        assert!(row.contains("\x1b[3"), "{row:?}");
+    }
+
+    #[test]
     fn folding_all_without_foldable_merges_explains_why() {
         let commits = vec![commit("one", &["base"]), commit("base", &[])];
         assert!(LogFolds::default().toggle_all(0, &commits).is_err());
