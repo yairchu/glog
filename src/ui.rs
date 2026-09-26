@@ -640,6 +640,16 @@ mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
+    fn log_hint_keeps_help_and_quit_visible_on_narrow_terminals() {
+        let mut app = App::new(vec![commit("subject", 1)]);
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let hint: String = (0..80).map(|x| buffer[(x, 7)].symbol()).collect();
+        assert!(hint.contains("h help") && hint.contains("q quit"), "{hint}");
+    }
+
+    #[test]
     fn merge_disclosure_replaces_the_graph_node_without_shifting_fields() {
         for (graph, column) in [("\x1b[32m*\x1b[m ", 0), ("| \x1b[32m*\x1b[m ", 2)] {
             let mut entry = commit("merge subject", 1);
