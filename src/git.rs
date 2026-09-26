@@ -158,6 +158,7 @@ pub fn merged_commits(hash: &str) -> Result<HashSet<String>, String> {
             &format!("^{hash}^1"),
             "--",
         ])
+        .env("GIT_NO_LAZY_FETCH", "1")
         .output()
         .map_err(|error| format!("could not read merged commits: {error}"))?;
     if !output.status.success() {
