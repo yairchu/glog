@@ -193,6 +193,7 @@ impl LogFolds {
         let Some(commit) = commits.get(index).filter(|c| c.parents.len() > 1) else {
             return Ok(());
         };
+        self.discard_unshown_folds();
         let previous = self.collapsed.clone();
         if !self.collapsed.remove(&commit.hash) {
             self.load_members(commit)?;
@@ -219,6 +220,7 @@ impl LogFolds {
     }
 
     pub fn toggle_all(&mut self, selected: usize, commits: &[Commit]) -> Result<usize, String> {
+        self.discard_unshown_folds();
         self.sync(commits);
         self.load_all_members(commits, false)?;
         let eligible: HashSet<_> = commits
@@ -261,6 +263,14 @@ impl LogFolds {
             }
         }
         Ok(selected)
+    }
+
+    // A failed refresh keeps fold choices for the next successful one, but
+    // shows the Log unfolded. Toggles act on what is shown instead.
+    fn discard_unshown_folds(&mut self) {
+        if !self.graph_ready {
+            self.collapsed.clear();
+        }
     }
 
     // Index the commit list once per refresh rather than on every keypress.
