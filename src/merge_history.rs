@@ -35,9 +35,15 @@ pub fn members(history: &str, merges: &[&str]) -> Result<HashMap<String, HashSet
         .iter()
         .map(|&hash| {
             let index = indices.get(hash).ok_or("merge missing from ancestry")?;
+            // Resolve the original first parent before discarding boundary
+            // parents, so a loaded side parent never takes its place.
+            let first_parent = rows[*index]
+                .get(1)
+                .and_then(|parent| indices.get(parent))
+                .copied();
             Ok((
                 hash.to_owned(),
-                difference(&parents, *index)
+                difference(&parents, *index, first_parent)
                     .into_iter()
                     .map(|index| rows[index][0].to_owned())
                     .collect(),
@@ -46,7 +52,7 @@ pub fn members(history: &str, merges: &[&str]) -> Result<HashMap<String, HashSet
         .collect()
 }
 
-fn difference(parents: &[Vec<usize>], merge: usize) -> HashSet<usize> {
+fn difference(parents: &[Vec<usize>], merge: usize, first_parent: Option<usize>) -> HashSet<usize> {
     // Bit 1 means reachable from the first parent, bit 2 from a side parent.
     // Process children before parents, so a node's flags are final when popped.
     // Stop once no exclusively-side frontier remains: older shared history
@@ -72,10 +78,10 @@ fn difference(parents: &[Vec<usize>], merge: usize) -> HashSet<usize> {
         }
         flags.insert(index, next);
     };
-    for (i, &parent) in parents[merge].iter().enumerate() {
+    for &parent in &parents[merge] {
         enqueue(
             parent,
-            if i == 0 { 1 } else { 2 },
+            if Some(parent) == first_parent { 1 } else { 2 },
             &mut flags,
             &mut todo,
             &mut side_pending,
@@ -131,7 +137,10 @@ mod tests {
             for (index, row) in parents.iter().enumerate().filter(|(_, row)| row.len() > 1) {
                 let main = reachable(&parents, &row[..1]);
                 let side = reachable(&parents, &row[1..]);
-                assert_eq!(difference(&parents, index), &side - &main);
+                assert_eq!(
+                    difference(&parents, index, row.first().copied()),
+                    &side - &main
+                );
             }
         }
     }
@@ -167,7 +176,10 @@ mod tests {
             parents[node + 2] = vec![node + 3];
         }
         for i in 0..merges {
-            assert_eq!(difference(&parents, i * 3), HashSet::from([i * 3 + 2]));
+            assert_eq!(
+                difference(&parents, i * 3, Some(i * 3 + 1)),
+                HashSet::from([i * 3 + 2])
+            );
         }
     }
 }
