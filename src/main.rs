@@ -31,10 +31,14 @@ fn main() -> ExitCode {
         println!("{information}");
         return ExitCode::SUCCESS;
     }
-    let (log_format, log_args) = match if command == Command::Log {
+    let (log_format, fold_merges, log_args) = match if command == Command::Log {
         log_format::parse_args(command_args)
     } else {
-        Ok((log_format::LogFormat::default(), command_args.to_vec()))
+        Ok((
+            log_format::LogFormat::default(),
+            false,
+            command_args.to_vec(),
+        ))
     } {
         Ok(options) => options,
         Err(error) => {
@@ -47,7 +51,7 @@ fn main() -> ExitCode {
     } else if command != Command::Log {
         Ok(false)
     } else {
-        parse_watch(command_args, log_format.fold_merges)
+        parse_watch(command_args, fold_merges)
     } {
         Ok(watch) => watch,
         Err(error) => {
@@ -91,7 +95,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    app.log_folds.start_collapsed = log_format.fold_merges;
+    app.log_folds.start_collapsed = fold_merges;
     // As on watch refreshes, a failure leaves the Log unfolded and says why.
     if let Err(error) = app.log_folds.refresh(&app.commits) {
         app.status = Some(error);

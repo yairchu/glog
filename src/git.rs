@@ -2762,7 +2762,7 @@ mod tests {
                 String::from_utf8_lossy(&output.stderr)
             );
         }
-        let (_, args) =
+        let (_, _, args) =
             crate::log_format::parse_args(&["--grep".into(), "--oneline".into()]).unwrap();
         let commits = load_log(&args).unwrap();
         assert_eq!(commits.len(), 1);
@@ -2800,7 +2800,7 @@ mod tests {
         ] {
             let mut args = vec!["--format=%h %ad %s".to_owned()];
             args.extend(options.iter().map(|arg| (*arg).to_owned()));
-            let (_, args) = crate::log_format::parse_args(&args).unwrap();
+            let (_, _, args) = crate::log_format::parse_args(&args).unwrap();
             let commits = load_log(&args).unwrap();
             assert_eq!(
                 commits.iter().map(|commit| commit.kind).collect::<Vec<_>>(),
@@ -3461,7 +3461,7 @@ mod tests {
             "2001-09-14"
         );
         assert!(read_date(&["--relative-date".into()], "UTC0").contains("ago"));
-        let (format, args) = crate::log_format::parse_args(&[
+        let (format, _, args) = crate::log_format::parse_args(&[
             "--pretty=format:%h %ad (%an) %s".into(),
             "--date=short".into(),
         ])
@@ -3511,7 +3511,7 @@ mod tests {
                 .unwrap()
                 .success());
             for options in [vec![], vec!["--oneline".into()]] {
-                let (_, args) = crate::log_format::parse_args(&options).unwrap();
+                let (_, _, args) = crate::log_format::parse_args(&options).unwrap();
                 let error = load_log(&args).unwrap_err();
                 assert!(error.contains("one line"), "{error}");
             }

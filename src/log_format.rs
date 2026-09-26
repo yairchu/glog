@@ -25,7 +25,6 @@ struct Part {
 
 #[derive(Clone, Debug)]
 pub struct LogFormat {
-    pub fold_merges: bool,
     parts: Vec<Part>,
 }
 
@@ -88,10 +87,7 @@ impl LogFormat {
         } else {
             return Err("log format must contain at least one supported field".into());
         }
-        Ok(Self {
-            parts,
-            fold_merges: false,
-        })
+        Ok(Self { parts })
     }
 
     pub fn toggle(&mut self, field: Field) {
@@ -218,7 +214,9 @@ impl LogFormat {
 }
 
 /// Consume display options before `--`, leaving traversal and pathspecs for Git.
-pub fn parse_args(args: &[String]) -> Result<(LogFormat, Vec<String>), String> {
+/// Split Log arguments into the row format, whether `--fold-merges` was given,
+/// and the arguments for Git.
+pub fn parse_args(args: &[String]) -> Result<(LogFormat, bool, Vec<String>), String> {
     let mut format = LogFormat::default();
     let mut git_args = Vec::new();
     let mut fold_merges = false;
@@ -271,8 +269,7 @@ pub fn parse_args(args: &[String]) -> Result<(LogFormat, Vec<String>), String> {
             git_args.push(arg.clone());
         }
     }
-    format.fold_merges = fold_merges;
-    Ok((format, git_args))
+    Ok((format, fold_merges, git_args))
 }
 
 #[cfg(test)]
@@ -286,9 +283,9 @@ pub(crate) mod tests {
             vec!["--format=%h %s", "--fold-merges", "--all"],
             vec!["--fold-merges", "--format=%h %s", "--all"],
         ] {
-            let (format, git) =
+            let (_, fold_merges, git) =
                 parse_args(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).unwrap();
-            assert!(format.fold_merges);
+            assert!(fold_merges);
             assert_eq!(git, ["--all"]);
         }
         for args in [
@@ -297,8 +294,8 @@ pub(crate) mod tests {
             vec!["--format", "--fold-merges %s"],
         ] {
             let args: Vec<_> = args.into_iter().map(str::to_owned).collect();
-            let (format, git) = parse_args(&args).unwrap();
-            assert!(!format.fold_merges);
+            let (_, fold_merges, git) = parse_args(&args).unwrap();
+            assert!(!fold_merges);
             if args[0] != "--format" {
                 assert_eq!(git, args);
             }
@@ -407,7 +404,7 @@ pub(crate) mod tests {
         format.toggle(Field::Author);
         format.toggle(Field::Date);
         assert_eq!(format.text(&commit()), "abcdef0 (HEAD -> main) A subject");
-        let (compact, _) = parse_args(&["--oneline".into()]).unwrap();
+        let (compact, _, _) = parse_args(&["--oneline".into()]).unwrap();
         assert_eq!(compact.text(&commit()), format.text(&commit()));
         let mut format = LogFormat::parse("%s").unwrap();
         format.toggle(Field::Author);
@@ -450,7 +447,7 @@ pub(crate) mod tests {
         ] {
             for pattern in ["--oneline", "--format=%s", "--pretty", "--"] {
                 let args = [option, pattern, "--format=%h"].map(str::to_owned);
-                let (format, forwarded) = parse_args(&args).unwrap();
+                let (format, _, forwarded) = parse_args(&args).unwrap();
                 assert_eq!(forwarded, [option, pattern], "{args:?}");
                 assert_eq!(format.text(&commit()), "abcdef0", "{args:?}");
             }
@@ -468,7 +465,7 @@ pub(crate) mod tests {
             "--format=%b",
         ]
         .map(str::to_owned);
-        let (format, args) = parse_args(&args).unwrap();
+        let (format, _, args) = parse_args(&args).unwrap();
         assert_eq!(format.text(&commit()), "abcdef0 2026-09-14 Alice A subject");
         assert_eq!(args, ["--date=short", "main", "--", "--format=%b"]);
         let args = ["--oneline", "--format", "%s"].map(str::to_owned);
