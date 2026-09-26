@@ -286,7 +286,9 @@ impl LogFolds {
             .enumerate()
             .map(|(index, c)| (c.hash.as_str(), index))
             .collect();
-        let mut lanes = Vec::<String>::new();
+        // Each lane keeps a colour from Git's default palette while it lasts.
+        let mut lanes = Vec::<(String, usize)>::new();
+        let mut colours = 0..;
         let mut pending = Vec::new();
         for (index, commit) in commits.iter().enumerate() {
             if !self.visible(index) {
@@ -298,13 +300,21 @@ impl LogFolds {
             }
             let column = lanes
                 .iter()
-                .position(|hash| hash == &commit.hash)
+                .position(|(hash, _)| hash == &commit.hash)
                 .unwrap_or_else(|| {
-                    lanes.push(commit.hash.clone());
+                    lanes.push((commit.hash.clone(), colours.next().unwrap()));
                     lanes.len() - 1
                 });
-            let node: String = (0..lanes.len())
-                .map(|i| if i == column { "* " } else { "| " })
+            let node: String = lanes
+                .iter()
+                .enumerate()
+                .map(|(i, &(_, colour))| {
+                    if i == column {
+                        "* ".to_owned()
+                    } else {
+                        format!("{} ", paint('|', colour))
+                    }
+                })
                 .collect();
             pending.push(node);
             self.graphs.insert(index, std::mem::take(&mut pending));
@@ -336,24 +346,30 @@ impl LogFolds {
                 }
             }
             let mut next = lanes.clone();
-            next.remove(column);
+            let (_, colour) = next.remove(column);
             let mut insert = column;
             for parent in &projected {
-                if !next.contains(parent) {
-                    next.insert(insert, parent.clone());
+                if !next.iter().any(|(hash, _)| hash == parent) {
+                    // The first new parent continues this lane's colour.
+                    let colour = if insert == column {
+                        colour
+                    } else {
+                        colours.next().unwrap()
+                    };
+                    next.insert(insert, (parent.clone(), colour));
                     insert += 1;
                 }
             }
             let mut edges = Vec::new();
-            for (from, hash) in lanes.iter().enumerate() {
+            for (from, (hash, _)) in lanes.iter().enumerate() {
                 let targets = if from == column {
                     &projected[..]
                 } else {
                     std::slice::from_ref(hash)
                 };
                 for target in targets {
-                    if let Some(to) = next.iter().position(|h| h == target) {
-                        edges.push((2 * from, 2 * to));
+                    if let Some(to) = next.iter().position(|(h, _)| h == target) {
+                        edges.push((2 * from, 2 * to, next[to].1));
                     }
                 }
             }
@@ -363,15 +379,29 @@ impl LogFolds {
     }
 }
 
-// Route edges a character at a time. Crossings retain their independent targets;
-// '+' joins routes to the same target, 'X' crosses routes to different targets.
-fn transitions(edges: &[(usize, usize)], width: usize) -> Vec<String> {
-    let distance = edges.iter().map(|(a, b)| a.abs_diff(*b)).max().unwrap_or(0);
+// Git's default graph colours, cycled per lane.
+const PALETTE: [&str; 12] = [
+    "31", "32", "33", "34", "35", "36", "1;31", "1;32", "1;33", "1;34", "1;35", "1;36",
+];
+
+fn paint(symbol: char, colour: usize) -> String {
+    format!("\x1b[{}m{symbol}\x1b[m", PALETTE[colour % PALETTE.len()])
+}
+
+// Route edges a character at a time, each in its target lane's colour.
+// Crossings retain their independent targets; '+' joins routes to the same
+// target, 'X' crosses routes to different targets.
+fn transitions(edges: &[(usize, usize, usize)], width: usize) -> Vec<String> {
+    let distance = edges
+        .iter()
+        .map(|(a, b, _)| a.abs_diff(*b))
+        .max()
+        .unwrap_or(0);
     let mut rows = Vec::new();
     for step in 1..=distance {
-        let mut cells = vec![' '; width * 2];
+        let mut cells = vec![(' ', 0); width * 2];
         let mut targets = vec![None; width * 2];
-        for &(from, to) in edges {
+        for &(from, to, colour) in edges {
             let shift = step.min(from.abs_diff(to));
             let position = if from < to {
                 from + shift
@@ -385,16 +415,31 @@ fn transitions(edges: &[(usize, usize)], width: usize) -> Vec<String> {
             } else {
                 '/'
             };
-            cells[position] = if cells[position] == ' ' {
+            let symbol = if cells[position].0 == ' ' {
                 symbol
             } else if targets[position] == Some(to) {
                 '+'
             } else {
                 'X'
             };
+            cells[position] = (symbol, colour);
             targets[position] = Some(to);
         }
-        rows.push(format!("{} ", cells.iter().collect::<String>().trim_end()));
+        let used = cells
+            .iter()
+            .rposition(|&(c, _)| c != ' ')
+            .map_or(0, |i| i + 1);
+        let row: String = cells[..used]
+            .iter()
+            .map(|&(symbol, colour)| {
+                if symbol == ' ' {
+                    " ".to_owned()
+                } else {
+                    paint(symbol, colour)
+                }
+            })
+            .collect();
+        rows.push(format!("{row} "));
     }
     rows
 }
@@ -402,6 +447,18 @@ fn transitions(edges: &[(usize, usize)], width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plain(rows: &[String]) -> Vec<String> {
+        rows.iter()
+            .map(|row| {
+                crate::ansi::parse_line(row)
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect()
+    }
 
     fn commit(hash: &str, parents: &[&str]) -> Commit {
         let mut commit = crate::log_format::tests::commit();
@@ -426,10 +483,10 @@ mod tests {
             .insert("merge".into(), HashSet::from(["side".into()]));
         folds.toggle(0, &commits).unwrap();
         assert!(!folds.visible(2));
-        assert_eq!(folds.graph(0, &commits[0]), ["* "]);
-        assert_eq!(folds.graph(1, &commits[1]), ["| * "]);
-        assert_eq!(folds.graph(3, &commits[3]), ["* | "]);
-        assert_eq!(folds.graph(4, &commits[4]), ["|/ ", "+ ", "* "]);
+        assert_eq!(plain(folds.graph(0, &commits[0])), ["* "]);
+        assert_eq!(plain(folds.graph(1, &commits[1])), ["| * "]);
+        assert_eq!(plain(folds.graph(3, &commits[3])), ["* | "]);
+        assert_eq!(plain(folds.graph(4, &commits[4])), ["|/ ", "+ ", "* "]);
         folds.toggle(0, &commits).unwrap();
         for (i, commit) in commits.iter().enumerate() {
             assert!(folds.visible(i));
@@ -512,6 +569,9 @@ mod tests {
 
     #[test]
     fn crossing_routes_do_not_turn_into_a_shared_parent() {
-        assert_eq!(transitions(&[(0, 2), (2, 0)], 2), [" X ", "/ \\ "]);
+        assert_eq!(
+            plain(&transitions(&[(0, 2, 0), (2, 0, 1)], 2)),
+            [" X ", "/ \\ "]
+        );
     }
 }
