@@ -728,6 +728,35 @@ mod tests {
     }
 
     #[test]
+    fn nested_folds_keep_mainline_that_a_topic_merged_back() {
+        // The topic merged master's m1 before master merged the topic, so
+        // m1 is merged by x but is mainline history of the outer merge.
+        let commits = vec![
+            commit("outer", &["m2", "t2"]),
+            commit("t2", &["x"]),
+            commit("x", &["t1", "m1"]),
+            commit("t1", &["base"]),
+            commit("m2", &["m1"]),
+            commit("m1", &["base"]),
+            commit("base", &[]),
+        ];
+        let mut folds = LogFolds::default();
+        folds.members.insert(
+            "outer".into(),
+            HashSet::from(["t2".into(), "x".into(), "t1".into()]),
+        );
+        folds
+            .members
+            .insert("x".into(), HashSet::from(["m1".into()]));
+        folds.toggle_all(0, &commits).unwrap();
+        let visible: Vec<_> = (0..commits.len())
+            .filter(|&i| folds.visible(i))
+            .map(|i| commits[i].hash.as_str())
+            .collect();
+        assert_eq!(visible, ["outer", "m2", "m1", "base"]);
+    }
+
+    #[test]
     fn crossing_routes_do_not_turn_into_a_shared_parent() {
         assert_eq!(
             plain(&transitions(&[(0, 2, 0), (2, 0, 1)], 2)),
