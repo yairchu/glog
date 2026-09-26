@@ -482,6 +482,12 @@ mod tests {
     }
 
     #[test]
+    fn folding_all_without_foldable_merges_explains_why() {
+        let commits = vec![commit("one", &["base"]), commit("base", &[])];
+        assert!(LogFolds::default().toggle_all(0, &commits).is_err());
+    }
+
+    #[test]
     fn crossing_routes_do_not_turn_into_a_shared_parent() {
         assert_eq!(transitions(&[(0, 2), (2, 0)], 2), [" X ", "/ \\ "]);
     }
