@@ -661,6 +661,23 @@ mod tests {
     }
 
     #[test]
+    fn side_parent_in_mainline_history_shows_no_disclosure_marker() {
+        // As with rewritten parents under --full-history -- path, the loaded
+        // side parent is also an ancestor of the first parent. An unrelated
+        // row keeps the history from being a single first-parent chain.
+        let commits = vec![
+            commit("merge", &["main", "old"]),
+            commit("main", &["old"]),
+            commit("unrelated", &["base"]),
+            commit("old", &["base"]),
+            commit("base", &[]),
+        ];
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        assert_eq!(folds.marker(&commits[0]), None);
+    }
+
+    #[test]
     fn crossing_routes_do_not_turn_into_a_shared_parent() {
         assert_eq!(
             plain(&transitions(&[(0, 2, 0), (2, 0, 1)], 2)),
