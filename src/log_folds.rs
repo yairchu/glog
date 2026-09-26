@@ -442,6 +442,27 @@ mod tests {
     }
 
     #[test]
+    fn only_merges_with_loaded_side_history_show_a_disclosure_marker() {
+        // As with --first-parent, the side parent is outside the loaded log.
+        let commits = vec![
+            commit("merge", &["main", "side"]),
+            commit("main", &["base"]),
+            commit("base", &[]),
+        ];
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        assert_eq!(folds.marker(&commits[0]), None);
+        let commits = vec![
+            commit("merge", &["main", "side"]),
+            commit("side", &["base"]),
+            commit("main", &["base"]),
+            commit("base", &[]),
+        ];
+        folds.refresh(&commits).unwrap();
+        assert_eq!(folds.marker(&commits[0]), Some("▼"));
+    }
+
+    #[test]
     fn crossing_routes_do_not_turn_into_a_shared_parent() {
         assert_eq!(transitions(&[(0, 2), (2, 0)], 2), [" X ", "/ \\ "]);
     }
