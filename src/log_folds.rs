@@ -334,16 +334,21 @@ impl LogFolds {
                 (hash.clone(), count)
             })
             .collect();
-        let hidden_hashes: HashSet<_> = self
-            .collapsed
-            .iter()
-            .filter_map(|hash| self.members.get(hash))
-            .flatten()
-            .collect();
-        self.hidden = hidden_hashes
-            .into_iter()
-            .filter_map(|hash| self.index.get(hash).copied())
-            .collect();
+        // Only shown folds hide commits: a fold inside another may have merged
+        // the outer merge's mainline. Members lie below their merge, so each
+        // fold is known to be hidden or shown before it is reached.
+        for (index, commit) in commits.iter().enumerate() {
+            if self.hidden.contains(&index) || !self.collapsed.contains(&commit.hash) {
+                continue;
+            }
+            if let Some(members) = self.members.get(&commit.hash) {
+                self.hidden.extend(
+                    members
+                        .iter()
+                        .filter_map(|hash| self.index.get(hash).copied()),
+                );
+            }
+        }
         if self.hidden.is_empty() {
             return;
         }
