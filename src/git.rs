@@ -1100,6 +1100,70 @@ mod tests {
     static NEXT_TEST_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
+    fn filtered_merge_disclosure_finds_history_beyond_an_omitted_side_parent() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        let tree = git(&["mktree"]);
+        let commit = |name: &str, parents: &[&str]| {
+            let mut args = vec!["commit-tree", &tree, "-m", name];
+            for parent in parents {
+                args.extend(["-p", parent]);
+            }
+            git(&args)
+        };
+        let base = commit("base", &[]);
+        let main = commit("main", &[&base]);
+        let side = commit("keep side", &[&base]);
+        let tip = commit("omitted tip", &[&side]);
+        let merge = commit("keep merge", &[&main, &tip]);
+        git(&["update-ref", "refs/heads/main", &merge]);
+        git(&["symbolic-ref", "HEAD", "refs/heads/main"]);
+
+        // First-parent walks genuinely have no side history to disclose.
+        let first_parent = load_log(&["--first-parent".into()]).unwrap();
+        let mut folds = crate::log_folds::LogFolds::default();
+        folds.refresh(&first_parent).unwrap();
+        assert_eq!(folds.marker(&first_parent[0]), None);
+
+        let commits = load_log(&["--grep=keep".into()]).unwrap();
+        assert_eq!(
+            commits.iter().map(|c| &c.hash).collect::<Vec<_>>(),
+            [&merge, &side]
+        );
+        folds.refresh(&commits).unwrap();
+        assert_eq!(folds.marker(&commits[0]), Some("▼"));
+        folds.toggle(0, &commits).unwrap();
+        assert!(!folds.visible(1));
+        assert_eq!(folds.label(&commits[0]), " · 1 merged commit");
+        folds.toggle(0, &commits).unwrap();
+        folds.refresh(&commits).unwrap();
+        assert!(folds.visible(1));
+        assert_eq!(folds.marker(&commits[0]), Some("▼"));
+    }
+
+    #[test]
     fn watch_merge_folds_refresh_members_after_deepening() {
         use crate::app::App;
         let directory = TestDirectory::new();
