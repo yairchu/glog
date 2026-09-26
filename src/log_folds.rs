@@ -165,6 +165,11 @@ impl LogFolds {
                 eligible.insert(commit.hash.clone());
             }
         }
+        if eligible.is_empty() {
+            return Err(
+                "No foldable merges in this history; revision and path filters still apply".into(),
+            );
+        }
         self.foldable.extend(eligible.iter().cloned());
         let next = if eligible.is_subset(&self.collapsed) {
             HashSet::new()
