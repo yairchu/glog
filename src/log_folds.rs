@@ -595,6 +595,26 @@ mod tests {
     }
 
     #[test]
+    fn first_parent_history_resolves_merges_without_an_ancestry_walk() {
+        // As in a --first-parent log, side parents are never loaded and each
+        // row below a merge is its mainline history. These hashes are in no
+        // repository, so a Git walk would fail the refresh.
+        let commits = vec![
+            commit("two", &["one", "side two"]),
+            commit("one", &["base", "side one"]),
+            commit("base", &[]),
+        ];
+        let mut folds = LogFolds {
+            start_collapsed: true,
+            ..LogFolds::default()
+        };
+        folds.refresh(&commits).unwrap();
+        assert!(commits.iter().all(|c| folds.marker(c).is_none()));
+        let error = folds.toggle_all(0, &commits).unwrap_err();
+        assert!(error.contains("No foldable merges"), "{error}");
+    }
+
+    #[test]
     fn crossing_routes_do_not_turn_into_a_shared_parent() {
         assert_eq!(
             plain(&transitions(&[(0, 2, 0), (2, 0, 1)], 2)),
