@@ -77,57 +77,32 @@ impl LogFolds {
         self.collapsed.retain(|hash| hashes.contains(hash));
         self.members.retain(|hash, _| hashes.contains(hash));
         self.seen.retain(|hash| hashes.contains(hash));
-        // Below a merge in the loaded first-parent chain, every row is
-        // mainline history, so no walk could find a loaded merged commit.
-        for commit in first_parent_tail(commits) {
-            if commit.parents.len() > 1 {
-                self.members.entry(commit.hash.clone()).or_default();
-            }
-        }
         let result = (|| {
             // Recompute existing folds after invalidation without changing
-            // which merges the user explicitly expanded or collapsed.
-            self.load_all_members(commits, true)?;
-            // A filter may omit the side tip but retain older introduced
-            // commits. Resolve those merges together using the bounded walk.
-            let unknown: Vec<_> = commits
+            // which merges the user explicitly expanded or collapsed, and
+            // resolve the new merges that start collapsed.
+            let starting: HashSet<_> = commits
                 .iter()
-                .filter(|c| c.parents.len() > 1)
-                .filter(|c| !self.members.contains_key(&c.hash))
-                .filter(|c| c.parents[1..].iter().all(|p| !hashes.contains(p)))
-                .map(|c| c.hash.as_str())
+                .filter(|c| self.start_collapsed && !self.seen.contains(&c.hash))
+                .filter(|c| self.offers_fold(c, commits))
+                .map(|c| c.hash.clone())
                 .collect();
-            if !unknown.is_empty() {
-                self.members
-                    .extend(git::merged_commits_many(&unknown, commits)?);
-            }
-            for commit in commits {
-                if self.start_collapsed
-                    && !self.seen.contains(&commit.hash)
-                    && commit.parents.len() > 1
-                {
-                    self.load_members(commit)?;
-                    if self.members[&commit.hash]
-                        .iter()
-                        .any(|hash| hashes.contains(hash))
-                    {
-                        self.collapsed.insert(commit.hash.clone());
-                    }
+            let merges: Vec<_> = commits
+                .iter()
+                .filter(|c| self.collapsed.contains(&c.hash) || starting.contains(&c.hash))
+                .collect();
+            self.load_all_members(&merges, commits)?;
+            for hash in starting {
+                if self.members[&hash].iter().any(|h| hashes.contains(h)) {
+                    self.collapsed.insert(hash);
                 }
-                self.seen.insert(commit.hash.clone());
             }
+            self.seen.extend(hashes.iter().cloned());
             Ok(())
         })();
-        // Known members decide exactly. Otherwise a loaded side parent outside
-        // the first parent's loaded ancestry cheaply identifies most foldable
-        // merges; members cover filters that omit the side parent.
         self.foldable = commits
             .iter()
-            .filter(|c| c.parents.len() > 1)
-            .filter(|c| match self.members.get(&c.hash) {
-                Some(members) => members.iter().any(|h| hashes.contains(h)),
-                None => self.has_side_parent_row(c, commits),
-            })
+            .filter(|c| self.offers_fold(c, commits))
             .map(|c| c.hash.clone())
             .collect();
         // Even on an I/O error, indices must refer to the new commit list.
@@ -135,6 +110,19 @@ impl LogFolds {
         self.graph_ready = result.is_ok() && graph.is_ok();
         self.rebuild(commits);
         result.and(graph)
+    }
+
+    /// Known members decide exactly. Otherwise only a loaded side parent
+    /// offers a fold: resolving merges whose side parent a filter omitted
+    /// would walk the history the filter left unloaded.
+    fn offers_fold(&self, merge: &Commit, commits: &[Commit]) -> bool {
+        if merge.parents.len() < 2 {
+            return false;
+        }
+        match self.members.get(&merge.hash) {
+            Some(members) => members.iter().any(|h| self.index.contains_key(h)),
+            None => self.has_side_parent_row(merge, commits),
+        }
     }
 
     /// Whether a loaded side parent is not reachable from the first parent
@@ -168,16 +156,10 @@ impl LogFolds {
         Ok(())
     }
 
-    fn load_all_members(&mut self, commits: &[Commit], for_refresh: bool) -> Result<(), String> {
-        let missing: Vec<_> = commits
+    fn load_all_members(&mut self, merges: &[&Commit], commits: &[Commit]) -> Result<(), String> {
+        let missing: Vec<_> = merges
             .iter()
-            .filter(|c| c.parents.len() > 1)
             .filter(|c| !self.members.contains_key(&c.hash))
-            .filter(|c| {
-                !for_refresh
-                    || self.collapsed.contains(&c.hash)
-                    || (self.start_collapsed && !self.seen.contains(&c.hash))
-            })
             .collect();
         if let [commit] = missing.as_slice() {
             self.load_members(commit)?;
@@ -222,10 +204,13 @@ impl LogFolds {
     pub fn toggle_all(&mut self, selected: usize, commits: &[Commit]) -> Result<usize, String> {
         self.discard_unshown_folds();
         self.sync(commits);
-        self.load_all_members(commits, false)?;
-        let eligible: HashSet<_> = commits
+        let candidates: Vec<_> = commits
             .iter()
-            .filter(|c| c.parents.len() > 1)
+            .filter(|c| self.offers_fold(c, commits))
+            .collect();
+        self.load_all_members(&candidates, commits)?;
+        let eligible: HashSet<_> = candidates
+            .iter()
             .filter(|c| {
                 self.members[&c.hash]
                     .iter()
@@ -453,21 +438,6 @@ impl LogFolds {
             lanes = next;
         }
     }
-}
-
-/// The trailing revisions whose loaded first parent is the next revision, as
-/// in a --first-parent log. Each is an ancestor of every row above it in the
-/// tail, through first parents, even when path filters rewrite them.
-fn first_parent_tail(commits: &[Commit]) -> Vec<&Commit> {
-    let revisions: Vec<_> = commits
-        .iter()
-        .filter(|c| c.kind == CommitKind::Revision)
-        .collect();
-    let start = revisions
-        .windows(2)
-        .rposition(|pair| pair[0].parents.first() != Some(&pair[1].hash))
-        .map_or(0, |break_at| break_at + 1);
-    revisions[start..].to_vec()
 }
 
 // Git's default graph colours, cycled per lane.
@@ -712,26 +682,28 @@ mod tests {
     #[test]
     fn folding_after_a_failed_refresh_folds_on_the_first_press() {
         let commits = vec![
-            // Its side parent is beyond the loaded history, and resolving it
-            // fails because these hashes are in no repository.
-            commit("unknown", &["merge", "root"]),
+            // Starting collapsed resolves this merge, which fails because
+            // these hashes are in no repository.
+            commit("unresolved", &["merge", "other side"]),
+            commit("other side", &["base"]),
             commit("merge", &["main", "side"]),
             commit("side", &["base"]),
             commit("main", &["base"]),
-            commit("base", &["root"]),
+            commit("base", &[]),
         ];
         let mut folds = LogFolds::default();
         folds
             .members
             .insert("merge".into(), HashSet::from(["side".into()]));
-        folds.toggle(1, &commits).unwrap();
+        folds.toggle(2, &commits).unwrap();
+        folds.start_collapsed = true;
         assert!(folds.refresh(&commits).is_err());
         // The failure leaves the Log unfolded, so z must fold what is shown.
-        assert!(folds.visible(2));
-        assert_eq!(folds.marker(&commits[1]), Some("▼"));
-        folds.toggle(1, &commits).unwrap();
-        assert!(!folds.visible(2));
-        assert_eq!(folds.marker(&commits[1]), Some("▶"));
+        assert!(folds.visible(3));
+        assert_eq!(folds.marker(&commits[2]), Some("▼"));
+        folds.toggle(2, &commits).unwrap();
+        assert!(!folds.visible(3));
+        assert_eq!(folds.marker(&commits[2]), Some("▶"));
     }
 
     #[test]

@@ -1101,7 +1101,7 @@ mod tests {
     static NEXT_TEST_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
-    fn filtered_merge_disclosure_finds_history_beyond_an_omitted_side_parent() {
+    fn filtered_out_side_parent_folds_only_on_request() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         let git = |args: &[&str]| {
@@ -1153,8 +1153,10 @@ mod tests {
             commits.iter().map(|c| &c.hash).collect::<Vec<_>>(),
             [&merge, &side]
         );
+        // Resolving a filtered-out side parent could walk the whole history,
+        // so no fold is offered, but z still finds the loaded side commit.
         folds.refresh(&commits).unwrap();
-        assert_eq!(folds.marker(&commits[0]), Some("▼"));
+        assert_eq!(folds.marker(&commits[0]), None);
         folds.toggle(0, &commits).unwrap();
         assert!(!folds.visible(1));
         assert_eq!(folds.label(&commits[0]), " · 1 merged commit");

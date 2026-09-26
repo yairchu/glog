@@ -104,6 +104,10 @@ folded when `--fold-merges` is enabled. The graph is redrawn around hidden commi
 Folding respects the loaded revision, path, and count filters: it does not fetch
 or load excluded commits. In particular, `--first-parent` omits side history,
 so use `--fold-merges` instead when you want to expand that history later.
+When a filter such as `--grep` omits the tip of a merge's side branch, the merge
+shows no `▼` and `m` and `--fold-merges` leave it expanded, since finding its
+merged commits could mean walking the entire history. `z` still folds any of
+them that were loaded.
 
 ### Show and Diff
 
