@@ -11,6 +11,9 @@ pub struct LogFolds {
     collapsed: HashSet<String>,
     foldable: HashSet<String>,
     members: HashMap<String, HashSet<String>>,
+    // Bulk membership is bounded by the loaded history, which can grow when
+    // a shallow repository is deepened. Parent links can change as well.
+    member_history: Vec<(String, Vec<String>)>,
     hidden: HashSet<usize>,
     graphs: HashMap<usize, Vec<String>>,
     counts: HashMap<String, usize>,
@@ -57,6 +60,15 @@ impl LogFolds {
     }
 
     pub fn refresh(&mut self, commits: &[Commit]) -> Result<(), String> {
+        let history: Vec<_> = commits
+            .iter()
+            .filter(|c| c.kind == CommitKind::Revision)
+            .map(|c| (c.hash.clone(), c.parents.clone()))
+            .collect();
+        if self.member_history != history {
+            self.members.clear();
+            self.member_history = history;
+        }
         self.indexed = false;
         self.sync(commits);
         let hashes: HashSet<_> = commits.iter().map(|c| c.hash.clone()).collect();
@@ -64,9 +76,9 @@ impl LogFolds {
         self.members.retain(|hash, _| hashes.contains(hash));
         self.seen.retain(|hash| hashes.contains(hash));
         let result = (|| {
-            if self.start_collapsed {
-                self.load_all_members(commits, true)?;
-            }
+            // Recompute existing folds after invalidation without changing
+            // which merges the user explicitly expanded or collapsed.
+            self.load_all_members(commits, true)?;
             for commit in commits {
                 if self.start_collapsed
                     && !self.seen.contains(&commit.hash)
@@ -100,7 +112,7 @@ impl LogFolds {
             .collect();
         // Even on an I/O error, indices must refer to the new commit list.
         let graph = self.prepare_graph(commits);
-        self.graph_ready = graph.is_ok();
+        self.graph_ready = result.is_ok() && graph.is_ok();
         self.rebuild(commits);
         result.and(graph)
     }
@@ -113,12 +125,16 @@ impl LogFolds {
         Ok(())
     }
 
-    fn load_all_members(&mut self, commits: &[Commit], only_new: bool) -> Result<(), String> {
+    fn load_all_members(&mut self, commits: &[Commit], for_refresh: bool) -> Result<(), String> {
         let missing: Vec<_> = commits
             .iter()
             .filter(|c| c.parents.len() > 1)
             .filter(|c| !self.members.contains_key(&c.hash))
-            .filter(|c| !only_new || !self.seen.contains(&c.hash))
+            .filter(|c| {
+                !for_refresh
+                    || self.collapsed.contains(&c.hash)
+                    || (self.start_collapsed && !self.seen.contains(&c.hash))
+            })
             .collect();
         if let [commit] = missing.as_slice() {
             self.load_members(commit)?;
