@@ -65,10 +65,12 @@ impl LogFolds {
             .filter(|c| c.kind == CommitKind::Revision)
             .map(|c| (c.hash.clone(), c.parents.clone()))
             .collect();
-        if self.member_history != history {
+        // Topological order lists ancestors below descendants, so rows added
+        // above an unchanged history cannot be merged by its existing merges.
+        if !history.ends_with(&self.member_history) {
             self.members.clear();
-            self.member_history = history;
         }
+        self.member_history = history;
         self.indexed = false;
         self.sync(commits);
         let hashes: HashSet<_> = commits.iter().map(|c| c.hash.clone()).collect();
