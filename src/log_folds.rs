@@ -334,15 +334,27 @@ impl LogFolds {
                 (hash.clone(), count)
             })
             .collect();
-        // Only shown folds hide commits: a fold inside another may have merged
-        // the outer merge's mainline. Members lie below their merge, so each
-        // fold is known to be hidden or shown before it is reached.
+        // Only shown folds hide commits, and not those a visible child reaches
+        // other than through a folded side parent: a topic's merge of a newer
+        // mainline has merged commits that remain its outer merge's mainline.
+        // Children and members lie below their commits and merges, so each is
+        // known to be hidden or shown before it is reached.
+        let mut claimed = HashSet::new();
+        let mut reached = HashSet::new();
         for (index, commit) in commits.iter().enumerate() {
-            if self.hidden.contains(&index) || !self.collapsed.contains(&commit.hash) {
+            if claimed.contains(&index) && !reached.contains(&index) {
+                self.hidden.insert(index);
                 continue;
             }
-            if let Some(members) = self.members.get(&commit.hash) {
-                self.hidden.extend(
+            let collapsed = self.collapsed.contains(&commit.hash);
+            let parents = if collapsed {
+                &commit.parents[..commit.parents.len().min(1)]
+            } else {
+                &commit.parents
+            };
+            reached.extend(parents.iter().filter_map(|p| self.index.get(p).copied()));
+            if let Some(members) = self.members.get(&commit.hash).filter(|_| collapsed) {
+                claimed.extend(
                     members
                         .iter()
                         .filter_map(|hash| self.index.get(hash).copied()),
