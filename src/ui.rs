@@ -107,6 +107,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if let Some(status) = &app.status {
         status.clone()
     } else if app.mode == Mode::Log {
+        // Keep the hint short by omitting the row format toggles (x hash,
+        // s subject); the help screen lists every key.
         "h help  q quit  ↑/k ↓/j  ←/→ commit  Enter show  z fold merge  m fold all  a author  d date  r refs  / ? search".to_owned()
     } else if !has_log {
         "h help  q quit  ↑/k ↓/j  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search"
