@@ -239,6 +239,7 @@ impl LogFolds {
         if self.graph.unknown_below.is_some() && (exact || layout.visible.contains(&false)) {
             match (self.load_ancestry)(commits) {
                 Ok(ancestry) => {
+                    let ancestry = leading_to_rows(ancestry, commits);
                     self.graph = Graph::new(commits, Some(&ancestry));
                     self.ancestry = Some(ancestry);
                     layout = Layout::new(&self.graph, commits, &self.collapsed);
@@ -259,6 +260,30 @@ impl LogFolds {
     fn containing_fold(&self, index: usize) -> Option<usize> {
         self.layout.owners.get(index).copied().flatten()
     }
+}
+
+/// The omitted commits that lead to a row. The rest, such as the history
+/// of a branch that diverged before the oldest row, connect no rows, and
+/// would otherwise enlarge every layout.
+fn leading_to_rows(mut ancestry: Ancestry, commits: &[Commit]) -> Ancestry {
+    let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
+    for (hash, parents) in &ancestry {
+        for parent in parents {
+            children.entry(parent).or_default().push(hash);
+        }
+    }
+    let mut todo: Vec<_> = commits.iter().map(|c| c.hash.as_str()).collect();
+    let mut leading = HashSet::new();
+    while let Some(hash) = todo.pop() {
+        for &child in children.get(hash).into_iter().flatten() {
+            if leading.insert(child) {
+                todo.push(child);
+            }
+        }
+    }
+    let leading: HashSet<String> = leading.into_iter().map(str::to_owned).collect();
+    ancestry.retain(|hash, _| leading.contains(hash));
+    ancestry
 }
 
 fn merges(commits: &[Commit]) -> impl Iterator<Item = &str> {
