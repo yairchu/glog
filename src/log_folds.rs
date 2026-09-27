@@ -330,6 +330,7 @@ impl LogFolds {
         // known to be hidden or shown before it is reached.
         let mut claimed = HashSet::new();
         let mut reached = HashSet::new();
+        let mut traversed = HashSet::new();
         for (index, commit) in commits.iter().enumerate() {
             if claimed.contains(&index) && !reached.contains(&index) {
                 self.hidden.insert(index);
@@ -341,7 +342,19 @@ impl LogFolds {
             } else {
                 &commit.parents
             };
-            reached.extend(parents.iter().filter_map(|p| self.index.get(p).copied()));
+            // Follow omitted rows to the next loaded commits, where their own
+            // fold choices decide which parents remain reachable. Share the
+            // visited set so overlapping filtered paths are walked only once.
+            let mut todo: Vec<_> = parents.iter().collect();
+            while let Some(parent) = todo.pop() {
+                if let Some(&index) = self.index.get(parent) {
+                    reached.insert(index);
+                } else if traversed.insert(parent) {
+                    if let Some(parents) = self.ancestry.get(parent) {
+                        todo.extend(parents);
+                    }
+                }
+            }
             if let Some(members) = self.members.get(&commit.hash).filter(|_| collapsed) {
                 claimed.extend(
                     members
