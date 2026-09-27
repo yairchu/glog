@@ -434,11 +434,34 @@ struct Layout {
 
 impl Layout {
     fn new(graph: &Graph, commits: &[Commit], collapsed: &HashSet<String>) -> Self {
-        let rows = graph.rows;
-        let folded: Vec<_> = commits
+        let mut folded: Vec<_> = commits
             .iter()
             .map(|c| c.parents.len() > 1 && collapsed.contains(&c.hash))
             .collect();
+        let (mut layout, mut reached) = Self::with_folds(graph, &folded);
+        // A shown fold that hides nothing, such as one inside a fold that
+        // was since expanded, stays chosen: folding another merge could
+        // make it hide something again. It is drawn as a merge, though.
+        // Following its side parents reaches only shown rows.
+        let mut idle = false;
+        for (row, folded) in folded.iter_mut().enumerate() {
+            if *folded && layout.visible[row] && layout.folds[row] == Fold::None {
+                *folded = false;
+                idle = true;
+            }
+        }
+        if idle {
+            reached = Self::with_folds(graph, &folded).1;
+        }
+        if layout.visible.contains(&false) {
+            layout.graphs = layout.draw(graph, commits, &folded, &reached);
+        }
+        layout
+    }
+
+    /// The layout without its redrawn graph, and which nodes shown rows reach.
+    fn with_folds(graph: &Graph, folded: &[bool]) -> (Self, Vec<bool>) {
+        let rows = graph.rows;
         let mut reach = vec![Reach::None; graph.parents.len()];
         let mut visible = vec![false; rows];
         let mut foldable = vec![false; rows];
@@ -526,16 +549,13 @@ impl Layout {
             })
             .collect();
         owners.truncate(rows);
-        let mut layout = Self {
+        let layout = Self {
             visible,
             owners,
             folds,
             graphs: HashMap::new(),
         };
-        if layout.visible.contains(&false) {
-            layout.graphs = layout.draw(graph, commits, &folded, &reached);
-        }
-        layout
+        (layout, reached)
     }
 
     /// Redraw the graph over the shown rows, keeping Git's lane colours.
