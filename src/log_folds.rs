@@ -812,7 +812,7 @@ mod tests {
         assert_eq!(plain(folds.graph(0, &commits[0])), ["* "]);
         assert_eq!(plain(folds.graph(1, &commits[1])), ["| * "]);
         assert_eq!(plain(folds.graph(3, &commits[3])), ["* | "]);
-        assert_eq!(plain(folds.graph(4, &commits[4])), ["|/ ", "+ ", "* "]);
+        assert_eq!(plain(folds.graph(4, &commits[4])), ["|/ ", "* "]);
         folds.toggle(0, &commits).unwrap();
         for (i, commit) in commits.iter().enumerate() {
             assert!(folds.visible(i));
@@ -1123,11 +1123,18 @@ mod tests {
     }
 
     #[test]
-    fn crossing_routes_do_not_turn_into_a_shared_parent() {
+    fn lines_move_one_lane_per_row_like_git() {
+        assert_eq!(plain(&transitions(&[(0, 0, 0), (0, 2, 1)], 2)), ["|\\ "]);
+        assert_eq!(plain(&transitions(&[(0, 0, 0), (2, 0, 1)], 2)), ["|/ "]);
         assert_eq!(
-            plain(&transitions(&[(0, 2, 0), (2, 0, 1)], 2)),
-            [" X ", "/ \\ "]
+            plain(&transitions(&[(0, 0, 0), (4, 0, 1)], 3)),
+            ["|  / ", "|/ "]
         );
+    }
+
+    #[test]
+    fn crossing_routes_do_not_turn_into_a_shared_parent() {
+        assert_eq!(plain(&transitions(&[(0, 2, 0), (2, 0, 1)], 2)), [" X "]);
     }
 
     /// A deterministic history of `size` commits, each with parents older

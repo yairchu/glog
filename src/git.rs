@@ -1584,11 +1584,21 @@ mod tests {
         app.toggle_log_merge();
         assert!(app.status.is_none(), "{:?}", app.status);
         let base_index = app.commits.iter().position(|c| c.hash == base).unwrap();
-        assert!(app
+        // The merge's lane runs through omitted main into base, which the
+        // unrelated branch joins.
+        let graph: Vec<String> = app
             .log_folds
             .graph(base_index, &app.commits[base_index])
             .iter()
-            .any(|row| row.contains('+')));
+            .map(|row| {
+                crate::ansi::parse_line(row)
+                    .spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        assert_eq!(graph, ["|/ ", "* "]);
 
         // Actual watch updates introduce folded merges without moving selection
         // away from the Working tree or overriding an explicitly expanded merge.
