@@ -1300,6 +1300,17 @@ mod tests {
     }
 
     #[test]
+    fn folding_a_commit_that_is_not_a_merge_keeps_the_status() {
+        let mut app = App::new(vec![commit("a"), commit("b")]);
+        app.status = Some("could not read ancestry for merge folding".to_owned());
+        app.toggle_log_merge();
+        assert_eq!(
+            app.status.as_deref(),
+            Some("could not read ancestry for merge folding")
+        );
+    }
+
+    #[test]
     fn log_search_wraps() {
         let mut app = App::new(vec![commit("first"), commit("needle"), commit("last")]);
         app.selected = 2;
