@@ -842,6 +842,27 @@ mod tests {
     }
 
     #[test]
+    fn shared_merge_folds_count_the_whole_hidden_topic() {
+        let commits = vec![
+            commit("one", &["base", "s3"]),
+            commit("two", &["base", "s3"]),
+            commit("s3", &["s2"]),
+            commit("s2", &["s1"]),
+            commit("s1", &["base"]),
+            commit("base", &[]),
+        ];
+        for merge in [0, 1] {
+            let mut folds = LogFolds::default();
+            folds.refresh(&commits).unwrap();
+            folds.toggle_all(merge, &commits).unwrap();
+            assert_eq!(shown(&folds, &commits), ["one", "two", "base"]);
+            assert_eq!(folds.label(merge), " · 3 merged commits");
+            folds.toggle(merge, &commits).unwrap();
+            assert!((0..commits.len()).all(|row| folds.visible(row)));
+        }
+    }
+
+    #[test]
     fn loaded_side_history_shows_a_disclosure_marker() {
         let commits = vec![
             commit("merge", &["main", "side"]),
