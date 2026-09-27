@@ -383,25 +383,24 @@ impl Graph {
         }
     }
 
-    /// The first rows a merge's side parents lead to through omitted
-    /// commits that `open` allows.
-    fn side_rows(&self, merge: usize, open: impl Fn(usize) -> bool) -> Vec<usize> {
+    /// Count distinct hidden rows reached through a merge's side history,
+    /// including rows shared with other folds and inside nested folds.
+    fn hidden_side_count(&self, merge: usize, reached: &[bool]) -> usize {
         let mut todo: Vec<_> = self.parents[merge]
             .iter()
             .filter(|(_, side)| *side)
             .map(|&(parent, _)| parent)
             .collect();
         let mut visited = HashSet::new();
-        let mut rows = Vec::new();
+        let mut rows = 0;
         while let Some(node) = todo.pop() {
-            if !open(node) || !visited.insert(node) {
+            if reached[node] || !visited.insert(node) {
                 continue;
             }
             if node < self.rows {
-                rows.push(node);
-            } else {
-                todo.extend(self.parents[node].iter().map(|&(parent, _)| parent));
+                rows += 1;
             }
+            todo.extend(self.parents[node].iter().map(|&(parent, _)| parent));
         }
         rows
     }
@@ -545,12 +544,6 @@ impl Layout {
                 }
             }
         }
-        let mut owned = vec![0; rows];
-        for row in (0..rows).filter(|&row| !visible[row]) {
-            if let Some(owner) = owners[row] {
-                owned[owner] += 1;
-            }
-        }
         let folds = (0..rows)
             .map(|row| {
                 if !visible[row] {
@@ -564,10 +557,8 @@ impl Layout {
                 } else {
                     // A fold hides something when its side history reaches
                     // a hidden row. Count those another fold owns as well.
-                    let targets = graph.side_rows(row, |node| !reached[node]);
-                    let shared = targets.iter().filter(|&&t| owners[t] != Some(row));
-                    match owned[row] + shared.count() {
-                        _ if targets.is_empty() => Fold::None,
+                    match graph.hidden_side_count(row, &reached) {
+                        0 => Fold::None,
                         count => Fold::Folded(count),
                     }
                 }
@@ -1331,6 +1322,28 @@ mod tests {
             // history reaches it through rows and commits that are hidden.
             let folded: Vec<_> = (0..size).map(|i| collapsed.contains(&name(i))).collect();
             let shown_nodes = model_reached(&parents, &loaded, &folded);
+            for &row in &merge_rows {
+                if !visible[row] || !folded[rows[row]] {
+                    continue;
+                }
+                // Count the complete hidden ancestry of each shown fold,
+                // independently of which fold owns it for navigation.
+                let mut hidden = vec![false; size];
+                for node in rows[row]..size {
+                    if shown_nodes[node] {
+                        continue;
+                    }
+                    hidden[node] = parents[rows[row]][1..].contains(&node)
+                        || (0..node).any(|child| hidden[child] && parents[child].contains(&node));
+                }
+                let count = rows.iter().filter(|&&node| hidden[node]).count();
+                let expected = if count == 0 {
+                    Fold::None
+                } else {
+                    Fold::Folded(count)
+                };
+                assert_eq!(folds.fold(row), expected, "row {row}, {context}");
+            }
             let mut total = 0;
             for hidden in (0..rows.len()).filter(|&r| !visible[r]) {
                 let owner = (0..rows.len())
