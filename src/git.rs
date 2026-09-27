@@ -1170,6 +1170,73 @@ mod tests {
     }
 
     #[test]
+    fn refresh_keeps_merge_folds_when_the_selected_commit_disappears() {
+        use crate::app::App;
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        // Commit dates fix the order of rows Git may otherwise tie.
+        let git_at = |args: &[&str], date: &str| {
+            let output = Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env("GIT_AUTHOR_DATE", date)
+                .env("GIT_COMMITTER_DATE", date)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        let git = |args: &[&str]| git_at(args, "1700000000 +0000");
+        git(&["init", "-q"]);
+        let tree = git(&["mktree"]);
+        let commit = |name: &str, parents: &[&str], time: u32| {
+            let mut args = vec!["commit-tree", &tree, "-m", name];
+            for parent in parents {
+                args.extend(["-p", parent]);
+            }
+            git_at(&args, &format!("{} +0000", 1_700_000_000 + time))
+        };
+        let base = commit("base", &[], 1);
+        let side = commit("side", &[&base], 2);
+        let main = commit("main", &[&base], 3);
+        let tip = commit("tip", &[&side], 4);
+        let merge = commit("merge", &[&main, &tip], 6);
+        // A branch that continued the topic after it was merged.
+        let extra = commit("extra", &[&tip], 5);
+        git(&["update-ref", "refs/heads/main", &merge]);
+        git(&["update-ref", "refs/heads/extra", &extra]);
+        git(&["symbolic-ref", "HEAD", "refs/heads/main"]);
+        let commits = load_log(&["--all".into()]).unwrap();
+        let order: Vec<_> = commits.iter().map(|c| c.hash.as_str()).collect();
+        assert_eq!(order, [&merge, &main, &extra, &tip, &side, &base]);
+        let mut app = App::new(commits);
+        app.toggle_log_merge();
+        app.selected = 2;
+
+        // Deleting the selected branch leaves its row to the topic it
+        // continued, which only it kept visible.
+        git(&["update-ref", "-d", "refs/heads/extra"]);
+        app.replace_commits(load_log(&["--all".into()]).unwrap());
+        let index = |hash: &str| app.commits.iter().position(|c| c.hash == hash).unwrap();
+        assert_eq!(app.log_folds.marker(&app.commits[0]), Some("▶"));
+        assert!(!app.log_folds.visible(index(&tip)));
+        assert!(app.log_folds.visible(app.selected));
+        assert_eq!(app.selected, index(&main));
+    }
+
+    #[test]
     fn watch_merge_folds_refresh_members_after_deepening() {
         use crate::app::App;
         let directory = TestDirectory::new();
