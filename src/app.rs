@@ -331,9 +331,18 @@ impl App {
         if let Err(error) = self.log_folds.refresh(&self.commits) {
             self.status = Some(error);
         }
-        // Keep the selected commit visible even if a newly arrived merge
-        // would fold it under --fold-merges.
-        self.log_folds.reveal(self.selected, &self.commits);
+        if preserved.is_some() {
+            // Keep the selected commit visible even if a newly arrived merge
+            // would fold it under --fold-merges.
+            self.log_folds.reveal(self.selected, &self.commits);
+        } else if !self.log_folds.visible(self.selected) {
+            // A folded commit took the row of one that disappeared. Keep the
+            // folds, and select the nearest visible commit instead.
+            self.selected = (self.selected..self.commits.len())
+                .chain((0..self.selected).rev())
+                .find(|&i| self.log_folds.visible(i))
+                .unwrap_or(0);
+        }
         // Searches index the old history and must restart from the selection.
         if self.search_match.is_some_and(|(mode, _)| mode == Mode::Log) {
             self.search_match = None;
