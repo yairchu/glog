@@ -287,6 +287,14 @@ impl App {
     }
 
     pub fn toggle_log_merge(&mut self) {
+        // Other rows have nothing to fold, so keep whatever the status says.
+        if self
+            .commits
+            .get(self.selected)
+            .is_none_or(|commit| commit.parents.len() < 2)
+        {
+            return;
+        }
         self.status = self.log_folds.toggle(self.selected, &self.commits).err();
         self.search_match = None;
     }
