@@ -1104,6 +1104,85 @@ mod tests {
     static NEXT_TEST_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
 
     #[test]
+    fn merge_folds_keep_history_reached_through_filtered_out_parents() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        let tree = git(&["mktree"]);
+        let commit = |name: &str, parents: &[&str]| {
+            let mut args = vec!["commit-tree", &tree, "-m", name];
+            for parent in parents {
+                args.extend(["-p", parent]);
+            }
+            git(&args)
+        };
+        let base = commit("keep base", &[]);
+        let main = commit("keep main", &[&base]);
+        let side = commit("keep shared side", &[&base]);
+        let tip = commit("keep merged tip", &[&side]);
+        let merge = commit("keep merge", &[&main, &tip]);
+        let omitted = commit("omitted parent", &[&side]);
+        let omitted_tip = commit("omitted tip", &[&omitted]);
+        let extra = commit("keep extra", &[&omitted_tip]);
+        git(&["update-ref", "refs/heads/main", &merge]);
+        git(&["update-ref", "refs/heads/extra", &extra]);
+        git(&["symbolic-ref", "HEAD", "refs/heads/main"]);
+
+        let commits = load_log(&["--all".into(), "--grep=keep".into()]).unwrap();
+        let index = |hash: &str| commits.iter().position(|c| c.hash == hash).unwrap();
+        assert!(!commits
+            .iter()
+            .any(|c| c.hash == omitted || c.hash == omitted_tip));
+        // The visible extra branch reaches side through two omitted rows.
+        // Only tip belongs exclusively to the folded merge's visible history.
+        for mode in ["single", "all", "startup"] {
+            let mut folds = crate::log_folds::LogFolds::default();
+            folds.start_collapsed = mode == "startup";
+            folds.refresh(&commits).unwrap();
+            match mode {
+                "single" => folds.toggle(index(&merge), &commits).unwrap(),
+                "all" => {
+                    folds.toggle_all(index(&merge), &commits).unwrap();
+                }
+                _ => {}
+            }
+            assert!(folds.visible(index(&extra)), "{mode}");
+            assert!(
+                folds.visible(index(&side)),
+                "{mode}: side is reachable from extra"
+            );
+            assert!(folds.visible(index(&base)), "{mode}");
+            assert!(!folds.visible(index(&tip)), "{mode}");
+            assert_eq!(
+                folds.label(&commits[index(&merge)]),
+                " · 1 merged commit",
+                "{mode}"
+            );
+        }
+    }
+
+    #[test]
     fn filtered_out_side_parent_folds_only_on_request() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
