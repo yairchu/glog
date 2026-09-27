@@ -701,13 +701,15 @@ fn paint(symbol: char, colour: usize) -> String {
     format!("\x1b[{}m{symbol}\x1b[m", PALETTE[colour % PALETTE.len()])
 }
 
-// Route edges a character at a time, each in its target lane's colour.
-// Crossings retain their independent targets; '+' joins routes to the same
-// target, 'X' crosses routes to different targets.
+// Route edges between columns two characters apart, each in its target
+// lane's colour. As in Git, each row moves a route one lane, drawn between
+// the two. Crossings retain their independent targets; '+' joins routes to
+// the same target, 'X' crosses routes to different targets.
 fn transitions(edges: &[(usize, usize, usize)], width: usize) -> Vec<String> {
+    let lanes = |from: usize, to: usize| from.abs_diff(to) / 2;
     let distance = edges
         .iter()
-        .map(|(a, b, _)| a.abs_diff(*b))
+        .map(|&(from, to, _)| lanes(from, to))
         .max()
         .unwrap_or(0);
     let mut rows = Vec::new();
@@ -715,25 +717,18 @@ fn transitions(edges: &[(usize, usize, usize)], width: usize) -> Vec<String> {
         let mut cells = vec![(' ', 0); width * 2];
         let mut targets = vec![None; width * 2];
         for &(from, to, colour) in edges {
-            let shift = step.min(from.abs_diff(to));
-            let position = if from < to {
-                from + shift
-            } else {
-                from - shift
-            };
-            let symbol = if step > from.abs_diff(to) {
-                '|'
+            let (position, symbol) = if step > lanes(from, to) {
+                (to, '|')
             } else if from < to {
-                '\\'
+                (from + 2 * step - 1, '\\')
             } else {
-                '/'
+                (from + 1 - 2 * step, '/')
             };
-            let symbol = if cells[position].0 == ' ' {
-                symbol
-            } else if targets[position] == Some(to) {
-                '+'
-            } else {
-                'X'
+            let symbol = match cells[position].0 {
+                ' ' => symbol,
+                existing if targets[position] == Some(to) && existing == symbol => symbol,
+                _ if targets[position] == Some(to) => '+',
+                _ => 'X',
             };
             cells[position] = (symbol, colour);
             targets[position] = Some(to);
