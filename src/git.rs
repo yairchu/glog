@@ -147,55 +147,7 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
     Ok(commits)
 }
 
-/// Use actual ancestry, not adjacency in the displayed (possibly filtered) log.
-/// ^@ expands all original parents; excluding ^1 leaves only the side history,
-/// even when Git has rewritten %P for path filters or the first parent is omitted.
-/// Like `merged_commits_many`, stop below the oldest displayed commit.
-pub fn merged_commits(hash: &str, commits: &[Commit]) -> Result<HashSet<String>, String> {
-    let output = Command::new("git")
-        .args(["rev-list", &format!("{hash}^@"), &format!("^{hash}^1")])
-        .args(walk_boundary(commits))
-        .arg("--")
-        .env("GIT_NO_LAZY_FETCH", "1")
-        .output()
-        .map_err(|error| format!("could not read merged commits: {error}"))?;
-    if !output.status.success() {
-        return Err(stderr_message(
-            "could not read merged commits",
-            &output.stderr,
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .map(str::to_owned)
-        .collect())
-}
-
-/// Bulk folding reads original parent links once, without log path rewriting.
-/// The walk stops below the oldest displayed commit, as in `log_ancestry`: no
-/// displayed commit, nor any path from a first parent to it, lies below it.
-/// Membership is therefore exact only for the displayed commits.
-pub fn merged_commits_many(
-    hashes: &[&str],
-    commits: &[Commit],
-) -> Result<std::collections::HashMap<String, HashSet<String>>, String> {
-    let mut input = String::new();
-    for hash in hashes {
-        input.push_str(hash);
-        input.push('\n');
-    }
-    push_walk_boundary(&mut input, commits);
-    let output = pipe_through(
-        Command::new("git")
-            .args(["rev-list", "--topo-order", "--parents", "--stdin"])
-            .env("GIT_NO_LAZY_FETCH", "1"),
-        input.as_bytes(),
-    )
-    .ok_or("could not read merge ancestry")?;
-    crate::merge_history::members(&output, hashes)
-}
-
-/// Parent links through commits omitted by log filters, for graph projection.
+/// Parent links through commits omitted by log filters, for merge folding.
 /// Stop below the oldest displayed commit: its ancestors cannot be displayed
 /// earlier in Git's topological graph order, and may be a very large history.
 pub fn log_ancestry(
@@ -210,14 +162,20 @@ pub fn log_ancestry(
         input.push_str(&commit.hash);
         input.push('\n');
     }
-    push_walk_boundary(&mut input, commits);
+    // Exclude the ancestors of the oldest displayed commit.
+    let oldest = revisions.last().into_iter().flat_map(|c| &c.parents);
+    for parent in oldest {
+        input.push('^');
+        input.push_str(parent);
+        input.push('\n');
+    }
     let output = pipe_through(
         Command::new("git")
             .args(["rev-list", "--parents", "--stdin"])
             .env("GIT_NO_LAZY_FETCH", "1"),
         input.as_bytes(),
     )
-    .ok_or("could not read ancestry for the folded log graph")?;
+    .ok_or("could not read ancestry for merge folding")?;
     Ok(output
         .lines()
         .filter_map(|line| {
@@ -228,21 +186,6 @@ pub fn log_ancestry(
             ))
         })
         .collect())
-}
-
-/// Exclude the ancestors of the oldest displayed commit from a --stdin walk.
-fn push_walk_boundary(input: &mut String, commits: &[Commit]) {
-    for exclusion in walk_boundary(commits) {
-        input.push_str(&exclusion);
-        input.push('\n');
-    }
-}
-
-fn walk_boundary(commits: &[Commit]) -> impl Iterator<Item = String> + '_ {
-    let last = commits.iter().rfind(|c| c.kind == CommitKind::Revision);
-    last.into_iter()
-        .flat_map(|c| &c.parents)
-        .map(|parent| format!("^{parent}"))
 }
 
 /// Watch mode includes one stable working-tree item ahead of committed history.
@@ -1174,11 +1117,7 @@ mod tests {
             );
             assert!(folds.visible(index(&base)), "{mode}");
             assert!(!folds.visible(index(&tip)), "{mode}");
-            assert_eq!(
-                folds.label(&commits[index(&merge)]),
-                " · 1 merged commit",
-                "{mode}"
-            );
+            assert_eq!(folds.label(index(&merge)), " · 1 merged commit", "{mode}");
         }
     }
 
@@ -1228,7 +1167,7 @@ mod tests {
         let first_parent = load_log(&["--first-parent".into()]).unwrap();
         let mut folds = crate::log_folds::LogFolds::default();
         folds.refresh(&first_parent).unwrap();
-        assert_eq!(folds.marker(&first_parent[0]), None);
+        assert_eq!(folds.marker(0), None);
 
         let commits = load_log(&["--grep=keep".into()]).unwrap();
         assert_eq!(
@@ -1238,14 +1177,14 @@ mod tests {
         // Resolving a filtered-out side parent could walk the whole history,
         // so no fold is offered, but z still finds the loaded side commit.
         folds.refresh(&commits).unwrap();
-        assert_eq!(folds.marker(&commits[0]), None);
+        assert_eq!(folds.marker(0), None);
         folds.toggle(0, &commits).unwrap();
         assert!(!folds.visible(1));
-        assert_eq!(folds.label(&commits[0]), " · 1 merged commit");
+        assert_eq!(folds.label(0), " · 1 merged commit");
         folds.toggle(0, &commits).unwrap();
         folds.refresh(&commits).unwrap();
         assert!(folds.visible(1));
-        assert_eq!(folds.marker(&commits[0]), Some("▼"));
+        assert_eq!(folds.marker(0), Some("▼"));
     }
 
     #[test]
@@ -1292,27 +1231,30 @@ mod tests {
         let main = commit("main", &[&base], 3);
         let tip = commit("tip", &[&side], 4);
         let merge = commit("merge", &[&main, &tip], 6);
-        // A branch that continued the topic after it was merged.
-        let extra = commit("extra", &[&tip], 5);
+        // A branch that continued the topic from before its merged tip.
+        let extra = commit("extra", &[&side], 5);
         git(&["update-ref", "refs/heads/main", &merge]);
         git(&["update-ref", "refs/heads/extra", &extra]);
         git(&["symbolic-ref", "HEAD", "refs/heads/main"]);
         let commits = load_log(&["--all".into()]).unwrap();
         let order: Vec<_> = commits.iter().map(|c| c.hash.as_str()).collect();
-        assert_eq!(order, [&merge, &main, &extra, &tip, &side, &base]);
-        let mut app = App::new(commits);
+        assert_eq!(order, [&merge, &tip, &main, &extra, &side, &base]);
+        let mut app = App::new(commits.clone());
         app.toggle_log_merge();
-        app.selected = 2;
+        assert!(app.status.is_none(), "{:?}", app.status);
+        app.selected = 3;
 
-        // Deleting the selected branch leaves its row to the topic it
-        // continued, which only it kept visible.
-        git(&["update-ref", "-d", "refs/heads/extra"]);
-        app.replace_commits(load_log(&["--all".into()]).unwrap());
+        // Deleting the selected branch leaves its row to the side commit
+        // it kept visible, which the fold now hides.
+        let mut refreshed = commits;
+        refreshed.retain(|c| c.hash != extra);
+        app.replace_commits(refreshed);
         let index = |hash: &str| app.commits.iter().position(|c| c.hash == hash).unwrap();
-        assert_eq!(app.log_folds.marker(&app.commits[0]), Some("▶"));
+        assert_eq!(app.log_folds.marker(0), Some("▶"));
         assert!(!app.log_folds.visible(index(&tip)));
+        assert!(!app.log_folds.visible(index(&side)));
         assert!(app.log_folds.visible(app.selected));
-        assert_eq!(app.selected, index(&main));
+        assert_eq!(app.selected, index(&base));
     }
 
     #[test]
@@ -1400,20 +1342,14 @@ mod tests {
             app.replace_commits(load_watch_log().unwrap());
             let index = |hash: &str| app.commits.iter().position(|c| c.hash == hash).unwrap();
             let merge_index = index(&merge);
-            assert_eq!(app.log_folds.marker(&app.commits[merge_index]), Some("▶"));
+            assert_eq!(app.log_folds.marker(merge_index), Some("▶"));
             assert!(
                 !app.log_folds.visible(index(&older)),
                 "deepened side history must remain folded"
             );
-            assert_eq!(
-                app.log_folds.label(&app.commits[merge_index]),
-                " · 2 merged commits"
-            );
+            assert_eq!(app.log_folds.label(merge_index), " · 2 merged commits");
             assert!(app.log_folds.visible(index(&second_side)));
-            assert_eq!(
-                app.log_folds.marker(&app.commits[index(&second_merge)]),
-                Some("▼")
-            );
+            assert_eq!(app.log_folds.marker(index(&second_merge)), Some("▼"));
             app.selected = merge_index;
             app.toggle_log_merge();
             app.toggle_log_merge();
@@ -1476,27 +1412,25 @@ mod tests {
         git(&["update-ref", "refs/heads/main", &octopus]);
         git(&["update-ref", "refs/heads/unrelated", &unrelated]);
         git(&["symbolic-ref", "HEAD", "refs/heads/main"]);
+        // Git's own account of what a merge brought in.
+        let merged_commits = |merge: &str| -> HashSet<String> {
+            git(&["rev-list", &format!("{merge}^@"), &format!("^{merge}^1")])
+                .lines()
+                .map(str::to_owned)
+                .collect()
+        };
         assert_eq!(
-            merged_commits(&merge, &[]).unwrap(),
+            merged_commits(&merge),
             [&feature, &inner, &nested, &tip]
                 .into_iter()
                 .cloned()
                 .collect()
         );
         assert_eq!(
-            merged_commits(&octopus, &[]).unwrap(),
+            merged_commits(&octopus),
             [&x, &y].into_iter().cloned().collect()
         );
         let commits = load_log(&["--all".into()]).unwrap();
-        let merge_hashes: Vec<_> = commits
-            .iter()
-            .filter(|c| c.parents.len() > 1)
-            .map(|c| c.hash.as_str())
-            .collect();
-        let batch = merged_commits_many(&merge_hashes, &commits).unwrap();
-        for hash in merge_hashes {
-            assert_eq!(batch[hash], merged_commits(hash, &commits).unwrap());
-        }
         let index = |hash: &str| commits.iter().position(|c| c.hash == hash).unwrap();
         let mut app = App::new(commits.clone());
         let key = |app: &mut App, code| {
@@ -1511,10 +1445,7 @@ mod tests {
         for hash in [&base, &main, &unrelated, &x, &y, &octopus] {
             assert!(app.log_folds.visible(index(hash)));
         }
-        assert_eq!(
-            app.log_folds.label(&commits[index(&merge)]),
-            " · 4 merged commits"
-        );
+        assert_eq!(app.log_folds.label(index(&merge)), " · 4 merged commits");
         let mut terminal = Terminal::new(TestBackend::new(140, 24)).unwrap();
         terminal.draw(|f| ui::draw(f, &mut app)).unwrap();
         let screen = terminal
@@ -1614,40 +1545,21 @@ mod tests {
             .iter()
             .all(|(i, c)| app.log_folds.graph(*i, c) == ["* "]));
 
-        // Limited history may omit the first parent. Membership still comes
-        // from Git's complete ancestry, and never loads rows outside the filter.
+        // Limited history may omit the first parent. What is folded still
+        // comes from Git's complete ancestry, and never loads rows outside
+        // the filter.
         for args in [
             vec![merge.clone(), "-3".into()],
             vec!["--all".into(), "--grep=outer\\|feature".into()],
         ] {
             let filtered = load_log(&args).unwrap();
-            let loaded: HashSet<_> = filtered.iter().map(|c| c.hash.clone()).collect();
-            let merges: Vec<_> = filtered
-                .iter()
-                .filter(|c| c.parents.len() > 1)
-                .map(|c| c.hash.as_str())
-                .collect();
-            let batch = merged_commits_many(&merges, &filtered).unwrap();
-            for hash in merges {
-                assert_eq!(
-                    &batch[hash] & &loaded,
-                    &merged_commits(hash, &filtered).unwrap() & &loaded
-                );
-                // Resolving one merge stops at the same boundary as bulk
-                // folding, rather than walking side history below the Log.
-                assert_eq!(
-                    batch[hash],
-                    merged_commits(hash, &filtered).unwrap(),
-                    "{args:?}"
-                );
-            }
             let mut app = App::new(filtered.clone());
             app.selected = filtered.iter().position(|c| c.hash == merge).unwrap();
             app.toggle_log_merge();
             for (i, c) in app.commits.iter().enumerate() {
                 assert_eq!(
                     app.log_folds.visible(i),
-                    !merged_commits(&merge, &filtered).unwrap().contains(&c.hash)
+                    !merged_commits(&merge).contains(&c.hash)
                 );
             }
             app.toggle_log_merge();

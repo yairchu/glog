@@ -260,7 +260,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             let mut line = ansi::parse_line(graph);
             if part + 1 == graph_rows.len() {
-                if let Some(marker) = app.log_folds.marker(commit) {
+                if let Some(marker) = app.log_folds.marker(index) {
                     if let Some(span) = line
                         .spans
                         .iter_mut()
@@ -271,7 +271,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 }
                 line.spans.extend(app.log_format.spans(commit));
                 line.spans.push(Span::styled(
-                    app.log_folds.label(commit),
+                    app.log_folds.label(index),
                     Style::default().fg(Color::Yellow),
                 ));
             }
@@ -662,7 +662,10 @@ mod tests {
             let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
             let before = terminal.backend().buffer().clone();
+            // The side commit is the oldest row, so its parent bounds the
+            // ancestry and cannot lead back to it.
             app.commits[0].parents = vec!["first".into(), side_hash];
+            app.commits[1].parents = vec!["first".into()];
             app.log_folds.refresh(&app.commits).unwrap();
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
             let after = terminal.backend().buffer();

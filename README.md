@@ -85,6 +85,8 @@ glog main -- src/
 In Log, select a merge and press `z` to collapse or expand the commits it brought
 in. Enter still opens the merge's Show view. A collapsed merge displays a `▶`
 and the number of folded commits; its first-parent history remains visible.
+Commits that another shown branch still reaches stay visible, so a merge whose
+branch continued past it may have nothing to fold and shows no marker.
 Nested merges can be folded independently. Press `m` to fold all merge histories,
 or expand them when all are folded. If folding hides the selected commit, selection
 moves to its containing merge.
@@ -104,10 +106,12 @@ folded when `--fold-merges` is enabled. The graph is redrawn around hidden commi
 Folding respects the loaded revision, path, and count filters: it does not fetch
 or load excluded commits. In particular, `--first-parent` omits side history,
 so use `--fold-merges` instead when you want to expand that history later.
-When a filter such as `--grep` omits the tip of a merge's side branch, the merge
-shows no `▼` and `m` and `--fold-merges` leave it expanded, since finding its
-merged commits could mean walking the entire history. `z` still folds any of
-them that were loaded.
+When a filter such as `--grep` omits commits, glog reads how the loaded commits
+connect through them, without loading them, before it hides anything. Until
+then, a merge whose side branch starts in omitted history shows no `▼`, though
+`z` still folds it. `m` and `--fold-merges` read this ancestry only when some
+merge's side branch was loaded, so under `--first-parent` they stop without
+walking the side history.
 
 ### Show and Diff
 
