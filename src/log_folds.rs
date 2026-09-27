@@ -797,6 +797,8 @@ mod tests {
         folds.toggle_all(0, &commits).unwrap();
         folds.toggle(0, &commits).unwrap();
         assert!((0..commits.len()).all(|i| folds.visible(i)));
+        // The count describes what the fold hides.
+        assert_eq!(folds.label(&commits[2]), " · 0 merged commits");
     }
 
     #[test]
