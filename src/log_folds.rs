@@ -148,10 +148,12 @@ impl LogFolds {
             })
     }
 
-    fn load_members(&mut self, commit: &Commit) -> Result<(), String> {
+    fn load_members(&mut self, commit: &Commit, commits: &[Commit]) -> Result<(), String> {
         if !self.members.contains_key(&commit.hash) {
-            self.members
-                .insert(commit.hash.clone(), git::merged_commits(&commit.hash)?);
+            self.members.insert(
+                commit.hash.clone(),
+                git::merged_commits(&commit.hash, commits)?,
+            );
         }
         Ok(())
     }
@@ -162,7 +164,7 @@ impl LogFolds {
             .filter(|c| !self.members.contains_key(&c.hash))
             .collect();
         if let [commit] = missing.as_slice() {
-            self.load_members(commit)?;
+            self.load_members(commit, commits)?;
         } else if !missing.is_empty() {
             let hashes: Vec<_> = missing.iter().map(|c| c.hash.as_str()).collect();
             self.members
@@ -178,7 +180,7 @@ impl LogFolds {
         self.discard_unshown_folds();
         let previous = self.collapsed.clone();
         if !self.collapsed.remove(&commit.hash) {
-            self.load_members(commit)?;
+            self.load_members(commit, commits)?;
             if !commits
                 .iter()
                 .any(|c| self.members[&commit.hash].contains(&c.hash))

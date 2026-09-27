@@ -150,14 +150,12 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
 /// Use actual ancestry, not adjacency in the displayed (possibly filtered) log.
 /// ^@ expands all original parents; excluding ^1 leaves only the side history,
 /// even when Git has rewritten %P for path filters or the first parent is omitted.
-pub fn merged_commits(hash: &str) -> Result<HashSet<String>, String> {
+/// Like `merged_commits_many`, stop below the oldest displayed commit.
+pub fn merged_commits(hash: &str, commits: &[Commit]) -> Result<HashSet<String>, String> {
     let output = Command::new("git")
-        .args([
-            "rev-list",
-            &format!("{hash}^@"),
-            &format!("^{hash}^1"),
-            "--",
-        ])
+        .args(["rev-list", &format!("{hash}^@"), &format!("^{hash}^1")])
+        .args(walk_boundary(commits))
+        .arg("--")
         .env("GIT_NO_LAZY_FETCH", "1")
         .output()
         .map_err(|error| format!("could not read merged commits: {error}"))?;
@@ -234,12 +232,17 @@ pub fn log_ancestry(
 
 /// Exclude the ancestors of the oldest displayed commit from a --stdin walk.
 fn push_walk_boundary(input: &mut String, commits: &[Commit]) {
-    let last = commits.iter().rfind(|c| c.kind == CommitKind::Revision);
-    for parent in last.into_iter().flat_map(|c| &c.parents) {
-        input.push('^');
-        input.push_str(parent);
+    for exclusion in walk_boundary(commits) {
+        input.push_str(&exclusion);
         input.push('\n');
     }
+}
+
+fn walk_boundary(commits: &[Commit]) -> impl Iterator<Item = String> + '_ {
+    let last = commits.iter().rfind(|c| c.kind == CommitKind::Revision);
+    last.into_iter()
+        .flat_map(|c| &c.parents)
+        .map(|parent| format!("^{parent}"))
 }
 
 /// Watch mode includes one stable working-tree item ahead of committed history.
@@ -1328,14 +1331,14 @@ mod tests {
         git(&["update-ref", "refs/heads/unrelated", &unrelated]);
         git(&["symbolic-ref", "HEAD", "refs/heads/main"]);
         assert_eq!(
-            merged_commits(&merge).unwrap(),
+            merged_commits(&merge, &[]).unwrap(),
             [&feature, &inner, &nested, &tip]
                 .into_iter()
                 .cloned()
                 .collect()
         );
         assert_eq!(
-            merged_commits(&octopus).unwrap(),
+            merged_commits(&octopus, &[]).unwrap(),
             [&x, &y].into_iter().cloned().collect()
         );
         let commits = load_log(&["--all".into()]).unwrap();
@@ -1346,7 +1349,7 @@ mod tests {
             .collect();
         let batch = merged_commits_many(&merge_hashes, &commits).unwrap();
         for hash in merge_hashes {
-            assert_eq!(batch[hash], merged_commits(hash).unwrap());
+            assert_eq!(batch[hash], merged_commits(hash, &commits).unwrap());
         }
         let index = |hash: &str| commits.iter().position(|c| c.hash == hash).unwrap();
         let mut app = App::new(commits.clone());
@@ -1482,11 +1485,15 @@ mod tests {
             for hash in merges {
                 assert_eq!(
                     &batch[hash] & &loaded,
-                    &merged_commits(hash).unwrap() & &loaded
+                    &merged_commits(hash, &filtered).unwrap() & &loaded
                 );
                 // Resolving one merge stops at the same boundary as bulk
                 // folding, rather than walking side history below the Log.
-                assert_eq!(batch[hash], merged_commits(hash).unwrap(), "{args:?}");
+                assert_eq!(
+                    batch[hash],
+                    merged_commits(hash, &filtered).unwrap(),
+                    "{args:?}"
+                );
             }
             let mut app = App::new(filtered.clone());
             app.selected = filtered.iter().position(|c| c.hash == merge).unwrap();
@@ -1494,7 +1501,7 @@ mod tests {
             for (i, c) in app.commits.iter().enumerate() {
                 assert_eq!(
                     app.log_folds.visible(i),
-                    !merged_commits(&merge).unwrap().contains(&c.hash)
+                    !merged_commits(&merge, &filtered).unwrap().contains(&c.hash)
                 );
             }
             app.toggle_log_merge();
