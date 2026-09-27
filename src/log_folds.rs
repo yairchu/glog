@@ -321,19 +321,6 @@ impl LogFolds {
         if !self.graph_ready {
             return;
         }
-        self.counts = self
-            .collapsed
-            .iter()
-            .map(|hash| {
-                let count = self.members.get(hash).map_or(0, |members| {
-                    members
-                        .iter()
-                        .filter(|member| self.index.contains_key(*member))
-                        .count()
-                });
-                (hash.clone(), count)
-            })
-            .collect();
         // Only shown folds hide commits, and not those a visible child reaches
         // other than through a folded side parent: a topic's merge of a newer
         // mainline has merged commits that remain its outer merge's mainline.
@@ -361,6 +348,22 @@ impl LogFolds {
                 );
             }
         }
+        // Count only what each fold hides: a visible commit may reach some
+        // of its merged commits.
+        self.counts = self
+            .collapsed
+            .iter()
+            .map(|hash| {
+                let count = self.members.get(hash).map_or(0, |members| {
+                    members
+                        .iter()
+                        .filter_map(|member| self.index.get(member))
+                        .filter(|index| self.hidden.contains(index))
+                        .count()
+                });
+                (hash.clone(), count)
+            })
+            .collect();
         if self.hidden.is_empty() {
             return;
         }
