@@ -762,6 +762,32 @@ mod tests {
     }
 
     #[test]
+    fn expanding_an_outer_merge_keeps_mainline_a_folded_topic_merged_back() {
+        // As above, but with the outer merge expanded, x's fold is shown.
+        // m1 is still reached from m2, so it remains visible.
+        let commits = vec![
+            commit("outer", &["m2", "t2"]),
+            commit("t2", &["x"]),
+            commit("x", &["t1", "m1"]),
+            commit("t1", &["base"]),
+            commit("m2", &["m1"]),
+            commit("m1", &["base"]),
+            commit("base", &[]),
+        ];
+        let mut folds = LogFolds::default();
+        folds.members.insert(
+            "outer".into(),
+            HashSet::from(["t2".into(), "x".into(), "t1".into()]),
+        );
+        folds
+            .members
+            .insert("x".into(), HashSet::from(["m1".into()]));
+        folds.toggle_all(0, &commits).unwrap();
+        folds.toggle(0, &commits).unwrap();
+        assert!((0..commits.len()).all(|i| folds.visible(i)));
+    }
+
+    #[test]
     fn crossing_routes_do_not_turn_into_a_shared_parent() {
         assert_eq!(
             plain(&transitions(&[(0, 2, 0), (2, 0, 1)], 2)),
