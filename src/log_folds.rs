@@ -992,6 +992,64 @@ mod tests {
         assert_eq!(folds.marker(2), None);
     }
 
+    fn assert_same_layout(folds: &LogFolds, expected: &LogFolds, commits: &[Commit]) {
+        for (i, commit) in commits.iter().enumerate() {
+            assert_eq!(folds.visible(i), expected.visible(i), "row {i}");
+            assert_eq!(folds.marker(i), expected.marker(i), "row {i}");
+            assert_eq!(folds.label(i), expected.label(i), "row {i}");
+            assert_eq!(
+                plain(folds.graph(i, commit)),
+                plain(expected.graph(i, commit)),
+                "row {i}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_fold_that_hides_nothing_draws_like_an_unfolded_merge() {
+        // The topic merged m1 back in with sync. m folds sync inside m3, but
+        // once m3 is expanded, sync's fold hides nothing.
+        let commits = vec![
+            commit("m4", &["m3", "o"]),
+            commit("o", &["m3"]),
+            commit("m3", &["m2", "t2"]),
+            commit("t2", &["sync"]),
+            commit("sync", &["t1", "m1"]),
+            commit("m2", &["m1"]),
+            commit("t1", &["base"]),
+            commit("m1", &["base"]),
+            commit("base", &[]),
+        ];
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        folds.toggle_all(0, &commits).unwrap();
+        folds.toggle(2, &commits).unwrap();
+        let mut expected = LogFolds::default();
+        expected.refresh(&commits).unwrap();
+        expected.toggle(0, &commits).unwrap();
+        assert_same_layout(&folds, &expected, &commits);
+
+        // A branch that continues a folded topic leaves m1 nothing to hide.
+        let before = vec![
+            commit("m2", &["m1", "s2"]),
+            commit("s2", &["m1"]),
+            commit("m1", &["main", "side"]),
+            commit("side", &["base"]),
+            commit("main", &["base"]),
+            commit("base", &[]),
+        ];
+        let mut folds = LogFolds::default();
+        folds.refresh(&before).unwrap();
+        folds.toggle_all(0, &before).unwrap();
+        let mut after = vec![commit("continued", &["side"])];
+        after.extend(before);
+        folds.refresh(&after).unwrap();
+        let mut expected = LogFolds::default();
+        expected.refresh(&after).unwrap();
+        expected.toggle(1, &after).unwrap();
+        assert_same_layout(&folds, &expected, &after);
+    }
+
     #[test]
     fn crossing_routes_do_not_turn_into_a_shared_parent() {
         assert_eq!(
@@ -1118,6 +1176,23 @@ mod tests {
             let mut folds = exact(&collapsed);
             let visible = model(&collapsed);
             assert_eq!(folds.layout.visible, visible, "{context}");
+            // Shown folds that hide nothing are drawn as unfolded merges.
+            let hiding: HashSet<_> = collapsed
+                .iter()
+                .filter(|hash| {
+                    let row = folds.graph.index[*hash];
+                    !visible[row] || folds.fold(row) != Fold::None
+                })
+                .cloned()
+                .collect();
+            let drawn = exact(&hiding);
+            for (row, commit) in commits.iter().enumerate().filter(|&(r, _)| visible[r]) {
+                assert_eq!(
+                    folds.graph(row, commit),
+                    drawn.graph(row, commit),
+                    "row {row}, {context}"
+                );
+            }
             for &row in &merge_rows {
                 let hash = &commits[row].hash;
                 let mut toggled = collapsed.clone();
