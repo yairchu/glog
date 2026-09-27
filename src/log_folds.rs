@@ -1071,6 +1071,33 @@ mod tests {
     }
 
     #[test]
+    fn ancestry_keeps_only_omitted_commits_that_lead_to_rows() {
+        // As in a count-limited --all log, an old branch's long omitted
+        // history leads to no row, so it must not grow every layout.
+        let commits = vec![
+            commit("merge", &["main", "omitted side"]),
+            commit("old tip", &["old 0"]),
+            commit("side", &["base"]),
+            commit("main", &["base"]),
+            commit("base", &["older"]),
+        ];
+        let mut ancestry: Ancestry = (0..1000)
+            .map(|i| (format!("old {i}"), vec![format!("old {}", i + 1)]))
+            .collect();
+        ancestry.insert("omitted side".into(), vec!["side".into()]);
+        let mut folds = folds_with(Some(ancestry));
+        folds.refresh(&commits).unwrap();
+        folds.toggle(0, &commits).unwrap();
+        assert_eq!(
+            shown(&folds, &commits),
+            ["merge", "old tip", "main", "base"]
+        );
+        assert_eq!(folds.graph.parents.len(), commits.len() + 1);
+        folds.refresh(&commits).unwrap();
+        assert_eq!(folds.graph.parents.len(), commits.len() + 1);
+    }
+
+    #[test]
     fn crossing_routes_do_not_turn_into_a_shared_parent() {
         assert_eq!(
             plain(&transitions(&[(0, 2, 0), (2, 0, 1)], 2)),
