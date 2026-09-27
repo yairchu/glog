@@ -1484,6 +1484,9 @@ mod tests {
                     &batch[hash] & &loaded,
                     &merged_commits(hash).unwrap() & &loaded
                 );
+                // Resolving one merge stops at the same boundary as bulk
+                // folding, rather than walking side history below the Log.
+                assert_eq!(batch[hash], merged_commits(hash).unwrap(), "{args:?}");
             }
             let mut app = App::new(filtered.clone());
             app.selected = filtered.iter().position(|c| c.hash == merge).unwrap();
