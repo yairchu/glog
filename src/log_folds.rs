@@ -1310,6 +1310,44 @@ mod tests {
     }
 
     #[test]
+    fn filters_preserve_connections_of_a_fold_that_hides_nothing() {
+        let commits = vec![
+            commit("m4", &["m3", "o"]),
+            commit("o", &["m3"]),
+            commit("m3", &["m2", "t2"]),
+            commit("t2", &["sync"]),
+            commit("sync", &["t1", "m1"]),
+            commit("m2", &["m1"]),
+            commit("t1", &["base"]),
+            commit("m1", &["base"]),
+            commit("base", &[]),
+        ];
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        folds.toggle_all(0, &commits).unwrap();
+        folds.toggle(2, &commits).unwrap();
+        // Expanding m3 leaves sync's saved fold with nothing to hide.
+        let mut expected = LogFolds::default();
+        expected.refresh(&commits).unwrap();
+        expected.toggle(0, &commits).unwrap();
+        assert_same_layout(&folds, &expected, &commits);
+
+        // Even a filter matching no commits redraws the graph. It must
+        // preserve sync's connection to m1, just like an unfolded merge.
+        folds.toggle_type(Some("nonexistent"), &commits).unwrap();
+        expected.toggle_type(Some("nonexistent"), &commits).unwrap();
+        assert_eq!(folds.hidden_count, 0);
+        assert_same_layout(&folds, &expected, &commits);
+
+        folds.toggle_merges(&commits).unwrap();
+        expected.toggle_merges(&commits).unwrap();
+        assert_same_layout(&folds, &expected, &commits);
+        folds.toggle_type(None, &commits).unwrap();
+        expected.toggle_type(None, &commits).unwrap();
+        assert_same_layout(&folds, &expected, &commits);
+    }
+
+    #[test]
     fn a_fold_that_hides_nothing_draws_like_an_unfolded_merge() {
         // The topic merged m1 back in with sync. m folds sync inside m3, but
         // once m3 is expanded, sync's fold hides nothing.
