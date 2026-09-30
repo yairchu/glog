@@ -8,6 +8,26 @@
   release. For fixes to unreleased features, update the feature's existing
   entry if needed rather than adding a separate fix entry.
 
+## Commit convention
+
+Use Conventional Commits for new commits: `type: description` or
+`type(scope): description` when a scope adds useful context.
+
+- `feat`: new functionality
+- `fix`: bug fixes
+- `docs`: documentation and website copy
+- `test`: tests and test infrastructure
+- `refactor`: code restructuring without behavior changes
+- `chore`: maintenance and releases
+
+Use lowercase types and short, imperative descriptions, for example
+`feat(log): filter commits by type`, `docs: simplify installation`, or
+`chore(release): prepare 0.3.2`. Mark breaking changes with `!` before the colon
+and explain them in the commit body.
+
+Apply this convention going forward; do not rewrite published history to
+convert existing commit messages.
+
 ## Release workflow
 
 1. Choose the next Semantic Versioning version and update it in both
