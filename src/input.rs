@@ -113,7 +113,7 @@ pub fn handle(event: Event, app: &mut App) {
                 app.scroll_show(app.visible_show_rows.max(1) as isize);
             }
             KeyCode::PageUp | KeyCode::Char('b') => app.move_by(-2, 20),
-            KeyCode::PageDown | KeyCode::Char(' ') => app.move_by(2, 20),
+            KeyCode::PageDown | KeyCode::Char(' ' | 'f') => app.move_by(2, 20),
             KeyCode::Left if app.mode == Mode::Show => show_adjacent(app, -1),
             KeyCode::Right if app.mode == Mode::Show => show_adjacent(app, 1),
             KeyCode::Left if !key.modifiers.contains(KeyModifiers::SHIFT) => app.move_by(-1, 1),
@@ -364,6 +364,32 @@ mod tests {
             &mut app,
         );
         assert_eq!(app.mode, Mode::Show);
+    }
+
+    #[test]
+    fn log_forward_page_keys_skip_filtered_commits() {
+        for code in [KeyCode::Char('f'), KeyCode::Char(' '), KeyCode::PageDown] {
+            let commits = (0..60)
+                .map(|i| {
+                    let mut commit = crate::log_format::tests::commit();
+                    commit.hash = i.to_string();
+                    commit.subject = if i % 2 == 0 {
+                        "feat: visible"
+                    } else {
+                        "test: hidden"
+                    }
+                    .into();
+                    commit.parents.clear();
+                    commit
+                })
+                .collect();
+            let mut app = App::new(commits);
+            app.toggle_commit_type(Some("test"));
+            handle(key(code), &mut app);
+            assert_eq!(app.selected, 40, "{code:?}");
+            handle(key(code), &mut app);
+            assert_eq!(app.selected, 58, "{code:?}");
+        }
     }
 
     #[test]

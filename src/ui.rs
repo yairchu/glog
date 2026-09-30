@@ -144,7 +144,7 @@ fn draw_help(frame: &mut Frame, has_log: bool) {
         "Navigation",
         "  ↑/k, ↓/j          previous / next; move Show cursor",
         "  Page Up/b         page up",
-        "  Page Down/Space/f page down (f in Show)",
+        "  Page Down/Space/f page down",
         "  ←/→                previous / next commit (Log/Show/Status)",
         "  [, ]              previous / next changed file (Show)",
         "  g/<, G/>          top / bottom (also Home/End)",

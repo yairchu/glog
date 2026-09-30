@@ -7,6 +7,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Added `f` as a forward-page shortcut in Log, matching Space and Page Down.
+
 - Added commit-type filtering in Log: `t` or a clickable button hides the
   selected Conventional Commit type, and the existing top bar shows the hidden count with
   buttons to restore individual types. `T` clears all commit filters. Navigation and

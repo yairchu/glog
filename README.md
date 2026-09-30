@@ -348,8 +348,7 @@ This differs from `m` / `z`, which fold branch history beneath merge commits.
 | `Tab` | open selected item | return to Log |
 | `Escape` | — | return to Log |
 | `↑` / `k`, `↓` / `j` | select commit | move patch cursor |
-| `Page Up` / `b`, `Page Down` / `Space` | move by page | scroll by page |
-| `f` | — | page forward |
+| `Page Up` / `b`, `Page Down` / `Space` / `f` | move by page | scroll by page |
 | `a`, `d`, `r`, `x`, `s` | toggle author/date/refs/hash/subject | — |
 | `←`, `→` | select previous/newer or next/older commit | previous/newer or next/older commit |
 | `[`, `]` | — | previous/next changed file |
