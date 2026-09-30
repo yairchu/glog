@@ -750,8 +750,14 @@ impl Layout {
             if node < graph.rows && self.visible[node] {
                 leads[node].push(node);
             } else if reached[node] {
-                for &(parent, side) in &graph.parents[node] {
-                    if (node >= graph.rows || folded[node]) && side {
+                for (slot, &(parent, side)) in graph.parents[node].iter().enumerate() {
+                    // Omitted nodes carry reachability links, whose `side`
+                    // flags are all false. Use their parent order instead.
+                    if node >= graph.rows {
+                        if slot > 0 {
+                            break;
+                        }
+                    } else if folded[node] && side {
                         continue;
                     }
                     let parents = leads[parent].clone();
