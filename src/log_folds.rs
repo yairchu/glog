@@ -1324,6 +1324,30 @@ mod tests {
     }
 
     #[test]
+    fn filters_after_a_failed_refresh_draw_the_unfolded_log() {
+        let commits = vec![
+            commit("merge", &["main", "side"]),
+            commit("side", &["base"]),
+            commit("main", &["filtered"]),
+            commit("filtered", &["base", "omitted"]),
+            commit("base", &[]),
+        ];
+        let ancestry = Ancestry::from([("omitted".into(), vec!["base".into()])]);
+        let mut folds = folds_with(Some(ancestry));
+        folds.refresh(&commits).unwrap();
+        folds.toggle(0, &commits).unwrap();
+        folds.load_ancestry = folds_with(None).load_ancestry;
+        folds.revisions.clear();
+        assert!(folds.refresh(&commits).is_err());
+        // The saved fold must not be drawn while the Log shows its side.
+        assert!(folds.toggle_type(Some("nonexistent"), &commits).is_err());
+        let mut expected = folds_with(None);
+        expected.refresh(&commits).unwrap();
+        assert!(expected.toggle_type(Some("nonexistent"), &commits).is_err());
+        assert_same_layout(&folds, &expected, &commits);
+    }
+
+    #[test]
     fn nested_folds_keep_mainline_that_a_topic_merged_back() {
         // The topic merged master's m1 before master merged the topic, so
         // m1 is merged by x but is mainline history of the outer merge.
