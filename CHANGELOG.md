@@ -5,6 +5,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+## 0.3.2 - 2026-09-30
+
 ### Added
 
 - Added `f` as a forward-page shortcut in Log, matching Space and Page Down.
@@ -233,7 +235,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Initial release of the interactive `git log` and `git show` browser.
 
-[Unreleased]: https://github.com/yairchu/glog/compare/v0.3.1...HEAD
+[Unreleased]: https://github.com/yairchu/glog/compare/v0.3.2...HEAD
+[0.3.2]: https://github.com/yairchu/glog/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/yairchu/glog/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/yairchu/glog/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/yairchu/glog/compare/v0.2.0...v0.2.1
