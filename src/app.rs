@@ -1390,6 +1390,24 @@ mod tests {
     }
 
     #[test]
+    fn folding_does_not_act_on_a_hidden_selection() {
+        let base = commit("fix: base");
+        let mut side = commit("fix: side");
+        let mut main = commit("fix: main");
+        let mut merge = commit("Merge side");
+        side.parents = vec![base.hash.clone()];
+        main.parents = vec![base.hash.clone()];
+        merge.parents = vec![main.hash.clone(), side.hash.clone()];
+        let mut app = App::new(vec![merge, side, main, base]);
+        app.apply_log_filter(LogFilterAction::Merges);
+        app.apply_log_filter(LogFilterAction::Type("fix".into()));
+        assert!((0..app.commits.len()).all(|i| !app.log_folds.visible(i)));
+        // The merge filter still applies, so z must not bring it back folded.
+        app.toggle_log_merge();
+        assert!((0..app.commits.len()).all(|i| !app.log_folds.visible(i)));
+    }
+
+    #[test]
     fn log_search_wraps() {
         let mut app = App::new(vec![commit("first"), commit("needle"), commit("last")]);
         app.selected = 2;
