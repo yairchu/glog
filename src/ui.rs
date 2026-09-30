@@ -739,6 +739,41 @@ mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
+    fn all_hidden_message_ignores_graph_only_merge_rows() {
+        // Nested merges hidden by the merge filter still draw junctions,
+        // but nothing is selectable once types hide every other commit.
+        let base = commit("fix: base", 1);
+        let mut outer = commit("Merge outer", 1);
+        let mut rows = Vec::new();
+        for name in ["left", "right"] {
+            let mut first = commit(&format!("fix: {name} first"), 1);
+            let mut second = commit(&format!("fix: {name} second"), 1);
+            let mut merge = commit(&format!("Merge {name}"), 1);
+            first.parents = vec![base.hash.clone()];
+            second.parents = vec![base.hash.clone()];
+            merge.parents = vec![first.hash.clone(), second.hash.clone()];
+            outer.parents.push(merge.hash.clone());
+            rows.extend([merge, second, first]);
+        }
+        rows.insert(0, outer);
+        rows.push(base);
+        let mut app = App::new(rows);
+        app.apply_log_filter(LogFilterAction::Merges);
+        app.apply_log_filter(LogFilterAction::Type("fix".into()));
+        assert!((0..app.commits.len()).all(|i| !app.log_folds.visible(i)));
+        let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(screen.contains("All commits hidden. Press T to clear filters."));
+    }
+
+    #[test]
     fn hidden_merges_keep_noninteractive_graph_junctions_for_both_filters() {
         use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
         for action in [
