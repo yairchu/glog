@@ -1186,6 +1186,29 @@ mod tests {
     }
 
     #[test]
+    fn nonmatching_type_filter_does_not_restore_an_omitted_merge_junction() {
+        // Git omitted the merge (for example, with --grep), but both of its
+        // parents are loaded. Redrawing must keep the first-parent projection
+        // through omitted ancestry instead of adding a split below tip.
+        let commits = vec![
+            commit("tip", &["omitted merge"]),
+            commit("main", &["base"]),
+            commit("side", &["base"]),
+            commit("base", &[]),
+        ];
+        let ancestry =
+            Ancestry::from([("omitted merge".into(), vec!["main".into(), "side".into()])]);
+        let mut folds = folds_with(Some(ancestry));
+        folds.refresh(&commits).unwrap();
+        folds.toggle_type(Some("nonexistent"), &commits).unwrap();
+
+        assert_eq!(folds.hidden_count, 0);
+        assert_eq!(shown(&folds, &commits), ["tip", "main", "side", "base"]);
+        assert_eq!(plain(folds.graph(1, &commits[1])), ["* "]);
+        assert_eq!(plain(folds.graph(2, &commits[2])), ["| * "]);
+    }
+
+    #[test]
     fn filtered_out_side_parents_are_not_resolved_by_bulk_folding() {
         // As in a --grep log, the side tip is omitted but an older side commit
         // matched. Only folding this merge on request reads the ancestry.
