@@ -337,10 +337,11 @@ impl LogFolds {
             // filtered out. Merge folds still control branch visibility.
             layout.visible[index] &= !hidden || commit.parents.len() > 1;
         }
-        let folded: Vec<_> = commits
+        let mut folded: Vec<_> = commits
             .iter()
             .map(|c| self.collapsed.contains(&c.hash))
             .collect();
+        self.layout.unfold_idle_merges(&mut folded);
         let reached = Layout::with_folds(&self.graph, &folded).1;
         layout.graphs = layout.draw(&self.graph, commits, &folded, &reached);
         for (index, commit) in commits.iter().enumerate() {
@@ -617,24 +618,29 @@ impl Layout {
             .map(|c| c.parents.len() > 1 && collapsed.contains(&c.hash))
             .collect();
         let (mut layout, mut reached) = Self::with_folds(graph, &folded);
-        // A shown fold that hides nothing, such as one inside a fold that
-        // was since expanded, stays chosen: folding another merge could
-        // make it hide something again. It is drawn as a merge, though.
-        // Following its side parents reaches only shown rows.
-        let mut idle = false;
-        for (row, folded) in folded.iter_mut().enumerate() {
-            if *folded && layout.visible[row] && layout.folds[row] == Fold::None {
-                *folded = false;
-                idle = true;
-            }
-        }
-        if idle {
+        if layout.unfold_idle_merges(&mut folded) {
             reached = Self::with_folds(graph, &folded).1;
         }
         if layout.visible.contains(&false) {
             layout.graphs = layout.draw(graph, commits, &folded, &reached);
         }
         layout
+    }
+
+    /// Normalize drawing choices without changing the saved merge folds.
+    fn unfold_idle_merges(&self, folded: &mut [bool]) -> bool {
+        // A shown fold that hides nothing, such as one inside a fold that
+        // was since expanded, stays chosen: folding another merge could
+        // make it hide something again. It is drawn as a merge, though.
+        // Following its side parents reaches only shown rows.
+        let mut idle = false;
+        for (row, folded) in folded.iter_mut().enumerate() {
+            if *folded && self.visible[row] && self.folds[row] == Fold::None {
+                *folded = false;
+                idle = true;
+            }
+        }
+        idle
     }
 
     /// The layout without its redrawn graph, and which nodes shown rows reach.
