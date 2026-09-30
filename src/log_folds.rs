@@ -931,6 +931,7 @@ fn transitions(edges: &[(usize, usize, usize)], width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::style::Style;
 
     fn plain(rows: &[String]) -> Vec<String> {
         rows.iter()
@@ -965,6 +966,114 @@ mod tests {
             .filter(|&i| folds.visible(i))
             .map(|i| commits[i].hash.as_str())
             .collect()
+    }
+
+    /// The history of `git log --graph --color=always` over two merges,
+    /// each commit with the graph rows Git drew for it.
+    fn coloured_history() -> Vec<Commit> {
+        let r = |c: char| format!("\x1b[31m{c}\x1b[m");
+        let g = |c: char| format!("\x1b[32m{c}\x1b[m");
+        let b = |c: char| format!("\x1b[34m{c}\x1b[m");
+        let rows = [
+            ("merge2", &["m2", "t1"][..], vec!["*   ".to_owned()]),
+            (
+                "t1",
+                &["m1"],
+                vec![format!("{}{}  ", r('|'), g('\\')), format!("{} * ", r('|'))],
+            ),
+            ("m2", &["merge1"], vec![format!("* {} ", g('|'))]),
+            ("merge1", &["m1", "s1"], vec![format!("* {}   ", g('|'))]),
+            (
+                "s1",
+                &["base"],
+                vec![
+                    format!("{}{} {}  ", g('|'), b('\\'), g('\\')),
+                    format!("{} {}{}  ", g('|'), b('|'), g('/')),
+                    format!("{}{}{}   ", g('|'), g('/'), b('|')),
+                    format!("{} * ", g('|')),
+                ],
+            ),
+            ("m1", &["base"], vec![format!("* {} ", b('|'))]),
+            (
+                "base",
+                &[],
+                vec![format!("{}{}  ", b('|'), b('/')), "* ".to_owned()],
+            ),
+        ];
+        rows.into_iter()
+            .map(|(hash, parents, graph)| {
+                let mut commit = commit(hash, parents);
+                commit.graph = graph;
+                commit
+            })
+            .collect()
+    }
+
+    /// The colour of the edge Git draws into each row's node, when one
+    /// ends there, following the rows in order.
+    fn incoming_colours(graphs: &[&[String]]) -> Vec<Option<Style>> {
+        let cells = |line: &str| -> Vec<(char, Style)> {
+            crate::ansi::parse_line(line)
+                .spans
+                .iter()
+                .flat_map(|span| span.content.chars().map(|c| (c, span.style)))
+                .collect()
+        };
+        let mut above: Vec<(char, Style)> = Vec::new();
+        let mut colours = Vec::new();
+        for rows in graphs {
+            let mut colour = None;
+            for line in rows.iter() {
+                let line = cells(line);
+                if let Some(node) = line.iter().position(|&(c, _)| c == '*') {
+                    let edge = |at: Option<usize>, symbol| {
+                        at.and_then(|at| above.get(at))
+                            .filter(|&&(c, _)| c == symbol)
+                            .map(|&(_, style)| style)
+                    };
+                    colour = edge(Some(node), '|')
+                        .or_else(|| edge(node.checked_sub(1), '\\'))
+                        .or_else(|| edge(Some(node + 1), '/'));
+                }
+                above = line;
+            }
+            colours.push(colour);
+        }
+        colours
+    }
+
+    #[test]
+    fn redrawn_lanes_keep_git_colours() {
+        let commits = coloured_history();
+        let git = incoming_colours(&commits.iter().map(|c| &c.graph[..]).collect::<Vec<_>>());
+        // merge2 is the first row and m2 leads straight into merge1.
+        assert_eq!(
+            git.iter().map(Option::is_some).collect::<Vec<_>>(),
+            [false, true, true, false, true, true, true]
+        );
+        for hide_merges in [false, true] {
+            let mut folds = LogFolds::default();
+            folds.refresh(&commits).unwrap();
+            if hide_merges {
+                folds.toggle_merges(&commits).unwrap();
+            } else {
+                // A filter matching nothing still redraws the graph.
+                folds.toggle_type(Some("nonexistent"), &commits).unwrap();
+            }
+            let shown: Vec<_> = (0..commits.len())
+                .filter(|&i| folds.graph_visible(i))
+                .collect();
+            let graphs: Vec<_> = shown.iter().map(|&i| folds.graph(i, &commits[i])).collect();
+            for (&i, colour) in shown.iter().zip(incoming_colours(&graphs)) {
+                if folds.visible(i) && git[i].is_some() {
+                    assert_eq!(
+                        colour, git[i],
+                        "{} (hide merges: {hide_merges})",
+                        commits[i].hash
+                    );
+                }
+            }
+        }
     }
 
     #[test]
