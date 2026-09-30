@@ -294,8 +294,9 @@ They are static and follow the author toggle. Credits come only from
 Other identities use the generic badge. Emails are deduplicated without regard
 to case, and the primary author is excluded. Full credits remain in Show.
 
-## Commit type filtering
+## Commit filters
 
+Log can hide commits by Conventional Commit type, merge commits, or both.
 Start with filters enabled:
 
 ```bash
@@ -304,45 +305,52 @@ glog --hide-merges
 glog --watch --hide-types=test,chore --hide-merges
 ```
 
-`--hide-types TYPES` also works. Repeated `--hide-types` options combine;
-aliases use the same groups as the interactive controls. These are reversible
-view filters: use the top-bar buttons, `M`, or `T` to change them after launch.
-Revision/path arguments still select which history Git loads.
+`--hide-types TYPES` also works, and repeated `--hide-types` options combine.
+These are reversible view filters: use the top-bar buttons, `t`, `M`, or `T` to
+change them after launch. Revision and path arguments still select which
+history Git loads.
+
+### Commit types
 
 In Log, press `t` or click **[t hide TYPE]** in the top bar to hide the
-selected commit's Conventional Commit type. For example, on
-`test(failing): reproduce crash`, this hides all `test` commits.
-Scopes and breaking-change markers (`feat!:`, `feat(api)!:`) are supported,
-as are custom lowercase types and issue-number extensions such as
-`test #234(failing):`, `docs #290(manual):`, and `fix #233 #234:`.
-Aliases share one filter: `doc`/`docs` → `docs`, `tests`/`test` → `test`,
-and `feature`/`feat` → `feat`. Buttons use these canonical labels; commit
-subjects keep their original spelling. Other custom types stay separate.
-Only the subject is examined; untyped commits
-and the working-tree entry remain visible.
+selected commit's type. For example, on `test(failing): reproduce crash`, this
+hides all `test` commits. Scopes and breaking-change markers (`feat!:`,
+`feat(api)!:`) are supported, as are custom lowercase types and issue-number
+extensions such as `test #234(failing):`, `docs #290(manual):`, and
+`fix #233 #234:`.
 
-The existing top bar shows **Hiding N commits**, with a button for each hidden type.
-Click a type to restore it, or press `T` / click **[T show all]** to clear both type and merge filters.
-Controls stay on one line; `t` and `T` work even when the terminal is too narrow
-to show the buttons. Filters last for the current session and
-survive watch refreshes. The count includes matching commits inside merge folds and is cached between
-filter/history updates rather than recounted on each redraw.
-Navigation and Log search skip hidden types. A folded merge stays shown even when
-a filter matches it, since it stands in for its hidden history; expanding it
+Aliases share one filter: `doc`/`docs` → `docs`, `tests`/`test` → `test`, and
+`feature`/`feat` → `feat`. Buttons and `--hide-types` use these canonical
+names; commit subjects keep their original spelling. Other custom types stay
+separate. Only the subject is examined, so untyped commits and the working-tree
+entry remain visible.
+
+### Merge commits
+
+Press `M` or click **[M hide merges]** to hide all merge commits, regardless of
+their subjects. The button appears when a merge is selected or while the filter
+is enabled; `M` works anywhere in Log. The merges' branch commits stay visible.
+Press `M` again or click **[M show merges]** to restore merges while keeping
+type filters. This differs from `m` / `z`, which fold the branch history
+beneath merge commits; existing merge folds stay folded.
+
+### Behavior
+
+While any filter is active, the top bar shows **Hiding N commits** and a button
+for each hidden type. Click a type to restore it, or press `T` / click
+**[T show all]** to clear both type and merge filters. The count includes
+matching commits inside merge folds, and commits matching both filters count
+once. The controls stay on one line; `t`, `M`, and `T` work even when the
+terminal is too narrow to show the buttons.
+
+Filters last for the current session and survive watch refreshes. Navigation
+and Log search skip hidden commits. A folded merge stays shown even when a
+filter matches it, since it stands in for its hidden history; expanding it
 applies the filter.
-Hidden merges omit their own commit rows while retaining connecting graph
-lines, keeping branch structure visible for both filters. Graph-only rows are
-skipped by navigation and mouse selection. Other filtered commits are omitted, so graph
-edges may span hidden commits.
 
-Press `M` or click **[M hide merges]** to hide all merge commits, regardless
-of their subjects. The button appears when selecting a merge or while the
-filter is enabled; `M` works anywhere in Log. A merge has more than one parent;
-this filter leaves its
-branch commits visible and combines with type filters. Commits matching both
-filters count only once. Press `M` again or click **[M show merges]** to restore
-merges while preserving type filters. Existing merge folds remain folded.
-This differs from `m` / `z`, which fold branch history beneath merge commits.
+Hidden merges keep their graph lines so branch structure stays visible; these
+graph-only rows cannot be selected. Other hidden commits are omitted entirely,
+so graph edges may span them.
 
 ## Keys
 
