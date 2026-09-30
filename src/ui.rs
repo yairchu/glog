@@ -252,7 +252,7 @@ fn draw_type_controls(frame: &mut Frame, app: &mut App, area: Rect) {
         let rect = Rect::new(x, area.y, width, 1);
         frame.render_widget(
             Paragraph::new(label).style(Style::default().bg(Color::DarkGray).fg(if clickable {
-                Color::Cyan
+                Color::LightBlue
             } else {
                 Color::Yellow
             })),

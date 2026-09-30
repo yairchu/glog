@@ -189,7 +189,7 @@ impl LogFormat {
                 if start > 0 {
                     spans.push(Span::styled(text[..start].to_owned(), style));
                 }
-                spans.push(Span::styled(kind.to_owned(), style.fg(Color::Cyan)));
+                spans.push(Span::styled(kind.to_owned(), style.fg(Color::LightBlue)));
                 spans.push(Span::styled(text[start + kind.len()..].to_owned(), style));
             } else {
                 spans.push(Span::styled(text, style));
@@ -331,7 +331,7 @@ pub(crate) mod tests {
                 let spans = format.spans(&c);
                 let highlighted: Vec<_> = spans
                     .iter()
-                    .filter(|span| span.style.fg == Some(Color::Cyan))
+                    .filter(|span| span.style.fg == Some(Color::LightBlue))
                     .map(|span| span.content.as_ref())
                     .collect();
                 let expected = kind
@@ -346,7 +346,7 @@ pub(crate) mod tests {
             assert!(LogFormat::default()
                 .spans(&c)
                 .iter()
-                .all(|span| { span.style.fg != Some(Color::Cyan) }));
+                .all(|span| { span.style.fg != Some(Color::LightBlue) }));
         }
     }
 
