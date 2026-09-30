@@ -478,6 +478,9 @@ mod tests {
         let oid = oid.trim();
         let clone = Repo(origin.0.with_extension("clone"));
         let output = Command::new("git")
+            // Other tests change the process-wide cwd and remove their repos.
+            // Keep clone and its subprocesses in this test's live repository.
+            .current_dir(&origin.0)
             .args([
                 "clone",
                 "-q",
