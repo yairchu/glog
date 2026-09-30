@@ -281,7 +281,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
         );
         return;
     }
-    if !(0..app.commits.len()).any(|i| app.log_folds.graph_visible(i)) {
+    if !(0..app.commits.len()).any(|i| app.log_folds.visible(i)) {
         frame.render_widget(
             Paragraph::new("All commits hidden. Press T to clear filters."),
             area,
