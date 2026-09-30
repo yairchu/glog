@@ -77,6 +77,12 @@
     .features ul { margin: 0; padding-left: 20px; color: var(--muted); }
     .features li { margin-block: 6px; }
     .features code, .features kbd { color: var(--text); font-size: .9em; }
+    .comparison { border-top: 1px solid var(--line); padding: 30px 0 36px; font-size: 14px; }
+    .comparison table { width: 100%; border-collapse: collapse; }
+    .comparison th, .comparison td { padding: 12px 0; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+    .comparison th { width: 1%; white-space: nowrap; padding-right: 20px; color: var(--text); }
+    .comparison td { color: var(--muted); }
+    .comparison tr:last-child th, .comparison tr:last-child td { border-bottom: 0; }
     .install { display: grid; grid-template-columns: 1fr 1.15fr; align-items: start; gap: 30px; border-top: 1px solid var(--line); margin-top: 30px; padding: 30px 0 36px; scroll-margin-top: 24px; }
     .install p { font-size: 14px; color: var(--muted); margin: 0; }
     .command { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); }
@@ -144,6 +150,7 @@
         <li>Spot agent coauthors with badges: <span class="codex" aria-hidden="true">꩜</span> Codex and <span class="claude" aria-hidden="true">❋</span> Claude Code.</li>
         <li>Lockfiles fold automatically to keep source changes in view; expand them when needed.</li>
         <li>View image files in diffs in supported terminals (<a href="https://sw.kovidgoyal.net/kitty/">Kitty</a> and <a href="https://ghostty.org">Ghostty</a>, <a href="https://cmux.com">cmux</a> and more).</li>
+        <li>Filter <a href="https://www.conventionalcommits.org/">conventional commits</a> by type.</li>
         <li>Expand submodule diffs to inspect the changes inside.</li>
         <li>Follow commits and working-tree changes live with <code>glog --watch</code>.</li>
       </ul>
@@ -161,6 +168,25 @@
         <p class="requirements">Requires Git and the latest stable Rust toolchain.</p>
         <span class="sr-only" id="copy-status" role="status"></span>
       </div>
+    </section>
+    <section class="comparison" aria-labelledby="comparison-heading">
+      <h2 id="comparison-heading">Comparison to other tools</h2>
+      <table aria-labelledby="comparison-heading">
+        <tbody>
+          <tr>
+            <th scope="row">Vanilla Git</th>
+            <td>glog adds interactive browsing and live refresh with familiar pager shortcuts.</td>
+          </tr>
+          <tr>
+            <th scope="row">Terminal UIs<br>(<a href="https://github.com/jesseduffield/lazygit">lazygit</a>, <a href="https://jonas.github.io/tig/">tig</a>)</th>
+            <td>glog focuses solely on read-only actions, so an accidental keypress won't change your files or rewrite history</td>
+          </tr>
+          <tr>
+            <th scope="row">Git GUI apps</th>
+            <td>glog is lightweight and fits terminal workspaces such as <a href="https://cmux.com">cmux</a>, where you can keep multiple projects open with a Git view alongside each one.</td>
+          </tr>
+        </tbody>
+      </table>
     </section>
   </main>
   <footer>
