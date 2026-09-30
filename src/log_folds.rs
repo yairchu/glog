@@ -759,6 +759,13 @@ impl Layout {
         folded: &[bool],
         reached: &[bool],
     ) -> HashMap<usize, Vec<String>> {
+        // Git colours each edge after the commit it leads to, so a lane
+        // takes its row's colour. Git draws no edge into the first row or a
+        // row directly below its child; those lanes use the palette instead.
+        let git_colours: Vec<_> = (0..commits.len())
+            .map(|row| incoming_colour(commits, row))
+            .collect();
+        let mut palette = (0..).map(|i| PALETTE[i % PALETTE.len()]);
         // Compute destinations parents first. Type-hidden loaded commits
         // preserve every unfolded parent; ancestry omitted by Git follows
         // first parents, matching the existing merge-fold projection.
@@ -787,9 +794,7 @@ impl Layout {
             }
         }
         let mut graphs = HashMap::new();
-        // Each lane keeps a colour from Git's default palette while it lasts.
-        let mut lanes = Vec::<(usize, usize)>::new();
-        let mut colours = 0..;
+        let mut lanes = Vec::<(usize, &str)>::new();
         let mut pending = Vec::new();
         for (index, commit) in commits.iter().enumerate() {
             if !self.visible[index] {
@@ -803,7 +808,8 @@ impl Layout {
                 .iter()
                 .position(|&(row, _)| row == index)
                 .unwrap_or_else(|| {
-                    lanes.push((index, colours.next().unwrap()));
+                    let colour = git_colours[index].or_else(|| palette.next()).unwrap();
+                    lanes.push((index, colour));
                     lanes.len() - 1
                 });
             let node: String = lanes
@@ -838,12 +844,12 @@ impl Layout {
             let mut insert = column;
             for &parent in &projected {
                 if !next.iter().any(|&(row, _)| row == parent) {
-                    // The first new parent continues this lane's colour.
-                    let colour = if insert == column {
-                        colour
-                    } else {
-                        colours.next().unwrap()
-                    };
+                    // Without Git's colour, the first new parent continues
+                    // this lane's colour.
+                    let colour = git_colours[parent]
+                        .or_else(|| (insert == column).then_some(colour))
+                        .or_else(|| palette.next())
+                        .unwrap();
                     next.insert(insert, (parent, colour));
                     insert += 1;
                 }
@@ -873,15 +879,56 @@ const PALETTE: [&str; 12] = [
     "31", "32", "33", "34", "35", "36", "1;31", "1;32", "1;33", "1;34", "1;35", "1;36",
 ];
 
-fn paint(symbol: char, colour: usize) -> String {
-    format!("\x1b[{}m{symbol}\x1b[m", PALETTE[colour % PALETTE.len()])
+fn paint(symbol: char, colour: &str) -> String {
+    format!("\x1b[{colour}m{symbol}\x1b[m")
+}
+
+/// The SGR colour of the edge Git drew into a row's node: the line above
+/// it, or a diagonal ending beside it.
+fn incoming_colour(commits: &[Commit], row: usize) -> Option<&str> {
+    let graph = &commits[row].graph;
+    let node = graph.last()?;
+    let above = match graph.len() {
+        0 | 1 => commits.get(row.checked_sub(1)?)?.graph.last()?,
+        len => &graph[len - 2],
+    };
+    let column = cells(node).iter().position(|&(symbol, _)| symbol == '*')?;
+    let above = cells(above);
+    let edge = |at: Option<usize>, expected| {
+        at.and_then(|at| above.get(at))
+            .filter(|&&(symbol, _)| symbol == expected)
+            .and_then(|&(_, colour)| colour)
+    };
+    edge(Some(column), '|')
+        .or_else(|| edge(column.checked_sub(1), '\\'))
+        .or_else(|| edge(Some(column + 1), '/'))
+}
+
+/// Each character of a graph line with the SGR colour it is drawn in.
+fn cells(line: &str) -> Vec<(char, Option<&str>)> {
+    let mut cells = Vec::new();
+    let mut colour = None;
+    let mut rest = line;
+    while let Some(c) = rest.chars().next() {
+        if let Some(sequence) = rest.strip_prefix("\x1b[") {
+            let Some(end) = sequence.find('m') else {
+                break;
+            };
+            colour = Some(&sequence[..end]).filter(|code| !matches!(*code, "" | "0"));
+            rest = &sequence[end + 1..];
+        } else {
+            cells.push((c, colour));
+            rest = &rest[c.len_utf8()..];
+        }
+    }
+    cells
 }
 
 // Route edges between columns two characters apart, each in its target
 // lane's colour. As in Git, each row moves a route one lane, drawn between
 // the two. Crossings retain their independent targets; '+' joins routes to
 // the same target, 'X' crosses routes to different targets.
-fn transitions(edges: &[(usize, usize, usize)], width: usize) -> Vec<String> {
+fn transitions(edges: &[(usize, usize, &str)], width: usize) -> Vec<String> {
     let lanes = |from: usize, to: usize| from.abs_diff(to) / 2;
     let distance = edges
         .iter()
@@ -890,7 +937,7 @@ fn transitions(edges: &[(usize, usize, usize)], width: usize) -> Vec<String> {
         .unwrap_or(0);
     let mut rows = Vec::new();
     for step in 1..=distance {
-        let mut cells = vec![(' ', 0); width * 2];
+        let mut cells = vec![(' ', ""); width * 2];
         let mut targets = vec![None; width * 2];
         for &(from, to, colour) in edges {
             let (position, symbol) = if step > lanes(from, to) {
@@ -1606,17 +1653,26 @@ mod tests {
 
     #[test]
     fn lines_move_one_lane_per_row_like_git() {
-        assert_eq!(plain(&transitions(&[(0, 0, 0), (0, 2, 1)], 2)), ["|\\ "]);
-        assert_eq!(plain(&transitions(&[(0, 0, 0), (2, 0, 1)], 2)), ["|/ "]);
         assert_eq!(
-            plain(&transitions(&[(0, 0, 0), (4, 0, 1)], 3)),
+            plain(&transitions(&[(0, 0, "31"), (0, 2, "32")], 2)),
+            ["|\\ "]
+        );
+        assert_eq!(
+            plain(&transitions(&[(0, 0, "31"), (2, 0, "32")], 2)),
+            ["|/ "]
+        );
+        assert_eq!(
+            plain(&transitions(&[(0, 0, "31"), (4, 0, "32")], 3)),
             ["|  / ", "|/ "]
         );
     }
 
     #[test]
     fn crossing_routes_do_not_turn_into_a_shared_parent() {
-        assert_eq!(plain(&transitions(&[(0, 2, 0), (2, 0, 1)], 2)), [" X "]);
+        assert_eq!(
+            plain(&transitions(&[(0, 2, "31"), (2, 0, "32")], 2)),
+            [" X "]
+        );
     }
 
     /// A deterministic history of `size` commits, each with parents older

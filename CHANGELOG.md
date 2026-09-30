@@ -25,6 +25,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Fixed
 
+- Folding merges no longer recolors the graph: redrawn lanes keep the colors
+  Git gave the commits they lead to.
 - Mouse scrolling and clicks no longer act on the view hidden behind the help
   overlay or while a search is being typed.
 
