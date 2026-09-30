@@ -5,6 +5,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Highlight recognized Conventional Commit types in cyan in Log, matching the
+  type-filter controls.
+
 ## 0.3.2 - 2026-09-30
 
 ### Added

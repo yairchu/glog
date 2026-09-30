@@ -180,7 +180,20 @@ impl LogFormat {
                 Field::Refs => Style::default().fg(Color::Green),
                 Field::Subject => Style::default(),
             };
-            spans.push(Span::styled(text, style));
+            if let Some(kind) = (part.field == Field::Subject)
+                .then(|| crate::log_folds::commit_type_prefix(commit))
+                .flatten()
+            {
+                // Preserve format literals and the subject's original spelling.
+                let start = text.len() - value.len() - part.suffix.len();
+                if start > 0 {
+                    spans.push(Span::styled(text[..start].to_owned(), style));
+                }
+                spans.push(Span::styled(kind.to_owned(), style.fg(Color::Cyan)));
+                spans.push(Span::styled(text[start + kind.len()..].to_owned(), style));
+            } else {
+                spans.push(Span::styled(text, style));
+            }
             if Some(index) == last_author {
                 let collaborators = &commit.collaborators;
                 let total = usize::from(collaborators.codex)
@@ -297,6 +310,45 @@ pub fn parse_args(args: &[String]) -> Result<(LogFormat, LogOptions, Vec<String>
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn subject_types_keep_original_spelling_and_format_literals() {
+        for (subject, kind) in [
+            ("feat(log)!: add filtering", Some("feat")),
+            ("tests #234(failing): reproduce crash", Some("tests")),
+            ("doc: explain filtering", Some("doc")),
+            ("feature: new view", Some("feature")),
+            ("custom-type: café", Some("custom-type")),
+            ("ordinary prose: description", None),
+            ("fix(): invalid scope", None),
+        ] {
+            let mut c = commit();
+            c.subject = subject.into();
+            for source in ["%s", "  «%s»", "%h — %s", "%s / %s"] {
+                let format = LogFormat::parse(source).unwrap();
+                let expected = source.replace("%s", subject).replace("%h", &c.short_hash);
+                assert_eq!(format.text(&c), expected.trim_start());
+                let spans = format.spans(&c);
+                let highlighted: Vec<_> = spans
+                    .iter()
+                    .filter(|span| span.style.fg == Some(Color::Cyan))
+                    .map(|span| span.content.as_ref())
+                    .collect();
+                let expected = kind
+                    .map(|kind| vec![kind; source.matches("%s").count()])
+                    .unwrap_or_default();
+                assert_eq!(highlighted, expected);
+            }
+            let mut format = LogFormat::parse("%s").unwrap();
+            format.toggle(Field::Subject);
+            assert!(format.spans(&c).is_empty());
+            c.kind = CommitKind::WorkingTree;
+            assert!(LogFormat::default()
+                .spans(&c)
+                .iter()
+                .all(|span| { span.style.fg != Some(Color::Cyan) }));
+        }
+    }
 
     #[test]
     fn startup_filters_parse_aliases_repetitions_and_preserve_git_arguments() {

@@ -380,6 +380,11 @@ impl LogFolds {
 /// Custom ASCII types and issue references before the scope are supported;
 /// ordinary prose remains unclassified.
 pub fn commit_type(commit: &Commit) -> Option<&str> {
+    commit_type_prefix(commit).and_then(normalize_type)
+}
+
+/// The recognized type as written in the subject, before alias normalization.
+pub fn commit_type_prefix(commit: &Commit) -> Option<&str> {
     if commit.kind != CommitKind::Revision {
         return None;
     }
@@ -413,7 +418,7 @@ pub fn commit_type(commit: &Commit) -> Option<&str> {
     } else {
         kind
     };
-    normalize_type(kind)
+    normalize_type(kind).map(|_| kind)
 }
 
 /// Validate a filter type and use the same aliases in the CLI and TUI.
