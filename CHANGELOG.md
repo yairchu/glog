@@ -13,10 +13,15 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   search skip hidden types, the graph reconnects visible history, and watch
   refreshes preserve filters. Issue-number prefixes such as `test #234(failing):`
   are supported, and hidden counts are cached between filter/history updates.
+  Aliases `doc`/`docs`, `tests`/`test`, and `feature`/`feat` share type filters.
+  `--hide-types=test,refactor,docs` enables filters at startup, including in watch mode.
   Untyped commits remain visible unless hidden by the merge filter.
-- Added `M` and a top-bar button to hide/show merge commits independently of
+- Added `M`, a contextual top-bar button, and `--hide-merges` at startup to
+  hide/show merge commits independently of
   their subjects, preserving branch history and existing fold choices. Merge
-  and type filters combine without double-counting hidden commits.
+  and type filters combine without double-counting hidden commits. Hidden merges
+  omit their own rows while retaining connecting graph lines, so both filters
+  preserve visible branch structure.
 
 ## 0.3.1 - 2026-09-28
 

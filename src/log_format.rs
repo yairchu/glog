@@ -213,13 +213,18 @@ impl LogFormat {
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LogOptions {
+    pub fold_merges: bool,
+    pub hide_merges: bool,
+    pub hidden_types: std::collections::BTreeSet<String>,
+}
+
 /// Consume display options before `--`, leaving traversal and pathspecs for Git.
-/// Split Log arguments into the row format, whether `--fold-merges` was given,
-/// and the arguments for Git.
-pub fn parse_args(args: &[String]) -> Result<(LogFormat, bool, Vec<String>), String> {
+pub fn parse_args(args: &[String]) -> Result<(LogFormat, LogOptions, Vec<String>), String> {
     let mut format = LogFormat::default();
     let mut git_args = Vec::new();
-    let mut fold_merges = false;
+    let mut options = LogOptions::default();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         // Git consumes the next argument as a pattern even when it looks like
@@ -240,6 +245,21 @@ pub fn parse_args(args: &[String]) -> Result<(LogFormat, bool, Vec<String>), Str
             git_args.push(arg.clone());
             git_args.extend(args.cloned());
             break;
+        }
+        if arg == "--hide-types" || arg.starts_with("--hide-types=") {
+            let value = if arg == "--hide-types" {
+                args.next()
+                    .ok_or("--hide-types requires a comma-separated list of types")?
+                    .as_str()
+            } else {
+                arg.strip_prefix("--hide-types=").unwrap()
+            };
+            for kind in value.split(',') {
+                let kind = crate::log_folds::normalize_type(kind.trim())
+                    .ok_or_else(|| format!("invalid commit type {kind:?} in --hide-types"))?;
+                options.hidden_types.insert(kind.to_owned());
+            }
+            continue;
         }
         let value = if arg == "--format" || arg == "--pretty" {
             Some(
@@ -262,19 +282,60 @@ pub fn parse_args(args: &[String]) -> Result<(LogFormat, bool, Vec<String>), Str
                 LogFormat::parse(value)?
             };
         } else if arg == "--fold-merges" {
-            fold_merges = true;
+            options.fold_merges = true;
+        } else if arg == "--hide-merges" {
+            options.hide_merges = true;
         } else if arg == "--oneline" {
             format = LogFormat::parse("%h (%D) %s")?;
         } else {
             git_args.push(arg.clone());
         }
     }
-    Ok((format, fold_merges, git_args))
+    Ok((format, options, git_args))
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn startup_filters_parse_aliases_repetitions_and_preserve_git_arguments() {
+        let args = [
+            "--hide-types=tests,doc",
+            "--hide-types",
+            "feature,test,custom",
+            "--hide-merges",
+            "--fold-merges",
+            "--all",
+        ]
+        .map(str::to_owned);
+        let (_, options, git) = parse_args(&args).unwrap();
+        assert!(options.hide_merges && options.fold_merges);
+        assert_eq!(
+            options.hidden_types,
+            ["test", "docs", "feat", "custom"].map(str::to_owned).into()
+        );
+        assert_eq!(git, ["--all"]);
+        for args in [
+            vec!["--hide-types"],
+            vec!["--hide-types="],
+            vec!["--hide-types=test,"],
+            vec!["--hide-types=fix: bad"],
+            vec!["--hide-types", "--hide-merges"],
+        ] {
+            assert!(parse_args(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err());
+        }
+        for args in [
+            vec!["--grep", "--hide-merges"],
+            vec!["--author", "--hide-types=test"],
+            vec!["--", "--hide-types=test", "--hide-merges"],
+        ] {
+            let args: Vec<_> = args.into_iter().map(str::to_owned).collect();
+            let (_, options, git) = parse_args(&args).unwrap();
+            assert_eq!(options, LogOptions::default());
+            assert_eq!(git, args);
+        }
+    }
 
     #[test]
     fn fold_merges_is_a_display_option_not_a_pattern_or_path() {
@@ -285,7 +346,7 @@ pub(crate) mod tests {
         ] {
             let (_, fold_merges, git) =
                 parse_args(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).unwrap();
-            assert!(fold_merges);
+            assert!(fold_merges.fold_merges);
             assert_eq!(git, ["--all"]);
         }
         for args in [
@@ -295,7 +356,7 @@ pub(crate) mod tests {
         ] {
             let args: Vec<_> = args.into_iter().map(str::to_owned).collect();
             let (_, fold_merges, git) = parse_args(&args).unwrap();
-            assert!(!fold_merges);
+            assert!(!fold_merges.fold_merges);
             if args[0] != "--format" {
                 assert_eq!(git, args);
             }

@@ -30,12 +30,12 @@ fn main() -> ExitCode {
         println!("{information}");
         return ExitCode::SUCCESS;
     }
-    let (log_format, fold_merges, log_args) = match if command == Command::Log {
+    let (log_format, log_options, log_args) = match if command == Command::Log {
         log_format::parse_args(command_args)
     } else {
         Ok((
             log_format::LogFormat::default(),
-            false,
+            log_format::LogOptions::default(),
             command_args.to_vec(),
         ))
     } {
@@ -50,7 +50,7 @@ fn main() -> ExitCode {
     } else if command != Command::Log {
         Ok(false)
     } else {
-        parse_watch(command_args, fold_merges)
+        parse_watch(&log_args)
     } {
         Ok(watch) => watch,
         Err(error) => {
@@ -94,12 +94,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    app.log_folds.start_collapsed = fold_merges;
-    // As on watch refreshes, a failure leaves the Log unfolded and says why.
-    if let Err(error) = app.log_folds.refresh(&app.commits) {
-        app.status = Some(error);
-    }
-    app.log_folds.reveal(app.selected, &app.commits);
+    initialize_log_filters(&mut app, log_options);
 
     let mut terminal = match start_terminal() {
         Ok(terminal) => terminal,
@@ -121,6 +116,20 @@ fn main() -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+fn initialize_log_filters(app: &mut App, options: log_format::LogOptions) {
+    app.log_folds.start_collapsed = options.fold_merges;
+    app.log_folds.hidden_types = options.hidden_types;
+    app.log_folds.hide_merges = options.hide_merges;
+    // As on watch refreshes, a failure leaves the Log unfolded and says why.
+    if let Err(error) = app.log_folds.refresh(&app.commits) {
+        app.status = Some(error);
+    }
+    app.log_folds.reveal(app.selected, &app.commits);
+    if app.mode == app::Mode::Log {
+        app.top();
     }
 }
 
@@ -154,7 +163,7 @@ fn parse_information(args: &[String]) -> Option<&'static str> {
 
 const HELP: &str = "glog — an interactive git log and git show browser
 
-Usage: glog [--watch] [--fold-merges]
+Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
        glog [log] [git log arguments] [--] [pathspec...]
        glog show [--stat] [commit] [-- pathspec...]
        glog diff [--cached] [--stat] [revision [revision]] [[--] pathspec...]
@@ -166,6 +175,9 @@ Options:
   --date=STYLE  Format author dates using Git (e.g. short, relative, iso)
   --oneline     Use the compact hash, refs, and subject layout
   --fold-merges Start Log with merge histories collapsed; z expands a merge
+  --hide-merges Hide merge commits; M toggles this filter
+  --hide-types=TYPES
+                Hide comma-separated commit types (e.g. test,refactor,docs); T clears filters
   --watch       Include a Working tree item and refresh the default HEAD view
   -h, --help    Print help
   -V, --version Print version
@@ -260,13 +272,8 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
     Ok(())
 }
 
-fn parse_watch(args: &[String], fold_merges: bool) -> Result<bool, String> {
-    let args: Vec<_> = args
-        .iter()
-        .filter(|arg| !fold_merges || arg.as_str() != "--fold-merges")
-        .cloned()
-        .collect();
-    match args.as_slice() {
+fn parse_watch(args: &[String]) -> Result<bool, String> {
+    match args {
         [flag] if flag == "--watch" => Ok(true),
         _ if args.iter().any(|arg| arg == "--watch") => {
             Err("--watch currently supports only the default HEAD view".to_owned())
@@ -328,18 +335,63 @@ mod tests {
     }
 
     #[test]
-    fn watch_limits_traversal_but_allows_merge_folding() {
-        assert!(parse_watch(&[], false).is_ok_and(|watch| !watch));
-        assert!(parse_watch(&["--watch".into(), "--fold-merges".into()], true).unwrap());
-        assert!(!parse_watch(&["--fold-merges".into()], true).unwrap());
-        assert!(parse_watch(
-            &["--watch".into(), "--fold-merges".into(), "--all".into()],
-            true
-        )
-        .is_err());
-        assert!(parse_watch(&["--watch".to_owned()], false).is_ok_and(|watch| watch));
-        assert!(parse_watch(&["--watch".to_owned(), "--all".to_owned()], false).is_err());
-        assert!(parse_watch(&["main".to_owned(), "--watch".to_owned()], false).is_err());
+    fn watch_limits_traversal_but_allows_display_filters() {
+        let check = |args: &[&str]| {
+            let args = args.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
+            let (_, _, git) = log_format::parse_args(&args)?;
+            parse_watch(&git)
+        };
+        assert!(!check(&[]).unwrap());
+        assert!(!check(&["--hide-types=test", "--hide-merges"]).unwrap());
+        assert!(check(&[
+            "--watch",
+            "--fold-merges",
+            "--hide-types=tests,doc",
+            "--hide-merges"
+        ])
+        .unwrap());
+        assert!(check(&["--watch", "--hide-types", "test", "--oneline"]).unwrap());
+        assert!(check(&["--watch", "--hide-merges", "--all"]).is_err());
+        assert!(check(&["main", "--watch"]).is_err());
+    }
+
+    #[test]
+    fn startup_filters_select_visible_history_and_can_be_cleared() {
+        let mut commits = Vec::new();
+        for (i, subject) in ["Merge topic", "tests: coverage", "feat: feature"]
+            .iter()
+            .enumerate()
+        {
+            let mut c = log_format::tests::commit();
+            c.hash = i.to_string();
+            c.subject = (*subject).into();
+            c.parents = if i == 0 {
+                vec!["1".into(), "2".into()]
+            } else {
+                Vec::new()
+            };
+            commits.push(c);
+        }
+        let (_, options, _) =
+            log_format::parse_args(&["--hide-merges".into(), "--hide-types=tests".into()]).unwrap();
+        let mut app = App::new(commits);
+        initialize_log_filters(&mut app, options);
+        assert_eq!(app.selected, 2);
+        assert_eq!(app.log_folds.hidden_count, 2);
+        assert!(app.status.is_none());
+        app.replace_commits(app.commits.clone());
+        assert_eq!(app.selected, 2);
+        assert_eq!(app.log_folds.hidden_count, 2);
+        app.toggle_commit_type(None);
+        assert!((0..3).all(|i| app.log_folds.visible(i)));
+        let (_, options, _) =
+            log_format::parse_args(&["--hide-merges".into(), "--hide-types=test,feature".into()])
+                .unwrap();
+        initialize_log_filters(&mut app, options);
+        assert_eq!(app.log_folds.hidden_count, 3);
+        assert_eq!(app.mode, app::Mode::Log);
+        app.toggle_commit_type(None);
+        assert_eq!(app.log_folds.hidden_count, 0);
     }
 
     #[test]

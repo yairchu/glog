@@ -224,16 +224,24 @@ fn draw_type_controls(frame: &mut Frame, app: &mut App, area: Rect) {
             true,
         ));
     }
-    items.push((
-        if app.log_folds.hide_merges {
-            "[M show merges] "
-        } else {
-            "[M hide merges] "
-        }
-        .to_owned(),
-        LogFilterAction::Merges,
-        true,
-    ));
+    if app.log_folds.hide_merges
+        || app.commits.get(app.selected).is_some_and(|commit| {
+            app.log_folds.visible(app.selected)
+                && commit.kind == crate::git::CommitKind::Revision
+                && commit.parents.len() > 1
+        })
+    {
+        items.push((
+            if app.log_folds.hide_merges {
+                "[M show merges] "
+            } else {
+                "[M hide merges] "
+            }
+            .to_owned(),
+            LogFilterAction::Merges,
+            true,
+        ));
+    }
     if area.is_empty() {
         return;
     }
@@ -270,7 +278,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
         );
         return;
     }
-    if !(0..app.commits.len()).any(|i| app.log_folds.visible(i)) {
+    if !(0..app.commits.len()).any(|i| app.log_folds.graph_visible(i)) {
         frame.render_widget(
             Paragraph::new("All commits hidden. Press T to clear filters."),
             area,
@@ -282,7 +290,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .enumerate()
         .find(|(i, commit)| {
-            app.log_folds.visible(*i) && commit.kind == crate::git::CommitKind::Revision
+            app.log_folds.graph_visible(*i) && commit.kind == crate::git::CommitKind::Revision
         })
         .map(|(i, _)| i)
         .filter(|index| {
@@ -295,7 +303,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
         .iter()
         .enumerate()
         .take(app.selected)
-        .filter(|(i, _)| app.log_folds.visible(*i))
+        .filter(|(i, _)| app.log_folds.graph_visible(*i))
         .map(|(i, commit)| app.log_folds.graph(i, commit).len())
         .sum::<usize>()
         + usize::from(separator_before.is_some_and(|index| app.selected >= index));
@@ -305,7 +313,9 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             .graph(app.selected, &app.commits[app.selected])
             .len()
             .saturating_sub(1);
-    if selected_subject_row < app.log_offset {
+    if !app.log_folds.visible(app.selected) {
+        app.log_offset = 0;
+    } else if selected_subject_row < app.log_offset {
         app.log_offset = selected_start_row;
     } else if selected_subject_row >= app.log_offset + height.max(1) {
         app.log_offset = selected_subject_row + 1 - height.max(1);
@@ -313,7 +323,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut lines = Vec::new();
     let mut graph_row = 0;
     'commits: for (index, commit) in app.commits.iter().enumerate() {
-        if !app.log_folds.visible(index) {
+        if !app.log_folds.graph_visible(index) {
             continue;
         }
         if separator_before == Some(index) {
@@ -331,6 +341,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             graph_row += 1;
         }
+        let graph_only = !app.log_folds.visible(index);
         let graph_rows = app.log_folds.graph(index, commit);
         for (part, graph) in graph_rows.iter().enumerate() {
             if graph_row < app.log_offset {
@@ -341,7 +352,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 break 'commits;
             }
             let mut line = ansi::parse_line(graph);
-            if part + 1 == graph_rows.len() {
+            if !graph_only && part + 1 == graph_rows.len() {
                 if let Some(marker) = app.log_folds.marker(index) {
                     if let Some(span) = line
                         .spans
@@ -361,13 +372,14 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 let current = app.search_match == Some((Mode::Log, index));
                 line = highlight_matches(line, query, current);
             }
-            if index == app.selected {
+            if !graph_only && index == app.selected {
                 line.style = Style::default()
                     .bg(Color::DarkGray)
                     .add_modifier(Modifier::BOLD);
             }
             lines.push(line);
-            app.visible_log_rows.push(Some(index));
+            app.visible_log_rows
+                .push((!graph_only && part + 1 == graph_rows.len()).then_some(index));
             graph_row += 1;
         }
     }
@@ -724,6 +736,70 @@ mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
+    fn hidden_merges_keep_noninteractive_graph_junctions_for_both_filters() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        for action in [
+            LogFilterAction::Merges,
+            LogFilterAction::Type("chore".into()),
+        ] {
+            let mut merge = commit("chore: hidden merge text", 1);
+            let mut side = commit("fix: side", 1);
+            let mut main = commit("feat: main", 1);
+            let base = commit("base", 1);
+            merge.parents = vec![main.hash.clone(), side.hash.clone()];
+            main.parents = vec![base.hash.clone()];
+            side.parents = vec![base.hash.clone()];
+            let mut app = App::new(vec![merge, side, main, base]);
+            app.apply_log_filter(action);
+            assert_eq!(app.selected, 1);
+            assert!(!app.log_folds.visible(0));
+            assert!(!app.log_folds.graph_visible(0));
+            assert!(app.log_folds.graph(0, &app.commits[0]).is_empty());
+            let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let row = |y| {
+                (0..100)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect::<String>()
+            };
+            assert!(row(app.log_row_origin).contains('\\'));
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(!screen.contains("hidden merge text"));
+            assert!((app.log_row_origin..11).all(|y| !row(y).contains('·')));
+            assert!(screen.contains("fix: side") && screen.contains("feat: main"));
+            assert!(screen.contains('/') || screen.contains('\\'));
+            assert_eq!(app.visible_log_rows[0], None);
+            handle(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: 0,
+                    row: app.log_row_origin,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                &mut app,
+            );
+            assert_eq!(app.selected, 1);
+            assert_eq!(app.mode, Mode::Log);
+            app.top();
+            assert_eq!(app.selected, 1);
+            app.move_by(1, 1);
+            assert_eq!(app.selected, 2);
+            terminal.resize(Rect::new(0, 0, 100, 4)).unwrap();
+            app.bottom();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            assert!(app.visible_log_rows.contains(&Some(3)));
+            app.apply_log_filter(LogFilterAction::Reset);
+            assert!(app.log_folds.visible(0));
+        }
+    }
+
+    #[test]
     fn merge_filter_keeps_branch_history_and_combines_with_types() {
         use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
         let mut merge = commit("test: merge", 1);
@@ -788,7 +864,7 @@ mod tests {
     fn type_filter_mouse_keyboard_search_and_refresh() {
         use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
         let mut app = App::new(vec![
-            commit("test #234(failing): reproduce", 1),
+            commit("tests #234(failing): reproduce", 1),
             commit("feat: feature", 1),
             commit("test: coverage", 1),
             commit("ordinary", 1),
@@ -806,6 +882,7 @@ mod tests {
                 app,
             )
         };
+        assert_eq!(app.type_buttons[0].1, LogFilterAction::Type("test".into()));
         let button = app.type_buttons[0].0;
         assert_eq!(button.y, 0);
         let origin = app.log_row_origin;
@@ -814,10 +891,7 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         assert_eq!(app.log_row_origin, origin);
         assert_eq!(app.visible_log_rows, rows);
-        assert!(app
-            .type_buttons
-            .iter()
-            .all(|(_, action)| *action == LogFilterAction::Merges));
+        assert!(app.type_buttons.is_empty());
         app.selected = 0;
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         click(&mut app, button);
@@ -830,7 +904,7 @@ mod tests {
         app.next_match(false);
         assert_eq!(app.selected, 1);
         let mut refreshed = app.commits.clone();
-        refreshed.insert(0, commit("test #233 #234: newly arrived", 1));
+        refreshed.insert(0, commit("tests #233 #234: newly arrived", 1));
         app.replace_commits(refreshed);
         assert_eq!(app.selected, 2);
         assert!(!app.log_folds.visible(0));
@@ -919,7 +993,12 @@ mod tests {
             assert_eq!(before[(column, 2)].symbol(), "*");
             assert_eq!(after[(column, 2)].symbol(), "▼");
             assert_eq!(before[(column, 2)].style(), after[(column, 2)].style());
-            for y in 0..8 {
+            // The header now offers the merge filter; history stays aligned.
+            assert!(app
+                .type_buttons
+                .iter()
+                .any(|(_, action)| *action == LogFilterAction::Merges));
+            for y in 1..8 {
                 for x in 0..100 {
                     if (x, y) != (column, 2) {
                         assert_eq!(before[(x, y)], after[(x, y)], "cell {x},{y}");

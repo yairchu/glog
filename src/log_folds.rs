@@ -74,6 +74,17 @@ impl LogFolds {
             .unwrap_or(true)
     }
 
+    /// Graph-only merge rows participate in layout, but not selection/search.
+    pub fn graph_visible(&self, index: usize) -> bool {
+        self.visible(index)
+            || self.filtered.as_ref().is_some_and(|layout| {
+                layout
+                    .graphs
+                    .get(&index)
+                    .is_some_and(|rows| !rows.is_empty())
+            })
+    }
+
     pub fn graph<'a>(&'a self, index: usize, commit: &'a Commit) -> &'a [String] {
         self.filtered
             .as_ref()
@@ -322,7 +333,9 @@ impl LogFolds {
         for (index, commit) in commits.iter().enumerate() {
             let hidden = self.filter_hidden(commit);
             self.hidden_count += usize::from(hidden);
-            layout.visible[index] &= !hidden;
+            // Keep merge junctions in the drawing even when their text is
+            // filtered out. Merge folds still control branch visibility.
+            layout.visible[index] &= !hidden || commit.parents.len() > 1;
         }
         let folded: Vec<_> = commits
             .iter()
@@ -330,6 +343,16 @@ impl LogFolds {
             .collect();
         let reached = Layout::with_folds(&self.graph, &folded).1;
         layout.graphs = layout.draw(&self.graph, commits, &folded, &reached);
+        for (index, commit) in commits.iter().enumerate() {
+            if self.filter_hidden(commit) {
+                layout.visible[index] = false;
+                // The final row is the commit node. Keep only the incoming
+                // routing rows; outgoing edges are attached to the next row.
+                if let Some(rows) = layout.graphs.get_mut(&index) {
+                    rows.pop();
+                }
+            }
+        }
         self.filtered = Some(layout);
     }
 
@@ -376,11 +399,21 @@ pub fn commit_type(commit: &Commit) -> Option<&str> {
     } else {
         kind
     };
-    (!kind.is_empty()
+    normalize_type(kind)
+}
+
+/// Validate a filter type and use the same aliases in the CLI and TUI.
+pub fn normalize_type(kind: &str) -> Option<&str> {
+    (kind.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
         && kind
             .bytes()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-'))
-    .then_some(kind)
+    .then_some(match kind {
+        "doc" => "docs",
+        "tests" => "test",
+        "feature" => "feat",
+        _ => kind,
+    })
 }
 
 /// The omitted commits that lead to a row. The rest, such as the history
@@ -909,6 +942,12 @@ mod tests {
     fn conventional_types_require_a_subject_prefix() {
         for (subject, expected) in [
             ("feat: add something", Some("feat")),
+            ("feature(api)!: add something", Some("feat")),
+            ("doc #290(manual): list Bypass", Some("docs")),
+            ("docs: update guide", Some("docs")),
+            ("tests #234(failing): reproduce bug", Some("test")),
+            ("testing: custom type", Some("testing")),
+            ("features: custom type", Some("features")),
             ("test(failing): reproduce bug", Some("test")),
             ("refactor(core)!: new API", Some("refactor")),
             ("feat!: breaking", Some("feat")),
@@ -938,7 +977,7 @@ mod tests {
     }
 
     #[test]
-    fn type_filter_projects_through_hidden_merges_and_restores_graph() {
+    fn type_filter_retains_hidden_merge_junctions_and_restores_graph() {
         let mut commits = vec![
             commit("tip", &["merge"]),
             commit("merge", &["main", "side"]),
@@ -951,7 +990,11 @@ mod tests {
         folds.refresh(&commits).unwrap();
         folds.toggle_type(Some("refactor"), &commits).unwrap();
         assert_eq!(shown(&folds, &commits), ["tip", "side", "main", "base"]);
-        // The hidden merge's two parents remain connected to the tip.
+        assert!(!folds.visible(1));
+        assert!(plain(folds.graph(1, &commits[1]))
+            .iter()
+            .all(|row| !row.contains('*')));
+        // The hidden merge's two parents remain connected to its junction.
         let side = plain(folds.graph(2, &commits[2]));
         assert!(
             side.iter()
