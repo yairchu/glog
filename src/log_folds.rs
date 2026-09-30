@@ -353,13 +353,10 @@ impl LogFolds {
             // filtered out. Merge folds still control branch visibility.
             layout.visible[index] &= !hidden || commit.parents.len() > 1;
         }
-        let mut folded: Vec<_> = commits
-            .iter()
-            .map(|c| self.collapsed.contains(&c.hash))
-            .collect();
-        self.layout.unfold_idle_merges(&mut folded);
-        let reached = Layout::with_folds(&self.graph, &folded).1;
-        layout.graphs = layout.draw(&self.graph, commits, &folded, &reached);
+        // Draw the folds the layout shows, which after a failed ancestry
+        // read are none of the saved ones.
+        let reached = Layout::with_folds(&self.graph, &layout.folded).1;
+        layout.graphs = layout.draw(&self.graph, commits, &layout.folded, &reached);
         for (index, commit) in commits.iter().enumerate() {
             if self.filter_hidden(index, commit) {
                 layout.visible[index] = false;
@@ -624,6 +621,8 @@ struct Layout {
     // The fold containing each hidden row.
     owners: Vec<Option<usize>>,
     folds: Vec<Fold>,
+    // The folds drawn, without those that hide nothing.
+    folded: Vec<bool>,
     graphs: HashMap<usize, Vec<String>>,
 }
 
@@ -640,6 +639,7 @@ impl Layout {
         if layout.visible.contains(&false) {
             layout.graphs = layout.draw(graph, commits, &folded, &reached);
         }
+        layout.folded = folded;
         layout
     }
 
@@ -745,6 +745,7 @@ impl Layout {
             visible,
             owners,
             folds,
+            folded: folded.to_vec(),
             graphs: HashMap::new(),
         };
         (layout, reached)
