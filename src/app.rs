@@ -352,10 +352,12 @@ impl App {
 
     pub fn toggle_log_merge(&mut self) {
         // Other rows have nothing to fold, so keep whatever the status says.
-        if self
-            .commits
-            .get(self.selected)
-            .is_none_or(|commit| commit.parents.len() < 2)
+        // When filters hide every commit, the selection is not shown.
+        if !self.log_folds.visible(self.selected)
+            || self
+                .commits
+                .get(self.selected)
+                .is_none_or(|commit| commit.parents.len() < 2)
         {
             return;
         }
