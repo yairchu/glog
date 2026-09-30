@@ -327,7 +327,9 @@ Controls stay on one line; `t` and `T` work even when the terminal is too narrow
 to show the buttons. Filters last for the current session and
 survive watch refreshes. The count includes matching commits inside merge folds and is cached between
 filter/history updates rather than recounted on each redraw.
-Navigation and Log search skip hidden types; merge folding remains independent.
+Navigation and Log search skip hidden types. A folded merge stays shown even when
+a filter matches it, since it stands in for its hidden history; expanding it
+applies the filter.
 Hidden merges omit their own commit rows while retaining connecting graph
 lines, keeping branch structure visible for both filters. Graph-only rows are
 skipped by navigation and mouse selection. Other filtered commits are omitted, so graph

@@ -19,7 +19,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   `--hide-merges` hides merge commits while keeping their branch history.
   Merge and type filters combine, and the top bar shows how many commits are
   hidden. Navigation and search skip hidden commits, the graph keeps visible
-  history connected, and watch refreshes preserve filters.
+  history connected, and watch refreshes preserve filters. Folded merges stay
+  shown so their history can still be expanded.
 - `--watch` now also accepts `--oneline` and `--format`/`--pretty`.
 
 ### Fixed

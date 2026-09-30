@@ -293,7 +293,14 @@ impl LogFolds {
         Ok(())
     }
 
-    pub fn filter_hidden(&self, commit: &Commit) -> bool {
+    pub fn filter_hidden(&self, index: usize, commit: &Commit) -> bool {
+        // A shown folded merge stands in for its hidden side history and is
+        // where `z` expands it, so filters leave it in place.
+        if self.layout.visible.get(index) == Some(&true)
+            && matches!(self.fold(index), Fold::Folded(_))
+        {
+            return false;
+        }
         (self.hide_merges && commit.kind == CommitKind::Revision && commit.parents.len() > 1)
             || commit_type(commit).is_some_and(|kind| self.hidden_types.contains(kind))
     }
@@ -331,7 +338,7 @@ impl LogFolds {
         }
         let mut layout = self.layout.clone();
         for (index, commit) in commits.iter().enumerate() {
-            let hidden = self.filter_hidden(commit);
+            let hidden = self.filter_hidden(index, commit);
             self.hidden_count += usize::from(hidden);
             // Keep merge junctions in the drawing even when their text is
             // filtered out. Merge folds still control branch visibility.
@@ -345,7 +352,7 @@ impl LogFolds {
         let reached = Layout::with_folds(&self.graph, &folded).1;
         layout.graphs = layout.draw(&self.graph, commits, &folded, &reached);
         for (index, commit) in commits.iter().enumerate() {
-            if self.filter_hidden(commit) {
+            if self.filter_hidden(index, commit) {
                 layout.visible[index] = false;
                 // The final row is the commit node. Keep only the incoming
                 // routing rows; outgoing edges are attached to the next row.

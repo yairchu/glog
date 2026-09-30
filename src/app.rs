@@ -353,6 +353,8 @@ impl App {
             return;
         }
         self.status = self.log_folds.toggle(self.selected, &self.commits).err();
+        // An expanded merge may itself be filtered out.
+        self.ensure_log_selection();
         self.search_match = None;
     }
 
@@ -1285,7 +1287,7 @@ impl App {
                         (start + step) % n
                     };
                     let c = &self.commits[i];
-                    if self.log_folds.filter_hidden(c) {
+                    if self.log_folds.filter_hidden(i, c) {
                         continue;
                     }
                     if c.hash.to_lowercase().contains(&query)

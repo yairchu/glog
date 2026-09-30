@@ -774,6 +774,46 @@ mod tests {
     }
 
     #[test]
+    fn filters_keep_folded_merges_that_stand_in_for_their_history() {
+        for action in [
+            LogFilterAction::Merges,
+            LogFilterAction::Type("chore".into()),
+        ] {
+            let mut merge = commit("chore: folded merge", 1);
+            let mut side = commit("fix: side", 1);
+            let mut main = commit("feat: main", 1);
+            let base = commit("base", 1);
+            merge.parents = vec![main.hash.clone(), side.hash.clone()];
+            main.parents = vec![base.hash.clone()];
+            side.parents = vec![base.hash.clone()];
+            let mut app = App::new(vec![merge, side, main, base]);
+            app.toggle_log_merge();
+            assert!(!app.log_folds.visible(1));
+            app.apply_log_filter(action);
+            assert!(app.log_folds.visible(0));
+            assert_eq!(app.log_folds.hidden_count, 0);
+            assert_eq!(app.selected, 0);
+            let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect();
+            assert!(screen.contains("chore: folded merge"));
+            assert!(screen.contains("1 merged commit"));
+            // Expanding reveals the side history and applies the filter.
+            app.toggle_log_merge();
+            assert!(!app.log_folds.visible(0));
+            assert!(app.log_folds.visible(1));
+            assert_eq!(app.log_folds.hidden_count, 1);
+            assert_eq!(app.selected, 1);
+        }
+    }
+
+    #[test]
     fn hidden_merges_keep_noninteractive_graph_junctions_for_both_filters() {
         use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
         for action in [
