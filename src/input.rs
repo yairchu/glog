@@ -128,7 +128,13 @@ pub fn handle(event: Event, app: &mut App) {
             _ => {}
         }
     } else if let Event::Mouse(mouse) = event {
-        if app.show_help || app.search_input.is_some() {
+        // The views behind the help overlay and search prompt ignore the
+        // mouse. The header stays visible, so its tabs still close help.
+        let tab_click = mouse.kind == MouseEventKind::Down(MouseButton::Left)
+            && mouse.row == 0
+            && ((app.log_tab_start..app.log_tab_end).contains(&mouse.column)
+                || (app.show_tab_start..app.show_tab_end).contains(&mouse.column));
+        if app.search_input.is_some() || (app.show_help && !tab_click) {
             return;
         }
         if app.mode == Mode::Log && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
@@ -364,6 +370,51 @@ mod tests {
             &mut app,
         );
         assert_eq!(app.mode, Mode::Show);
+    }
+
+    #[test]
+    fn help_and_search_prompt_shield_the_view_but_tabs_close_help() {
+        let click = |column, row| {
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column,
+                row,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        let wheel = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::ScrollDown,
+            column: 20,
+            row: 2,
+            modifiers: KeyModifiers::NONE,
+        });
+        let commits = (0..8)
+            .map(|i| {
+                let mut commit = crate::log_format::tests::commit();
+                commit.hash = i.to_string();
+                commit
+            })
+            .collect();
+        let mut app = App::new(commits);
+        app.log_row_origin = 1;
+        app.visible_log_rows = vec![Some(4), Some(5), Some(6)];
+        app.show_help = true;
+        handle(click(20, 2), &mut app);
+        handle(wheel.clone(), &mut app);
+        assert_eq!(app.selected, 0);
+        assert!(app.show_help);
+        handle(click(app.show_tab_start, 0), &mut app);
+        assert_eq!(app.mode, Mode::Show);
+        assert!(!app.show_help);
+
+        app.mode = Mode::Log;
+        app.begin_search(false);
+        handle(click(20, 2), &mut app);
+        handle(wheel, &mut app);
+        handle(click(app.show_tab_start, 0), &mut app);
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.mode, Mode::Log);
+        assert_eq!(app.search_input.as_deref(), Some(""));
     }
 
     #[test]

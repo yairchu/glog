@@ -203,9 +203,10 @@ change:
 glog --watch
 ```
 
-`--watch` accepts display options such as `--fold-merges`, `--hide-merges`,
-`--hide-types`, and `--oneline`. Combinations such as `glog --watch --all` fail with
-a concise error rather than providing partial watch semantics.
+`--watch` accepts glog's own display options: `--fold-merges`, `--hide-merges`,
+`--hide-types`, `--oneline`, and `--format`/`--pretty`. Git options such as
+`--all` or `--date` fail with a concise error rather than providing partial
+watch semantics.
 
 ## Working-tree status
 

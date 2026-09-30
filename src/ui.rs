@@ -199,7 +199,10 @@ fn draw_type_controls(frame: &mut Frame, app: &mut App, area: Rect) {
     if !app.log_folds.hidden_types.is_empty() || app.log_folds.hide_merges {
         let count = app.log_folds.hidden_count;
         items.push((
-            format!("Hiding {count} commits · "),
+            format!(
+                "Hiding {count} commit{} · ",
+                if count == 1 { "" } else { "s" }
+            ),
             LogFilterAction::Reset,
             false,
         ));

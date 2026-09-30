@@ -177,7 +177,8 @@ Options:
   --fold-merges Start Log with merge histories collapsed; z expands a merge
   --hide-merges Hide merge commits; M toggles this filter
   --hide-types=TYPES
-                Hide comma-separated commit types (e.g. test,refactor,docs); T clears filters
+                Hide comma-separated commit types (e.g. test,refactor,docs);
+                T clears filters
   --watch       Include a Working tree item and refresh the default HEAD view
   -h, --help    Print help
   -V, --version Print version

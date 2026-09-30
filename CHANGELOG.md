@@ -8,22 +8,24 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 ### Added
 
 - Added `f` as a forward-page shortcut in Log, matching Space and Page Down.
+- Added commit-type filtering in Log: `t` or the top-bar button hides the
+  selected commit's Conventional Commit type, clicking a hidden type restores
+  it, and `T` clears all filters. `--hide-types=test,refactor,docs` hides types
+  at startup, including in watch mode. Scopes, `!` markers, and issue numbers
+  such as `test #234(failing):` are recognized, and `doc`/`docs`,
+  `tests`/`test`, and `feature`/`feat` share a filter. Untyped commits stay
+  visible.
+- Added merge-commit filtering in Log: `M`, the top-bar button, or
+  `--hide-merges` hides merge commits while keeping their branch history.
+  Merge and type filters combine, and the top bar shows how many commits are
+  hidden. Navigation and search skip hidden commits, the graph keeps visible
+  history connected, and watch refreshes preserve filters.
+- `--watch` now also accepts `--oneline` and `--format`/`--pretty`.
 
-- Added commit-type filtering in Log: `t` or a clickable button hides the
-  selected Conventional Commit type, and the existing top bar shows the hidden count with
-  buttons to restore individual types. `T` clears all commit filters. Navigation and
-  search skip hidden types, the graph reconnects visible history, and watch
-  refreshes preserve filters. Issue-number prefixes such as `test #234(failing):`
-  are supported, and hidden counts are cached between filter/history updates.
-  Aliases `doc`/`docs`, `tests`/`test`, and `feature`/`feat` share type filters.
-  `--hide-types=test,refactor,docs` enables filters at startup, including in watch mode.
-  Untyped commits remain visible unless hidden by the merge filter.
-- Added `M`, a contextual top-bar button, and `--hide-merges` at startup to
-  hide/show merge commits independently of
-  their subjects, preserving branch history and existing fold choices. Merge
-  and type filters combine without double-counting hidden commits. Hidden merges
-  omit their own rows while retaining connecting graph lines, so both filters
-  preserve visible branch structure.
+### Fixed
+
+- Mouse scrolling and clicks no longer act on the view hidden behind the help
+  overlay or while a search is being typed.
 
 ## 0.3.1 - 2026-09-28
 
