@@ -31,6 +31,13 @@ pub enum ShowScroll {
     PreserveCursorPosition(isize),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LogFilterAction {
+    Type(String),
+    Merges,
+    Reset,
+}
+
 pub struct App {
     pub images: crate::images::Images,
     pub status_view: Option<crate::status::StatusView>,
@@ -62,7 +69,7 @@ pub struct App {
     show_search_location: Option<(Vec<Vec<u8>>, usize)>,
     pub show_help: bool,
     pub log_row_origin: u16,
-    pub type_buttons: Vec<(ratatui::layout::Rect, Option<String>)>,
+    pub type_buttons: Vec<(ratatui::layout::Rect, LogFilterAction)>,
     pub visible_log_rows: Vec<Option<usize>>,
     pub show_row_origin: u16,
     pub visible_show_rows: usize,
@@ -312,6 +319,19 @@ impl App {
         self.ensure_log_selection();
         self.log_offset = 0;
         self.search_match = None;
+    }
+
+    pub fn apply_log_filter(&mut self, action: LogFilterAction) {
+        match action {
+            LogFilterAction::Type(kind) => self.toggle_commit_type(Some(&kind)),
+            LogFilterAction::Reset => self.toggle_commit_type(None),
+            LogFilterAction::Merges => {
+                self.status = self.log_folds.toggle_merges(&self.commits).err();
+                self.ensure_log_selection();
+                self.log_offset = 0;
+                self.search_match = None;
+            }
+        }
     }
 
     fn ensure_log_selection(&mut self) {
@@ -1265,7 +1285,7 @@ impl App {
                         (start + step) % n
                     };
                     let c = &self.commits[i];
-                    if self.log_folds.type_hidden(c) {
+                    if self.log_folds.filter_hidden(c) {
                         continue;
                     }
                     if c.hash.to_lowercase().contains(&query)

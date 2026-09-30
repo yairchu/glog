@@ -1,4 +1,4 @@
-use crate::app::{App, Mode};
+use crate::app::{App, LogFilterAction, Mode};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 
 pub fn handle(event: Event, app: &mut App) {
@@ -91,6 +91,9 @@ pub fn handle(event: Event, app: &mut App) {
             KeyCode::Enter if app.mode == Mode::Log => app.switch_mode(),
             KeyCode::Char('t') if app.mode == Mode::Log => app.hide_selected_type(),
             KeyCode::Char('T') if app.mode == Mode::Log => app.toggle_commit_type(None),
+            KeyCode::Char('M') if app.mode == Mode::Log => {
+                app.apply_log_filter(LogFilterAction::Merges)
+            }
             KeyCode::Char('z') if app.mode == Mode::Log => app.toggle_log_merge(),
             KeyCode::Char('m') if app.mode == Mode::Log => app.toggle_all_log_merges(),
             KeyCode::Enter | KeyCode::Char('z') if app.mode == Mode::Show => app.toggle_show_file(),
@@ -135,7 +138,7 @@ pub fn handle(event: Event, app: &mut App) {
                 .find(|(rect, _)| rect.contains((mouse.column, mouse.row).into()))
                 .map(|(_, kind)| kind.clone());
             if let Some(kind) = action {
-                app.toggle_commit_type(kind.as_deref());
+                app.apply_log_filter(kind);
                 return;
             }
         }

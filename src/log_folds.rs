@@ -30,7 +30,8 @@ pub struct LogFolds {
     failed: bool,
     pub hidden_types: std::collections::BTreeSet<String>,
     filtered: Option<Layout>,
-    pub hidden_type_count: usize,
+    pub hidden_count: usize,
+    pub hide_merges: bool,
 }
 
 impl Default for LogFolds {
@@ -47,7 +48,8 @@ impl Default for LogFolds {
             failed: false,
             hidden_types: Default::default(),
             filtered: None,
-            hidden_type_count: 0,
+            hidden_count: 0,
+            hide_merges: false,
         }
     }
 }
@@ -254,7 +256,10 @@ impl LogFolds {
     fn update(&mut self, commits: &[Commit], exact: bool) -> Result<(), String> {
         let mut layout = Layout::new(&self.graph, commits, &self.collapsed);
         if self.graph.unknown_below.is_some()
-            && (exact || layout.visible.contains(&false) || !self.hidden_types.is_empty())
+            && (exact
+                || layout.visible.contains(&false)
+                || !self.hidden_types.is_empty()
+                || self.hide_merges)
         {
             match (self.load_ancestry)(commits) {
                 Ok(ancestry) => {
@@ -265,20 +270,21 @@ impl LogFolds {
                 }
                 Err(error) => {
                     self.layout = Layout::new(&self.graph, commits, &HashSet::new());
-                    self.apply_type_filter(commits);
+                    self.apply_filter(commits);
                     self.failed = true;
                     return Err(error);
                 }
             }
         }
         self.layout = layout;
-        self.apply_type_filter(commits);
+        self.apply_filter(commits);
         self.failed = false;
         Ok(())
     }
 
-    pub fn type_hidden(&self, commit: &Commit) -> bool {
-        commit_type(commit).is_some_and(|kind| self.hidden_types.contains(kind))
+    pub fn filter_hidden(&self, commit: &Commit) -> bool {
+        (self.hide_merges && commit.kind == CommitKind::Revision && commit.parents.len() > 1)
+            || commit_type(commit).is_some_and(|kind| self.hidden_types.contains(kind))
     }
 
     pub fn toggle_type(&mut self, kind: Option<&str>, commits: &[Commit]) -> Result<(), String> {
@@ -288,6 +294,7 @@ impl LogFolds {
             }
         } else {
             self.hidden_types.clear();
+            self.hide_merges = false;
         }
         if self.graph.rows != commits.len() {
             self.refresh(commits)
@@ -296,16 +303,25 @@ impl LogFolds {
         }
     }
 
-    fn apply_type_filter(&mut self, commits: &[Commit]) {
+    pub fn toggle_merges(&mut self, commits: &[Commit]) -> Result<(), String> {
+        self.hide_merges = !self.hide_merges;
+        if self.graph.rows != commits.len() {
+            self.refresh(commits)
+        } else {
+            self.update(commits, false)
+        }
+    }
+
+    fn apply_filter(&mut self, commits: &[Commit]) {
         self.filtered = None;
-        self.hidden_type_count = 0;
-        if self.hidden_types.is_empty() {
+        self.hidden_count = 0;
+        if self.hidden_types.is_empty() && !self.hide_merges {
             return;
         }
         let mut layout = self.layout.clone();
         for (index, commit) in commits.iter().enumerate() {
-            let hidden = self.type_hidden(commit);
-            self.hidden_type_count += usize::from(hidden);
+            let hidden = self.filter_hidden(commit);
+            self.hidden_count += usize::from(hidden);
             layout.visible[index] &= !hidden;
         }
         let folded: Vec<_> = commits
@@ -964,14 +980,14 @@ mod tests {
         folds.toggle(0, &commits).unwrap();
         folds.toggle_type(Some("test"), &commits).unwrap();
         assert_eq!(shown(&folds, &commits), ["merge", "base"]);
-        assert_eq!(folds.hidden_type_count, 2);
+        assert_eq!(folds.hidden_count, 2);
         folds.toggle_type(None, &commits).unwrap();
         assert_eq!(shown(&folds, &commits), ["merge", "main", "base"]);
-        assert_eq!(folds.hidden_type_count, 0);
+        assert_eq!(folds.hidden_count, 0);
         folds.toggle_type(Some("test"), &commits).unwrap();
         folds.toggle(0, &commits).unwrap();
         assert_eq!(shown(&folds, &commits), ["merge", "base"]);
-        assert_eq!(folds.hidden_type_count, 2);
+        assert_eq!(folds.hidden_count, 2);
     }
 
     #[test]
@@ -1143,7 +1159,7 @@ mod tests {
         folds.load_ancestry = folds_with(Some(ancestry)).load_ancestry;
         folds.toggle(0, &commits).unwrap();
         assert_eq!(shown(&folds, &commits), ["merge", "main", "base"]);
-        assert_eq!(folds.hidden_type_count, 0);
+        assert_eq!(folds.hidden_count, 0);
         assert_eq!(folds.label(0), " · 1 merged commit");
     }
 

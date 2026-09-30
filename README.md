@@ -305,7 +305,7 @@ Only the subject is examined; untyped commits
 and the working-tree entry remain visible.
 
 The existing top bar shows **Hiding N commits**, with a button for each hidden type.
-Click a type to restore it, or press `T` / click **[T show all]** to reset.
+Click a type to restore it, or press `T` / click **[T show all]** to clear both type and merge filters.
 Controls stay on one line; `t` and `T` work even when the terminal is too narrow
 to show the buttons. Filters last for the current session and
 survive watch refreshes. The count includes matching commits inside merge folds and is cached between
@@ -313,6 +313,13 @@ filter/history updates rather than recounted on each redraw.
 Navigation and Log search skip hidden types; merge folding remains independent.
 The graph connects visible commits through filtered history, so its edges may
 span hidden commits.
+
+Press `M` or click **[M hide merges]** to hide all merge commits, regardless
+of their subjects. A merge has more than one parent; this filter leaves its
+branch commits visible and combines with type filters. Commits matching both
+filters count only once. Press `M` again or click **[M show merges]** to restore
+merges while preserving type filters. Existing merge folds remain folded.
+This differs from `m` / `z`, which fold branch history beneath merge commits.
 
 ## Keys
 
@@ -330,7 +337,8 @@ span hidden commits.
 | `z` | expand/fold selected merge history | expand/fold current folded file |
 | `L` | — | expand/fold all lockfiles |
 | `m` | expand/fold all merge histories | — |
-| `t`, `T` | hide selected commit type / restore all types | — |
+| `M` | hide/show merge commits | — |
+| `t`, `T` | hide selected commit type / clear filters | — |
 | `s` | toggle subject | toggle file summary / patch |
 | `g` / `<` / `Home`, `G` / `>` / `End` | first/last commit | top/bottom |
 | `/`, `?`, `n`, `N` | search forward/backward; repeat/opposite | search forward/backward; repeat/opposite |

@@ -1,6 +1,6 @@
 use crate::{
     ansi,
-    app::{App, Mode, ShowScroll},
+    app::{App, LogFilterAction, Mode, ShowScroll},
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -133,7 +133,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_help(frame: &mut Frame, has_log: bool) {
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(68);
-    let height = screen.height.saturating_sub(2).min(27);
+    let height = screen.height.saturating_sub(2).min(28);
     let area = Rect::new(
         screen.x + screen.width.saturating_sub(width) / 2,
         screen.y + screen.height.saturating_sub(height) / 2,
@@ -155,7 +155,8 @@ fn draw_help(frame: &mut Frame, has_log: bool) {
         "  Enter             open commit / toggle section or file",
         "  z                 fold merge (Log) / file (Show)",
         "  m                 expand / fold all merges (Log)",
-        "  t / T             hide selected type / show all types (Log)",
+        "  t / T             hide selected type / clear filters (Log)",
+        "  M                 hide / show merge commits (Log)",
         "  L                 expand / fold all lockfiles (Show)",
         "  s                 toggle file summary / patch (Show/Status)",
         "  Escape            return to Log / cancel",
@@ -195,12 +196,20 @@ fn draw_help(frame: &mut Frame, has_log: bool) {
 
 fn draw_type_controls(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut items = Vec::new();
-    if !app.log_folds.hidden_types.is_empty() {
-        let count = app.log_folds.hidden_type_count;
-        items.push((format!("Hiding {count} commits · "), None, false));
-        items.push(("[T show all] ".to_owned(), None, true));
+    if !app.log_folds.hidden_types.is_empty() || app.log_folds.hide_merges {
+        let count = app.log_folds.hidden_count;
+        items.push((
+            format!("Hiding {count} commits · "),
+            LogFilterAction::Reset,
+            false,
+        ));
+        items.push(("[T show all] ".to_owned(), LogFilterAction::Reset, true));
         for kind in &app.log_folds.hidden_types {
-            items.push((format!("[{kind} ×] "), Some(kind.clone()), true));
+            items.push((
+                format!("[{kind} ×] "),
+                LogFilterAction::Type(kind.clone()),
+                true,
+            ));
         }
     }
     if let Some(kind) = app
@@ -209,8 +218,22 @@ fn draw_type_controls(frame: &mut Frame, app: &mut App, area: Rect) {
         .filter(|_| app.log_folds.visible(app.selected))
         .and_then(crate::log_folds::commit_type)
     {
-        items.push((format!("[t hide {kind}] "), Some(kind.to_owned()), true));
+        items.push((
+            format!("[t hide {kind}] "),
+            LogFilterAction::Type(kind.to_owned()),
+            true,
+        ));
     }
+    items.push((
+        if app.log_folds.hide_merges {
+            "[M show merges] "
+        } else {
+            "[M hide merges] "
+        }
+        .to_owned(),
+        LogFilterAction::Merges,
+        true,
+    ));
     if area.is_empty() {
         return;
     }
@@ -249,7 +272,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     if !(0..app.commits.len()).any(|i| app.log_folds.visible(i)) {
         frame.render_widget(
-            Paragraph::new("All commits hidden. Press T to show all types."),
+            Paragraph::new("All commits hidden. Press T to clear filters."),
             area,
         );
         return;
@@ -701,6 +724,67 @@ mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
+    fn merge_filter_keeps_branch_history_and_combines_with_types() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut merge = commit("test: merge", 1);
+        let mut plain_merge = commit("Merge topic", 1);
+        let side = commit("test: side", 1);
+        let main = commit("feat: main", 1);
+        merge.parents = vec![plain_merge.hash.clone(), side.hash.clone()];
+        plain_merge.parents = vec![main.hash.clone(), side.hash.clone()];
+        let mut app = App::new(vec![merge, plain_merge, side, main]);
+        let mut terminal = Terminal::new(TestBackend::new(120, 10)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let button = app
+            .type_buttons
+            .iter()
+            .find(|(_, a)| *a == LogFilterAction::Merges)
+            .unwrap()
+            .0;
+        handle(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: button.x,
+                row: button.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut app,
+        );
+        assert!(app.log_folds.hide_merges);
+        assert_eq!(app.selected, 2);
+        assert_eq!(app.log_folds.hidden_count, 2);
+        assert!(app.log_folds.visible(2) && app.log_folds.visible(3));
+        app.search = Some("Merge topic".into());
+        app.next_match(false);
+        assert_eq!(app.selected, 2);
+        app.hide_selected_type();
+        assert_eq!(app.log_folds.hidden_count, 3); // Matching merges count once.
+        assert_eq!(app.selected, 3);
+        app.replace_commits(app.commits.clone());
+        assert!(app.log_folds.hide_merges);
+        assert_eq!(app.log_folds.hidden_count, 3);
+        handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('M'), KeyModifiers::NONE)),
+            &mut app,
+        );
+        assert!(!app.log_folds.hide_merges);
+        assert!(!app.log_folds.visible(0)); // Type filter still applies.
+        assert!(app.log_folds.visible(1));
+        assert_eq!(app.log_folds.hidden_count, 2);
+        handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('M'), KeyModifiers::NONE)),
+            &mut app,
+        );
+        handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('T'), KeyModifiers::NONE)),
+            &mut app,
+        );
+        assert!(!app.log_folds.hide_merges);
+        assert_eq!(app.log_folds.hidden_count, 0);
+        assert!((0..4).all(|i| app.log_folds.visible(i)));
+    }
+
+    #[test]
     fn type_filter_mouse_keyboard_search_and_refresh() {
         use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
         let mut app = App::new(vec![
@@ -730,7 +814,10 @@ mod tests {
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         assert_eq!(app.log_row_origin, origin);
         assert_eq!(app.visible_log_rows, rows);
-        assert!(app.type_buttons.is_empty());
+        assert!(app
+            .type_buttons
+            .iter()
+            .all(|(_, action)| *action == LogFilterAction::Merges));
         app.selected = 0;
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         click(&mut app, button);
@@ -747,7 +834,7 @@ mod tests {
         app.replace_commits(refreshed);
         assert_eq!(app.selected, 2);
         assert!(!app.log_folds.visible(0));
-        assert_eq!(app.log_folds.hidden_type_count, 3);
+        assert_eq!(app.log_folds.hidden_count, 3);
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let screen: String = terminal
             .backend()
@@ -763,12 +850,12 @@ mod tests {
         let button = app
             .type_buttons
             .iter()
-            .find(|(_, kind)| kind.as_deref() == Some("test"))
+            .find(|(_, kind)| *kind == LogFilterAction::Type("test".into()))
             .unwrap()
             .0;
         click(&mut app, button);
         assert!(app.log_folds.hidden_types.is_empty());
-        assert_eq!(app.log_folds.hidden_type_count, 0);
+        assert_eq!(app.log_folds.hidden_count, 0);
         app.top();
         handle(
             Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE)),
