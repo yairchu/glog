@@ -215,12 +215,7 @@ fn draw_type_controls(frame: &mut Frame, app: &mut App, area: Rect) {
             ));
         }
     }
-    if let Some(kind) = app
-        .commits
-        .get(app.selected)
-        .filter(|_| app.log_folds.visible(app.selected))
-        .and_then(crate::log_folds::commit_type)
-    {
+    if let Some(kind) = app.selected_hideable_type() {
         items.push((
             format!("[t hide {kind}] "),
             LogFilterAction::Type(kind.to_owned()),
@@ -325,7 +320,17 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let mut lines = Vec::new();
     let mut graph_row = 0;
+    // Routing rows below a filtered-out commit carry its edges, so clicking
+    // them selects nothing rather than the commit they lead to.
+    let mut after_filtered = false;
     'commits: for (index, commit) in app.commits.iter().enumerate() {
+        let graph_only = !app.log_folds.visible(index);
+        let routing_selectable = !graph_only && !after_filtered;
+        if app.log_folds.filtered_out(index) {
+            after_filtered = true;
+        } else if !graph_only {
+            after_filtered = false;
+        }
         if !app.log_folds.graph_visible(index) {
             continue;
         }
@@ -344,7 +349,6 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             graph_row += 1;
         }
-        let graph_only = !app.log_folds.visible(index);
         let graph_rows = app.log_folds.graph(index, commit);
         for (part, graph) in graph_rows.iter().enumerate() {
             if graph_row < app.log_offset {
@@ -381,8 +385,10 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                     .add_modifier(Modifier::BOLD);
             }
             lines.push(line);
-            app.visible_log_rows
-                .push((!graph_only && part + 1 == graph_rows.len()).then_some(index));
+            app.visible_log_rows.push(
+                (routing_selectable || !graph_only && part + 1 == graph_rows.len())
+                    .then_some(index),
+            );
             graph_row += 1;
         }
     }
@@ -804,6 +810,16 @@ mod tests {
                 .collect();
             assert!(screen.contains("chore: folded merge"));
             assert!(screen.contains("1 merged commit"));
+            // The stand-in's type is already hidden, so `t` has nothing to hide.
+            let hidden_types = app.log_folds.hidden_types.clone();
+            assert_eq!(
+                screen.contains("[t hide chore]"),
+                !hidden_types.contains("chore")
+            );
+            if hidden_types.contains("chore") {
+                app.hide_selected_type();
+                assert_eq!(app.log_folds.hidden_types, hidden_types);
+            }
             // Expanding reveals the side history and applies the filter.
             app.toggle_log_merge();
             assert!(!app.log_folds.visible(0));
@@ -811,6 +827,22 @@ mod tests {
             assert_eq!(app.log_folds.hidden_count, 1);
             assert_eq!(app.selected, 1);
         }
+    }
+
+    #[test]
+    fn routing_rows_select_the_commit_they_lead_to() {
+        let mut merge = commit("merge", 1);
+        let mut side = commit("side", 1);
+        let mut main = commit("main", 1);
+        let base = commit("base", 1);
+        merge.parents = vec![main.hash.clone(), side.hash.clone()];
+        main.parents = vec![base.hash.clone()];
+        side.parents = vec![base.hash.clone()];
+        side.graph = vec!["|\\".into(), "| * ".into()];
+        let mut app = App::new(vec![merge, side, main, base]);
+        let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(app.visible_log_rows[..3], [Some(0), Some(1), Some(1)]);
     }
 
     #[test]

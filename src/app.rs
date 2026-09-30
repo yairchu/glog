@@ -298,18 +298,25 @@ impl App {
         selected
     }
 
-    pub fn hide_selected_type(&mut self) {
-        if !self.log_folds.visible(self.selected) {
-            return;
-        }
-        if let Some(kind) = self
-            .commits
+    /// The selected commit's type, unless it is already hidden: a folded
+    /// merge matching a filter stays shown only to stand in for its history.
+    pub fn selected_hideable_type(&self) -> Option<&str> {
+        self.commits
             .get(self.selected)
+            .filter(|_| self.log_folds.visible(self.selected))
             .and_then(crate::log_folds::commit_type)
-            .map(str::to_owned)
-        {
+            .filter(|kind| !self.log_folds.hidden_types.contains(*kind))
+    }
+
+    pub fn hide_selected_type(&mut self) {
+        if let Some(kind) = self.selected_hideable_type().map(str::to_owned) {
             self.toggle_commit_type(Some(&kind));
-        } else {
+        } else if self.log_folds.visible(self.selected)
+            && self
+                .commits
+                .get(self.selected)
+                .is_some_and(|commit| crate::log_folds::commit_type(commit).is_none())
+        {
             self.status = Some("Selected commit has no Conventional Commit type".into());
         }
     }

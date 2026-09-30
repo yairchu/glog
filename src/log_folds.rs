@@ -85,6 +85,15 @@ impl LogFolds {
             })
     }
 
+    /// A row that merge folds show but filters hide. Its outgoing edges are
+    /// drawn in the routing rows of the next shown commit.
+    pub fn filtered_out(&self, index: usize) -> bool {
+        self.filtered.as_ref().is_some_and(|filtered| {
+            self.layout.visible.get(index) == Some(&true)
+                && filtered.visible.get(index) == Some(&false)
+        })
+    }
+
     pub fn graph<'a>(&'a self, index: usize, commit: &'a Commit) -> &'a [String] {
         self.filtered
             .as_ref()
