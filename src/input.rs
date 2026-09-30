@@ -89,6 +89,8 @@ pub fn handle(event: Event, app: &mut App) {
             KeyCode::Char('q') => app.quit = true,
             KeyCode::Tab => app.switch_mode(),
             KeyCode::Enter if app.mode == Mode::Log => app.switch_mode(),
+            KeyCode::Char('t') if app.mode == Mode::Log => app.hide_selected_type(),
+            KeyCode::Char('T') if app.mode == Mode::Log => app.toggle_commit_type(None),
             KeyCode::Char('z') if app.mode == Mode::Log => app.toggle_log_merge(),
             KeyCode::Char('m') if app.mode == Mode::Log => app.toggle_all_log_merges(),
             KeyCode::Enter | KeyCode::Char('z') if app.mode == Mode::Show => app.toggle_show_file(),
@@ -123,6 +125,21 @@ pub fn handle(event: Event, app: &mut App) {
             _ => {}
         }
     } else if let Event::Mouse(mouse) = event {
+        if app.show_help || app.search_input.is_some() {
+            return;
+        }
+        if app.mode == Mode::Log && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            let action = app
+                .type_buttons
+                .iter()
+                .find(|(rect, _)| rect.contains((mouse.column, mouse.row).into()))
+                .map(|(_, kind)| kind.clone());
+            if let Some(kind) = action {
+                app.toggle_commit_type(kind.as_deref());
+                return;
+            }
+        }
+
         if app.mode == Mode::Status && mouse.row != 0 {
             if let Some(view) = &mut app.status_view {
                 match mouse.kind {

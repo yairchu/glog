@@ -5,6 +5,16 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Added commit-type filtering in Log: `t` or a clickable button hides the
+  selected Conventional Commit type, and the existing top bar shows the hidden count with
+  buttons to restore individual types. `T` restores all types. Navigation and
+  search skip hidden types, the graph reconnects visible history, and watch
+  refreshes preserve filters. Issue-number prefixes such as `test #234(failing):`
+  are supported, and hidden counts are cached between filter/history updates.
+  Untyped commits remain visible.
+
 ## 0.3.1 - 2026-09-28
 
 ### Added

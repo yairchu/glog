@@ -28,6 +28,9 @@ pub struct LogFolds {
     // A failed ancestry read keeps fold choices for the next successful
     // refresh, but shows the Log unfolded.
     failed: bool,
+    pub hidden_types: std::collections::BTreeSet<String>,
+    filtered: Option<Layout>,
+    pub hidden_type_count: usize,
 }
 
 impl Default for LogFolds {
@@ -42,6 +45,9 @@ impl Default for LogFolds {
             graph: Graph::default(),
             layout: Layout::default(),
             failed: false,
+            hidden_types: Default::default(),
+            filtered: None,
+            hidden_type_count: 0,
         }
     }
 }
@@ -57,11 +63,22 @@ enum Fold {
 
 impl LogFolds {
     pub fn visible(&self, index: usize) -> bool {
-        self.layout.visible.get(index).copied().unwrap_or(true)
+        self.filtered
+            .as_ref()
+            .unwrap_or(&self.layout)
+            .visible
+            .get(index)
+            .copied()
+            .unwrap_or(true)
     }
 
     pub fn graph<'a>(&'a self, index: usize, commit: &'a Commit) -> &'a [String] {
-        self.layout.graphs.get(&index).unwrap_or(&commit.graph)
+        self.filtered
+            .as_ref()
+            .unwrap_or(&self.layout)
+            .graphs
+            .get(&index)
+            .unwrap_or(&commit.graph)
     }
 
     fn fold(&self, index: usize) -> Fold {
@@ -180,7 +197,7 @@ impl LogFolds {
     }
 
     pub fn reveal(&mut self, index: usize, commits: &[Commit]) {
-        while !self.visible(index) {
+        while !self.layout.visible.get(index).copied().unwrap_or(true) {
             let Some(fold) = self.containing_fold(index) else {
                 return;
             };
@@ -236,7 +253,9 @@ impl LogFolds {
     /// read it before hiding anything, or when `exact` asks for it anyway.
     fn update(&mut self, commits: &[Commit], exact: bool) -> Result<(), String> {
         let mut layout = Layout::new(&self.graph, commits, &self.collapsed);
-        if self.graph.unknown_below.is_some() && (exact || layout.visible.contains(&false)) {
+        if self.graph.unknown_below.is_some()
+            && (exact || layout.visible.contains(&false) || !self.hidden_types.is_empty())
+        {
             match (self.load_ancestry)(commits) {
                 Ok(ancestry) => {
                     let ancestry = leading_to_rows(ancestry, commits);
@@ -246,20 +265,106 @@ impl LogFolds {
                 }
                 Err(error) => {
                     self.layout = Layout::new(&self.graph, commits, &HashSet::new());
+                    self.apply_type_filter(commits);
                     self.failed = true;
                     return Err(error);
                 }
             }
         }
         self.layout = layout;
+        self.apply_type_filter(commits);
         self.failed = false;
         Ok(())
+    }
+
+    pub fn type_hidden(&self, commit: &Commit) -> bool {
+        commit_type(commit).is_some_and(|kind| self.hidden_types.contains(kind))
+    }
+
+    pub fn toggle_type(&mut self, kind: Option<&str>, commits: &[Commit]) -> Result<(), String> {
+        if let Some(kind) = kind {
+            if !self.hidden_types.remove(kind) {
+                self.hidden_types.insert(kind.to_owned());
+            }
+        } else {
+            self.hidden_types.clear();
+        }
+        if self.graph.rows != commits.len() {
+            self.refresh(commits)
+        } else {
+            self.update(commits, false)
+        }
+    }
+
+    fn apply_type_filter(&mut self, commits: &[Commit]) {
+        self.filtered = None;
+        self.hidden_type_count = 0;
+        if self.hidden_types.is_empty() {
+            return;
+        }
+        let mut layout = self.layout.clone();
+        for (index, commit) in commits.iter().enumerate() {
+            let hidden = self.type_hidden(commit);
+            self.hidden_type_count += usize::from(hidden);
+            layout.visible[index] &= !hidden;
+        }
+        let folded: Vec<_> = commits
+            .iter()
+            .map(|c| self.collapsed.contains(&c.hash))
+            .collect();
+        let reached = Layout::with_folds(&self.graph, &folded).1;
+        layout.graphs = layout.draw(&self.graph, commits, &folded, &reached);
+        self.filtered = Some(layout);
     }
 
     /// The nearest shown fold whose side history leads to a hidden row.
     fn containing_fold(&self, index: usize) -> Option<usize> {
         self.layout.owners.get(index).copied().flatten()
     }
+}
+
+/// Conventional Commit prefix, taken only from the subject of a revision.
+/// Custom ASCII types and issue references before the scope are supported;
+/// ordinary prose remains unclassified.
+pub fn commit_type(commit: &Commit) -> Option<&str> {
+    if commit.kind != CommitKind::Revision {
+        return None;
+    }
+    let (prefix, description) = commit.subject.split_once(": ")?;
+    if description.is_empty() || prefix.contains(['\n', '\r']) {
+        return None;
+    }
+    let prefix = prefix.strip_suffix('!').unwrap_or(prefix);
+    let kind = if let Some((kind, scope)) = prefix.split_once('(') {
+        let scope = scope.strip_suffix(')')?;
+        if scope.is_empty() || scope.contains(['(', ')']) {
+            return None;
+        }
+        kind
+    } else {
+        prefix
+    };
+    let kind = if let Some((kind, issues)) = kind.split_once(' ') {
+        // Accept project extensions such as `test #234(failing):` and
+        // `fix #233 #234:` without treating arbitrary prose as a type.
+        if issues.is_empty()
+            || !issues.split(' ').all(|issue| {
+                issue.strip_prefix('#').is_some_and(|number| {
+                    !number.is_empty() && number.bytes().all(|c| c.is_ascii_digit())
+                })
+            })
+        {
+            return None;
+        }
+        kind
+    } else {
+        kind
+    };
+    (!kind.is_empty()
+        && kind
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-'))
+    .then_some(kind)
 }
 
 /// The omitted commits that lead to a row. The rest, such as the history
@@ -447,7 +552,7 @@ impl Reach {
     }
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct Layout {
     visible: Vec<bool>,
     // The fold containing each hidden row.
@@ -582,20 +687,25 @@ impl Layout {
         folded: &[bool],
         reached: &[bool],
     ) -> HashMap<usize, Vec<String>> {
-        // The row each reached omitted commit leads to along first parents,
-        // computed parents first. Following every parent would connect a
-        // row to each commit a filter left behind it, which Git does not
-        // draw either.
-        let mut leads = vec![None; graph.parents.len()];
+        // Compute destinations parents first. Type-hidden loaded commits
+        // preserve every unfolded parent; ancestry omitted by Git follows
+        // first parents, matching the existing merge-fold projection.
+        let mut leads: Vec<Vec<usize>> = vec![Vec::new(); graph.parents.len()];
         for &node in graph.order.iter().rev() {
-            if node >= graph.rows && reached[node] {
-                leads[node] = graph.parents[node].first().and_then(|&(parent, _)| {
-                    if parent < graph.rows {
-                        Some(parent)
-                    } else {
-                        leads[parent]
+            if node < graph.rows && self.visible[node] {
+                leads[node].push(node);
+            } else if reached[node] {
+                for &(parent, side) in &graph.parents[node] {
+                    if (node >= graph.rows || folded[node]) && side {
+                        continue;
                     }
-                });
+                    let parents = leads[parent].clone();
+                    for row in parents {
+                        if !leads[node].contains(&row) {
+                            leads[node].push(row);
+                        }
+                    }
+                }
             }
         }
         let mut graphs = HashMap::new();
@@ -639,13 +749,10 @@ impl Layout {
                 if folded[index] && side {
                     continue;
                 }
-                let row = if parent < graph.rows {
-                    Some(parent)
-                } else {
-                    leads[parent]
-                };
-                if let Some(row) = row.filter(|row| !projected.contains(row)) {
-                    projected.push(row);
+                for &row in &leads[parent] {
+                    if !projected.contains(&row) {
+                        projected.push(row);
+                    }
                 }
             }
             let mut next = lanes.clone();
@@ -780,6 +887,91 @@ mod tests {
             .filter(|&i| folds.visible(i))
             .map(|i| commits[i].hash.as_str())
             .collect()
+    }
+
+    #[test]
+    fn conventional_types_require_a_subject_prefix() {
+        for (subject, expected) in [
+            ("feat: add something", Some("feat")),
+            ("test(failing): reproduce bug", Some("test")),
+            ("refactor(core)!: new API", Some("refactor")),
+            ("feat!: breaking", Some("feat")),
+            ("custom-type: thing", Some("custom-type")),
+            ("test #234(failing): reproduce", Some("test")),
+            ("docs #290(manual): list Bypass", Some("docs")),
+            ("fix #233 #234: editor", Some("fix")),
+            ("feat #42(api)!: breaking", Some("feat")),
+            ("test #234: coverage", Some("test")),
+            ("test #: missing number", None),
+            ("test #abc: nonnumeric", None),
+            ("test #234oops: malformed", None),
+            ("test something: prose", None),
+            ("ordinary subject", None),
+            ("Fix typo: description", None),
+            ("test(): empty scope", None),
+            ("feat: ", None),
+            ("feat(scope: malformed", None),
+            ("subject\n\nrefactor: body", None),
+        ] {
+            let mut c = commit("a", &[]);
+            c.subject = subject.into();
+            assert_eq!(commit_type(&c), expected, "{subject}");
+            c.kind = CommitKind::WorkingTree;
+            assert_eq!(commit_type(&c), None);
+        }
+    }
+
+    #[test]
+    fn type_filter_projects_through_hidden_merges_and_restores_graph() {
+        let mut commits = vec![
+            commit("tip", &["merge"]),
+            commit("merge", &["main", "side"]),
+            commit("side", &["base"]),
+            commit("main", &["base"]),
+            commit("base", &[]),
+        ];
+        commits[1].subject = "refactor: merge".into();
+        let mut folds = folds_with(None);
+        folds.refresh(&commits).unwrap();
+        folds.toggle_type(Some("refactor"), &commits).unwrap();
+        assert_eq!(shown(&folds, &commits), ["tip", "side", "main", "base"]);
+        // The hidden merge's two parents remain connected to the tip.
+        let side = plain(folds.graph(2, &commits[2]));
+        assert!(
+            side.iter()
+                .any(|row| row.contains('|') && row.contains('*')),
+            "{side:?}"
+        );
+        folds.toggle_type(None, &commits).unwrap();
+        for (i, c) in commits.iter().enumerate() {
+            assert!(folds.visible(i));
+            assert_eq!(folds.graph(i, c), c.graph);
+        }
+    }
+
+    #[test]
+    fn type_filters_and_merge_folds_are_independent() {
+        let mut commits = vec![
+            commit("merge", &["main", "side"]),
+            commit("side", &["base"]),
+            commit("main", &["base"]),
+            commit("base", &[]),
+        ];
+        commits[1].subject = "test: side".into();
+        commits[2].subject = "test: main".into();
+        let mut folds = folds_with(None);
+        folds.refresh(&commits).unwrap();
+        folds.toggle(0, &commits).unwrap();
+        folds.toggle_type(Some("test"), &commits).unwrap();
+        assert_eq!(shown(&folds, &commits), ["merge", "base"]);
+        assert_eq!(folds.hidden_type_count, 2);
+        folds.toggle_type(None, &commits).unwrap();
+        assert_eq!(shown(&folds, &commits), ["merge", "main", "base"]);
+        assert_eq!(folds.hidden_type_count, 0);
+        folds.toggle_type(Some("test"), &commits).unwrap();
+        folds.toggle(0, &commits).unwrap();
+        assert_eq!(shown(&folds, &commits), ["merge", "base"]);
+        assert_eq!(folds.hidden_type_count, 2);
     }
 
     #[test]
@@ -951,6 +1143,7 @@ mod tests {
         folds.load_ancestry = folds_with(Some(ancestry)).load_ancestry;
         folds.toggle(0, &commits).unwrap();
         assert_eq!(shown(&folds, &commits), ["merge", "main", "base"]);
+        assert_eq!(folds.hidden_type_count, 0);
         assert_eq!(folds.label(0), " · 1 merged commit");
     }
 

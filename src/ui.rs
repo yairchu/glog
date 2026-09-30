@@ -11,6 +11,7 @@ use ratatui::{
 };
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    app.type_buttons.clear();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -80,6 +81,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if has_log {
         frame.render_widget(tabs, header[1]);
     }
+    if app.mode == Mode::Log {
+        draw_type_controls(frame, app, header[2]);
+    }
     if live {
         frame.render_widget(
             Paragraph::new(" WATCH  ").style(
@@ -109,7 +113,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.mode == Mode::Log {
         // Keep the hint short by omitting the row format toggles (x hash,
         // s subject); the help screen lists every key.
-        "h help  q quit  ↑/k ↓/j  ←/→ commit  Enter show  z fold merge  m fold all  a author  d date  r refs  / ? search".to_owned()
+        "h help  q quit  ↑/k ↓/j  ←/→ commit  Enter show  t hide type  z fold merge  m fold all  a author  d date  r refs  / ? search".to_owned()
     } else if !has_log {
         "h help  q quit  ↑/k ↓/j  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search"
             .to_owned()
@@ -129,7 +133,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 fn draw_help(frame: &mut Frame, has_log: bool) {
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(68);
-    let height = screen.height.saturating_sub(2).min(26);
+    let height = screen.height.saturating_sub(2).min(27);
     let area = Rect::new(
         screen.x + screen.width.saturating_sub(width) / 2,
         screen.y + screen.height.saturating_sub(height) / 2,
@@ -151,6 +155,7 @@ fn draw_help(frame: &mut Frame, has_log: bool) {
         "  Enter             open commit / toggle section or file",
         "  z                 fold merge (Log) / file (Show)",
         "  m                 expand / fold all merges (Log)",
+        "  t / T             hide selected type / show all types (Log)",
         "  L                 expand / fold all lockfiles (Show)",
         "  s                 toggle file summary / patch (Show/Status)",
         "  Escape            return to Log / cancel",
@@ -188,6 +193,49 @@ fn draw_help(frame: &mut Frame, has_log: bool) {
     );
 }
 
+fn draw_type_controls(frame: &mut Frame, app: &mut App, area: Rect) {
+    let mut items = Vec::new();
+    if !app.log_folds.hidden_types.is_empty() {
+        let count = app.log_folds.hidden_type_count;
+        items.push((format!("Hiding {count} commits · "), None, false));
+        items.push(("[T show all] ".to_owned(), None, true));
+        for kind in &app.log_folds.hidden_types {
+            items.push((format!("[{kind} ×] "), Some(kind.clone()), true));
+        }
+    }
+    if let Some(kind) = app
+        .commits
+        .get(app.selected)
+        .filter(|_| app.log_folds.visible(app.selected))
+        .and_then(crate::log_folds::commit_type)
+    {
+        items.push((format!("[t hide {kind}] "), Some(kind.to_owned()), true));
+    }
+    if area.is_empty() {
+        return;
+    }
+    let mut x = area.x;
+    for (label, kind, clickable) in items {
+        let width = (Line::from(label.as_str()).width() as u16).min(area.right() - x);
+        if width == 0 {
+            break;
+        }
+        let rect = Rect::new(x, area.y, width, 1);
+        frame.render_widget(
+            Paragraph::new(label).style(Style::default().bg(Color::DarkGray).fg(if clickable {
+                Color::Cyan
+            } else {
+                Color::Yellow
+            })),
+            rect,
+        );
+        if clickable {
+            app.type_buttons.push((rect, kind));
+        }
+        x += width;
+    }
+}
+
 fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     let height = area.height as usize;
     app.log_row_origin = area.y;
@@ -195,6 +243,13 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     if app.commits.is_empty() {
         frame.render_widget(
             Paragraph::new("No commits matched the supplied arguments."),
+            area,
+        );
+        return;
+    }
+    if !(0..app.commits.len()).any(|i| app.log_folds.visible(i)) {
+        frame.render_widget(
+            Paragraph::new("All commits hidden. Press T to show all types."),
             area,
         );
         return;
@@ -207,7 +262,11 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             app.log_folds.visible(*i) && commit.kind == crate::git::CommitKind::Revision
         })
         .map(|(i, _)| i)
-        .filter(|index| *index > 0);
+        .filter(|index| {
+            app.commits[..*index]
+                .iter()
+                .any(|c| c.kind != crate::git::CommitKind::Revision)
+        });
     let selected_start_row: usize = app
         .commits
         .iter()
@@ -640,6 +699,107 @@ mod tests {
     use crate::input::handle;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn type_filter_mouse_keyboard_search_and_refresh() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut app = App::new(vec![
+            commit("test #234(failing): reproduce", 1),
+            commit("feat: feature", 1),
+            commit("test: coverage", 1),
+            commit("ordinary", 1),
+        ]);
+        let mut terminal = Terminal::new(TestBackend::new(80, 12)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let click = |app: &mut App, rect: Rect| {
+            handle(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column: rect.x,
+                    row: rect.y,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                app,
+            )
+        };
+        let button = app.type_buttons[0].0;
+        assert_eq!(button.y, 0);
+        let origin = app.log_row_origin;
+        let rows = app.visible_log_rows.clone();
+        app.selected = 3; // Untyped selection must not move the history.
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(app.log_row_origin, origin);
+        assert_eq!(app.visible_log_rows, rows);
+        assert!(app.type_buttons.is_empty());
+        app.selected = 0;
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        click(&mut app, button);
+        assert_eq!(app.selected, 1);
+        app.move_by(1, 1);
+        assert_eq!(app.selected, 3);
+        app.top();
+        assert_eq!(app.selected, 1);
+        app.search = Some("coverage".into());
+        app.next_match(false);
+        assert_eq!(app.selected, 1);
+        let mut refreshed = app.commits.clone();
+        refreshed.insert(0, commit("test #233 #234: newly arrived", 1));
+        app.replace_commits(refreshed);
+        assert_eq!(app.selected, 2);
+        assert!(!app.log_folds.visible(0));
+        assert_eq!(app.log_folds.hidden_type_count, 3);
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|c| c.symbol())
+            .collect();
+        assert!(screen.contains("Hiding 3 commits"));
+        assert_eq!(app.log_row_origin, origin);
+        assert!(app.type_buttons.iter().all(|(rect, _)| rect.y == 0));
+        assert!(!screen.contains("newly arrived"));
+        let button = app
+            .type_buttons
+            .iter()
+            .find(|(_, kind)| kind.as_deref() == Some("test"))
+            .unwrap()
+            .0;
+        click(&mut app, button);
+        assert!(app.log_folds.hidden_types.is_empty());
+        assert_eq!(app.log_folds.hidden_type_count, 0);
+        app.top();
+        handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE)),
+            &mut app,
+        );
+        assert!(!app.log_folds.visible(0));
+        handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('T'), KeyModifiers::NONE)),
+            &mut app,
+        );
+        assert!(app.log_folds.visible(0));
+    }
+
+    #[test]
+    fn all_types_hidden_remains_recoverable_on_small_terminals() {
+        for (width, height) in [(80, 8), (24, 6), (1, 3)] {
+            let mut app = App::new(vec![commit("test: only commit", 1)]);
+            app.hide_selected_type();
+            app.switch_mode();
+            assert_eq!(app.mode, Mode::Log);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            assert!(app.visible_log_rows.is_empty());
+            handle(
+                Event::Key(KeyEvent::new(KeyCode::Char('T'), KeyModifiers::NONE)),
+                &mut app,
+            );
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            assert!(app.log_folds.visible(0));
+        }
+    }
 
     #[test]
     fn log_hint_keeps_help_and_quit_visible_on_narrow_terminals() {

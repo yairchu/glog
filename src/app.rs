@@ -62,6 +62,7 @@ pub struct App {
     show_search_location: Option<(Vec<Vec<u8>>, usize)>,
     pub show_help: bool,
     pub log_row_origin: u16,
+    pub type_buttons: Vec<(ratatui::layout::Rect, Option<String>)>,
     pub visible_log_rows: Vec<Option<usize>>,
     pub show_row_origin: u16,
     pub visible_show_rows: usize,
@@ -116,6 +117,7 @@ impl App {
             show_search_location: None,
             show_help: false,
             log_row_origin: 0,
+            type_buttons: Vec::new(),
             visible_log_rows: Vec::new(),
             show_row_origin: 0,
             visible_show_rows: 0,
@@ -184,6 +186,9 @@ impl App {
 
     pub fn switch_mode(&mut self) {
         if !self.has_log_view() {
+            return;
+        }
+        if self.mode == Mode::Log && !self.log_folds.visible(self.selected) {
             return;
         }
         if self.mode == Mode::Log
@@ -286,6 +291,38 @@ impl App {
         selected
     }
 
+    pub fn hide_selected_type(&mut self) {
+        if !self.log_folds.visible(self.selected) {
+            return;
+        }
+        if let Some(kind) = self
+            .commits
+            .get(self.selected)
+            .and_then(crate::log_folds::commit_type)
+            .map(str::to_owned)
+        {
+            self.toggle_commit_type(Some(&kind));
+        } else {
+            self.status = Some("Selected commit has no Conventional Commit type".into());
+        }
+    }
+
+    pub fn toggle_commit_type(&mut self, kind: Option<&str>) {
+        self.status = self.log_folds.toggle_type(kind, &self.commits).err();
+        self.ensure_log_selection();
+        self.log_offset = 0;
+        self.search_match = None;
+    }
+
+    fn ensure_log_selection(&mut self) {
+        if !self.log_folds.visible(self.selected) {
+            self.selected = (self.selected..self.commits.len())
+                .chain((0..self.selected).rev())
+                .find(|&i| self.log_folds.visible(i))
+                .unwrap_or(0);
+        }
+    }
+
     pub fn toggle_log_merge(&mut self) {
         // Other rows have nothing to fold, so keep whatever the status says.
         if self
@@ -307,6 +344,7 @@ impl App {
             }
             Err(error) => self.status = Some(error),
         }
+        self.ensure_log_selection();
         self.search_match = None;
     }
 
@@ -351,6 +389,7 @@ impl App {
                 .find(|&i| self.log_folds.visible(i))
                 .unwrap_or(0);
         }
+        self.ensure_log_selection();
         // Searches index the old history and must restart from the selection.
         if self.search_match.is_some_and(|(mode, _)| mode == Mode::Log) {
             self.search_match = None;
@@ -1226,6 +1265,9 @@ impl App {
                         (start + step) % n
                     };
                     let c = &self.commits[i];
+                    if self.log_folds.type_hidden(c) {
+                        continue;
+                    }
                     if c.hash.to_lowercase().contains(&query)
                         || self.log_format.text(c).to_lowercase().contains(&query)
                     {

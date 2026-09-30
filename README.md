@@ -293,6 +293,27 @@ They are static and follow the author toggle. Credits come only from
 Other identities use the generic badge. Emails are deduplicated without regard
 to case, and the primary author is excluded. Full credits remain in Show.
 
+## Commit type filtering
+
+In Log, press `t` or click **[t hide TYPE]** in the top bar to hide the
+selected commit's Conventional Commit type. For example, on
+`test(failing): reproduce crash`, this hides all `test` commits.
+Scopes and breaking-change markers (`feat!:`, `feat(api)!:`) are supported,
+as are custom lowercase types and issue-number extensions such as
+`test #234(failing):`, `docs #290(manual):`, and `fix #233 #234:`.
+Only the subject is examined; untyped commits
+and the working-tree entry remain visible.
+
+The existing top bar shows **Hiding N commits**, with a button for each hidden type.
+Click a type to restore it, or press `T` / click **[T show all]** to reset.
+Controls stay on one line; `t` and `T` work even when the terminal is too narrow
+to show the buttons. Filters last for the current session and
+survive watch refreshes. The count includes matching commits inside merge folds and is cached between
+filter/history updates rather than recounted on each redraw.
+Navigation and Log search skip hidden types; merge folding remains independent.
+The graph connects visible commits through filtered history, so its edges may
+span hidden commits.
+
 ## Keys
 
 | Key | Log | Show |
@@ -309,6 +330,7 @@ to case, and the primary author is excluded. Full credits remain in Show.
 | `z` | expand/fold selected merge history | expand/fold current folded file |
 | `L` | — | expand/fold all lockfiles |
 | `m` | expand/fold all merge histories | — |
+| `t`, `T` | hide selected commit type / restore all types | — |
 | `s` | toggle subject | toggle file summary / patch |
 | `g` / `<` / `Home`, `G` / `>` / `End` | first/last commit | top/bottom |
 | `/`, `?`, `n`, `N` | search forward/backward; repeat/opposite | search forward/backward; repeat/opposite |
