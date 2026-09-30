@@ -124,6 +124,47 @@ impl LogFormat {
     }
 
     pub fn spans(&self, commit: &Commit) -> Vec<Span<'static>> {
+        if let Some(entry) = &commit.reflog {
+            let mut spans = vec![
+                Span::styled(
+                    format!("{} ", commit.short_hash),
+                    Style::default().fg(Color::Yellow),
+                ),
+                Span::styled(
+                    format!("{} ", entry.updated_at),
+                    Style::default().fg(Color::Gray),
+                ),
+                Span::styled(
+                    format!("{} ", entry.actor),
+                    Style::default().fg(Color::Cyan),
+                ),
+            ];
+            if entry.show_reference {
+                spans.push(Span::styled(
+                    format!("({}) ", entry.reference),
+                    Style::default().fg(Color::Green),
+                ));
+            }
+            if let Some((action, message)) = entry.action.split_once(": ") {
+                spans.push(Span::styled(
+                    format!("{action}:"),
+                    Style::default().fg(Color::Rgb(255, 165, 0)),
+                ));
+                spans.push(Span::raw(" "));
+                if let Some(kind) = crate::log_folds::subject_type_prefix(message) {
+                    spans.push(Span::styled(
+                        kind.to_owned(),
+                        Style::default().fg(Color::LightBlue),
+                    ));
+                    spans.push(Span::raw(message[kind.len()..].to_owned()));
+                } else {
+                    spans.push(Span::raw(message.to_owned()));
+                }
+            } else {
+                spans.push(Span::raw(entry.action.clone()));
+            }
+            return spans;
+        }
         // Synthetic entries must remain identifiable even in author-only formats.
         if commit.kind != CommitKind::Revision {
             return vec![
@@ -312,6 +353,53 @@ pub(crate) mod tests {
     use super::*;
 
     #[test]
+    fn reflog_actions_and_subject_types_have_distinct_colors() {
+        for (action, label, kind) in [
+            ("commit: feat(log)!: café", Some("commit:"), Some("feat")),
+            (
+                "commit (amend): tests #234(scope): coverage",
+                Some("commit (amend):"),
+                Some("tests"),
+            ),
+            (
+                "rebase (pick): doc: explain",
+                Some("rebase (pick):"),
+                Some("doc"),
+            ),
+            (
+                "checkout: moving from main to topic",
+                Some("checkout:"),
+                None,
+            ),
+            ("reset: moving to HEAD~1", Some("reset:"), None),
+            ("custom message", None, None),
+        ] {
+            let mut c = commit();
+            c.reflog = Some(crate::git::ReflogEntry {
+                reference: "HEAD".into(),
+                show_reference: false,
+                updated_at: "2026-10-01 10:00:01".into(),
+                actor: "Alice".into(),
+                action: action.into(),
+            });
+            let format = LogFormat::default();
+            assert_eq!(
+                format.text(&c),
+                format!("{} 2026-10-01 10:00:01 Alice {action}", c.short_hash)
+            );
+            let spans = format.spans(&c);
+            for (color, expected) in [(Color::Rgb(255, 165, 0), label), (Color::LightBlue, kind)] {
+                let parts: Vec<_> = spans
+                    .iter()
+                    .filter(|span| span.style.fg == Some(color))
+                    .map(|span| span.content.as_ref())
+                    .collect();
+                assert_eq!(parts, expected.into_iter().collect::<Vec<_>>());
+            }
+        }
+    }
+
+    #[test]
     fn subject_types_keep_original_spelling_and_format_literals() {
         for (subject, kind) in [
             ("feat(log)!: add filtering", Some("feat")),
@@ -418,6 +506,7 @@ pub(crate) mod tests {
     pub fn commit() -> Commit {
         Commit {
             kind: CommitKind::Revision,
+            reflog: None,
             parents: Vec::new(),
             diff_args: Vec::new(),
             hash: "abcdef0123456789".into(),

@@ -208,6 +208,34 @@ glog --watch
 `--all` or `--date` fail with a concise error rather than providing partial
 watch semantics.
 
+## Reflog
+
+Browse the local history of ref updates:
+
+```bash
+glog reflog                      # HEAD updates
+glog reflog main                 # updates to a branch
+glog reflog --all                # entries from all available reflogs
+glog reflog -n 50 --date=relative
+```
+
+Each row shows the commit hash, ref-update time, person who updated the ref,
+and action (such as commit, checkout, or reset). Ref names appear only when
+the results contain multiple refs. The time is when the ref was updated, not the commit's
+author or committer date. Dates default to `YYYY-MM-DD HH:MM:SS` in your local
+timezone, including seconds to distinguish updates close together. Git's
+`log.date` configuration is respected.
+`--date=STYLE` overrides the display format.
+
+Enter opens the selected commit. Tab or Escape returns to the reflog, and
+Left/Right in Show moves between reflog entries. Search matches the displayed
+event text or commit hash. Repeated visits to the same commit remain separate
+entries. This view is read-only and loaded once; Log's ancestry graph, merge
+folds, type filters, field toggles, and watch mode do not apply.
+
+Reflogs belong to the local repository and may have expired entries. They show
+the retained update history, not a complete record of activity on other clones.
+
 ## Working-tree status
 
 `glog status` opens the live **Status** view directly. It shows the current branch,

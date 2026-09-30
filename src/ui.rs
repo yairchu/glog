@@ -37,14 +37,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         "Show"
     };
+    let log_label = if app.is_reflog() { "Reflog" } else { "Log" };
+    let log_extra = (log_label.len() - 3) as u16;
     let tab_width: u16 = if !has_log {
         0
     } else if detail == "Status" {
-        15
+        15 + log_extra
     } else {
-        13
+        13 + log_extra
     };
-    let tabs = Tabs::new(["Log", detail])
+    let tabs = Tabs::new([log_label, detail])
         .select(selected)
         .style(header_style)
         .highlight_style(
@@ -71,8 +73,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .split(chunks[0]);
     app.log_tab_start = header[1].x;
-    app.log_tab_end = header[1].x.saturating_add(if has_log { 5 } else { 0 });
-    app.show_tab_start = header[1].x.saturating_add(if has_log { 6 } else { 0 });
+    app.log_tab_end = header[1]
+        .x
+        .saturating_add(if has_log { 5 + log_extra } else { 0 });
+    app.show_tab_start = header[1]
+        .x
+        .saturating_add(if has_log { 6 + log_extra } else { 0 });
     app.show_tab_end = header[1].x.saturating_add(tab_width.saturating_sub(1));
     frame.render_widget(
         Paragraph::new(command).style(header_style.add_modifier(Modifier::BOLD)),
@@ -81,7 +87,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if has_log {
         frame.render_widget(tabs, header[1]);
     }
-    if app.mode == Mode::Log {
+    if app.mode == Mode::Log && !app.is_reflog() {
         draw_type_controls(frame, app, header[2]);
     }
     if live {
@@ -110,6 +116,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         format!("{prefix}{input}█")
     } else if let Some(status) = &app.status {
         status.clone()
+    } else if app.mode == Mode::Log && app.is_reflog() {
+        "h help  q quit  ↑/k ↓/j  ←/→ entry  Enter show  / ? search".to_owned()
     } else if app.mode == Mode::Log {
         // Keep the hint short by omitting the row format toggles (x hash,
         // s subject); the help screen lists every key.
@@ -126,11 +134,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         chunks[2],
     );
     if app.show_help {
-        draw_help(frame, has_log);
+        draw_help(frame, has_log, app.is_reflog());
     }
 }
 
-fn draw_help(frame: &mut Frame, has_log: bool) {
+fn draw_help(frame: &mut Frame, has_log: bool, reflog: bool) {
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(68);
     let height = screen.height.saturating_sub(2).min(28);
@@ -170,6 +178,14 @@ fn draw_help(frame: &mut Frame, has_log: bool) {
     ]
     .into_iter()
     .filter(|line| {
+        !reflog
+            || !(line.starts_with("  a/d/r/x/s")
+                || line.contains("Author badges")
+                || line.starts_with("  m ")
+                || line.starts_with("  t / T")
+                || line.starts_with("  M "))
+    })
+    .filter(|line| {
         has_log
             || line.starts_with("  z ")
             || !(line.contains("Log")
@@ -179,8 +195,14 @@ fn draw_help(frame: &mut Frame, has_log: bool) {
     .map(|line| {
         if !has_log && line.contains("open commit") {
             "  Enter             toggle section or file"
-        } else if !has_log && line.starts_with("  z ") {
+        } else if (!has_log || reflog) && line.starts_with("  z ") {
             "  z                 toggle current file fold (Show)"
+        } else if reflog && line.contains("previous / next commit") {
+            "  ←/→                previous / next reflog entry"
+        } else if reflog && line.starts_with("  Escape") {
+            "  Escape            return to Reflog / cancel"
+        } else if reflog && line.starts_with("  Tab") {
+            "  Tab               switch Reflog / Show"
         } else {
             line
         }
@@ -1121,6 +1143,7 @@ mod tests {
     fn commit(subject: &str, graph_rows: usize) -> Commit {
         Commit {
             kind: CommitKind::Revision,
+            reflog: None,
             parents: Vec::new(),
             diff_args: Vec::new(),
             hash: subject.repeat(40).chars().take(40).collect(),

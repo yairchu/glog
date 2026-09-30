@@ -74,7 +74,9 @@ pub fn handle(event: Event, app: &mut App) {
             return;
         }
         match key.code {
-            KeyCode::Char(c @ ('a' | 'd' | 'r' | 'x' | 's')) if app.mode == Mode::Log => {
+            KeyCode::Char(c @ ('a' | 'd' | 'r' | 'x' | 's'))
+                if app.mode == Mode::Log && !app.is_reflog() =>
+            {
                 use crate::log_format::Field;
                 let field = match c {
                     'a' => Field::Author,

@@ -31,6 +31,7 @@ const NULL_DEVICE: &str = "/dev/null";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
     pub kind: CommitKind,
+    pub reflog: Option<ReflogEntry>,
     pub diff_args: Vec<String>,
     pub hash: String,
     pub short_hash: String,
@@ -49,6 +50,115 @@ pub struct Collaborators {
     pub codex: bool,
     pub claude: bool,
     pub others: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReflogEntry {
+    pub reference: String,
+    pub show_reference: bool,
+    pub updated_at: String,
+    pub actor: String,
+    pub action: String,
+}
+
+/// Read ref-update events, preserving repeated visits to the same commit.
+pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
+    let mut options = Vec::new();
+    let mut reference = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-n" | "--max-count" | "--date" => {
+                let value = args.next().ok_or_else(|| format!("{arg} requires a value"))?;
+                let option = if arg == "-n" { "--max-count" } else { arg };
+                options.push(format!("{option}={value}"));
+            }
+            "--all" => options.push(arg.clone()),
+            _ if arg.starts_with("--max-count=") || arg.starts_with("--date=") => {
+                options.push(arg.clone());
+            }
+            _ if arg.starts_with("-n") && arg[2..].bytes().all(|b| b.is_ascii_digit()) => {
+                options.push(arg.clone());
+            }
+            _ if !arg.starts_with('-') && !arg.contains("@{") && reference.is_none() => {
+                reference = Some(arg.clone());
+            }
+            _ => return Err(format!("unsupported reflog argument {arg:?}; use glog reflog [ref] [--all] [-n COUNT] [--date=STYLE]")),
+        }
+    }
+    let output = Command::new("git")
+        .args(["--no-pager", "reflog", "show"])
+        // Reflog selectors need an explicit --date to show times, not indices.
+        .arg(format!(
+            "--date={}",
+            configured_log_date("format-local:%Y-%m-%d %H:%M:%S")?
+        ))
+        .env("LC_ALL", "C")
+        .args(options)
+        .args([
+            "--no-color",
+            "--no-patch",
+            "--no-show-signature",
+            "--no-notes",
+        ])
+        .arg("-z")
+        .arg("--format=%H%x00%h%x00%gD%x00%gs%x00%s%x00%gn")
+        .args(reference)
+        .arg("--")
+        .output()
+        .map_err(|error| format!("could not run git reflog: {error}"))?;
+    if !output.status.success() {
+        let error = String::from_utf8_lossy(&output.stderr);
+        if error.contains("does not have any commits yet") {
+            return Ok(Vec::new());
+        }
+        return Err(stderr_message("git reflog failed", &output.stderr));
+    }
+    parse_reflog(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_reflog(output: &str) -> Result<Vec<Commit>, String> {
+    if output.is_empty() {
+        return Ok(Vec::new());
+    }
+    let fields: Vec<_> = output
+        .strip_suffix('\0')
+        .unwrap_or(output)
+        .split('\0')
+        .collect();
+    let (records, remainder) = fields.as_chunks::<6>();
+    if !remainder.is_empty() {
+        return Err("invalid Git reflog output".into());
+    }
+    let first_ref = records
+        .first()
+        .and_then(|fields| fields[2].rsplit_once("@{").map(|(reference, _)| reference));
+    let show_reference = records
+        .iter()
+        .any(|fields| fields[2].rsplit_once("@{").map(|(reference, _)| reference) != first_ref);
+    records
+        .iter()
+        .map(|fields| {
+            let (reference, date) = fields[2]
+                .rsplit_once("@{")
+                .ok_or("missing reflog update time")?;
+            let date = date.strip_suffix('}').ok_or("invalid reflog update time")?;
+            if date.chars().any(char::is_control) {
+                return Err("Git reflog dates must fit on one line; use --date=iso-strict".into());
+            }
+            let mut commit = pseudo_commit(CommitKind::Revision, fields[1], fields[4]);
+            commit.hash = fields[0].into();
+            commit.graph = vec![String::new()];
+            commit.reflog = Some(ReflogEntry {
+                reference: reference.into(),
+                show_reference,
+                updated_at: date.into(),
+                actor: fields[5].into(),
+                action: fields[3].into(),
+            });
+            Ok(commit)
+        })
+        .collect()
 }
 
 impl Collaborators {
@@ -86,27 +196,35 @@ pub enum CommitKind {
     Comparison { worktree: bool },
 }
 
-fn log_command(user_args: &[String]) -> Result<Command, String> {
+fn configured_log_date(fallback: &str) -> Result<String, String> {
     let configured_date = Command::new("git")
         .args(["config", "--get", "log.date"])
         .output()
         .map_err(|error| format!("could not read Git date configuration: {error}"))?;
+    match configured_date.status.code() {
+        Some(0) => {
+            let date = String::from_utf8_lossy(&configured_date.stdout);
+            Ok(date.strip_suffix('\n').unwrap_or(&date).to_owned())
+        }
+        Some(1) => Ok(fallback.into()),
+        _ => Err(stderr_message(
+            "could not read Git date configuration",
+            &configured_date.stderr,
+        )),
+    }
+}
+
+fn log_command(user_args: &[String]) -> Result<Command, String> {
     let mut command = Command::new("git");
     command.env("LC_ALL", "C");
-    // Supply a configuration fallback rather than a --date argument, so Git
-    // retains its own precedence for --date and --relative-date.
-    match configured_date.status.code() {
-        Some(0) => {}
-        Some(1) => {
-            command.args(["-c", "log.date=format-local:%Y-%m-%d %H:%M"]);
-        }
-        _ => {
-            return Err(stderr_message(
-                "could not read Git date configuration",
-                &configured_date.stderr,
-            ))
-        }
-    }
+    // Use configuration so --date and --relative-date retain their precedence.
+    command.args([
+        "-c",
+        &format!(
+            "log.date={}",
+            configured_log_date("format-local:%Y-%m-%d %H:%M")?
+        ),
+    ]);
     command.args(["--no-pager", "log"]);
     let separator = user_args
         .iter()
@@ -461,6 +579,7 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
                 pending_graph.push(line[..marker].to_owned());
                 commits.push(Commit {
                     kind: CommitKind::Revision,
+                    reflog: None,
                     diff_args: Vec::new(),
                     hash: fields[0].to_owned(),
                     short_hash: fields[1].to_owned(),
@@ -503,6 +622,7 @@ fn working_tree_entries() -> Result<Vec<Commit>, String> {
 fn pseudo_commit(kind: CommitKind, short_hash: &str, subject: &str) -> Commit {
     Commit {
         kind,
+        reflog: None,
         diff_args: Vec::new(),
         hash: format!("[{short_hash}]"),
         short_hash: short_hash.to_owned(),
@@ -1045,6 +1165,176 @@ mod tests {
 
     static CURRENT_DIR_LOCK: Mutex<()> = Mutex::new(());
     static NEXT_TEST_DIRECTORY: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn reflog_keeps_update_times_repeated_commits_and_navigation() {
+        use crate::{
+            app::{App, Mode},
+            input, ui,
+        };
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str], date: &str| {
+            let output = Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .env("GIT_AUTHOR_DATE", "2001-01-01T00:00:00+00:00")
+                .env("GIT_AUTHOR_NAME", "Original author")
+                .env("GIT_COMMITTER_DATE", date)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        let first = "2020-01-01T10:00:00+03:00";
+        let second = "2020-01-02T11:00:00+03:00";
+        let reset = "2020-01-03T12:00:00+03:00";
+        git(&["init", "-q"], first);
+        git(&["symbolic-ref", "HEAD", "refs/heads/main"], first);
+        assert!(load_reflog(&[]).unwrap().is_empty());
+        git(&["commit", "--allow-empty", "-qm", "feat: first"], first);
+        git(&["commit", "--allow-empty", "-qm", "fix: second"], second);
+        git(&["reset", "--soft", "HEAD~1"], reset);
+
+        let entries = load_reflog(&["--date=iso-strict".into()]).unwrap();
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].hash, entries[2].hash);
+        let format = crate::log_format::LogFormat::default();
+        assert_eq!(
+            format.text(&entries[0]),
+            format!(
+                "{} {reset} Test reset: moving to HEAD~1",
+                entries[0].short_hash
+            )
+        );
+        for (entry, date) in entries.iter().zip([reset, second, first]) {
+            assert_eq!(entry.reflog.as_ref().unwrap().updated_at, date);
+            assert!(entry.parents.is_empty());
+        }
+        assert!(entries[0]
+            .reflog
+            .as_ref()
+            .unwrap()
+            .action
+            .starts_with("reset:"));
+        let named = load_reflog(&[
+            "main".into(),
+            "-n".into(),
+            "1".into(),
+            "--date=short".into(),
+        ])
+        .unwrap();
+        assert_eq!(named.len(), 1);
+        assert_eq!(named[0].reflog.as_ref().unwrap().reference, "main");
+        assert_eq!(named[0].reflog.as_ref().unwrap().updated_at, "2020-01-03");
+        let all = load_reflog(&["--all".into()]).unwrap();
+        assert!(all.len() > entries.len());
+        for entry in &all {
+            let event = entry.reflog.as_ref().unwrap();
+            assert!(event.show_reference);
+            assert!(format
+                .text(entry)
+                .contains(&format!("({})", event.reference)));
+        }
+        let default_entries = load_reflog(&[]).unwrap();
+        let expected_date = git(
+            &[
+                "show",
+                "-s",
+                "--format=%cd",
+                &format!(
+                    "--date={}",
+                    configured_log_date("format-local:%Y-%m-%d %H:%M:%S").unwrap()
+                ),
+                "HEAD@{1}",
+            ],
+            second,
+        );
+        assert_eq!(
+            default_entries[1].reflog.as_ref().unwrap().updated_at,
+            expected_date
+        );
+        git(&["config", "log.date", "short"], first);
+        assert_eq!(
+            load_reflog(&[]).unwrap()[0]
+                .reflog
+                .as_ref()
+                .unwrap()
+                .updated_at,
+            "2020-01-03"
+        );
+        assert_eq!(
+            load_reflog(&["--date=iso-strict".into()]).unwrap()[0]
+                .reflog
+                .as_ref()
+                .unwrap()
+                .updated_at,
+            reset
+        );
+        for args in [
+            vec!["--watch"],
+            vec!["--date"],
+            vec!["--delete"],
+            vec!["HEAD@{0}"],
+            vec!["missing-ref"],
+        ] {
+            assert!(load_reflog(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err());
+        }
+
+        let mut app = App::new(entries);
+        crate::initialize_log_filters(&mut app, Default::default());
+        let mut terminal = Terminal::new(TestBackend::new(120, 10)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("Reflog"));
+        assert!(screen.contains(reset));
+        assert!(screen.contains("reset: moving to HEAD~1"));
+        assert_eq!(&app.visible_log_rows[..3], &[Some(0), Some(1), Some(2)]);
+        assert!(app.type_buttons.is_empty());
+        let key = |code, app: &mut App| {
+            input::handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), app)
+        };
+        key(KeyCode::Char('G'), &mut app);
+        assert_eq!(app.selected, 2);
+        for code in ['t', 'M', 'm', 'z'] {
+            key(KeyCode::Char(code), &mut app);
+        }
+        assert!(app.status.is_none());
+        key(KeyCode::Enter, &mut app);
+        assert_eq!(app.mode, Mode::Show);
+        assert!(crate::ansi::plain(&app.show_text).contains("feat: first"));
+        key(KeyCode::Left, &mut app);
+        assert_eq!(app.selected, 1);
+        assert!(crate::ansi::plain(&app.show_text).contains("fix: second"));
+        key(KeyCode::Tab, &mut app);
+        assert_eq!(app.mode, Mode::Log);
+        assert_eq!(app.selected, 1);
+        app.search = Some("reset: moving".into());
+        app.next_match(false);
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn reflog_rejects_multiline_dates_and_malformed_records() {
+        assert!(parse_reflog("hash\0short\0HEAD@{2020\n01}\0reset\0subject\0Actor\0").is_err());
+        assert!(parse_reflog("hash\0short\0").is_err());
+    }
 
     #[test]
     fn merge_folds_keep_history_reached_through_filtered_out_parents() {

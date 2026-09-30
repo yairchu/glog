@@ -388,7 +388,12 @@ pub fn commit_type_prefix(commit: &Commit) -> Option<&str> {
     if commit.kind != CommitKind::Revision {
         return None;
     }
-    let (prefix, description) = commit.subject.split_once(": ")?;
+    subject_type_prefix(&commit.subject)
+}
+
+/// Recognize a type in a subject, including subjects carried by reflog actions.
+pub fn subject_type_prefix(subject: &str) -> Option<&str> {
+    let (prefix, description) = subject.split_once(": ")?;
     if description.is_empty() || prefix.contains(['\n', '\r']) {
         return None;
     }

@@ -75,6 +75,7 @@ fn main() -> ExitCode {
         }
         Command::Show => git::load_show_app(command_args),
         Command::Diff => git::load_diff_app(command_args),
+        Command::Reflog => git::load_reflog(command_args).map(App::new),
         Command::Log if watch => git::load_watch_log().map(App::new),
         Command::Log => git::load_log(git_args).map(App::new),
     };
@@ -88,6 +89,7 @@ fn main() -> ExitCode {
     if command != Command::Status && !should_start_tui(watch, app.commits.len()) {
         let message = match command {
             Command::Diff => "no changes",
+            Command::Reflog => "no reflog entries matched",
             _ => "no commits matched",
         };
         eprintln!("glog: {message}");
@@ -120,6 +122,9 @@ fn main() -> ExitCode {
 }
 
 fn initialize_log_filters(app: &mut App, options: log_format::LogOptions) {
+    if app.is_reflog() {
+        return;
+    }
     app.log_folds.start_collapsed = options.fold_merges;
     app.log_folds.hidden_types = options.hidden_types;
     app.log_folds.hide_merges = options.hide_merges;
@@ -136,6 +141,7 @@ fn initialize_log_filters(app: &mut App, options: log_format::LogOptions) {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Command {
     Log,
+    Reflog,
     Show,
     Diff,
     Status,
@@ -143,6 +149,7 @@ enum Command {
 
 fn parse_command(args: &[String]) -> (Command, &[String]) {
     match args.first().map(String::as_str) {
+        Some("reflog") => (Command::Reflog, &args[1..]),
         Some("status") => (Command::Status, &args[1..]),
         Some("show") => (Command::Show, &args[1..]),
         Some("diff") => (Command::Diff, &args[1..]),
@@ -165,6 +172,7 @@ const HELP: &str = "glog — an interactive git log and git show browser
 
 Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
        glog [log] [git log arguments] [--] [pathspec...]
+       glog reflog [ref] [--all] [-n COUNT] [--date=STYLE]
        glog show [--stat] [commit] [-- pathspec...]
        glog diff [--cached] [--stat] [revision [revision]] [[--] pathspec...]
        glog status
@@ -172,7 +180,8 @@ Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
 Options:
   --pretty=format:FORMAT / --format=FORMAT
                 Format Log rows (%h %H %ad %an %ae %d %D %s %%)
-  --date=STYLE  Format author dates using Git (e.g. short, relative, iso)
+  --date=STYLE  Format Log author dates or Reflog update times using Git
+                (e.g. short, relative, iso)
   --oneline     Use the compact hash, refs, and subject layout
   --fold-merges Start Log with merge histories collapsed; z expands a merge
   --hide-merges Hide merge commits; M toggles this filter
@@ -186,6 +195,7 @@ Options:
 Status opens the Working tree detail view in a watch session.
 Watch mode includes one Working tree item; commits open Show.
 Log shows committed history, loaded once unless --watch is used.
+Reflog shows local ref updates with their update times; Enter opens the commit.
 Show opens HEAD or the specified commit, with history available via Tab.
 Diff opens unstaged changes (including untracked files), or staged changes
 with --cached. Revisions compare commits (A..B, A...B, A B) or a commit
@@ -313,6 +323,8 @@ mod tests {
     #[test]
     fn commands_preserve_log_shorthand_and_escape_reserved_names() {
         for (args, show, remaining) in [
+            (vec!["reflog", "main"], Command::Reflog, vec!["main"]),
+            (vec!["log", "reflog"], Command::Log, vec!["reflog"]),
             (vec!["status"], Command::Status, vec![]),
             (vec!["log", "status"], Command::Log, vec!["status"]),
             (vec!["show", "HEAD~2"], Command::Show, vec!["HEAD~2"]),

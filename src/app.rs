@@ -191,6 +191,12 @@ impl App {
         })
     }
 
+    pub fn is_reflog(&self) -> bool {
+        self.commits
+            .first()
+            .is_some_and(|commit| commit.reflog.is_some())
+    }
+
     pub fn switch_mode(&mut self) {
         if !self.has_log_view() {
             return;
@@ -301,6 +307,9 @@ impl App {
     /// The selected commit's type, unless it is already hidden: a folded
     /// merge matching a filter stays shown only to stand in for its history.
     pub fn selected_hideable_type(&self) -> Option<&str> {
+        if self.is_reflog() {
+            return None;
+        }
         self.commits
             .get(self.selected)
             .filter(|_| self.log_folds.visible(self.selected))
@@ -309,6 +318,9 @@ impl App {
     }
 
     pub fn hide_selected_type(&mut self) {
+        if self.is_reflog() {
+            return;
+        }
         if let Some(kind) = self.selected_hideable_type().map(str::to_owned) {
             self.toggle_commit_type(Some(&kind));
         } else if self.log_folds.visible(self.selected)
@@ -322,6 +334,9 @@ impl App {
     }
 
     pub fn toggle_commit_type(&mut self, kind: Option<&str>) {
+        if self.is_reflog() {
+            return;
+        }
         self.status = self.log_folds.toggle_type(kind, &self.commits).err();
         self.ensure_log_selection();
         self.log_offset = 0;
@@ -329,6 +344,9 @@ impl App {
     }
 
     pub fn apply_log_filter(&mut self, action: LogFilterAction) {
+        if self.is_reflog() {
+            return;
+        }
         match action {
             LogFilterAction::Type(kind) => self.toggle_commit_type(Some(&kind)),
             LogFilterAction::Reset => self.toggle_commit_type(None),
@@ -368,6 +386,9 @@ impl App {
     }
 
     pub fn toggle_all_log_merges(&mut self) {
+        if self.is_reflog() {
+            return;
+        }
         match self.log_folds.toggle_all(self.selected, &self.commits) {
             Ok(selected) => {
                 self.selected = selected;
@@ -1358,6 +1379,7 @@ mod tests {
     fn commit(subject: &str) -> Commit {
         Commit {
             kind: CommitKind::Revision,
+            reflog: None,
             parents: Vec::new(),
             diff_args: Vec::new(),
             hash: subject.repeat(40).chars().take(40).collect(),
