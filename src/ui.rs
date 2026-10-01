@@ -134,11 +134,131 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         chunks[2],
     );
     if app.show_help {
-        draw_help(frame, has_log, app.is_reflog());
+        draw_help(
+            frame,
+            if !has_log {
+                HelpView::Detail
+            } else if app.is_reflog() {
+                HelpView::Reflog
+            } else {
+                HelpView::Log
+            },
+        );
     }
 }
 
-fn draw_help(frame: &mut Frame, has_log: bool, reflog: bool) {
+/// The session a help screen describes.
+#[derive(Clone, Copy)]
+enum HelpView {
+    Log,
+    Reflog,
+    /// Show, Diff, or Status without a Log to return to.
+    Detail,
+}
+
+/// A key and its description in the Log, Reflog, and Detail help screens, in
+/// that order; `None` omits the row. Rows without a key are shown verbatim.
+type HelpRow = (&'static str, [Option<&'static str>; 3]);
+
+const fn every(key: &'static str, text: &'static str) -> HelpRow {
+    (key, [Some(text); 3])
+}
+
+const FILE_FOLD: Option<&str> = Some("toggle current file fold (Show)");
+
+const HELP_ROWS: &[HelpRow] = &[
+    every("", "Navigation"),
+    every("↑/k, ↓/j", "previous / next; move Show cursor"),
+    every("Page Up/b", "page up"),
+    every("Page Down/Space/f", "page down"),
+    (
+        "←/→",
+        [
+            Some("previous / next commit (Log/Show/Status)"),
+            Some("previous / next reflog entry"),
+            None,
+        ],
+    ),
+    every("[, ]", "previous / next changed file (Show)"),
+    every("g/<, G/>", "top / bottom (also Home/End)"),
+    every("", ""),
+    (
+        "a/d/r/x/s",
+        [
+            Some("toggle author/date/refs/hash/subject (Log)"),
+            None,
+            None,
+        ],
+    ),
+    (
+        "",
+        [
+            Some("  Author badges: +꩜ Codex  +❋ Claude Code  +N other coauthors"),
+            None,
+            None,
+        ],
+    ),
+    every("", "Views and search"),
+    (
+        "Enter",
+        [
+            Some("open commit / toggle section or file"),
+            Some("open commit / toggle section or file"),
+            Some("toggle section or file"),
+        ],
+    ),
+    (
+        "z",
+        [Some("fold merge (Log) / file (Show)"), FILE_FOLD, FILE_FOLD],
+    ),
+    ("m", [Some("expand / fold all merges (Log)"), None, None]),
+    (
+        "t / T",
+        [Some("hide selected type / clear filters (Log)"), None, None],
+    ),
+    ("M", [Some("hide / show merge commits (Log)"), None, None]),
+    every("L", "expand / fold all lockfiles (Show)"),
+    every("s", "toggle file summary / patch (Show/Status)"),
+    (
+        "Escape",
+        [
+            Some("return to Log / cancel"),
+            Some("return to Reflog / cancel"),
+            None,
+        ],
+    ),
+    (
+        "Tab",
+        [
+            Some("switch Log / detail"),
+            Some("switch Reflog / Show"),
+            None,
+        ],
+    ),
+    every("/, ?", "search forward / backward"),
+    every("n, N", "repeat / reverse search"),
+    every("Ctrl-L", "redraw the screen"),
+    every("", ""),
+    every("h", "close help"),
+    every("q", "quit (or close help)"),
+];
+
+fn help_text(view: HelpView) -> String {
+    HELP_ROWS
+        .iter()
+        .filter_map(|(key, texts)| {
+            let text = texts[view as usize]?;
+            Some(if key.is_empty() {
+                text.to_owned()
+            } else {
+                format!("  {key:<18}{text}")
+            })
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn draw_help(frame: &mut Frame, view: HelpView) {
     let screen = frame.area();
     let width = screen.width.saturating_sub(4).min(68);
     let height = screen.height.saturating_sub(2).min(28);
@@ -148,70 +268,9 @@ fn draw_help(frame: &mut Frame, has_log: bool, reflog: bool) {
         width,
         height,
     );
-    let text = [
-        "Navigation",
-        "  ↑/k, ↓/j          previous / next; move Show cursor",
-        "  Page Up/b         page up",
-        "  Page Down/Space/f page down",
-        "  ←/→               previous / next commit (Log/Show/Status)",
-        "  [, ]              previous / next changed file (Show)",
-        "  g/<, G/>          top / bottom (also Home/End)",
-        "",
-        "  a/d/r/x/s         toggle author/date/refs/hash/subject (Log)",
-        "  Author badges: +꩜ Codex  +❋ Claude Code  +N other coauthors",
-        "Views and search",
-        "  Enter             open commit / toggle section or file",
-        "  z                 fold merge (Log) / file (Show)",
-        "  m                 expand / fold all merges (Log)",
-        "  t / T             hide selected type / clear filters (Log)",
-        "  M                 hide / show merge commits (Log)",
-        "  L                 expand / fold all lockfiles (Show)",
-        "  s                 toggle file summary / patch (Show/Status)",
-        "  Escape            return to Log / cancel",
-        "  Tab               switch Log / detail",
-        "  /, ?              search forward / backward",
-        "  n, N              repeat / reverse search",
-        "  Ctrl-L            redraw the screen",
-        "",
-        "  h                 close help",
-        "  q                 quit (or close help)",
-    ]
-    .into_iter()
-    .filter(|line| {
-        !reflog
-            || !(line.starts_with("  a/d/r/x/s")
-                || line.contains("Author badges")
-                || line.starts_with("  m ")
-                || line.starts_with("  t / T")
-                || line.starts_with("  M "))
-    })
-    .filter(|line| {
-        has_log
-            || line.starts_with("  z ")
-            || !(line.contains("Log")
-                || line.contains("previous / next commit")
-                || line.contains("Author badges"))
-    })
-    .map(|line| {
-        if !has_log && line.contains("open commit") {
-            "  Enter             toggle section or file"
-        } else if (!has_log || reflog) && line.starts_with("  z ") {
-            "  z                 toggle current file fold (Show)"
-        } else if reflog && line.contains("previous / next commit") {
-            "  ←/→               previous / next reflog entry"
-        } else if reflog && line.starts_with("  Escape") {
-            "  Escape            return to Reflog / cancel"
-        } else if reflog && line.starts_with("  Tab") {
-            "  Tab               switch Reflog / Show"
-        } else {
-            line
-        }
-    })
-    .collect::<Vec<_>>()
-    .join("\n");
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(text).block(Block::bordered().title(" Help ")),
+        Paragraph::new(help_text(view)).block(Block::bordered().title(" Help ")),
         area,
     );
 }
