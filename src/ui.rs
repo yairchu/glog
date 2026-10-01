@@ -153,7 +153,7 @@ fn draw_help(frame: &mut Frame, has_log: bool, reflog: bool) {
         "  ↑/k, ↓/j          previous / next; move Show cursor",
         "  Page Up/b         page up",
         "  Page Down/Space/f page down",
-        "  ←/→                previous / next commit (Log/Show/Status)",
+        "  ←/→               previous / next commit (Log/Show/Status)",
         "  [, ]              previous / next changed file (Show)",
         "  g/<, G/>          top / bottom (also Home/End)",
         "",
@@ -198,7 +198,7 @@ fn draw_help(frame: &mut Frame, has_log: bool, reflog: bool) {
         } else if (!has_log || reflog) && line.starts_with("  z ") {
             "  z                 toggle current file fold (Show)"
         } else if reflog && line.contains("previous / next commit") {
-            "  ←/→                previous / next reflog entry"
+            "  ←/→               previous / next reflog entry"
         } else if reflog && line.starts_with("  Escape") {
             "  Escape            return to Reflog / cancel"
         } else if reflog && line.starts_with("  Tab") {
