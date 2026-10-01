@@ -221,11 +221,11 @@ glog reflog -n 50 --date=relative
 
 Each row shows the commit hash, ref-update time, person who updated the ref,
 and action (such as commit, checkout, or reset). Ref names appear only when
-the results contain multiple refs. The time is when the ref was updated, not the commit's
-author or committer date. Dates default to `YYYY-MM-DD HH:MM:SS` in your local
-timezone, including seconds to distinguish updates close together. Git's
-`log.date` configuration is respected.
-`--date=STYLE` overrides the display format.
+the results contain multiple refs. The time is when the ref was updated, not
+the commit's author or committer date. Dates default to `YYYY-MM-DD HH:MM:SS`
+in your local timezone, including seconds to distinguish updates close
+together. Git's `log.date` configuration is respected. `--date=STYLE`
+overrides the display format.
 
 Enter opens the selected commit. Tab or Escape returns to the reflog, and
 Left/Right in Show moves between reflog entries. Search matches the displayed

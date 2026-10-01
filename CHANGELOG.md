@@ -10,10 +10,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Added `glog reflog` to browse local ref updates with commit hashes, update
   times, identities, and actions. Enter opens the commit; search and navigation
   keep repeated visits to the same commit separate. Supports named refs,
-  `--all`, entry limits, and date formatting. Action labels are orange and
-  Conventional Commit types in event messages are light blue.
-- Highlight recognized Conventional Commit types in light blue in Log, matching the
-  type-filter controls.
+  `--all`, entry limits, and date formatting.
+- Added highlighting of recognized Conventional Commit types in Log, in the
+  same light blue as the type-filter controls.
 
 ## 0.3.2 - 2026-09-30
 
