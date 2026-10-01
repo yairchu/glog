@@ -1,12 +1,23 @@
 # Repository instructions
 
 - Add `Co-authored-by: Codex <codex@openai.com>` to commits created or amended by Codex.
+- Commit completed changes by default, without waiting to be asked. Do not
+  push; pushing is a maintainer action.
 - Never amend or otherwise rewrite a commit reachable from a remote ref unless
   the maintainer explicitly requests a history rewrite. Create a follow-up
   commit instead.
 - Changelog fix entries should only describe bugs present in the previous
   release. For fixes to unreleased features, update the feature's existing
   entry if needed rather than adding a separate fix entry.
+- Leave trivial cosmetic fixes, such as help-text spacing, out of the
+  changelog.
+- Keep the website concise and to the point: omit requirements and details
+  that go without saying, such as needing Git.
+- Don't add tests for behavior that works and was never broken. Add a
+  regression test when something breaks or proves verifiably error-prone.
+- Prefer code structures that make mistakes hard over ones that rely on
+  matching or keeping separate pieces in sync, such as filtering
+  user-facing text by its contents.
 
 ## Commit convention
 
