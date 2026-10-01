@@ -1,6 +1,6 @@
 use crate::{
     ansi,
-    app::{App, LogFilterAction, Mode, ShowScroll},
+    app::{App, LogAction, Mode, ShowScroll},
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -38,13 +38,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         "Show"
     };
     let log_label = if app.is_reflog() { "Reflog" } else { "Log" };
-    let log_extra = (log_label.len() - 3) as u16;
-    let tab_width: u16 = if !has_log {
-        0
-    } else if detail == "Status" {
-        15 + log_extra
+    // Tabs pads each label with a space on either side and separates them
+    // with a one-cell divider.
+    let (log_width, detail_width) = if has_log {
+        (log_label.len() as u16 + 2, detail.len() as u16 + 2)
     } else {
-        13 + log_extra
+        (0, 0)
+    };
+    let tab_width = if has_log {
+        log_width + 1 + detail_width + 1
+    } else {
+        0
     };
     let tabs = Tabs::new([log_label, detail])
         .select(selected)
@@ -73,13 +77,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     ])
     .split(chunks[0]);
     app.log_tab_start = header[1].x;
-    app.log_tab_end = header[1]
-        .x
-        .saturating_add(if has_log { 5 + log_extra } else { 0 });
+    app.log_tab_end = header[1].x.saturating_add(log_width);
     app.show_tab_start = header[1]
         .x
-        .saturating_add(if has_log { 6 + log_extra } else { 0 });
-    app.show_tab_end = header[1].x.saturating_add(tab_width.saturating_sub(1));
+        .saturating_add(if has_log { log_width + 1 } else { 0 });
+    app.show_tab_end = app.show_tab_start.saturating_add(detail_width);
     frame.render_widget(
         Paragraph::new(command).style(header_style.add_modifier(Modifier::BOLD)),
         header[0],
@@ -284,22 +286,18 @@ fn draw_type_controls(frame: &mut Frame, app: &mut App, area: Rect) {
                 "Hiding {count} commit{} · ",
                 if count == 1 { "" } else { "s" }
             ),
-            LogFilterAction::Reset,
+            LogAction::Reset,
             false,
         ));
-        items.push(("[T show all] ".to_owned(), LogFilterAction::Reset, true));
+        items.push(("[T show all] ".to_owned(), LogAction::Reset, true));
         for kind in &app.log_folds.hidden_types {
-            items.push((
-                format!("[{kind} ×] "),
-                LogFilterAction::Type(kind.clone()),
-                true,
-            ));
+            items.push((format!("[{kind} ×] "), LogAction::Type(kind.clone()), true));
         }
     }
     if let Some(kind) = app.selected_hideable_type() {
         items.push((
             format!("[t hide {kind}] "),
-            LogFilterAction::Type(kind.to_owned()),
+            LogAction::Type(kind.to_owned()),
             true,
         ));
     }
@@ -317,7 +315,7 @@ fn draw_type_controls(frame: &mut Frame, app: &mut App, area: Rect) {
                 "[M hide merges] "
             }
             .to_owned(),
-            LogFilterAction::Merges,
+            LogAction::Merges,
             true,
         ));
     }
@@ -845,8 +843,8 @@ mod tests {
         rows.insert(0, outer);
         rows.push(base);
         let mut app = App::new(rows);
-        app.apply_log_filter(LogFilterAction::Merges);
-        app.apply_log_filter(LogFilterAction::Type("fix".into()));
+        app.apply_log_action(LogAction::Merges);
+        app.apply_log_action(LogAction::Type("fix".into()));
         assert!((0..app.commits.len()).all(|i| !app.log_folds.visible(i)));
         let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
@@ -862,10 +860,7 @@ mod tests {
 
     #[test]
     fn filters_keep_folded_merges_that_stand_in_for_their_history() {
-        for action in [
-            LogFilterAction::Merges,
-            LogFilterAction::Type("chore".into()),
-        ] {
+        for action in [LogAction::Merges, LogAction::Type("chore".into())] {
             let mut merge = commit("chore: folded merge", 1);
             let mut side = commit("fix: side", 1);
             let mut main = commit("feat: main", 1);
@@ -874,9 +869,9 @@ mod tests {
             main.parents = vec![base.hash.clone()];
             side.parents = vec![base.hash.clone()];
             let mut app = App::new(vec![merge, side, main, base]);
-            app.toggle_log_merge();
+            app.apply_log_action(LogAction::Fold);
             assert!(!app.log_folds.visible(1));
-            app.apply_log_filter(action);
+            app.apply_log_action(action);
             assert!(app.log_folds.visible(0));
             assert_eq!(app.log_folds.hidden_count, 0);
             assert_eq!(app.selected, 0);
@@ -898,11 +893,11 @@ mod tests {
                 !hidden_types.contains("chore")
             );
             if hidden_types.contains("chore") {
-                app.hide_selected_type();
+                app.apply_log_action(LogAction::HideSelectedType);
                 assert_eq!(app.log_folds.hidden_types, hidden_types);
             }
             // Expanding reveals the side history and applies the filter.
-            app.toggle_log_merge();
+            app.apply_log_action(LogAction::Fold);
             assert!(!app.log_folds.visible(0));
             assert!(app.log_folds.visible(1));
             assert_eq!(app.log_folds.hidden_count, 1);
@@ -929,10 +924,7 @@ mod tests {
     #[test]
     fn hidden_merges_keep_noninteractive_graph_junctions_for_both_filters() {
         use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-        for action in [
-            LogFilterAction::Merges,
-            LogFilterAction::Type("chore".into()),
-        ] {
+        for action in [LogAction::Merges, LogAction::Type("chore".into())] {
             let mut merge = commit("chore: hidden merge text", 1);
             let mut side = commit("fix: side", 1);
             let mut main = commit("feat: main", 1);
@@ -941,7 +933,7 @@ mod tests {
             main.parents = vec![base.hash.clone()];
             side.parents = vec![base.hash.clone()];
             let mut app = App::new(vec![merge, side, main, base]);
-            app.apply_log_filter(action);
+            app.apply_log_action(action);
             assert_eq!(app.selected, 1);
             assert!(!app.log_folds.visible(0));
             assert!(!app.log_folds.graph_visible(0));
@@ -985,7 +977,7 @@ mod tests {
             app.bottom();
             terminal.draw(|f| draw(f, &mut app)).unwrap();
             assert!(app.visible_log_rows.contains(&Some(3)));
-            app.apply_log_filter(LogFilterAction::Reset);
+            app.apply_log_action(LogAction::Reset);
             assert!(app.log_folds.visible(0));
         }
     }
@@ -1005,7 +997,7 @@ mod tests {
         let button = app
             .type_buttons
             .iter()
-            .find(|(_, a)| *a == LogFilterAction::Merges)
+            .find(|(_, a)| *a == LogAction::Merges)
             .unwrap()
             .0;
         handle(
@@ -1024,7 +1016,7 @@ mod tests {
         app.search = Some("Merge topic".into());
         app.next_match(false);
         assert_eq!(app.selected, 2);
-        app.hide_selected_type();
+        app.apply_log_action(LogAction::HideSelectedType);
         assert_eq!(app.log_folds.hidden_count, 3); // Matching merges count once.
         assert_eq!(app.selected, 3);
         app.replace_commits(app.commits.clone());
@@ -1073,7 +1065,7 @@ mod tests {
                 app,
             )
         };
-        assert_eq!(app.type_buttons[0].1, LogFilterAction::Type("test".into()));
+        assert_eq!(app.type_buttons[0].1, LogAction::Type("test".into()));
         let button = app.type_buttons[0].0;
         assert_eq!(button.y, 0);
         let origin = app.log_row_origin;
@@ -1115,7 +1107,7 @@ mod tests {
         let button = app
             .type_buttons
             .iter()
-            .find(|(_, kind)| *kind == LogFilterAction::Type("test".into()))
+            .find(|(_, kind)| *kind == LogAction::Type("test".into()))
             .unwrap()
             .0;
         click(&mut app, button);
@@ -1138,7 +1130,7 @@ mod tests {
     fn all_types_hidden_remains_recoverable_on_small_terminals() {
         for (width, height) in [(80, 8), (24, 6), (1, 3)] {
             let mut app = App::new(vec![commit("test: only commit", 1)]);
-            app.hide_selected_type();
+            app.apply_log_action(LogAction::HideSelectedType);
             app.switch_mode();
             assert_eq!(app.mode, Mode::Log);
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -1188,7 +1180,7 @@ mod tests {
             assert!(app
                 .type_buttons
                 .iter()
-                .any(|(_, action)| *action == LogFilterAction::Merges));
+                .any(|(_, action)| *action == LogAction::Merges));
             for y in 1..8 {
                 for x in 0..100 {
                     if (x, y) != (column, 2) {

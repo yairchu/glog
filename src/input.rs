@@ -1,4 +1,4 @@
-use crate::app::{App, LogFilterAction, Mode};
+use crate::app::{App, LogAction, Mode};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 
 pub fn handle(event: Event, app: &mut App) {
@@ -91,13 +91,14 @@ pub fn handle(event: Event, app: &mut App) {
             KeyCode::Char('q') => app.quit = true,
             KeyCode::Tab => app.switch_mode(),
             KeyCode::Enter if app.mode == Mode::Log => app.switch_mode(),
-            KeyCode::Char('t') if app.mode == Mode::Log => app.hide_selected_type(),
-            KeyCode::Char('T') if app.mode == Mode::Log => app.toggle_commit_type(None),
-            KeyCode::Char('M') if app.mode == Mode::Log => {
-                app.apply_log_filter(LogFilterAction::Merges)
-            }
-            KeyCode::Char('z') if app.mode == Mode::Log => app.toggle_log_merge(),
-            KeyCode::Char('m') if app.mode == Mode::Log => app.toggle_all_log_merges(),
+            KeyCode::Char(c @ ('t' | 'T' | 'M' | 'z' | 'm')) if app.mode == Mode::Log => app
+                .apply_log_action(match c {
+                    't' => LogAction::HideSelectedType,
+                    'T' => LogAction::Reset,
+                    'M' => LogAction::Merges,
+                    'z' => LogAction::Fold,
+                    _ => LogAction::FoldAll,
+                }),
             KeyCode::Enter | KeyCode::Char('z') if app.mode == Mode::Show => app.toggle_show_file(),
             KeyCode::Char('s') if app.mode == Mode::Show => app.toggle_show_stat(),
             KeyCode::Char('L') if app.mode == Mode::Show => app.toggle_all_lockfiles(),
@@ -146,7 +147,7 @@ pub fn handle(event: Event, app: &mut App) {
                 .find(|(rect, _)| rect.contains((mouse.column, mouse.row).into()))
                 .map(|(_, kind)| kind.clone());
             if let Some(kind) = action {
-                app.apply_log_filter(kind);
+                app.apply_log_action(kind);
                 return;
             }
         }
@@ -437,7 +438,7 @@ mod tests {
                 })
                 .collect();
             let mut app = App::new(commits);
-            app.toggle_commit_type(Some("test"));
+            app.apply_log_action(LogAction::Type("test".into()));
             handle(key(code), &mut app);
             assert_eq!(app.selected, 40, "{code:?}");
             handle(key(code), &mut app);

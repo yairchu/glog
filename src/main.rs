@@ -319,6 +319,7 @@ impl Drop for TerminalGuard {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use app::LogAction;
 
     #[test]
     fn commands_preserve_log_shorthand_and_escape_reserved_names() {
@@ -395,7 +396,7 @@ mod tests {
         app.replace_commits(app.commits.clone());
         assert_eq!(app.selected, 2);
         assert_eq!(app.log_folds.hidden_count, 2);
-        app.toggle_commit_type(None);
+        app.apply_log_action(LogAction::Reset);
         assert!((0..3).all(|i| app.log_folds.visible(i)));
         let (_, options, _) =
             log_format::parse_args(&["--hide-merges".into(), "--hide-types=test,feature".into()])
@@ -403,7 +404,7 @@ mod tests {
         initialize_log_filters(&mut app, options);
         assert_eq!(app.log_folds.hidden_count, 3);
         assert_eq!(app.mode, app::Mode::Log);
-        app.toggle_commit_type(None);
+        app.apply_log_action(LogAction::Reset);
         assert_eq!(app.log_folds.hidden_count, 0);
     }
 

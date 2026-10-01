@@ -31,11 +31,16 @@ pub enum ShowScroll {
     PreserveCursorPosition(isize),
 }
 
+/// Every action that filters or folds Log rows, so Reflog, which has neither,
+/// can refuse them in one place.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum LogFilterAction {
+pub enum LogAction {
     Type(String),
     Merges,
     Reset,
+    HideSelectedType,
+    Fold,
+    FoldAll,
 }
 
 pub struct App {
@@ -69,7 +74,7 @@ pub struct App {
     show_search_location: Option<(Vec<Vec<u8>>, usize)>,
     pub show_help: bool,
     pub log_row_origin: u16,
-    pub type_buttons: Vec<(ratatui::layout::Rect, LogFilterAction)>,
+    pub type_buttons: Vec<(ratatui::layout::Rect, LogAction)>,
     pub visible_log_rows: Vec<Option<usize>>,
     pub show_row_origin: u16,
     pub visible_show_rows: usize,
@@ -307,9 +312,6 @@ impl App {
     /// The selected commit's type, unless it is already hidden: a folded
     /// merge matching a filter stays shown only to stand in for its history.
     pub fn selected_hideable_type(&self) -> Option<&str> {
-        if self.is_reflog() {
-            return None;
-        }
         self.commits
             .get(self.selected)
             .filter(|_| self.log_folds.visible(self.selected))
@@ -317,10 +319,7 @@ impl App {
             .filter(|kind| !self.log_folds.hidden_types.contains(*kind))
     }
 
-    pub fn hide_selected_type(&mut self) {
-        if self.is_reflog() {
-            return;
-        }
+    fn hide_selected_type(&mut self) {
         if let Some(kind) = self.selected_hideable_type().map(str::to_owned) {
             self.toggle_commit_type(Some(&kind));
         } else if self.log_folds.visible(self.selected)
@@ -333,24 +332,25 @@ impl App {
         }
     }
 
-    pub fn toggle_commit_type(&mut self, kind: Option<&str>) {
-        if self.is_reflog() {
-            return;
-        }
+    fn toggle_commit_type(&mut self, kind: Option<&str>) {
         self.status = self.log_folds.toggle_type(kind, &self.commits).err();
         self.ensure_log_selection();
         self.log_offset = 0;
         self.search_match = None;
     }
 
-    pub fn apply_log_filter(&mut self, action: LogFilterAction) {
+    pub fn apply_log_action(&mut self, action: LogAction) {
+        // Reflog entries are separate ref updates, not a commit graph.
         if self.is_reflog() {
             return;
         }
         match action {
-            LogFilterAction::Type(kind) => self.toggle_commit_type(Some(&kind)),
-            LogFilterAction::Reset => self.toggle_commit_type(None),
-            LogFilterAction::Merges => {
+            LogAction::Type(kind) => self.toggle_commit_type(Some(&kind)),
+            LogAction::Reset => self.toggle_commit_type(None),
+            LogAction::HideSelectedType => self.hide_selected_type(),
+            LogAction::Fold => self.toggle_log_merge(),
+            LogAction::FoldAll => self.toggle_all_log_merges(),
+            LogAction::Merges => {
                 self.status = self.log_folds.toggle_merges(&self.commits).err();
                 self.ensure_log_selection();
                 self.log_offset = 0;
@@ -368,7 +368,7 @@ impl App {
         }
     }
 
-    pub fn toggle_log_merge(&mut self) {
+    fn toggle_log_merge(&mut self) {
         // Other rows have nothing to fold, so keep whatever the status says.
         // When filters hide every commit, the selection is not shown.
         if !self.log_folds.visible(self.selected)
@@ -385,10 +385,7 @@ impl App {
         self.search_match = None;
     }
 
-    pub fn toggle_all_log_merges(&mut self) {
-        if self.is_reflog() {
-            return;
-        }
+    fn toggle_all_log_merges(&mut self) {
         match self.log_folds.toggle_all(self.selected, &self.commits) {
             Ok(selected) => {
                 self.selected = selected;
@@ -1423,8 +1420,8 @@ mod tests {
         main.parents = vec![base.hash.clone()];
         merge.parents = vec![main.hash.clone(), side.hash.clone()];
         let mut app = App::new(vec![merge, side, main, base]);
-        app.apply_log_filter(LogFilterAction::Merges);
-        app.apply_log_filter(LogFilterAction::Type("fix".into()));
+        app.apply_log_action(LogAction::Merges);
+        app.apply_log_action(LogAction::Type("fix".into()));
         assert!((0..app.commits.len()).all(|i| !app.log_folds.visible(i)));
         // The merge filter still applies, so z must not bring it back folded.
         app.toggle_log_merge();

@@ -1156,6 +1156,7 @@ fn stderr_message(prefix: &str, stderr: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::LogAction;
     use std::{
         fmt::Write,
         fs,
@@ -1546,7 +1547,7 @@ mod tests {
         let order: Vec<_> = commits.iter().map(|c| c.hash.as_str()).collect();
         assert_eq!(order, [&merge, &tip, &main, &extra, &side, &base]);
         let mut app = App::new(commits.clone());
-        app.toggle_log_merge();
+        app.apply_log_action(LogAction::Fold);
         assert!(app.status.is_none(), "{:?}", app.status);
         app.selected = 3;
 
@@ -1630,7 +1631,7 @@ mod tests {
                 app.log_folds.start_collapsed = start_collapsed;
                 app.log_folds.refresh(&app.commits).unwrap();
                 if !start_collapsed {
-                    app.toggle_all_log_merges();
+                    app.apply_log_action(LogAction::FoldAll);
                 }
                 // An explicit expansion must survive cache invalidation too.
                 app.selected = app
@@ -1638,7 +1639,7 @@ mod tests {
                     .iter()
                     .position(|c| c.hash == second_merge)
                     .unwrap();
-                app.toggle_log_merge();
+                app.apply_log_action(LogAction::Fold);
                 app.top();
                 app
             })
@@ -1657,8 +1658,8 @@ mod tests {
             assert!(app.log_folds.visible(index(&second_side)));
             assert_eq!(app.log_folds.marker(index(&second_merge)), Some("▼"));
             app.selected = merge_index;
-            app.toggle_log_merge();
-            app.toggle_log_merge();
+            app.apply_log_action(LogAction::Fold);
+            app.apply_log_action(LogAction::Fold);
             let older_index = app.commits.iter().position(|c| c.hash == older).unwrap();
             assert!(!app.log_folds.visible(older_index));
         }
@@ -1861,19 +1862,19 @@ mod tests {
             let filtered = load_log(&args).unwrap();
             let mut app = App::new(filtered.clone());
             app.selected = filtered.iter().position(|c| c.hash == merge).unwrap();
-            app.toggle_log_merge();
+            app.apply_log_action(LogAction::Fold);
             for (i, c) in app.commits.iter().enumerate() {
                 assert_eq!(
                     app.log_folds.visible(i),
                     !merged_commits(&merge).contains(&c.hash)
                 );
             }
-            app.toggle_log_merge();
+            app.apply_log_action(LogAction::Fold);
             assert_eq!(app.commits.len(), filtered.len());
             assert!((0..filtered.len()).all(|i| app.log_folds.visible(i)));
         }
         let mut app = App::new(load_log(&["--first-parent".into(), "main".into()]).unwrap());
-        app.toggle_log_merge();
+        app.apply_log_action(LogAction::Fold);
         assert!(app.status.as_ref().unwrap().contains("No merged commits"));
         assert!((0..app.commits.len()).all(|i| app.log_folds.visible(i)));
 
@@ -1887,7 +1888,7 @@ mod tests {
         );
         app.selected = app.commits.iter().position(|c| c.hash == merge).unwrap();
         assert!(!app.commits.iter().any(|c| c.hash == main));
-        app.toggle_log_merge();
+        app.apply_log_action(LogAction::Fold);
         assert!(app.status.is_none(), "{:?}", app.status);
         let base_index = app.commits.iter().position(|c| c.hash == base).unwrap();
         // The merge's lane runs through omitted main into base, which the
@@ -1913,7 +1914,7 @@ mod tests {
         app.log_folds.start_collapsed = true;
         app.log_folds.refresh(&app.commits).unwrap();
         app.selected = app.commits.iter().position(|c| c.hash == merge).unwrap();
-        app.toggle_log_merge();
+        app.apply_log_action(LogAction::Fold);
         app.top();
         let newest_side = commit("new side", &[&octopus]);
         let newest_merge = commit("new merge", &[&octopus, &newest_side]);
