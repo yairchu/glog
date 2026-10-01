@@ -5,6 +5,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-01
+
 ### Added
 
 - Added `glog reflog` to browse local ref updates with commit hashes, update
@@ -244,7 +246,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Initial release of the interactive `git log` and `git show` browser.
 
-[Unreleased]: https://github.com/yairchu/glog/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/yairchu/glog/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/yairchu/glog/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/yairchu/glog/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/yairchu/glog/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/yairchu/glog/compare/v0.2.1...v0.3.0
