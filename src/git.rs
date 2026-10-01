@@ -132,15 +132,15 @@ fn parse_reflog(output: &str) -> Result<Vec<Commit>, String> {
     }
     let first_ref = records
         .first()
-        .and_then(|fields| fields[2].rsplit_once("@{").map(|(reference, _)| reference));
+        .and_then(|fields| fields[2].split_once("@{").map(|(reference, _)| reference));
     let show_reference = records
         .iter()
-        .any(|fields| fields[2].rsplit_once("@{").map(|(reference, _)| reference) != first_ref);
+        .any(|fields| fields[2].split_once("@{").map(|(reference, _)| reference) != first_ref);
     records
         .iter()
         .map(|fields| {
             let (reference, date) = fields[2]
-                .rsplit_once("@{")
+                .split_once("@{")
                 .ok_or("missing reflog update time")?;
             let date = date.strip_suffix('}').ok_or("invalid reflog update time")?;
             if date.chars().any(char::is_control) {
