@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101318">
   <title>glog — A terminal UI for Git</title>
-  <meta name="description" content="A terminal UI for git log/show/diff/status (common read-only git commands).">
+  <meta name="description" content="A terminal UI for git log/show/diff/status/reflog (strictly read-only).">
   <meta property="og:title" content="glog — A terminal UI for Git">
-  <meta property="og:description" content="A terminal UI for git log/show/diff/status (common read-only git commands).">
+  <meta property="og:description" content="A terminal UI for git log/show/diff/status/reflog (strictly read-only).">
   <meta property="og:type" content="website">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23101318'/%3E%3Ctext x='16' y='46' font-family='monospace' font-size='48' fill='%23f0bd69'%3Eg%3C/text%3E%3C/svg%3E">
   <style>
@@ -51,6 +51,7 @@
     .ref { color: #a3d8a0; }
     .dim { color: var(--muted); }
     .author { color: #85c7d9; }
+    .type { color: #82aaff; }
     .coauthor-separator { color: #a0a0a0; }
     .codex { color: var(--text); }
     .claude { color: #d77757; }
@@ -115,9 +116,9 @@
   </header>
   <main class="wrap">
     <section class="hero" aria-labelledby="heading">
-      <h1 id="heading">A terminal UI for <code>git log</code>/<code>show</code>/<code>diff</code>/<code>status</code> <small>(common read-only git commands)</small></h1>
+      <h1 id="heading">A terminal UI for <code>git log</code>/<code>show</code>/<code>diff</code>/<code>status</code>/<code>reflog</code> <small>(strictly read-only)</small></h1>
       <figure>
-        <div class="terminal" role="group" aria-label="Illustrative glog Log view in watch mode. The Working tree row is selected above committed history. Each commit shows its hash, date, author, and coauthor badge. Log and Status tabs and a WATCH indicator appear above.">
+        <div class="terminal" role="group" aria-label="Illustrative glog Log view in watch mode. The Working tree row is selected above committed history. Each commit shows its hash, date, author, coauthor badge, and highlighted commit type. Log and Status tabs and a WATCH indicator appear above.">
           <div class="terminal-bar" aria-hidden="true">
             <span class="terminal-command">glog --watch</span>
             <span class="terminal-tab active">Log</span>
@@ -127,12 +128,12 @@
           <div class="terminal-body" tabindex="0" aria-label="Example history, scroll horizontally to read long lines">
             <pre aria-hidden="true"><span class="selected"><span class="hash">worktree</span> Working tree · 2 changed files · 1 untracked file</span>
 <span class="dim">── committed history ─────────────────────────────────────────────────────────</span>
-* <span class="hash">5ead122</span> <span class="dim">2026-09-24 15:33</span> <span class="author">Yair Chuchem</span><span class="coauthor-separator">+</span><span class="codex">꩜</span> <span class="ref">(HEAD → main, tag: v0.3.0)</span> Release 0.3.0
-* <span class="hash">5ae1080</span> <span class="dim">2026-09-24 12:21</span> <span class="author">Yair Chuchem</span><span class="coauthor-separator">+</span><span class="claude">❋</span> Keep file jumps and lockfile toggling off nested submodule rows
-* <span class="hash">3645995</span> <span class="dim">2026-09-24 12:01</span> <span class="author">Yair Chuchem</span><span class="coauthor-separator">+</span><span class="claude">❋</span> Keep Status action errors in the footer across refreshes
-* <span class="hash">2ca81df</span> <span class="dim">2026-09-24 12:00</span> <span class="author">Yair Chuchem</span><span class="coauthor-separator">+</span><span class="claude">❋</span> Add regression for Status action errors surviving refresh
-* <span class="hash">56eef49</span> <span class="dim">2026-09-24 11:32</span> <span class="author">Yair Chuchem</span><span class="coauthor-separator">+</span><span class="claude">❋</span> Keep the Log scroll position when watch mode refreshes
-* <span class="hash">8ebc581</span> <span class="dim">2026-09-24 11:19</span> <span class="author">Yair Chuchem</span><span class="coauthor-separator">+</span><span class="claude">❋</span> Escape displayed filenames the same way in Show and Status</pre>
+* <span class="hash">877fddf</span> <span class="dim">2026-10-01 15:35</span> <span class="author">Yair Chuchem</span><span class="coauthor-separator">+</span><span class="claude">❋</span> <span class="ref">(HEAD → main, tag: v0.4.0)</span> <span class="type">chore</span>(release): prepare 0.4.0
+* <span class="hash">7ed8e9e</span> <span class="dim">2026-10-01 13:06</span> <span class="author">Yair Chuchem</span><span class="coauthor-separator">+</span><span class="claude">❋</span> <span class="type">fix</span>(help): omit Status from Reflog's summary toggle
+* <span class="hash">91626d4</span> <span class="dim">2026-10-01 12:02</span> <span class="author">Yair Chuchem</span><span class="coauthor-separator">+</span><span class="claude">❋</span> <span class="type">docs</span>: tidy reflog and commit-type entries
+* <span class="hash">2949974</span> <span class="dim">2026-10-01 12:02</span> <span class="author">Yair Chuchem</span><span class="coauthor-separator">+</span><span class="claude">❋</span> <span class="type">refactor</span>: route Log filter and fold actions through one entry point
+* <span class="hash">f43bacd</span> <span class="dim">2026-10-01 11:48</span> <span class="author">Yair Chuchem</span><span class="coauthor-separator">+</span><span class="claude">❋</span> <span class="type">docs</span>(dev): distinguish developer docs in commit types
+* <span class="hash">5fd55e6</span> <span class="dim">2026-10-01 11:46</span> <span class="author">Yair Chuchem</span><span class="coauthor-separator">+</span><span class="claude">❋</span> <span class="type">docs</span>(dev): add contribution guidelines for agents</pre>
           </div>
           <div class="terminal-footer" aria-hidden="true">↑/k ↓/j &nbsp; ←/→ commit &nbsp; Enter show &nbsp; / ? search &nbsp; h help &nbsp; q quit</div>
         </div>
@@ -149,7 +150,9 @@
         <li>Spot agent coauthors with badges: <span class="codex" aria-hidden="true">꩜</span> Codex and <span class="claude" aria-hidden="true">❋</span> Claude Code.</li>
         <li>Lockfiles fold automatically to keep source changes in view; expand them when needed.</li>
         <li>View image files in diffs in supported terminals (<a href="https://sw.kovidgoyal.net/kitty/">Kitty</a> and <a href="https://ghostty.org">Ghostty</a>, <a href="https://cmux.com">cmux</a> and more).</li>
-        <li>Filter <a href="https://www.conventionalcommits.org/">conventional commits</a> by type.</li>
+        <li>Highlight and filter <a href="https://www.conventionalcommits.org/">conventional commit</a> types.</li>
+        <li>Browse ref updates with <code>glog reflog</code>, timestamped to the second.</li>
+        <li>Read dates in your local time, like <code>2026-10-01 15:35</code>, instead of Git's verbose default.</li>
         <li>Expand submodule diffs to inspect the changes inside.</li>
         <li>Follow commits and working-tree changes live with <code>glog --watch</code>.</li>
       </ul>
@@ -177,7 +180,7 @@
           </tr>
           <tr>
             <th scope="row">Terminal UIs<br>(<a href="https://github.com/jesseduffield/lazygit">lazygit</a>, <a href="https://jonas.github.io/tig/">tig</a>)</th>
-            <td>glog focuses solely on read-only actions, so an accidental keypress won't change your files or rewrite history.</td>
+            <td>glog focuses solely on read-only actions,<br>so an accidental keypress won't change your files or rewrite history.</td>
           </tr>
           <tr>
             <th scope="row">Git GUI apps</th>
