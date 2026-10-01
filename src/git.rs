@@ -1337,6 +1337,22 @@ mod tests {
     }
 
     #[test]
+    fn reflog_dates_may_contain_selector_syntax() {
+        // Ref names cannot contain "@{", but custom date formats can.
+        let entries = parse_reflog(
+            "hash\0short\0HEAD@{01@{x}\0reset: moving\0subject\0Actor\0\
+             hash\0short\0HEAD@{02@{x}\0reset: moving\0subject\0Actor\0",
+        )
+        .unwrap();
+        for (entry, date) in entries.iter().zip(["01@{x", "02@{x"]) {
+            let event = entry.reflog.as_ref().unwrap();
+            assert_eq!(event.reference, "HEAD");
+            assert_eq!(event.updated_at, date);
+            assert!(!event.show_reference);
+        }
+    }
+
+    #[test]
     fn merge_folds_keep_history_reached_through_filtered_out_parents() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
