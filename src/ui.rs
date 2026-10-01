@@ -167,6 +167,7 @@ const fn every(key: &'static str, text: &'static str) -> HelpRow {
 }
 
 const FILE_FOLD: Option<&str> = Some("toggle current file fold (Show)");
+const FILE_SUMMARY: Option<&str> = Some("toggle file summary / patch (Show/Status)");
 
 const HELP_ROWS: &[HelpRow] = &[
     every("", "Navigation"),
@@ -220,7 +221,14 @@ const HELP_ROWS: &[HelpRow] = &[
     ),
     ("M", [Some("hide / show merge commits (Log)"), None, None]),
     every("L", "expand / fold all lockfiles (Show)"),
-    every("s", "toggle file summary / patch (Show/Status)"),
+    (
+        "s",
+        [
+            FILE_SUMMARY,
+            Some("toggle file summary / patch (Show)"),
+            FILE_SUMMARY,
+        ],
+    ),
     (
         "Escape",
         [
