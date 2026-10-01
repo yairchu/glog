@@ -26,13 +26,16 @@ Use Conventional Commits for new commits: `type: description` or
 
 - `feat`: new functionality
 - `fix`: bug fixes
-- `docs`: documentation and website copy
+- `docs`: user-facing documentation, such as the README, changelog, and
+  website copy; use `docs(dev):` for contributor and agent instructions such
+  as this file
 - `test`: tests and test infrastructure
 - `refactor`: code restructuring without behavior changes
 - `chore`: maintenance and releases
 
 Use lowercase types and short, imperative descriptions, for example
-`feat(log): filter commits by type`, `docs: simplify installation`, or
+`feat(log): filter commits by type`, `docs: simplify installation`,
+`docs(dev): describe the release workflow`, or
 `chore(release): prepare 0.3.2`. Mark breaking changes with `!` before the colon
 and explain them in the commit body.
 
