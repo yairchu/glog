@@ -213,7 +213,7 @@ fn blame(
     let lines = parse_porcelain(&String::from_utf8_lossy(&output.stdout))?;
     let top = match top {
         Some(top) => top.clone(),
-        None => repository_top()?,
+        None => git::repository_directory()?,
     };
     let details = commit_details(&lines, date)?;
     let mut highlighted = highlight(&crate::diff::display_path(path), &lines).map(Vec::into_iter);
@@ -287,36 +287,6 @@ fn blame(
             commit
         })
         .collect())
-}
-
-fn repository_top() -> Result<PathBuf, String> {
-    let bare = Command::new("git")
-        .args(["rev-parse", "--is-bare-repository"])
-        .output()
-        .map_err(|error| format!("could not run git rev-parse: {error}"))?;
-    if !bare.status.success() {
-        return Err(git::stderr_message(
-            "could not inspect the repository",
-            &bare.stderr,
-        ));
-    }
-    let root = if bare.stdout.starts_with(b"true") {
-        "--absolute-git-dir"
-    } else {
-        "--show-toplevel"
-    };
-    let output = Command::new("git")
-        .args(["rev-parse", root])
-        .output()
-        .map_err(|error| format!("could not run git rev-parse: {error}"))?;
-    if !output.status.success() {
-        return Err(git::stderr_message(
-            "could not find the repository root",
-            &output.stderr,
-        ));
-    }
-    let top = output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout);
-    Ok(git::raw_path(top))
 }
 
 #[derive(Debug, PartialEq, Eq)]

@@ -1068,7 +1068,11 @@ pub(crate) fn repository_env<'a>(
     {
         return command;
     }
-    if MAIN_ROOT.get_or_init(|| repository_root().ok()).as_deref() != Some(directory) {
+    if MAIN_ROOT
+        .get_or_init(|| repository_directory().ok())
+        .as_deref()
+        != Some(directory)
+    {
         for name in REPOSITORY_ENV {
             command.env_remove(name);
         }
@@ -1104,6 +1108,37 @@ const REPOSITORY_PATH_ENV: [&str; 8] = [
     "GIT_SHALLOW_FILE",
     "GIT_COMMON_DIR",
 ];
+
+/// The working tree root, or the Git directory for a bare repository.
+pub(crate) fn repository_directory() -> Result<std::path::PathBuf, String> {
+    let bare = Command::new("git")
+        .args(["rev-parse", "--is-bare-repository"])
+        .output()
+        .map_err(|error| format!("could not run git rev-parse: {error}"))?;
+    if !bare.status.success() {
+        return Err(stderr_message(
+            "could not inspect the repository",
+            &bare.stderr,
+        ));
+    }
+    let root = if bare.stdout.starts_with(b"true") {
+        "--absolute-git-dir"
+    } else {
+        "--show-toplevel"
+    };
+    let output = Command::new("git")
+        .args(["rev-parse", root])
+        .output()
+        .map_err(|error| format!("could not run git rev-parse: {error}"))?;
+    if !output.status.success() {
+        return Err(stderr_message(
+            "could not find the repository root",
+            &output.stderr,
+        ));
+    }
+    let top = output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout);
+    Ok(raw_path(top))
+}
 
 /// Git terminates its raw repository path with exactly one newline.
 pub(crate) fn repository_root() -> Result<std::path::PathBuf, String> {
