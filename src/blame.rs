@@ -13,7 +13,6 @@ use crate::{
     log_format::{Field, LogFormat},
 };
 
-const UNCOMMITTED: &str = "0000000000000000000000000000000000000000";
 const UNCOMMITTED_AUTHOR: &str = "Not committed yet";
 const MAX_AUTHOR_WIDTH: usize = 20;
 const TAB_WIDTH: usize = 4;
@@ -125,6 +124,7 @@ pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<(Vec<Commit>, us
             "--no-ext-diff",
             "--no-textconv",
             "-U0",
+            "--inter-hunk-context=0",
         ])
         .arg(format!("{parent}:{path}"))
         .arg(format!("{}:{}", commit.hash, line.source_path))
@@ -225,7 +225,7 @@ fn blame(
             .chain(
                 lines
                     .iter()
-                    .any(|line| line.hash == UNCOMMITTED)
+                    .any(PorcelainLine::is_uncommitted)
                     .then(|| width(UNCOMMITTED_AUTHOR)),
             )
             .max()
@@ -306,6 +306,12 @@ struct PorcelainLine {
     previous: Option<(String, String)>,
 }
 
+impl PorcelainLine {
+    fn is_uncommitted(&self) -> bool {
+        self.hash.bytes().all(|byte| byte == b'0')
+    }
+}
+
 /// Git describes each commit once, and again only where its lines came
 /// from another path, so origins carry over between line groups.
 fn parse_porcelain(output: &str) -> Result<Vec<PorcelainLine>, String> {
@@ -375,7 +381,7 @@ fn commit_details(lines: &[PorcelainLine], date: &str) -> Result<HashMap<String,
     let mut input = String::new();
     let mut seen = std::collections::HashSet::new();
     for line in lines {
-        if line.hash != UNCOMMITTED && seen.insert(&line.hash) {
+        if !line.is_uncommitted() && seen.insert(&line.hash) {
             input.push_str(&line.hash);
             input.push('\n');
         }
