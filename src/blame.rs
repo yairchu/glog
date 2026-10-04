@@ -469,19 +469,23 @@ fn display_code(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
     for span in spans {
         let content = span.content.strip_suffix('\r').unwrap_or(&span.content);
         let mut text = String::with_capacity(content.len());
-        for ch in content.chars() {
-            if ch == '\t' {
+        for (index, segment) in content.split('\t').enumerate() {
+            if index > 0 {
                 let spaces = TAB_WIDTH - column % TAB_WIDTH;
                 text.extend(std::iter::repeat_n(' ', spaces));
                 column += spaces;
-            } else {
-                text.push(if ch.is_control() {
+            }
+            let start = text.len();
+            text.extend(segment.chars().map(|ch| {
+                if ch.is_control() {
                     char::REPLACEMENT_CHARACTER
                 } else {
                     ch
-                });
-                column += 1;
-            }
+                }
+            }));
+            // Measure rendered text together so combining marks and emoji
+            // sequences use the same display width as the terminal UI.
+            column += Span::raw(&text[start..]).width();
         }
         output.push(Span::styled(text, span.style));
     }
