@@ -116,7 +116,7 @@ fn parse_line(value: &str) -> Result<usize, String> {
 /// commit added it.
 pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<(Vec<Commit>, usize), String> {
     let (parent, path) = line.previous.as_ref().ok_or("nothing earlier to blame")?;
-    let output = Command::new("git")
+    let output = git::repository_env(&mut Command::new("git"), &line.file.top)
         .current_dir(&line.file.top)
         .env("LC_ALL", "C")
         .args([
@@ -197,7 +197,7 @@ fn blame(
 ) -> Result<Vec<Commit>, String> {
     let mut command = Command::new("git");
     if let Some(top) = top {
-        command.current_dir(top);
+        git::repository_env(&mut command, top).current_dir(top);
     }
     let output = command
         .env("LC_ALL", "C")
