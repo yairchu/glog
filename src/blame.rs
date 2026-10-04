@@ -22,6 +22,7 @@ const USAGE: &str = "use glog blame [-L LINE] [--date=STYLE] [revision] [--] fil
 #[derive(Debug, PartialEq, Eq)]
 pub struct BlameFile {
     /// Paths in Git's blame output are relative to the repository root.
+    /// In bare repositories, run historical queries from the Git directory.
     top: PathBuf,
     date: String,
     hash_width: usize,
@@ -289,8 +290,23 @@ fn blame(
 }
 
 fn repository_top() -> Result<PathBuf, String> {
+    let bare = Command::new("git")
+        .args(["rev-parse", "--is-bare-repository"])
+        .output()
+        .map_err(|error| format!("could not run git rev-parse: {error}"))?;
+    if !bare.status.success() {
+        return Err(git::stderr_message(
+            "could not inspect the repository",
+            &bare.stderr,
+        ));
+    }
+    let root = if bare.stdout.starts_with(b"true") {
+        "--absolute-git-dir"
+    } else {
+        "--show-toplevel"
+    };
     let output = Command::new("git")
-        .args(["rev-parse", "--show-toplevel"])
+        .args(["rev-parse", root])
         .output()
         .map_err(|error| format!("could not run git rev-parse: {error}"))?;
     if !output.status.success() {
