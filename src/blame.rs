@@ -625,6 +625,38 @@ mod tests {
         assert!(output.status.success(), "{output:?}");
     }
 
+    #[test]
+    fn blame_bare_repository_follows_parent_and_returns() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q", "work"]);
+        std::env::set_current_dir("work").unwrap();
+        fs::write("file.txt", "a\nb\nc\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        fs::write("file.txt", "a\nB\nc\n").unwrap();
+        git(&["commit", "-qam", "edit"]);
+        git(&["clone", "--bare", "-q", ".", "../bare.git"]);
+        std::env::set_current_dir("../bare.git").unwrap();
+
+        let (rows, _) = load(&["HEAD".into(), "file.txt".into()]).unwrap();
+        let mut app = App::new(rows);
+        app.selected = 1;
+        assert_eq!(code(app.commits[1].blame().unwrap()), "B");
+        app.blame_parent();
+        assert_eq!(app.status, None);
+        assert_eq!(app.selected, 1);
+        assert_eq!(code(app.commits[1].blame().unwrap()), "b");
+        app.blame_back();
+        assert_eq!(app.status, None);
+        assert_eq!(app.selected, 1);
+        assert_eq!(code(app.commits[1].blame().unwrap()), "B");
+        app.switch_mode();
+        assert_eq!(app.status, None);
+        assert_eq!(app.mode, Mode::Show);
+        assert!(crate::ansi::plain(&app.show_text).contains("+B"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn blame_parent_preserves_non_utf8_paths_across_renames() {
