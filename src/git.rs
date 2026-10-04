@@ -12,8 +12,9 @@ const COAUTHOR: char = '\x1d';
 
 // Patch paths are parsed relative to the repository, independent of user
 // preferences such as diff.relative, diff.noprefix and diff.mnemonicPrefix.
-pub(crate) const DIFF_PREFIX_ARGS: [&str; 3] =
-    ["--no-relative", "--src-prefix=a/", "--dst-prefix=b/"];
+// Git 2.55 stash frees parsed string arguments before rendering its patch,
+// so use the default-prefix flag instead of borrowed src/dst-prefix values.
+pub(crate) const DIFF_PREFIX_ARGS: [&str; 2] = ["--no-relative", "--default-prefix"];
 
 pub(crate) fn patch_command() -> Command {
     let mut command = Command::new("git");

@@ -432,7 +432,13 @@ mod tests {
         fs::write("staged.txt", "staged change\n").unwrap();
         git(&["add", "staged.txt"]);
         fs::write("unstaged.txt", "unstaged change\n").unwrap();
-        let untracked = "saved \"é\".txt";
+        // A real a/ directory exposes missing diff prefixes, even when a
+        // quoted filename at the repository root would still parse correctly.
+        #[cfg(not(windows))]
+        let untracked = "a/saved \"é\".txt";
+        #[cfg(windows)]
+        let untracked = "a/saved é.txt";
+        fs::create_dir("a").unwrap();
         fs::write(untracked, "saved untracked\n").unwrap();
         fs::write("saved.png", b"\x89PNG\0saved image").unwrap();
         git(&["stash", "push", "-u", "-m", "first saved work"]);
@@ -487,9 +493,12 @@ mod tests {
             assert!(patch.contains(content), "missing {content}: {patch}");
         }
         assert!(patch.contains(&image_hash));
-        assert!(crate::diff::file_sections(&app.show_text)
-            .iter()
-            .any(|file| file.path_bytes == untracked.as_bytes()));
+        assert!(
+            crate::diff::file_sections(&app.show_text)
+                .iter()
+                .any(|file| file.path_bytes == untracked.as_bytes()),
+            "missing {untracked:?}: {patch}"
+        );
         key(&mut app, KeyCode::Char('s'));
         assert!(app.show_stat);
         key(&mut app, KeyCode::Left);
