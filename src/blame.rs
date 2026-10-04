@@ -580,6 +580,64 @@ mod tests {
         line.code.iter().map(|span| span.content.as_ref()).collect()
     }
 
+    fn git(args: &[&str]) {
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "user.name=Alice",
+                "-c",
+                "user.email=alice@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .env("GIT_AUTHOR_NAME", "Alice")
+            .env("GIT_AUTHOR_EMAIL", "alice@example.com")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+    }
+
+    #[test]
+    fn blame_sha256_includes_uncommitted_lines() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q", "--object-format=sha256"]);
+        fs::write("file.txt", "a\nb\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        fs::write("file.txt", "a\nB\n").unwrap();
+
+        let (rows, _) = load(&["--date=short".into(), "file.txt".into()]).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].kind, CommitKind::Revision);
+        assert_eq!(rows[0].hash.len(), 64);
+        assert_eq!(rows[1].kind, CommitKind::WorkingTree);
+        assert_eq!(code(rows[1].blame().unwrap()), "B");
+        assert!(LogFormat::default()
+            .text(&rows[1])
+            .contains("Not committed yet"));
+    }
+
+    #[test]
+    fn blame_parent_ignores_configured_inter_hunk_context() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file.txt", "a\nb\nc\nd\ne\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        fs::write("file.txt", "a\nB\nc\nD\ne\n").unwrap();
+        git(&["commit", "-qam", "edit"]);
+        git(&["config", "diff.interHunkContext", "10"]);
+
+        let (rows, _) = load(&["file.txt".into()]).unwrap();
+        let commit = &rows[3];
+        let (parent, selected) = load_parent(commit, commit.blame().unwrap()).unwrap();
+        assert_eq!(selected, 3);
+        assert_eq!(code(parent[selected].blame().unwrap()), "d");
+    }
+
     #[test]
     fn tabs_expand_across_highlighted_spans() {
         let style = Style::default().fg(Color::Red);
