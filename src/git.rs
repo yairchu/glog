@@ -259,11 +259,7 @@ fn log_command(user_args: &[String]) -> Result<Command, String> {
         ),
     ]);
     command.args(["--no-pager", "log"]);
-    let separator = user_args
-        .iter()
-        .position(|arg| arg == "--")
-        .unwrap_or(user_args.len());
-    command.args(&user_args[..separator]);
+    // User arguments come last because Git rejects options after a pathspec.
     command.args([
         "--graph",
         "--decorate=short",
@@ -271,7 +267,7 @@ fn log_command(user_args: &[String]) -> Result<Command, String> {
         "--no-abbrev-commit",
         "--pretty=format:%x1e%H%x1f%h%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)%x1f%P%x1f%s",
     ]);
-    command.args(&user_args[separator..]);
+    command.args(user_args);
     Ok(command)
 }
 
@@ -4190,6 +4186,45 @@ pub(crate) mod tests {
         );
         assert_eq!(commits[1].collaborators, Collaborators::default());
         assert!(commits.iter().all(|commit| commit.graph.len() == 1));
+    }
+
+    #[test]
+    fn loads_log_for_a_path_without_a_separator() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        assert!(Command::new("git")
+            .args(["init", "-q"])
+            .status()
+            .unwrap()
+            .success());
+        for name in ["a.txt", "b.txt"] {
+            std::fs::write(name, name).unwrap();
+            assert!(Command::new("git")
+                .args(["add", name])
+                .status()
+                .unwrap()
+                .success());
+            let output = Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Alice",
+                    "-c",
+                    "user.email=alice@example.com",
+                    "commit",
+                    "-qm",
+                    name,
+                ])
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        let commits = load_log(&["a.txt".into()]).unwrap();
+        assert_eq!(commits.len(), 1);
+        assert_eq!(commits[0].subject, "a.txt");
     }
 
     #[test]

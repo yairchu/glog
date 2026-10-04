@@ -356,6 +356,8 @@ pub fn parse_args(args: &[String]) -> Result<(LogFormat, LogOptions, Vec<String>
             options.hide_merges = true;
         } else if arg == "--oneline" {
             format = LogFormat::parse("%h (%D) %s")?;
+        } else if arg == "--no-graph" {
+            return Err("--no-graph is not supported; glog always draws the graph".into());
         } else {
             git_args.push(arg.clone());
         }

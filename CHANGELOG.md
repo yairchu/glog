@@ -18,6 +18,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   just the day. `x`, `d`, and `a` toggle the hash, date, and author columns,
   and code is syntax-highlighted with delta when it is installed.
 
+### Fixed
+
+- `glog FILE` now shows the file's history, like `git log FILE`, instead of
+  failing unless the path follows `--`.
+
 ## 0.4.0 - 2026-10-01
 
 ### Added
