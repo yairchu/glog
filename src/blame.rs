@@ -870,6 +870,38 @@ mod tests {
     }
 
     #[test]
+    fn tabs_after_wide_characters_use_display_columns() {
+        for prefix in ["界", "👩‍💻"] {
+            for spans in [
+                vec![Span::raw(format!("{prefix}\tX"))],
+                vec![
+                    Span::raw(prefix),
+                    Span::styled("\tX", Style::default().fg(Color::Red)),
+                ],
+            ] {
+                let output = display_code(spans);
+                let text: String = output.iter().map(|span| span.content.as_ref()).collect();
+                assert_eq!(text, format!("{prefix}  X"));
+            }
+        }
+    }
+
+    #[test]
+    fn tabs_after_combining_marks_use_display_columns() {
+        for spans in [
+            vec![Span::raw("e\u{301}\tX")],
+            vec![
+                Span::raw("e"),
+                Span::styled("\u{301}\tX", Style::default().fg(Color::Red)),
+            ],
+        ] {
+            let output = display_code(spans);
+            let text: String = output.iter().map(|span| span.content.as_ref()).collect();
+            assert_eq!(text, "e\u{301}   X");
+        }
+    }
+
+    #[test]
     fn parent_lines_follow_hunks_and_land_on_what_a_change_replaced() {
         // Old: a b c d e. New: a B c x d (b changed, x added, e deleted).
         let diff = "@@ -2 +2 @@\n-b\n+B\n@@ -3,0 +4 @@\n+x\n@@ -5 +5,0 @@\n-e\n";
