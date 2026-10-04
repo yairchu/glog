@@ -7,6 +7,7 @@ mod images;
 mod input;
 mod log_folds;
 mod log_format;
+mod stash;
 mod status;
 mod ui;
 
@@ -77,6 +78,7 @@ fn main() -> ExitCode {
         Command::Show => git::load_show_app(command_args),
         Command::Diff => git::load_diff_app(command_args),
         Command::Reflog => git::load_reflog(command_args).map(App::new),
+        Command::Stash => stash::load_app(command_args),
         Command::Blame => blame::load(command_args).map(|(rows, selected)| {
             let mut app = App::new(rows);
             app.selected = selected;
@@ -98,6 +100,7 @@ fn main() -> ExitCode {
             Command::Diff => "no changes",
             Command::Reflog => "no reflog entries matched",
             Command::Blame => "the file is empty",
+            Command::Stash => "no stashes matched",
             _ => "no commits matched",
         };
         eprintln!("glog: {message}");
@@ -151,6 +154,7 @@ enum Command {
     Log,
     Reflog,
     Blame,
+    Stash,
     Show,
     Diff,
     Status,
@@ -160,6 +164,7 @@ fn parse_command(args: &[String]) -> (Command, &[String]) {
     match args.first().map(String::as_str) {
         Some("reflog") => (Command::Reflog, &args[1..]),
         Some("blame") => (Command::Blame, &args[1..]),
+        Some("stash") => (Command::Stash, &args[1..]),
         Some("status") => (Command::Status, &args[1..]),
         Some("show") => (Command::Show, &args[1..]),
         Some("diff") => (Command::Diff, &args[1..]),
@@ -184,6 +189,8 @@ Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
        glog [log] [git log arguments] [--] [pathspec...]
        glog reflog [ref] [--all] [-n COUNT] [--date=STYLE]
        glog blame [-L LINE] [--date=STYLE] [revision] [--] file
+       glog stash [list [-n COUNT] [--date=STYLE]]
+       glog stash show [--stat] [stash]
        glog show [--stat] [commit] [-- pathspec...]
        glog diff [--cached] [--stat] [revision [revision]] [[--] pathspec...]
        glog status
@@ -191,7 +198,7 @@ Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
 Options:
   --pretty=format:FORMAT / --format=FORMAT
                 Format Log rows (%h %H %ad %an %ae %d %D %s %%)
-  --date=STYLE  Format Log and Blame author dates or Reflog update times
+  --date=STYLE  Format Log, Blame, and Stash dates or Reflog update times
                 using Git (e.g. short, relative, iso)
   -L LINE       Open Blame at a line
   --oneline     Use the compact hash, refs, and subject layout
@@ -208,6 +215,8 @@ Status opens the Working tree detail view in a watch session.
 Watch mode includes one Working tree item; commits open Show.
 Log shows committed history, loaded once unless --watch is used.
 Reflog shows local ref updates with their update times; Enter opens the commit.
+Stash lists saved work; Enter opens its changes, including saved untracked files.
+Stash show opens a stash by index or reference (the latest by default).
 Blame shows which commit last changed each line; Enter opens it, p blames
 the file before it, and Backspace returns.
 Show opens HEAD or the specified commit, with history available via Tab.
@@ -346,6 +355,13 @@ mod tests {
             ),
             (vec!["log", "blame"], Command::Log, vec!["blame"]),
             (vec!["log", "reflog"], Command::Log, vec!["reflog"]),
+            (vec!["stash"], Command::Stash, vec![]),
+            (
+                vec!["stash", "show", "1"],
+                Command::Stash,
+                vec!["show", "1"],
+            ),
+            (vec!["log", "stash"], Command::Log, vec!["stash"]),
             (vec!["status"], Command::Status, vec![]),
             (vec!["log", "status"], Command::Log, vec!["status"]),
             (vec!["show", "HEAD~2"], Command::Show, vec!["HEAD~2"]),

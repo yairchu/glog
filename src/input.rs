@@ -80,6 +80,7 @@ pub fn handle(event: Event, app: &mut App) {
                         History::Log => true,
                         // Blame rows have no refs or subjects.
                         History::Blame => matches!(c, 'a' | 'd' | 'x'),
+                        History::Stash => matches!(c, 'a' | 'd'),
                         History::Reflog => false,
                     } =>
             {

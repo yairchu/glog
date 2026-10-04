@@ -129,6 +129,7 @@ impl LogFormat {
     pub fn spans(&self, commit: &Commit) -> Vec<Span<'static>> {
         match &commit.annotation {
             Some(Annotation::Reflog(entry)) => return reflog_spans(commit, entry),
+            Some(Annotation::Stash(entry)) => return crate::stash::spans(commit, entry, self),
             Some(Annotation::Blame(line)) => {
                 return crate::blame::spans(commit, line, line.starts_chunk, self)
             }

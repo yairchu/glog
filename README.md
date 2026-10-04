@@ -52,7 +52,7 @@ completion adapter to take effect.
 ### Zsh completion
 
 The included completion adapter reuses Zsh's `git log` completer, including branches, tags, revisions, paths, and Git log options. Explicit `log`, `show`,
-`diff`, `reflog`, and `blame` commands select the corresponding Git completer. From a checkout, install it with:
+`diff`, `reflog`, `blame`, and `stash` commands select the corresponding Git completer. From a checkout, install it with:
 
 ```zsh
 mkdir -p ~/.cargo/share/zsh/site-functions
@@ -262,6 +262,28 @@ following renames. The parent's version of the line stays at the same height
 on screen; for a line the commit added, the line before it is selected.
 `Backspace` returns to the previous blame, as many steps back as you went.
 Git's `blame.ignoreRevsFile` configuration applies.
+
+## Stashes
+
+Browse saved work and inspect its changes:
+
+```bash
+glog stash                      # browse the stash list
+glog stash list -n 10            # the ten newest entries
+glog stash show                  # open the latest stash
+glog stash show 1                # open stash@{1}
+glog stash show --stat 'stash@{2}'
+```
+
+Each row shows the stash selector, date, author, and message. `a` and `d` toggle
+the author and date columns. Enter opens the saved patch, including staged
+changes and saved untracked files. Left/Right
+move between stashes in either view; Tab or Escape returns to the list.
+Search, file folding, and `s` for the file summary work as in Show.
+
+`stash list --date=STYLE` overrides Git's `log.date` setting. `stash show`
+also accepts a stash commit hash. Browsing loads a snapshot of the stash list;
+it never creates, applies, or drops stashes.
 
 ## Working-tree status
 

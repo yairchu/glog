@@ -37,6 +37,7 @@ pub enum History {
     Log,
     Reflog,
     Blame,
+    Stash,
 }
 
 /// A blame view to return to after blaming a parent.
@@ -132,6 +133,7 @@ impl App {
                 None => History::Log,
                 Some(git::Annotation::Reflog(_)) => History::Reflog,
                 Some(git::Annotation::Blame(_)) => History::Blame,
+                Some(git::Annotation::Stash(_)) => History::Stash,
             },
             commits,
             blame_stack: Vec::new(),
@@ -523,7 +525,7 @@ impl App {
             .collect();
         for old in &self.commits {
             if decorations.get(&old.hash).copied() != Some(&old.decorations) {
-                self.cache.remove(&old.hash);
+                self.cache.remove(&old.show_cache_key());
             }
         }
         self.cache_order
@@ -576,7 +578,8 @@ impl App {
             return;
         };
         // Unchanged cached revisions retain their reading context without I/O.
-        if commit.kind == CommitKind::Revision && self.cache.contains_key(&commit.hash) {
+        if commit.kind == CommitKind::Revision && self.cache.contains_key(&commit.show_cache_key())
+        {
             return;
         }
         let text = match git::show(commit, &self.show_paths) {
@@ -587,7 +590,7 @@ impl App {
             }
         };
         if commit.kind == CommitKind::Revision {
-            self.insert_cache(commit.hash.clone(), text.clone());
+            self.insert_cache(commit.show_cache_key(), text.clone());
         }
         if text == self.show_text {
             return;
@@ -730,7 +733,7 @@ impl App {
             return;
         };
         if commit.kind == CommitKind::Revision {
-            if let Some(text) = self.cache.get(&commit.hash) {
+            if let Some(text) = self.cache.get(&commit.show_cache_key()) {
                 let changed = self.show_text != *text;
                 self.show_text = text.clone();
                 if changed {
@@ -751,7 +754,7 @@ impl App {
                 self.reset_show_folds();
                 self.focus_blamed_file();
                 if commit.kind == CommitKind::Revision {
-                    self.insert_cache(commit.hash, text);
+                    self.insert_cache(commit.show_cache_key(), text);
                 }
                 self.status = None;
             }
@@ -1370,14 +1373,14 @@ impl App {
         }
     }
 
-    fn insert_cache(&mut self, hash: String, text: String) {
+    fn insert_cache(&mut self, key: String, text: String) {
         if self.cache.len() >= 8 {
             if let Some(old) = self.cache_order.pop_front() {
                 self.cache.remove(&old);
             }
         }
-        self.cache_order.push_back(hash.clone());
-        self.cache.insert(hash, text);
+        self.cache_order.push_back(key.clone());
+        self.cache.insert(key, text);
     }
 
     pub fn begin_search(&mut self, reverse: bool) {

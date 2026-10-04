@@ -41,6 +41,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         History::Log => "Log",
         History::Reflog => "Reflog",
         History::Blame => "Blame",
+        History::Stash => "Stash",
     };
     // Tabs pads each label with a space on either side and separates them
     // with a one-cell divider.
@@ -124,6 +125,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         status.clone()
     } else if app.mode == Mode::Log && app.history == History::Reflog {
         "h help  q quit  ↑/k ↓/j  ←/→ entry  Enter show  / ? search".to_owned()
+    } else if app.mode == Mode::Log && app.history == History::Stash {
+        "h help  q quit  ↑/k ↓/j  ←/→ stash  Enter show  a author  d date  / ? search".to_owned()
     } else if app.mode == Mode::Log && app.history == History::Blame {
         "h help  q quit  ↑/k ↓/j  ←/→ chunk  Enter show  p blame parent  Backspace back  a author  d date  x hash  / ? search"
             .to_owned()
@@ -133,6 +136,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         "h help  q quit  ↑/k ↓/j  ←/→ commit  Enter show  t hide type  z fold merge  m fold all  a author  d date  r refs  / ? search".to_owned()
     } else if !has_log {
         "h help  q quit  ↑/k ↓/j  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search"
+            .to_owned()
+    } else if app.history == History::Stash {
+        "h help  q quit  ↑/k ↓/j  ←/→ stash  [/ ] file  Enter/z fold  s summary  Tab Stash  / ? search"
             .to_owned()
     } else {
         "h help  q quit  ↑/k ↓/j  ←/→ commit  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search"
@@ -150,6 +156,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 History::Log => HelpView::Log,
                 History::Reflog => HelpView::Reflog,
                 History::Blame => HelpView::Blame,
+                History::Stash => HelpView::Stash,
             },
         );
     }
@@ -161,17 +168,18 @@ enum HelpView {
     Log,
     Reflog,
     Blame,
+    Stash,
     /// Show, Diff, or Status without a Log to return to.
     Detail,
 }
 
-/// A key and its description in the Log, Reflog, Blame, and Detail help
+/// A key and its description in the Log, Reflog, Blame, Stash, and Detail help
 /// screens, in that order; `None` omits the row. Rows without a key are shown
 /// verbatim.
-type HelpRow = (&'static str, [Option<&'static str>; 4]);
+type HelpRow = (&'static str, [Option<&'static str>; 5]);
 
 const fn every(key: &'static str, text: &'static str) -> HelpRow {
-    (key, [Some(text); 4])
+    (key, [Some(text); 5])
 }
 
 const AUTHOR_BADGES: &str = "  Author badges: +꩜ Codex  +❋ Claude Code  +N other coauthors";
@@ -189,6 +197,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("previous / next commit (Log/Show/Status)"),
             Some("previous / next reflog entry"),
             Some("previous / next commit chunk"),
+            Some("previous / next stash"),
             None,
         ],
     ),
@@ -202,10 +211,21 @@ const HELP_ROWS: &[HelpRow] = &[
             None,
             None,
             None,
+            None,
         ],
     ),
-    ("a/d/x", [None, None, Some("toggle author/date/hash"), None]),
-    ("", [Some(AUTHOR_BADGES), None, Some(AUTHOR_BADGES), None]),
+    (
+        "a/d/x",
+        [None, None, Some("toggle author/date/hash"), None, None],
+    ),
+    (
+        "a/d",
+        [None, None, None, Some("toggle author/date (Stash)"), None],
+    ),
+    (
+        "",
+        [Some(AUTHOR_BADGES), None, Some(AUTHOR_BADGES), None, None],
+    ),
     every("", "Views and search"),
     (
         "Enter",
@@ -213,6 +233,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("open commit / toggle section or file"),
             Some("open commit / toggle section or file"),
             Some("open commit / toggle section or file"),
+            Some("open stash / toggle section or file"),
             Some("toggle section or file"),
         ],
     ),
@@ -223,11 +244,18 @@ const HELP_ROWS: &[HelpRow] = &[
             FILE_FOLD,
             FILE_FOLD,
             FILE_FOLD,
+            FILE_FOLD,
         ],
     ),
     (
         "m",
-        [Some("expand / fold all merges (Log)"), None, None, None],
+        [
+            Some("expand / fold all merges (Log)"),
+            None,
+            None,
+            None,
+            None,
+        ],
     ),
     (
         "t / T",
@@ -236,19 +264,32 @@ const HELP_ROWS: &[HelpRow] = &[
             None,
             None,
             None,
+            None,
         ],
     ),
     (
         "M",
-        [Some("hide / show merge commits (Log)"), None, None, None],
+        [
+            Some("hide / show merge commits (Log)"),
+            None,
+            None,
+            None,
+            None,
+        ],
     ),
     (
         "p",
-        [None, None, Some("blame the file before this commit"), None],
+        [
+            None,
+            None,
+            Some("blame the file before this commit"),
+            None,
+            None,
+        ],
     ),
     (
         "Backspace",
-        [None, None, Some("return to the previous blame"), None],
+        [None, None, Some("return to the previous blame"), None, None],
     ),
     every("L", "expand / fold all lockfiles (Show)"),
     (
@@ -257,6 +298,7 @@ const HELP_ROWS: &[HelpRow] = &[
             FILE_SUMMARY,
             Some("toggle file summary / patch (Show)"),
             FILE_SUMMARY,
+            Some("toggle file summary / patch (Show)"),
             FILE_SUMMARY,
         ],
     ),
@@ -266,6 +308,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("return to Log / cancel"),
             Some("return to Reflog / cancel"),
             Some("return to Blame / cancel"),
+            Some("return to Stash / cancel"),
             None,
         ],
     ),
@@ -275,6 +318,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("switch Log / detail"),
             Some("switch Reflog / Show"),
             Some("switch Blame / detail"),
+            Some("switch Stash / Show"),
             None,
         ],
     ),

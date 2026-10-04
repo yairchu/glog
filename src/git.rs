@@ -57,9 +57,18 @@ pub struct Collaborators {
 pub enum Annotation {
     Reflog(ReflogEntry),
     Blame(crate::blame::BlameLine),
+    Stash(crate::stash::StashEntry),
 }
 
 impl Commit {
+    /// Stash headings identify a list entry as well as its saved commit.
+    pub fn show_cache_key(&self) -> String {
+        match &self.annotation {
+            Some(Annotation::Stash(entry)) => format!("{} {}", self.hash, entry.selector),
+            _ => self.hash.clone(),
+        }
+    }
+
     #[cfg(test)]
     pub fn reflog(&self) -> Option<&ReflogEntry> {
         match &self.annotation {
@@ -675,6 +684,9 @@ fn has_diff(args: &[&str]) -> Result<bool, String> {
 }
 
 pub fn show(commit: &Commit, paths: &[String]) -> Result<String, String> {
+    if let Some(Annotation::Stash(entry)) = &commit.annotation {
+        return crate::stash::show(commit, entry);
+    }
     match commit.kind {
         CommitKind::WorkingTree => Err("Working tree opens the Status view".to_owned()),
         CommitKind::Comparison { .. } => {

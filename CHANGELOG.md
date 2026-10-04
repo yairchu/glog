@@ -7,6 +7,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Added `glog stash` / `glog stash list` to browse saved work and
+  `glog stash show` to open a stash by index or reference. Patches include
+  staged changes and saved untracked files, with search, file folding,
+  summary mode, navigation between stashes, and toggleable author/date columns.
 - Added `glog blame` to see which commit last changed each line of a file.
   Enter opens the commit at that file, `p` blames the file as it was before
   that commit, following renames, and `Backspace` goes back. Supports
