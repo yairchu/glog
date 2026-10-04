@@ -39,11 +39,11 @@ pub struct BlameLine {
     pub starts_chunk: bool,
     /// The file's path and this line's number in the commit that last
     /// changed it.
-    pub source_path: String,
+    pub source_path: Vec<u8>,
     pub source_number: usize,
     /// That commit's parent and the file's path there, unless the commit
     /// added the file without history to follow.
-    pub previous: Option<(String, String)>,
+    pub previous: Option<(String, Vec<u8>)>,
 }
 
 /// Rows for `glog blame` arguments, and the row to select.
@@ -93,7 +93,7 @@ pub fn load(args: &[String]) -> Result<(Vec<Commit>, usize), String> {
         Some(date) => date,
         None => git::configured_log_date("format-local:%Y-%m-%d")?,
     };
-    let rows = blame(revision, path, None, &date)?;
+    let rows = blame(revision, path.as_bytes(), None, &date)?;
     let selected = line
         .map_or(0, |line| line.saturating_sub(1))
         .min(rows.len().saturating_sub(1));
@@ -126,8 +126,8 @@ pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<(Vec<Commit>, us
             "-U0",
             "--inter-hunk-context=0",
         ])
-        .arg(format!("{parent}:{path}"))
-        .arg(format!("{}:{}", commit.hash, line.source_path))
+        .arg(blob_spec(parent, path))
+        .arg(blob_spec(&commit.hash, &line.source_path))
         .output()
         .map_err(|error| format!("could not run git diff: {error}"))?;
     if !output.status.success() {
@@ -137,6 +137,13 @@ pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<(Vec<Commit>, us
     let rows = blame(Some(parent), path, Some(&line.file.top), &line.file.date)?;
     let selected = number.saturating_sub(1).min(rows.len().saturating_sub(1));
     Ok((rows, selected))
+}
+
+/// Build a revision:path argument without converting path bytes to text.
+fn blob_spec(revision: &str, path: &[u8]) -> std::ffi::OsString {
+    let mut spec = std::ffi::OsString::from(format!("{revision}:"));
+    spec.push(git::raw_path(path));
+    spec
 }
 
 /// Map a line through the hunks of a `-U0` diff to the old version: changed
@@ -183,7 +190,7 @@ fn parent_line(diff: &str, line: usize) -> usize {
 
 fn blame(
     revision: Option<&str>,
-    path: &str,
+    path: &[u8],
     top: Option<&PathBuf>,
     date: &str,
 ) -> Result<Vec<Commit>, String> {
@@ -193,10 +200,10 @@ fn blame(
     }
     let output = command
         .env("LC_ALL", "C")
-        .args(["-c", "core.quotepath=false", "blame", "--porcelain"])
+        .args(["-c", "core.quotepath=true", "blame", "--porcelain"])
         .args(revision)
         .arg("--")
-        .arg(path)
+        .arg(git::raw_path(path))
         .output()
         .map_err(|error| format!("could not run git blame: {error}"))?;
     if !output.status.success() {
@@ -208,7 +215,7 @@ fn blame(
         None => repository_top()?,
     };
     let details = commit_details(&lines, date)?;
-    let mut highlighted = highlight(path, &lines).map(Vec::into_iter);
+    let mut highlighted = highlight(&crate::diff::display_path(path), &lines).map(Vec::into_iter);
     let width = |text: &str| Span::raw(text).width();
     let file = Arc::new(BlameFile {
         top,
@@ -292,8 +299,8 @@ fn repository_top() -> Result<PathBuf, String> {
             &output.stderr,
         ));
     }
-    let top = String::from_utf8_lossy(&output.stdout);
-    Ok(PathBuf::from(top.strip_suffix('\n').unwrap_or(&top)))
+    let top = output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout);
+    Ok(git::raw_path(top))
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -301,9 +308,9 @@ struct PorcelainLine {
     hash: String,
     number: usize,
     code: String,
-    source_path: String,
+    source_path: Vec<u8>,
     source_number: usize,
-    previous: Option<(String, String)>,
+    previous: Option<(String, Vec<u8>)>,
 }
 
 impl PorcelainLine {
@@ -318,17 +325,25 @@ fn parse_porcelain(output: &str) -> Result<Vec<PorcelainLine>, String> {
     let invalid = || "invalid Git blame output".to_owned();
     let unquote = |path: &str| {
         crate::diff::unquote_path(path)
-            .map(|(bytes, _)| String::from_utf8_lossy(&bytes).into_owned())
+            .map(|(bytes, _)| bytes)
             .ok_or_else(invalid)
     };
-    let mut origins: HashMap<String, (String, Option<(String, String)>)> = HashMap::new();
+    #[derive(Clone)]
+    struct Origin {
+        source_path: Vec<u8>,
+        previous: Option<(String, Vec<u8>)>,
+    }
+    let mut origins: HashMap<String, Origin> = HashMap::new();
     let mut header: Option<(String, usize, usize)> = None;
     let mut previous = None;
     let mut lines = Vec::new();
     for line in output.split('\n') {
         if let Some(code) = line.strip_prefix('\t') {
             let (hash, source_number, number) = header.take().ok_or_else(invalid)?;
-            let (source_path, previous) = origins.get(&hash).cloned().ok_or_else(invalid)?;
+            let Origin {
+                source_path,
+                previous,
+            } = origins.get(&hash).cloned().ok_or_else(invalid)?;
             lines.push(PorcelainLine {
                 hash,
                 number,
@@ -342,7 +357,13 @@ fn parse_porcelain(output: &str) -> Result<Vec<PorcelainLine>, String> {
                 let (parent, path) = rest.split_once(' ').ok_or_else(invalid)?;
                 previous = Some((parent.to_owned(), unquote(path)?));
             } else if let Some(path) = line.strip_prefix("filename ") {
-                origins.insert(hash.clone(), (unquote(path)?, previous.take()));
+                origins.insert(
+                    hash.clone(),
+                    Origin {
+                        source_path: unquote(path)?,
+                        previous: previous.take(),
+                    },
+                );
             }
             // Authors and dates come from Git's log formatting instead.
         } else if !line.is_empty() {
@@ -768,8 +789,8 @@ mod tests {
             [true, true, true, true, true]
         );
         assert_eq!(rows[0].hash, rows[2].hash);
-        assert_eq!(lines[0].source_path, "old.txt");
-        assert_eq!(lines[1].source_path, "new.txt");
+        assert_eq!(lines[0].source_path, b"old.txt");
+        assert_eq!(lines[1].source_path, b"new.txt");
         assert_eq!(rows[0].author_date, "2020-01-01");
         assert!(rows[0].collaborators.claude);
         assert_eq!(rows[4].kind, CommitKind::WorkingTree);

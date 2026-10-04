@@ -276,8 +276,9 @@ glog stash show --stat 'stash@{2}'
 ```
 
 Each row shows the stash selector, date, author, and message. `a` and `d` toggle
-the author and date columns. Enter opens the saved patch, including staged
-changes and saved untracked files. Left/Right
+the author and date columns. Enter opens separate staged, unstaged, and
+saved untracked patches, preserving staged content even when it was later
+overwritten in the working tree. Left/Right
 move between stashes in either view; Tab or Escape returns to the list.
 Search, file folding, and `s` for the file summary work as in Show.
 

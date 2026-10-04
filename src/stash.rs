@@ -201,8 +201,8 @@ fn load_show(args: &[String]) -> Result<App, String> {
     Ok(app)
 }
 
-/// Use stash show instead of a merge commit's combined diff, which omits
-/// staged-only changes and the separate parent containing untracked files.
+/// Show each saved layer independently: base to index, index to worktree,
+/// and the untracked snapshot. A net base-to-worktree patch loses index edits.
 pub fn show(commit: &Commit, entry: &StashEntry) -> Result<String, String> {
     let output = git::patch_command()
         .args([
@@ -214,7 +214,7 @@ pub fn show(commit: &Commit, entry: &StashEntry) -> Result<String, String> {
             "stash",
             "show",
             "--patch",
-            "--include-untracked",
+            "--only-untracked",
             "--color=always",
             "--no-ext-diff",
             "--full-index",
@@ -238,8 +238,47 @@ pub fn show(commit: &Commit, entry: &StashEntry) -> Result<String, String> {
         commit.subject,
     )
     .into_bytes();
-    text.extend(output.stdout);
+    for (section, old, new) in [
+        (
+            "staged",
+            format!("{}^1", commit.hash),
+            format!("{}^2", commit.hash),
+        ),
+        (
+            "unstaged",
+            format!("{}^2", commit.hash),
+            commit.hash.clone(),
+        ),
+    ] {
+        let patch = git::patch_command()
+            .args([
+                "diff",
+                "--patch",
+                "--color=always",
+                "--no-ext-diff",
+                "--full-index",
+                "--submodule=short",
+            ])
+            .args(git::DIFF_PREFIX_ARGS)
+            .args([old, new])
+            .arg("--")
+            .env("LC_ALL", "C")
+            .output()
+            .map_err(|error| format!("could not read {section} stash changes: {error}"))?;
+        if !patch.status.success() {
+            return Err(git::stderr_message("git diff failed", &patch.stderr));
+        }
+        append_section(&mut text, section, &patch.stdout);
+    }
+    append_section(&mut text, "untracked", &output.stdout);
     git::format_output(text)
+}
+
+fn append_section(text: &mut Vec<u8>, section: &str, patch: &[u8]) {
+    if !patch.is_empty() {
+        text.extend(format!("glog-stash-section:{section}\n").as_bytes());
+        text.extend(patch);
+    }
 }
 
 pub fn spans(commit: &Commit, entry: &StashEntry, format: &LogFormat) -> Vec<Span<'static>> {

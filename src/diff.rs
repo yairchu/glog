@@ -7,6 +7,8 @@ pub struct FileSection {
     // Display text is separate from the lossless identity used for folds and I/O.
     pub path: String,
     pub path_bytes: Vec<u8>,
+    // Include the stash layer so repeated paths have independent view state.
+    pub key: Vec<u8>,
     pub lockfile: bool,
     pub submodule: Option<(String, String)>,
     pub untracked: bool,
@@ -28,11 +30,16 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
             .then_some(index)
         })
         .collect();
+    let mut section = None;
+    let mut scanned = 0;
     starts
         .iter()
         .enumerate()
         .map(|(position, start)| {
-            let end = starts.get(position + 1).copied().unwrap_or(lines.len());
+            let next = starts.get(position + 1).copied().unwrap_or(lines.len());
+            let end = (*start + 1..next)
+                .find(|&index| stash_section(lines[index]).is_some())
+                .unwrap_or(next);
             let visible: Vec<_> = lines[*start..end]
                 .iter()
                 .map(|line| ansi::plain(line))
@@ -46,6 +53,17 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                 .or_else(|| diff_path(&visible))
                 .unwrap_or_else(|| b"changed file".to_vec());
             let path = display_path(&path_bytes);
+            let mut key = path_bytes.clone();
+            for line in &lines[scanned..*start] {
+                if let Some(found) = stash_section(line) {
+                    section = Some(found);
+                }
+            }
+            scanned = *start;
+            if let Some(section) = section {
+                key.push(0); // Git paths cannot contain NUL.
+                key.extend(section.as_bytes());
+            }
             // Only the file header is metadata: hunk content can itself start
             // with `+++` or `---` (for example, an increment or a Markdown rule).
             let body_start = visible
@@ -82,11 +100,31 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                 lazy_untracked_path,
                 path,
                 path_bytes,
+                key,
                 additions,
                 deletions,
             }
         })
         .collect()
+}
+
+pub(crate) fn stash_section(line: &str) -> Option<&'static str> {
+    if !line.contains("glog-stash-section:") {
+        return None;
+    }
+    match ansi::plain(line).as_str() {
+        "glog-stash-section:staged" => Some("Staged changes"),
+        "glog-stash-section:unstaged" => Some("Unstaged changes"),
+        "glog-stash-section:untracked" => Some("Untracked files"),
+        _ => None,
+    }
+}
+
+pub(crate) fn display_metadata(line: &str) -> String {
+    match stash_section(line) {
+        Some(label) => format!("\x1b[1m{label}\x1b[m"),
+        None => line.to_owned(),
+    }
 }
 
 fn submodule_change(lines: &[String]) -> Option<(String, String)> {

@@ -366,8 +366,9 @@ impl App {
             return;
         };
         let context = format!(
-            "blame {} -- {path}",
-            &parent[..commit.short_hash.len().min(parent.len())]
+            "blame {} -- {}",
+            &parent[..commit.short_hash.len().min(parent.len())],
+            diff::display_path(path)
         );
         match crate::blame::load_parent(commit, line) {
             Ok((commits, _)) if commits.is_empty() => {
@@ -615,7 +616,7 @@ impl App {
             .filter_map(|file| {
                 file.submodule
                     .as_ref()
-                    .map(|ids| (file.path_bytes.clone(), ids.clone()))
+                    .map(|ids| (file.key.clone(), ids.clone()))
             })
             .collect();
         let mut children = std::mem::take(&mut self.submodules);
@@ -625,7 +626,7 @@ impl App {
         // and row indices when only the surrounding Show text has changed.
         children.retain(|path, _| {
             self.show_files.iter().any(|file| {
-                &file.path_bytes == path
+                &file.key == path
                     && file.submodule.as_ref() == old_submodules.get(path)
                     && file.submodule.is_some()
             })
@@ -638,7 +639,7 @@ impl App {
                 row.folded
                     && row
                         .file
-                        .is_some_and(|file| self.show_files[file].path_bytes == path)
+                        .is_some_and(|file| self.show_files[file].key == path)
             }) {
                 self.show_cursor = index;
                 self.toggle_show_file();
@@ -649,7 +650,7 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(_, row)| match (&cursor_file, row.file) {
-                (Some(old), Some(index)) => self.show_files[index].path_bytes == old.path_bytes,
+                (Some(old), Some(index)) => self.show_files[index].key == old.key,
                 (None, None) => true,
                 _ => false,
             })
@@ -771,10 +772,10 @@ impl App {
         let Some(line) = self.commits.get(self.selected).and_then(Commit::blame) else {
             return;
         };
-        let path = line.source_path.as_bytes();
+        let path = &line.source_path;
         if let Some(row) = self.show_rows.iter().position(|row| {
             row.file
-                .is_some_and(|file| self.show_files[file].path_bytes == path)
+                .is_some_and(|file| self.show_files[file].path_bytes == *path)
         }) {
             self.show_cursor = row;
             self.show_scroll = Some(ShowScroll::Cursor);
@@ -813,7 +814,7 @@ impl App {
         for (file_index, file) in self.show_files.iter().enumerate() {
             for (index, line) in lines[source..file.start].iter().enumerate() {
                 rows.push(ShowRow {
-                    text: (*line).to_owned(),
+                    text: diff::display_metadata(line),
                     source: source + index,
                     file: None,
                     folded: false,
@@ -823,7 +824,7 @@ impl App {
                 });
             }
             if self.show_stat || file.submodule.is_some() {
-                let expanded = self.expanded_folds.contains(&file.path_bytes);
+                let expanded = self.expanded_folds.contains(&file.key);
                 let detail = if let Some((old, new)) = &file.submodule {
                     let dirty = lines[file.start..file.end].iter().any(|line| {
                         crate::ansi::plain(line)
@@ -862,7 +863,7 @@ impl App {
                 if expanded && file.submodule.is_none() {
                     for (index, line) in lines[file.start..file.end].iter().enumerate() {
                         rows.push(ShowRow {
-                            text: (*line).to_owned(),
+                            text: diff::display_metadata(line),
                             source: file.start + index,
                             file: Some(file_index),
                             folded: false,
@@ -872,8 +873,7 @@ impl App {
                         });
                     }
                 }
-            } else if (file.lockfile || file.untracked)
-                && !self.expanded_folds.contains(&file.path_bytes)
+            } else if (file.lockfile || file.untracked) && !self.expanded_folds.contains(&file.key)
             {
                 rows.push(ShowRow {
                     text: String::new(),
@@ -922,7 +922,7 @@ impl App {
             } else {
                 for (index, line) in lines[file.start..file.end].iter().enumerate() {
                     rows.push(ShowRow {
-                        text: (*line).to_owned(),
+                        text: diff::display_metadata(line),
                         source: file.start + index,
                         file: Some(file_index),
                         folded: false,
@@ -936,7 +936,7 @@ impl App {
         }
         for (index, line) in lines[source..].iter().enumerate() {
             rows.push(ShowRow {
-                text: (*line).to_owned(),
+                text: diff::display_metadata(line),
                 source: source + index,
                 file: None,
                 folded: false,
@@ -992,10 +992,10 @@ impl App {
             let child = row
                 .file
                 .filter(|_| row.summary && !row.folded)
-                .and_then(|index| self.submodules.get(&self.show_files[index].path_bytes));
+                .and_then(|index| self.submodules.get(&self.show_files[index].key));
             nested_rows.push(row.clone());
             if let Some(child) = child {
-                let path = self.show_files[row.file.unwrap()].path_bytes.clone();
+                let path = self.show_files[row.file.unwrap()].key.clone();
                 for (index, child_row) in child.show_rows.iter().enumerate() {
                     let mut nested = child_row.clone();
                     nested.text = format!("  {}", nested.text);
@@ -1026,7 +1026,7 @@ impl App {
             self.stat_submodule_bookmark = nested_cursor.clone();
             self.stat_bookmark = file.as_ref().zip(current.as_ref()).map(|(file, row)| {
                 (
-                    file.path_bytes.clone(),
+                    file.key.clone(),
                     row.source.saturating_sub(file.start),
                     row.preview.clone(),
                 )
@@ -1037,9 +1037,9 @@ impl App {
         if !self.show_stat {
             if let Some(file) = &file {
                 if file.lazy_untracked_path.is_none()
-                    && (file.submodule.is_none() || self.submodules.contains_key(&file.path_bytes))
+                    && (file.submodule.is_none() || self.submodules.contains_key(&file.key))
                 {
-                    self.expanded_folds.insert(file.path_bytes.clone());
+                    self.expanded_folds.insert(file.key.clone());
                 }
             }
         }
@@ -1054,7 +1054,7 @@ impl App {
                     + self
                         .stat_bookmark
                         .as_ref()
-                        .filter(|(path, _, _)| *path == file.path_bytes)
+                        .filter(|(path, _, _)| *path == file.key)
                         .map_or(0, |(_, line, _)| *line)
             };
             let preview = current
@@ -1064,7 +1064,7 @@ impl App {
                 .or_else(|| {
                     self.stat_bookmark
                         .as_ref()
-                        .filter(|(path, _, _)| *path == file.path_bytes)
+                        .filter(|(path, _, _)| *path == file.key)
                         .and_then(|(_, _, preview)| preview.as_ref())
                 });
             self.show_cursor = self
@@ -1072,7 +1072,7 @@ impl App {
                 .iter()
                 .position(|row| {
                     row.file
-                        .is_some_and(|index| self.show_files[index].path_bytes == file.path_bytes)
+                        .is_some_and(|index| self.show_files[index].key == file.key)
                         && (self.show_stat
                             || (row.source == source && row.preview.as_ref() == preview))
                 })
@@ -1081,7 +1081,7 @@ impl App {
                 let nested = nested_cursor.as_ref().or_else(|| {
                     self.stat_submodule_bookmark
                         .as_ref()
-                        .filter(|(path, _)| *path == file.path_bytes)
+                        .filter(|(path, _)| *path == file.key)
                 });
                 if let Some(index) = nested.and_then(|location| {
                     self.submodule_rows
@@ -1103,8 +1103,8 @@ impl App {
             .iter()
             .filter_map(|file| {
                 self.submodules
-                    .get(&file.path_bytes)
-                    .map(|child| (file.end, (&file.path_bytes, child)))
+                    .get(&file.key)
+                    .map(|child| (file.end, (&file.key, child)))
             })
             .collect();
         for (source, line) in self.show_text.lines().enumerate() {
@@ -1112,7 +1112,11 @@ impl App {
             if !(line.contains("glog-lazy-untracked:")
                 && crate::ansi::plain(line).starts_with("glog-lazy-untracked:"))
             {
-                result.push((Vec::new(), source, line));
+                result.push((
+                    Vec::new(),
+                    source,
+                    diff::stash_section(line).unwrap_or(line),
+                ));
             }
             if let Some((path, child)) = children.get(&(source + 1)) {
                 for (mut route, source, line) in child.searchable_show_lines() {
@@ -1161,7 +1165,7 @@ impl App {
         };
         let folded_start = file.filter(unloaded).map(|f| f.start);
         if let Some(file) = file.filter(|f| !unloaded(f)) {
-            self.expanded_folds.insert(file.path_bytes.clone());
+            self.expanded_folds.insert(file.key.clone());
             self.rebuild_show_rows();
         }
         self.show_rows.iter().enumerate().position(|(index, row)| {
@@ -1206,13 +1210,13 @@ impl App {
         if !self.show_stat && !file.lockfile && !file.untracked && file.submodule.is_none() {
             return;
         }
-        let path = file.path_bytes.clone();
+        let path = file.key.clone();
         let source = file.start;
         if let Some((old, new)) = &file.submodule {
             if !self.submodules.contains_key(&path) {
                 match git::show_submodule(
                     self.submodule_root.as_deref(),
-                    git::raw_path(&path),
+                    git::raw_path(&file.path_bytes),
                     old,
                     new,
                 ) {
@@ -1282,7 +1286,7 @@ impl App {
             .show_files
             .iter()
             .filter(|file| file.lockfile)
-            .map(|file| file.path_bytes.clone())
+            .map(|file| file.key.clone())
             .collect();
         if lockfiles
             .iter()
@@ -1294,7 +1298,7 @@ impl App {
                 !self
                     .show_files
                     .iter()
-                    .any(|file| file.lockfile && file.path_bytes == *path)
+                    .any(|file| file.lockfile && file.key == *path)
             });
         }
         self.search_match = None;
