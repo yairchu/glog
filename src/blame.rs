@@ -708,6 +708,75 @@ mod tests {
     }
 
     #[test]
+    fn bare_blame_parent_preserves_object_environment() {
+        with_bare_object_environment("bare_blame_parent_preserves_object_environment", false);
+    }
+
+    #[test]
+    fn bare_historical_blame_preserves_object_environment() {
+        with_bare_object_environment("bare_historical_blame_preserves_object_environment", true);
+    }
+
+    fn with_bare_object_environment(test: &str, historical_only: bool) {
+        // Each child has its own environment and cached repository identity.
+        const CHILD: &str = "GLOG_TEST_BARE_BLAME_OBJECT_ENV_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let (rows, _) = load(&["HEAD".into(), "file.txt".into()]).unwrap();
+            assert_eq!(code(rows[2].blame().unwrap()), "B");
+            if historical_only {
+                let line = rows[2].blame().unwrap();
+                let (parent, path) = line.previous.as_ref().unwrap();
+                let rows =
+                    blame(Some(parent), path, Some(&line.file.top), &line.file.date).unwrap();
+                assert_eq!(code(rows[1].blame().unwrap()), "b");
+            } else {
+                let mut app = App::new(rows);
+                app.selected = 2;
+                app.blame_parent();
+                assert_eq!(app.status, None);
+                assert_eq!(app.selected, 1);
+                assert_eq!(code(app.commits[1].blame().unwrap()), "b");
+                app.blame_back();
+                assert_eq!(app.status, None);
+                assert_eq!(app.selected, 2);
+                assert_eq!(code(app.commits[2].blame().unwrap()), "B");
+            }
+            return;
+        }
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q", "work"]);
+        std::env::set_current_dir("work").unwrap();
+        fs::write("file.txt", "a\nb\nc\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        fs::write("file.txt", "prefix\na\nB\nc\n").unwrap();
+        git(&["commit", "-qam", "edit"]);
+        git(&["clone", "--bare", "-q", ".", "../bare.git"]);
+        std::env::set_current_dir(directory.path()).unwrap();
+        fs::rename("bare.git/objects", "objects").unwrap();
+        fs::create_dir("bare.git/objects").unwrap();
+        fs::create_dir("launch").unwrap();
+
+        // Start outside the repository to exercise both retaining these
+        // variables and anchoring their paths before changing directories.
+        for variable in ["GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_OBJECT_DIRECTORY"] {
+            let output = Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", &format!("blame::tests::{test}")])
+                .current_dir(directory.path().join("launch"))
+                .env(CHILD, "1")
+                .env("GIT_DIR", "../bare.git")
+                .env(variable, "../objects")
+                .output()
+                .unwrap();
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{variable}: {stdout}\n{stderr}");
+            assert!(stdout.contains("1 passed"), "{stdout}");
+        }
+    }
+
+    #[test]
     fn blame_bare_repository_follows_parent_and_returns() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
