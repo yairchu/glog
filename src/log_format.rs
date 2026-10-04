@@ -3,7 +3,7 @@ use ratatui::{
     text::Span,
 };
 
-use crate::git::{Commit, CommitKind};
+use crate::git::{Annotation, Collaborators, Commit, CommitKind, ReflogEntry};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
@@ -90,11 +90,14 @@ impl LogFormat {
         Ok(Self { parts })
     }
 
-    pub fn toggle(&mut self, field: Field) {
-        let enabled = !self
-            .parts
+    pub fn shows(&self, field: Field) -> bool {
+        self.parts
             .iter()
-            .any(|part| part.field == field && part.enabled);
+            .any(|part| part.field == field && part.enabled)
+    }
+
+    pub fn toggle(&mut self, field: Field) {
+        let enabled = !self.shows(field);
         if !self.parts.iter().any(|part| part.field == field) {
             let source = match field {
                 Field::Hash => " %h",
@@ -124,46 +127,12 @@ impl LogFormat {
     }
 
     pub fn spans(&self, commit: &Commit) -> Vec<Span<'static>> {
-        if let Some(entry) = &commit.reflog {
-            let mut spans = vec![
-                Span::styled(
-                    format!("{} ", commit.short_hash),
-                    Style::default().fg(Color::Yellow),
-                ),
-                Span::styled(
-                    format!("{} ", entry.updated_at),
-                    Style::default().fg(Color::Gray),
-                ),
-                Span::styled(
-                    format!("{} ", entry.actor),
-                    Style::default().fg(Color::Cyan),
-                ),
-            ];
-            if entry.show_reference {
-                spans.push(Span::styled(
-                    format!("({}) ", entry.reference),
-                    Style::default().fg(Color::Green),
-                ));
+        match &commit.annotation {
+            Some(Annotation::Reflog(entry)) => return reflog_spans(commit, entry),
+            Some(Annotation::Blame(line)) => {
+                return crate::blame::spans(commit, line, line.starts_chunk, self)
             }
-            if let Some((action, message)) = entry.action.split_once(": ") {
-                spans.push(Span::styled(
-                    format!("{action}:"),
-                    Style::default().fg(Color::Rgb(255, 165, 0)),
-                ));
-                spans.push(Span::raw(" "));
-                if let Some(kind) = crate::log_folds::subject_type_prefix(message) {
-                    spans.push(Span::styled(
-                        kind.to_owned(),
-                        Style::default().fg(Color::LightBlue),
-                    ));
-                    spans.push(Span::raw(message[kind.len()..].to_owned()));
-                } else {
-                    spans.push(Span::raw(message.to_owned()));
-                }
-            } else {
-                spans.push(Span::raw(entry.action.clone()));
-            }
-            return spans;
+            None => {}
         }
         // Synthetic entries must remain identifiable even in author-only formats.
         if commit.kind != CommitKind::Revision {
@@ -236,24 +205,7 @@ impl LogFormat {
                 spans.push(Span::styled(text, style));
             }
             if Some(index) == last_author {
-                let collaborators = &commit.collaborators;
-                let total = usize::from(collaborators.codex)
-                    + usize::from(collaborators.claude)
-                    + collaborators.others;
-                if total > 0 {
-                    spans.push(Span::styled(
-                        "+",
-                        Style::default().fg(Color::Rgb(160, 160, 160)),
-                    ));
-                    let badge = if total == 1 && collaborators.codex {
-                        Span::raw("꩜")
-                    } else if total == 1 && collaborators.claude {
-                        Span::styled("❋", Style::default().fg(Color::Rgb(215, 119, 87)))
-                    } else {
-                        Span::styled(total.to_string(), Style::default().fg(Color::Gray))
-                    };
-                    spans.push(badge);
-                }
+                spans.extend(coauthor_badge(&commit.collaborators));
             }
         }
         spans
@@ -265,6 +217,68 @@ impl LogFormat {
             .map(|span| span.content.as_ref())
             .collect()
     }
+}
+
+/// A `+` and a symbol for an agent coauthor, or the number of coauthors.
+pub fn coauthor_badge(collaborators: &Collaborators) -> Vec<Span<'static>> {
+    let total =
+        usize::from(collaborators.codex) + usize::from(collaborators.claude) + collaborators.others;
+    if total == 0 {
+        return Vec::new();
+    }
+    let badge = if total == 1 && collaborators.codex {
+        Span::raw("꩜")
+    } else if total == 1 && collaborators.claude {
+        Span::styled("❋", Style::default().fg(Color::Rgb(215, 119, 87)))
+    } else {
+        Span::styled(total.to_string(), Style::default().fg(Color::Gray))
+    };
+    vec![
+        Span::styled("+", Style::default().fg(Color::Rgb(160, 160, 160))),
+        badge,
+    ]
+}
+
+fn reflog_spans(commit: &Commit, entry: &ReflogEntry) -> Vec<Span<'static>> {
+    let mut spans = vec![
+        Span::styled(
+            format!("{} ", commit.short_hash),
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            format!("{} ", entry.updated_at),
+            Style::default().fg(Color::Gray),
+        ),
+        Span::styled(
+            format!("{} ", entry.actor),
+            Style::default().fg(Color::Cyan),
+        ),
+    ];
+    if entry.show_reference {
+        spans.push(Span::styled(
+            format!("({}) ", entry.reference),
+            Style::default().fg(Color::Green),
+        ));
+    }
+    if let Some((action, message)) = entry.action.split_once(": ") {
+        spans.push(Span::styled(
+            format!("{action}:"),
+            Style::default().fg(Color::Rgb(255, 165, 0)),
+        ));
+        spans.push(Span::raw(" "));
+        if let Some(kind) = crate::log_folds::subject_type_prefix(message) {
+            spans.push(Span::styled(
+                kind.to_owned(),
+                Style::default().fg(Color::LightBlue),
+            ));
+            spans.push(Span::raw(message[kind.len()..].to_owned()));
+        } else {
+            spans.push(Span::raw(message.to_owned()));
+        }
+    } else {
+        spans.push(Span::raw(entry.action.clone()));
+    }
+    spans
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -375,13 +389,13 @@ pub(crate) mod tests {
             ("custom message", None, None),
         ] {
             let mut c = commit();
-            c.reflog = Some(crate::git::ReflogEntry {
+            c.annotation = Some(crate::git::Annotation::Reflog(crate::git::ReflogEntry {
                 reference: "HEAD".into(),
                 show_reference: false,
                 updated_at: "2026-10-01 10:00:01".into(),
                 actor: "Alice".into(),
                 action: action.into(),
-            });
+            }));
             let format = LogFormat::default();
             assert_eq!(
                 format.text(&c),
@@ -506,7 +520,7 @@ pub(crate) mod tests {
     pub fn commit() -> Commit {
         Commit {
             kind: CommitKind::Revision,
-            reflog: None,
+            annotation: None,
             parents: Vec::new(),
             diff_args: Vec::new(),
             hash: "abcdef0123456789".into(),

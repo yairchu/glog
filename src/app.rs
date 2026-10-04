@@ -31,8 +31,24 @@ pub enum ShowScroll {
     PreserveCursorPosition(isize),
 }
 
-/// Every action that filters or folds Log rows, so Reflog, which has neither,
-/// can refuse them in one place.
+/// The rows behind the first tab.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum History {
+    Log,
+    Reflog,
+    Blame,
+}
+
+/// A blame view to return to after blaming a parent.
+struct BlameFrame {
+    commits: Vec<Commit>,
+    selected: usize,
+    log_offset: usize,
+    context: String,
+}
+
+/// Every action that filters or folds Log rows, so other histories, which
+/// have neither, can refuse them in one place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LogAction {
     Type(String),
@@ -47,6 +63,10 @@ pub struct App {
     pub images: crate::images::Images,
     pub status_view: Option<crate::status::StatusView>,
     pub commits: Vec<Commit>,
+    pub history: History,
+    blame_stack: Vec<BlameFrame>,
+    // Scroll the Log so the selection is centered on the next draw.
+    pub center_selection: bool,
     pub log_folds: crate::log_folds::LogFolds,
     pub log_format: crate::log_format::LogFormat,
     pub selected: usize,
@@ -105,7 +125,17 @@ impl App {
         Self {
             images: crate::images::Images::default(),
             status_view: None,
+            history: match commits
+                .first()
+                .and_then(|commit| commit.annotation.as_ref())
+            {
+                None => History::Log,
+                Some(git::Annotation::Reflog(_)) => History::Reflog,
+                Some(git::Annotation::Blame(_)) => History::Blame,
+            },
             commits,
+            blame_stack: Vec::new(),
+            center_selection: false,
             log_folds: crate::log_folds::LogFolds::default(),
             log_format: crate::log_format::LogFormat::default(),
             selected: 0,
@@ -196,12 +226,6 @@ impl App {
         })
     }
 
-    pub fn is_reflog(&self) -> bool {
-        self.commits
-            .first()
-            .is_some_and(|commit| commit.reflog.is_some())
-    }
-
     pub fn switch_mode(&mut self) {
         if !self.has_log_view() {
             return;
@@ -281,12 +305,101 @@ impl App {
         if self.commits.is_empty() {
             return false;
         }
-        let selected = self.log_selection(delta, 1);
+        let selected = self.adjacent_selection(delta);
         if selected == self.selected {
             return false;
         }
         self.selected = selected;
         true
+    }
+
+    /// Move to the previous or next commit, or blame chunk.
+    pub fn move_adjacent(&mut self, delta: isize) {
+        self.selected = self.adjacent_selection(delta);
+    }
+
+    fn adjacent_selection(&self, delta: isize) -> usize {
+        if self.history != History::Blame || self.commits.is_empty() {
+            return self.log_selection(delta, 1);
+        }
+        let starts_chunk = |index: usize| {
+            self.commits[index]
+                .blame()
+                .is_none_or(|line| line.starts_chunk)
+        };
+        if delta > 0 {
+            return (self.selected + 1..self.commits.len())
+                .find(|&index| starts_chunk(index))
+                .unwrap_or(self.selected);
+        }
+        let chunk_start = |index: usize| {
+            (0..=index)
+                .rev()
+                .find(|&index| starts_chunk(index))
+                .unwrap_or(0)
+        };
+        match chunk_start(self.selected.min(self.commits.len().saturating_sub(1))) {
+            0 => self.selected,
+            start => chunk_start(start - 1),
+        }
+    }
+
+    /// Blame the selected line's file as it was before the selected commit.
+    pub fn blame_parent(&mut self) {
+        let Some(commit) = self.commits.get(self.selected) else {
+            return;
+        };
+        let Some(line) = commit.blame() else {
+            return;
+        };
+        if commit.kind != CommitKind::Revision {
+            self.status = Some("This line is not committed yet".into());
+            return;
+        }
+        let Some((parent, path)) = &line.previous else {
+            self.status = Some(format!(
+                "{} added this file; nothing earlier to blame",
+                commit.short_hash
+            ));
+            return;
+        };
+        let context = format!(
+            "blame {} -- {path}",
+            &parent[..commit.short_hash.len().min(parent.len())]
+        );
+        match crate::blame::load_parent(commit, line) {
+            Ok((commits, _)) if commits.is_empty() => {
+                self.status = Some("The file was empty before this commit".into());
+            }
+            Ok((commits, selected)) => {
+                // Keep the selection at the same height on screen.
+                let screen_row = self.selected.saturating_sub(self.log_offset);
+                self.blame_stack.push(BlameFrame {
+                    commits: std::mem::replace(&mut self.commits, commits),
+                    selected: std::mem::replace(&mut self.selected, selected),
+                    log_offset: self.log_offset,
+                    context: std::mem::replace(&mut self.context, context),
+                });
+                self.log_offset = selected.saturating_sub(screen_row);
+                self.search_match = None;
+                self.status = None;
+            }
+            Err(error) => self.status = Some(error),
+        }
+    }
+
+    /// Return to the blame view before the last `blame_parent`.
+    pub fn blame_back(&mut self) {
+        let Some(frame) = self.blame_stack.pop() else {
+            self.status = Some("No earlier blame view to return to".into());
+            return;
+        };
+        self.commits = frame.commits;
+        self.selected = frame.selected;
+        self.log_offset = frame.log_offset;
+        self.context = frame.context;
+        self.search_match = None;
+        self.status = None;
     }
 
     fn log_selection(&self, delta: isize, amount: usize) -> usize {
@@ -340,8 +453,8 @@ impl App {
     }
 
     pub fn apply_log_action(&mut self, action: LogAction) {
-        // Reflog entries are separate ref updates, not a commit graph.
-        if self.is_reflog() {
+        // Reflog and blame rows are not a commit graph.
+        if self.history != History::Log {
             return;
         }
         match action {
@@ -622,6 +735,7 @@ impl App {
                 self.show_text = text.clone();
                 if changed {
                     self.reset_show_folds();
+                    self.focus_blamed_file();
                 } else if self.show_rows_stat != self.show_stat {
                     self.show_stat = self.show_rows_stat;
                     self.toggle_show_stat();
@@ -635,6 +749,7 @@ impl App {
             Ok(text) => {
                 self.show_text = text.clone();
                 self.reset_show_folds();
+                self.focus_blamed_file();
                 if commit.kind == CommitKind::Revision {
                     self.insert_cache(commit.hash, text);
                 }
@@ -645,6 +760,21 @@ impl App {
                 self.reset_show_folds();
                 self.status = Some(error);
             }
+        }
+    }
+
+    /// Start a commit opened from blame at the blamed file.
+    fn focus_blamed_file(&mut self) {
+        let Some(line) = self.commits.get(self.selected).and_then(Commit::blame) else {
+            return;
+        };
+        let path = line.source_path.as_bytes();
+        if let Some(row) = self.show_rows.iter().position(|row| {
+            row.file
+                .is_some_and(|file| self.show_files[file].path_bytes == path)
+        }) {
+            self.show_cursor = row;
+            self.show_scroll = Some(ShowScroll::Cursor);
         }
     }
 
@@ -1376,7 +1506,7 @@ mod tests {
     fn commit(subject: &str) -> Commit {
         Commit {
             kind: CommitKind::Revision,
-            reflog: None,
+            annotation: None,
             parents: Vec::new(),
             diff_args: Vec::new(),
             hash: subject.repeat(40).chars().take(40).collect(),

@@ -52,7 +52,7 @@ completion adapter to take effect.
 ### Zsh completion
 
 The included completion adapter reuses Zsh's `git log` completer, including branches, tags, revisions, paths, and Git log options. Explicit `log`, `show`,
-and `diff` commands select the corresponding Git completer. From a checkout, install it with:
+`diff`, `reflog`, and `blame` commands select the corresponding Git completer. From a checkout, install it with:
 
 ```zsh
 mkdir -p ~/.cargo/share/zsh/site-functions
@@ -235,6 +235,33 @@ folds, type filters, field toggles, and watch mode do not apply.
 
 Reflogs belong to the local repository and may have expired entries. They show
 the retained update history, not a complete record of activity on other clones.
+
+## Blame
+
+See which commit last changed each line of a file:
+
+```bash
+glog blame src/main.rs           # the working tree version
+glog blame v1.0 -- src/main.rs   # the file as of a revision
+glog blame -L 120 src/main.rs    # open at line 120
+```
+
+Each run of lines from the same commit starts with its hash, author date, and
+author, with the same coauthor badges as Log; the first line on screen names
+its commit too. As in Log, `x`, `d`, and `a` hide or show the hash, date, and
+author columns, leaving more room for code. The code is syntax-highlighted when
+[`delta`](#delta-and-color) is available. Dates default to `YYYY-MM-DD` in your local timezone. Git's
+`log.date` configuration is respected, and `--date=STYLE` overrides it.
+
+Enter opens the selected line's commit at the blamed file. Tab or Escape
+returns to the blame, and Left/Right move between runs of lines from different
+commits, in both views. Lines not committed yet open the working-tree status.
+
+Press `p` to blame the file as it was just before the selected line's commit,
+following renames. The parent's version of the line stays at the same height
+on screen; for a line the commit added, the line before it is selected.
+`Backspace` returns to the previous blame, as many steps back as you went.
+Git's `blame.ignoreRevsFile` configuration applies.
 
 ## Working-tree status
 
@@ -456,7 +483,7 @@ SVG rendering and pixel-difference overlays are not currently supported.
 
 ## Delta and color
 
-`glog` automatically tries [`delta`](https://github.com/dandavison/delta) when it is on `PATH`. Delta is run with paging disabled; if it is absent or fails, ordinary colored `git show` output is used. ANSI colors from either program are rendered in the TUI.
+`glog` automatically tries [`delta`](https://github.com/dandavison/delta) when it is on `PATH`. Delta is run with paging disabled; if it is absent or fails, ordinary colored `git show` output is used. Blame also uses delta to syntax-highlight the file, in the same theme as Show, and shows plain text without it. ANSI colors from either program are rendered in the TUI.
 
 Set `GLOG_DELTA=0` to always use plain Git output:
 

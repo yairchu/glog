@@ -1,6 +1,6 @@
 use crate::{
     ansi,
-    app::{App, LogAction, Mode, ShowScroll},
+    app::{App, History, LogAction, Mode, ShowScroll},
 };
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -37,7 +37,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         "Show"
     };
-    let log_label = if app.is_reflog() { "Reflog" } else { "Log" };
+    let log_label = match app.history {
+        History::Log => "Log",
+        History::Reflog => "Reflog",
+        History::Blame => "Blame",
+    };
     // Tabs pads each label with a space on either side and separates them
     // with a one-cell divider.
     let (log_width, detail_width) = if has_log {
@@ -89,7 +93,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if has_log {
         frame.render_widget(tabs, header[1]);
     }
-    if app.mode == Mode::Log && !app.is_reflog() {
+    if app.mode == Mode::Log && app.history == History::Log {
         draw_type_controls(frame, app, header[2]);
     }
     if live {
@@ -118,8 +122,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         format!("{prefix}{input}█")
     } else if let Some(status) = &app.status {
         status.clone()
-    } else if app.mode == Mode::Log && app.is_reflog() {
+    } else if app.mode == Mode::Log && app.history == History::Reflog {
         "h help  q quit  ↑/k ↓/j  ←/→ entry  Enter show  / ? search".to_owned()
+    } else if app.mode == Mode::Log && app.history == History::Blame {
+        "h help  q quit  ↑/k ↓/j  ←/→ chunk  Enter show  p blame parent  Backspace back  a author  d date  x hash  / ? search"
+            .to_owned()
     } else if app.mode == Mode::Log {
         // Keep the hint short by omitting the row format toggles (x hash,
         // s subject); the help screen lists every key.
@@ -138,12 +145,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.show_help {
         draw_help(
             frame,
-            if !has_log {
-                HelpView::Detail
-            } else if app.is_reflog() {
-                HelpView::Reflog
-            } else {
-                HelpView::Log
+            match app.history {
+                _ if !has_log => HelpView::Detail,
+                History::Log => HelpView::Log,
+                History::Reflog => HelpView::Reflog,
+                History::Blame => HelpView::Blame,
             },
         );
     }
@@ -154,18 +160,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 enum HelpView {
     Log,
     Reflog,
+    Blame,
     /// Show, Diff, or Status without a Log to return to.
     Detail,
 }
 
-/// A key and its description in the Log, Reflog, and Detail help screens, in
-/// that order; `None` omits the row. Rows without a key are shown verbatim.
-type HelpRow = (&'static str, [Option<&'static str>; 3]);
+/// A key and its description in the Log, Reflog, Blame, and Detail help
+/// screens, in that order; `None` omits the row. Rows without a key are shown
+/// verbatim.
+type HelpRow = (&'static str, [Option<&'static str>; 4]);
 
 const fn every(key: &'static str, text: &'static str) -> HelpRow {
-    (key, [Some(text); 3])
+    (key, [Some(text); 4])
 }
 
+const AUTHOR_BADGES: &str = "  Author badges: +꩜ Codex  +❋ Claude Code  +N other coauthors";
 const FILE_FOLD: Option<&str> = Some("toggle current file fold (Show)");
 const FILE_SUMMARY: Option<&str> = Some("toggle file summary / patch (Show/Status)");
 
@@ -179,6 +188,7 @@ const HELP_ROWS: &[HelpRow] = &[
         [
             Some("previous / next commit (Log/Show/Status)"),
             Some("previous / next reflog entry"),
+            Some("previous / next commit chunk"),
             None,
         ],
     ),
@@ -191,20 +201,16 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("toggle author/date/refs/hash/subject (Log)"),
             None,
             None,
-        ],
-    ),
-    (
-        "",
-        [
-            Some("  Author badges: +꩜ Codex  +❋ Claude Code  +N other coauthors"),
-            None,
             None,
         ],
     ),
+    ("a/d/x", [None, None, Some("toggle author/date/hash"), None]),
+    ("", [Some(AUTHOR_BADGES), None, Some(AUTHOR_BADGES), None]),
     every("", "Views and search"),
     (
         "Enter",
         [
+            Some("open commit / toggle section or file"),
             Some("open commit / toggle section or file"),
             Some("open commit / toggle section or file"),
             Some("toggle section or file"),
@@ -212,20 +218,45 @@ const HELP_ROWS: &[HelpRow] = &[
     ),
     (
         "z",
-        [Some("fold merge (Log) / file (Show)"), FILE_FOLD, FILE_FOLD],
+        [
+            Some("fold merge (Log) / file (Show)"),
+            FILE_FOLD,
+            FILE_FOLD,
+            FILE_FOLD,
+        ],
     ),
-    ("m", [Some("expand / fold all merges (Log)"), None, None]),
+    (
+        "m",
+        [Some("expand / fold all merges (Log)"), None, None, None],
+    ),
     (
         "t / T",
-        [Some("hide selected type / clear filters (Log)"), None, None],
+        [
+            Some("hide selected type / clear filters (Log)"),
+            None,
+            None,
+            None,
+        ],
     ),
-    ("M", [Some("hide / show merge commits (Log)"), None, None]),
+    (
+        "M",
+        [Some("hide / show merge commits (Log)"), None, None, None],
+    ),
+    (
+        "p",
+        [None, None, Some("blame the file before this commit"), None],
+    ),
+    (
+        "Backspace",
+        [None, None, Some("return to the previous blame"), None],
+    ),
     every("L", "expand / fold all lockfiles (Show)"),
     (
         "s",
         [
             FILE_SUMMARY,
             Some("toggle file summary / patch (Show)"),
+            FILE_SUMMARY,
             FILE_SUMMARY,
         ],
     ),
@@ -234,6 +265,7 @@ const HELP_ROWS: &[HelpRow] = &[
         [
             Some("return to Log / cancel"),
             Some("return to Reflog / cancel"),
+            Some("return to Blame / cancel"),
             None,
         ],
     ),
@@ -242,6 +274,7 @@ const HELP_ROWS: &[HelpRow] = &[
         [
             Some("switch Log / detail"),
             Some("switch Reflog / Show"),
+            Some("switch Blame / detail"),
             None,
         ],
     ),
@@ -370,10 +403,12 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
         );
         return;
     }
+    // Blame rows of uncommitted lines are interleaved with committed ones.
     let separator_before = app
         .commits
         .iter()
         .enumerate()
+        .filter(|_| app.history == History::Log)
         .find(|(i, commit)| {
             app.log_folds.graph_visible(*i) && commit.kind == crate::git::CommitKind::Revision
         })
@@ -400,10 +435,18 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             .saturating_sub(1);
     if !app.log_folds.visible(app.selected) {
         app.log_offset = 0;
+    } else if std::mem::take(&mut app.center_selection) {
+        app.log_offset = selected_subject_row.saturating_sub(height / 2);
     } else if selected_subject_row < app.log_offset {
         app.log_offset = selected_start_row;
     } else if selected_subject_row >= app.log_offset + height.max(1) {
         app.log_offset = selected_subject_row + 1 - height.max(1);
+    }
+    if app.history == History::Blame {
+        // Blame rows are one line each; keep the last line at the bottom.
+        app.log_offset = app
+            .log_offset
+            .min(app.commits.len().saturating_sub(height.max(1)));
     }
     let mut lines = Vec::new();
     let mut graph_row = 0;
@@ -456,7 +499,16 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                         span.content = span.content.replacen('*', marker, 1).into();
                     }
                 }
-                line.spans.extend(app.log_format.spans(commit));
+                line.spans.extend(match commit.blame() {
+                    // Name the commit of a chunk that starts above the screen.
+                    Some(blame) => crate::blame::spans(
+                        commit,
+                        blame,
+                        blame.starts_chunk || lines.is_empty(),
+                        &app.log_format,
+                    ),
+                    None => app.log_format.spans(commit),
+                });
                 line.spans.push(Span::styled(
                     app.log_folds.label(index),
                     Style::default().fg(Color::Yellow),
@@ -1202,7 +1254,7 @@ mod tests {
     fn commit(subject: &str, graph_rows: usize) -> Commit {
         Commit {
             kind: CommitKind::Revision,
-            reflog: None,
+            annotation: None,
             parents: Vec::new(),
             diff_args: Vec::new(),
             hash: subject.repeat(40).chars().take(40).collect(),

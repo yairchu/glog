@@ -31,7 +31,7 @@ const NULL_DEVICE: &str = "/dev/null";
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Commit {
     pub kind: CommitKind,
-    pub reflog: Option<ReflogEntry>,
+    pub annotation: Option<Annotation>,
     pub diff_args: Vec<String>,
     pub hash: String,
     pub short_hash: String,
@@ -50,6 +50,30 @@ pub struct Collaborators {
     pub codex: bool,
     pub claude: bool,
     pub others: usize,
+}
+
+/// What a row of a view other than Log describes beyond its commit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Annotation {
+    Reflog(ReflogEntry),
+    Blame(crate::blame::BlameLine),
+}
+
+impl Commit {
+    #[cfg(test)]
+    pub fn reflog(&self) -> Option<&ReflogEntry> {
+        match &self.annotation {
+            Some(Annotation::Reflog(entry)) => Some(entry),
+            _ => None,
+        }
+    }
+
+    pub fn blame(&self) -> Option<&crate::blame::BlameLine> {
+        match &self.annotation {
+            Some(Annotation::Blame(line)) => Some(line),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -149,20 +173,20 @@ fn parse_reflog(output: &str) -> Result<Vec<Commit>, String> {
             let mut commit = pseudo_commit(CommitKind::Revision, fields[1], fields[4]);
             commit.hash = fields[0].into();
             commit.graph = vec![String::new()];
-            commit.reflog = Some(ReflogEntry {
+            commit.annotation = Some(Annotation::Reflog(ReflogEntry {
                 reference: reference.into(),
                 show_reference,
                 updated_at: date.into(),
                 actor: fields[5].into(),
                 action: fields[3].into(),
-            });
+            }));
             Ok(commit)
         })
         .collect()
 }
 
 impl Collaborators {
-    fn parse(trailers: &str, author_email: &str) -> Self {
+    pub(crate) fn parse(trailers: &str, author_email: &str) -> Self {
         let mut result = Self::default();
         let mut seen = HashSet::new();
         seen.insert(author_email.trim().to_ascii_lowercase());
@@ -196,7 +220,7 @@ pub enum CommitKind {
     Comparison { worktree: bool },
 }
 
-fn configured_log_date(fallback: &str) -> Result<String, String> {
+pub(crate) fn configured_log_date(fallback: &str) -> Result<String, String> {
     let configured_date = Command::new("git")
         .args(["config", "--get", "log.date"])
         .output()
@@ -579,7 +603,7 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
                 pending_graph.push(line[..marker].to_owned());
                 commits.push(Commit {
                     kind: CommitKind::Revision,
-                    reflog: None,
+                    annotation: None,
                     diff_args: Vec::new(),
                     hash: fields[0].to_owned(),
                     short_hash: fields[1].to_owned(),
@@ -622,7 +646,7 @@ fn working_tree_entries() -> Result<Vec<Commit>, String> {
 fn pseudo_commit(kind: CommitKind, short_hash: &str, subject: &str) -> Commit {
     Commit {
         kind,
-        reflog: None,
+        annotation: None,
         diff_args: Vec::new(),
         hash: format!("[{short_hash}]"),
         short_hash: short_hash.to_owned(),
@@ -1108,14 +1132,14 @@ pub(crate) fn format_output(output: Vec<u8>) -> Result<String, String> {
     Ok(plain)
 }
 
-fn delta_enabled() -> bool {
+pub(crate) fn delta_enabled() -> bool {
     !matches!(
         env::var("GLOG_DELTA").as_deref(),
         Ok("0" | "false" | "no" | "off")
     )
 }
 
-fn run_delta(input: &[u8]) -> Option<String> {
+pub(crate) fn run_delta(input: &[u8]) -> Option<String> {
     pipe_through(
         Command::new("delta").args(["--paging=never", "--color-only"]),
         input,
@@ -1143,7 +1167,7 @@ pub(crate) fn pipe_through_bytes(command: &mut Command, input: &[u8]) -> Option<
     output.status.success().then_some(output.stdout)
 }
 
-fn stderr_message(prefix: &str, stderr: &[u8]) -> String {
+pub(crate) fn stderr_message(prefix: &str, stderr: &[u8]) -> String {
     let detail = String::from_utf8_lossy(stderr);
     let detail = detail.trim();
     if detail.is_empty() {
@@ -1154,7 +1178,7 @@ fn stderr_message(prefix: &str, stderr: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::app::LogAction;
     use std::{
@@ -1219,15 +1243,10 @@ mod tests {
             )
         );
         for (entry, date) in entries.iter().zip([reset, second, first]) {
-            assert_eq!(entry.reflog.as_ref().unwrap().updated_at, date);
+            assert_eq!(entry.reflog().unwrap().updated_at, date);
             assert!(entry.parents.is_empty());
         }
-        assert!(entries[0]
-            .reflog
-            .as_ref()
-            .unwrap()
-            .action
-            .starts_with("reset:"));
+        assert!(entries[0].reflog().unwrap().action.starts_with("reset:"));
         let named = load_reflog(&[
             "main".into(),
             "-n".into(),
@@ -1236,12 +1255,12 @@ mod tests {
         ])
         .unwrap();
         assert_eq!(named.len(), 1);
-        assert_eq!(named[0].reflog.as_ref().unwrap().reference, "main");
-        assert_eq!(named[0].reflog.as_ref().unwrap().updated_at, "2020-01-03");
+        assert_eq!(named[0].reflog().unwrap().reference, "main");
+        assert_eq!(named[0].reflog().unwrap().updated_at, "2020-01-03");
         let all = load_reflog(&["--all".into()]).unwrap();
         assert!(all.len() > entries.len());
         for entry in &all {
-            let event = entry.reflog.as_ref().unwrap();
+            let event = entry.reflog().unwrap();
             assert!(event.show_reference);
             assert!(format
                 .text(entry)
@@ -1262,22 +1281,17 @@ mod tests {
             second,
         );
         assert_eq!(
-            default_entries[1].reflog.as_ref().unwrap().updated_at,
+            default_entries[1].reflog().unwrap().updated_at,
             expected_date
         );
         git(&["config", "log.date", "short"], first);
         assert_eq!(
-            load_reflog(&[]).unwrap()[0]
-                .reflog
-                .as_ref()
-                .unwrap()
-                .updated_at,
+            load_reflog(&[]).unwrap()[0].reflog().unwrap().updated_at,
             "2020-01-03"
         );
         assert_eq!(
             load_reflog(&["--date=iso-strict".into()]).unwrap()[0]
-                .reflog
-                .as_ref()
+                .reflog()
                 .unwrap()
                 .updated_at,
             reset
@@ -1346,7 +1360,7 @@ mod tests {
         )
         .unwrap();
         for (entry, date) in entries.iter().zip(["01@{x", "02@{x"]) {
-            let event = entry.reflog.as_ref().unwrap();
+            let event = entry.reflog().unwrap();
             assert_eq!(event.reference, "HEAD");
             assert_eq!(event.updated_at, date);
             assert!(!event.show_reference);
@@ -2113,17 +2127,17 @@ mod tests {
         assert!(stdout.contains("1 passed"), "{stdout}");
     }
 
-    struct TestDirectory(PathBuf);
+    pub(crate) struct TestDirectory(PathBuf);
 
     impl TestDirectory {
-        fn new() -> Self {
+        pub(crate) fn new() -> Self {
             let sequence = NEXT_TEST_DIRECTORY.fetch_add(1, Ordering::Relaxed);
             let path = env::temp_dir().join(format!("glog-test-{}-{sequence}", std::process::id()));
             fs::create_dir(&path).unwrap();
             Self(path)
         }
 
-        fn path(&self) -> &Path {
+        pub(crate) fn path(&self) -> &Path {
             &self.0
         }
     }
@@ -2134,13 +2148,13 @@ mod tests {
         }
     }
 
-    struct CurrentDirGuard {
+    pub(crate) struct CurrentDirGuard {
         original: std::path::PathBuf,
         _lock: MutexGuard<'static, ()>,
     }
 
     impl CurrentDirGuard {
-        fn enter(path: &Path) -> Self {
+        pub(crate) fn enter(path: &Path) -> Self {
             let lock = CURRENT_DIR_LOCK.lock().unwrap();
             let original = env::current_dir().unwrap();
             env::set_current_dir(path).unwrap();

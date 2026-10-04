@@ -1,5 +1,6 @@
 mod ansi;
 mod app;
+mod blame;
 mod diff;
 mod git;
 mod images;
@@ -76,6 +77,12 @@ fn main() -> ExitCode {
         Command::Show => git::load_show_app(command_args),
         Command::Diff => git::load_diff_app(command_args),
         Command::Reflog => git::load_reflog(command_args).map(App::new),
+        Command::Blame => blame::load(command_args).map(|(rows, selected)| {
+            let mut app = App::new(rows);
+            app.selected = selected;
+            app.center_selection = true;
+            app
+        }),
         Command::Log if watch => git::load_watch_log().map(App::new),
         Command::Log => git::load_log(git_args).map(App::new),
     };
@@ -90,6 +97,7 @@ fn main() -> ExitCode {
         let message = match command {
             Command::Diff => "no changes",
             Command::Reflog => "no reflog entries matched",
+            Command::Blame => "the file is empty",
             _ => "no commits matched",
         };
         eprintln!("glog: {message}");
@@ -122,7 +130,7 @@ fn main() -> ExitCode {
 }
 
 fn initialize_log_filters(app: &mut App, options: log_format::LogOptions) {
-    if app.is_reflog() {
+    if app.history != app::History::Log {
         return;
     }
     app.log_folds.start_collapsed = options.fold_merges;
@@ -142,6 +150,7 @@ fn initialize_log_filters(app: &mut App, options: log_format::LogOptions) {
 enum Command {
     Log,
     Reflog,
+    Blame,
     Show,
     Diff,
     Status,
@@ -150,6 +159,7 @@ enum Command {
 fn parse_command(args: &[String]) -> (Command, &[String]) {
     match args.first().map(String::as_str) {
         Some("reflog") => (Command::Reflog, &args[1..]),
+        Some("blame") => (Command::Blame, &args[1..]),
         Some("status") => (Command::Status, &args[1..]),
         Some("show") => (Command::Show, &args[1..]),
         Some("diff") => (Command::Diff, &args[1..]),
@@ -173,6 +183,7 @@ const HELP: &str = "glog — an interactive git log and git show browser
 Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
        glog [log] [git log arguments] [--] [pathspec...]
        glog reflog [ref] [--all] [-n COUNT] [--date=STYLE]
+       glog blame [-L LINE] [--date=STYLE] [revision] [--] file
        glog show [--stat] [commit] [-- pathspec...]
        glog diff [--cached] [--stat] [revision [revision]] [[--] pathspec...]
        glog status
@@ -180,8 +191,9 @@ Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
 Options:
   --pretty=format:FORMAT / --format=FORMAT
                 Format Log rows (%h %H %ad %an %ae %d %D %s %%)
-  --date=STYLE  Format Log author dates or Reflog update times using Git
-                (e.g. short, relative, iso)
+  --date=STYLE  Format Log and Blame author dates or Reflog update times
+                using Git (e.g. short, relative, iso)
+  -L LINE       Open Blame at a line
   --oneline     Use the compact hash, refs, and subject layout
   --fold-merges Start Log with merge histories collapsed; z expands a merge
   --hide-merges Hide merge commits; M toggles this filter
@@ -196,6 +208,8 @@ Status opens the Working tree detail view in a watch session.
 Watch mode includes one Working tree item; commits open Show.
 Log shows committed history, loaded once unless --watch is used.
 Reflog shows local ref updates with their update times; Enter opens the commit.
+Blame shows which commit last changed each line; Enter opens it, p blames
+the file before it, and Backspace returns.
 Show opens HEAD or the specified commit, with history available via Tab.
 Diff opens unstaged changes (including untracked files), or staged changes
 with --cached. Revisions compare commits (A..B, A...B, A B) or a commit
@@ -325,6 +339,12 @@ mod tests {
     fn commands_preserve_log_shorthand_and_escape_reserved_names() {
         for (args, show, remaining) in [
             (vec!["reflog", "main"], Command::Reflog, vec!["main"]),
+            (
+                vec!["blame", "src/main.rs"],
+                Command::Blame,
+                vec!["src/main.rs"],
+            ),
+            (vec!["log", "blame"], Command::Log, vec!["blame"]),
             (vec!["log", "reflog"], Command::Log, vec!["reflog"]),
             (vec!["status"], Command::Status, vec![]),
             (vec!["log", "status"], Command::Log, vec!["status"]),

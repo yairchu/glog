@@ -1,4 +1,4 @@
-use crate::app::{App, LogAction, Mode};
+use crate::app::{App, History, LogAction, Mode};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 
 pub fn handle(event: Event, app: &mut App) {
@@ -75,7 +75,13 @@ pub fn handle(event: Event, app: &mut App) {
         }
         match key.code {
             KeyCode::Char(c @ ('a' | 'd' | 'r' | 'x' | 's'))
-                if app.mode == Mode::Log && !app.is_reflog() =>
+                if app.mode == Mode::Log
+                    && match app.history {
+                        History::Log => true,
+                        // Blame rows have no refs or subjects.
+                        History::Blame => matches!(c, 'a' | 'd' | 'x'),
+                        History::Reflog => false,
+                    } =>
             {
                 use crate::log_format::Field;
                 let field = match c {
@@ -91,6 +97,12 @@ pub fn handle(event: Event, app: &mut App) {
             KeyCode::Char('q') => app.quit = true,
             KeyCode::Tab => app.switch_mode(),
             KeyCode::Enter if app.mode == Mode::Log => app.switch_mode(),
+            KeyCode::Char('p') if app.mode == Mode::Log && app.history == History::Blame => {
+                app.blame_parent()
+            }
+            KeyCode::Backspace if app.mode == Mode::Log && app.history == History::Blame => {
+                app.blame_back()
+            }
             KeyCode::Char(c @ ('t' | 'T' | 'M' | 'z' | 'm')) if app.mode == Mode::Log => app
                 .apply_log_action(match c {
                     't' => LogAction::HideSelectedType,
@@ -119,8 +131,8 @@ pub fn handle(event: Event, app: &mut App) {
             KeyCode::PageDown | KeyCode::Char(' ' | 'f') => app.move_by(2, 20),
             KeyCode::Left if app.mode == Mode::Show => show_adjacent(app, -1),
             KeyCode::Right if app.mode == Mode::Show => show_adjacent(app, 1),
-            KeyCode::Left if !key.modifiers.contains(KeyModifiers::SHIFT) => app.move_by(-1, 1),
-            KeyCode::Right if !key.modifiers.contains(KeyModifiers::SHIFT) => app.move_by(1, 1),
+            KeyCode::Left if !key.modifiers.contains(KeyModifiers::SHIFT) => app.move_adjacent(-1),
+            KeyCode::Right if !key.modifiers.contains(KeyModifiers::SHIFT) => app.move_adjacent(1),
             KeyCode::Char('g' | '<') | KeyCode::Home => app.top(),
             KeyCode::Char('G' | '>') | KeyCode::End => app.bottom(),
             KeyCode::Char('/') => app.begin_search(false),

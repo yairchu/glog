@@ -226,7 +226,7 @@ pub(crate) fn display_path(bytes: &[u8]) -> String {
     output
 }
 
-fn unquote_path(path: &str) -> Option<(Vec<u8>, usize)> {
+pub(crate) fn unquote_path(path: &str) -> Option<(Vec<u8>, usize)> {
     if !path.starts_with('"') {
         return Some((path.as_bytes().to_vec(), path.len()));
     }

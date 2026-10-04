@@ -5,6 +5,15 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Added `glog blame` to see which commit last changed each line of a file.
+  Enter opens the commit at that file, `p` blames the file as it was before
+  that commit, following renames, and `Backspace` goes back. Supports
+  revisions, `-L` to open at a line, and date formatting; dates default to
+  just the day. `x`, `d`, and `a` toggle the hash, date, and author columns,
+  and code is syntax-highlighted with delta when it is installed.
+
 ## 0.4.0 - 2026-10-01
 
 ### Added
