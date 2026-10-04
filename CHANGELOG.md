@@ -20,6 +20,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Fixed
 
+- Commit-type filters keep branch points and commits labelled with refs visible
+  as context, including branch tips in linear history after a rebase.
 - `glog FILE` now shows the file's history, like `git log FILE`, instead of
   failing unless the path follows `--`.
 

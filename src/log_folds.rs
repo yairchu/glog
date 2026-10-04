@@ -311,7 +311,9 @@ impl LogFolds {
             return false;
         }
         (self.hide_merges && commit.kind == CommitKind::Revision && commit.parents.len() > 1)
-            || commit_type(commit).is_some_and(|kind| self.hidden_types.contains(kind))
+            || (self.graph.branch_points.get(index) != Some(&true)
+                && commit.decorations.is_empty()
+                && commit_type(commit).is_some_and(|kind| self.hidden_types.contains(kind)))
     }
 
     pub fn toggle_type(&mut self, kind: Option<&str>, commits: &[Commit]) -> Result<(), String> {
@@ -482,6 +484,8 @@ struct Graph {
     // Children before parents.
     order: Vec<usize>,
     tips: Vec<bool>,
+    // Commits with multiple children anchor the points where history forks.
+    branch_points: Vec<bool>,
     // The first row with a parent that is neither loaded nor known to be
     // irrelevant. Omitted commits may connect it to any row below it.
     unknown_below: Option<usize>,
@@ -540,6 +544,10 @@ impl Graph {
         for &(parent, _) in parents.iter().flatten() {
             incoming[parent] += 1;
         }
+        let branch_points = incoming[..rows]
+            .iter()
+            .map(|&children| children > 1)
+            .collect();
         let mut todo: Vec<_> = (0..nodes).filter(|&n| incoming[n] == 0).collect();
         let mut order = Vec::with_capacity(nodes);
         while let Some(node) = todo.pop() {
@@ -557,6 +565,7 @@ impl Graph {
             parents,
             order,
             tips,
+            branch_points,
             unknown_below,
         }
     }
@@ -1005,6 +1014,7 @@ mod tests {
     fn commit(hash: &str, parents: &[&str]) -> Commit {
         let mut commit = crate::log_format::tests::commit();
         commit.hash = hash.into();
+        commit.decorations.clear();
         commit.parents = parents.iter().map(|p| (*p).into()).collect();
         commit.graph = vec![format!("original graph {hash}")];
         commit
@@ -1168,6 +1178,64 @@ mod tests {
             assert_eq!(commit_type(&c), expected, "{subject}");
             c.kind = CommitKind::WorkingTree;
             assert_eq!(commit_type(&c), None);
+        }
+    }
+
+    #[test]
+    fn type_filter_preserves_refs_in_linear_history() {
+        for decoration in ["main", "origin/main", "tag: v1.0", "HEAD"] {
+            let mut commits = vec![
+                commit("feature", &["intermediate"]),
+                commit("intermediate", &["main"]),
+                commit("main", &["base"]),
+                commit("base", &[]),
+            ];
+            for commit in &mut commits {
+                commit.subject = "test: context".into();
+            }
+            commits[0].decorations = "HEAD -> feature".into();
+            commits[2].decorations = decoration.into();
+            let mut folds = folds_with(None);
+            folds.refresh(&commits).unwrap();
+            folds.toggle_type(Some("test"), &commits).unwrap();
+            assert_eq!(shown(&folds, &commits), ["feature", "main"]);
+            assert_eq!(folds.hidden_count, 2);
+            assert!(!folds.filter_hidden(2, &commits[2]));
+
+            // Watch refresh must follow a moved ref, without retaining its old row.
+            commits[2].decorations.clear();
+            commits[1].decorations = decoration.into();
+            folds.refresh(&commits).unwrap();
+            assert_eq!(shown(&folds, &commits), ["feature", "intermediate"]);
+            assert_eq!(folds.hidden_count, 2);
+        }
+    }
+
+    #[test]
+    fn type_filter_preserves_branch_points_through_omitted_history() {
+        for omitted in [false, true] {
+            let mut commits = vec![
+                commit("left", &[if omitted { "omitted-left" } else { "fork" }]),
+                commit("right", &["fork"]),
+                commit("fork", &["base"]),
+                commit("base", &[]),
+            ];
+            for commit in &mut commits {
+                commit.subject = "test: context".into();
+            }
+            let ancestry = HashMap::from([("omitted-left".into(), vec!["fork".into()])]);
+            let mut folds = folds_with(Some(ancestry));
+            folds.refresh(&commits).unwrap();
+            folds.toggle_type(Some("test"), &commits).unwrap();
+            assert_eq!(shown(&folds, &commits), ["fork"]);
+            assert_eq!(folds.hidden_count, 3);
+            assert!(!folds.filter_hidden(2, &commits[2]));
+
+            // A refreshed linear history no longer has a branch point.
+            commits.remove(1);
+            folds.refresh(&commits).unwrap();
+            assert!(shown(&folds, &commits).is_empty());
+            assert_eq!(folds.hidden_count, 3);
         }
     }
 

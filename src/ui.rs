@@ -935,11 +935,10 @@ mod tests {
         let mut outer = commit("Merge outer", 1);
         let mut rows = Vec::new();
         for name in ["left", "right"] {
-            let mut first = commit(&format!("fix: {name} first"), 1);
-            let mut second = commit(&format!("fix: {name} second"), 1);
+            let first = commit(&format!("fix: {name} first"), 1);
+            let second = commit(&format!("fix: {name} second"), 1);
             let mut merge = commit(&format!("Merge {name}"), 1);
-            first.parents = vec![base.hash.clone()];
-            second.parents = vec![base.hash.clone()];
+            // Separate roots leave no branch point exempt from filtering.
             merge.parents = vec![first.hash.clone(), second.hash.clone()];
             outer.parents.push(merge.hash.clone());
             rows.extend([merge, second, first]);
@@ -1121,11 +1120,12 @@ mod tests {
         app.next_match(false);
         assert_eq!(app.selected, 2);
         app.apply_log_action(LogAction::HideSelectedType);
-        assert_eq!(app.log_folds.hidden_count, 3); // Matching merges count once.
-        assert_eq!(app.selected, 3);
+        // Side is a branch point shared by both merges, so it stays selected.
+        assert_eq!(app.log_folds.hidden_count, 2);
+        assert_eq!(app.selected, 2);
         app.replace_commits(app.commits.clone());
         assert!(app.log_folds.hide_merges);
-        assert_eq!(app.log_folds.hidden_count, 3);
+        assert_eq!(app.log_folds.hidden_count, 2);
         handle(
             Event::Key(KeyEvent::new(KeyCode::Char('M'), KeyModifiers::NONE)),
             &mut app,
@@ -1133,7 +1133,7 @@ mod tests {
         assert!(!app.log_folds.hide_merges);
         assert!(!app.log_folds.visible(0)); // Type filter still applies.
         assert!(app.log_folds.visible(1));
-        assert_eq!(app.log_folds.hidden_count, 2);
+        assert_eq!(app.log_folds.hidden_count, 1);
         handle(
             Event::Key(KeyEvent::new(KeyCode::Char('M'), KeyModifiers::NONE)),
             &mut app,

@@ -425,8 +425,8 @@ impl App {
         selected
     }
 
-    /// The selected commit's type, unless it is already hidden: a folded
-    /// merge matching a filter stays shown only to stand in for its history.
+    /// The selected commit's type, unless that type is already filtered.
+    /// Branch points, ref-labelled commits, and folded merges can stay visible.
     pub fn selected_hideable_type(&self) -> Option<&str> {
         self.commits
             .get(self.selected)
@@ -1551,10 +1551,10 @@ mod tests {
     fn folding_does_not_act_on_a_hidden_selection() {
         let base = commit("fix: base");
         let mut side = commit("fix: side");
-        let mut main = commit("fix: main");
+        let main = commit("fix: main");
         let mut merge = commit("Merge side");
         side.parents = vec![base.hash.clone()];
-        main.parents = vec![base.hash.clone()];
+        // Separate roots leave no branch point exempt from type filtering.
         merge.parents = vec![main.hash.clone(), side.hash.clone()];
         let mut app = App::new(vec![merge, side, main, base]);
         app.apply_log_action(LogAction::Merges);

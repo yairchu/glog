@@ -447,6 +447,7 @@ mod tests {
                     }
                     .into();
                     commit.parents.clear();
+                    commit.decorations.clear();
                     commit
                 })
                 .collect();

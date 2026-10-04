@@ -415,6 +415,7 @@ mod tests {
             let mut c = log_format::tests::commit();
             c.hash = i.to_string();
             c.subject = (*subject).into();
+            c.decorations.clear();
             c.parents = if i == 0 {
                 vec!["1".into(), "2".into()]
             } else {
