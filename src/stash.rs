@@ -301,6 +301,52 @@ mod tests {
     }
 
     #[test]
+    fn stash_preserves_staged_content_overwritten_in_the_worktree() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file.txt", "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        fs::write("file.txt", "saved staged content\n").unwrap();
+        git(&["add", "."]);
+        fs::write("file.txt", "base\n").unwrap();
+        git(&["stash", "push"]);
+
+        let mut app = load_app(&["show".into()]).unwrap();
+        let patch = crate::ansi::plain(&app.show_text);
+        assert!(patch.contains("+saved staged content"), "{patch}");
+        assert!(patch.contains("-saved staged content"), "{patch}");
+        assert!(patch.contains("+base"), "{patch}");
+
+        key(&mut app, KeyCode::Char('s'));
+        for label in ["Staged changes", "Unstaged changes"] {
+            assert!(app
+                .show_rows
+                .iter()
+                .any(|row| crate::ansi::plain(&row.text) == label));
+        }
+        // Both layers affect the same filename, but expanding one must not
+        // expand the other or move a summary bookmark to the wrong patch.
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.file == Some(1))
+            .unwrap();
+        key(&mut app, KeyCode::Enter);
+        assert!(app
+            .show_rows
+            .iter()
+            .any(|row| row.file == Some(0) && row.folded));
+        assert!(app
+            .show_rows
+            .iter()
+            .any(|row| row.file == Some(1) && !row.folded));
+        key(&mut app, KeyCode::Char('s'));
+        assert_eq!(app.show_rows[app.show_cursor].file, Some(1));
+    }
+
+    #[test]
     fn stash_columns_align_across_index_widths_and_toggle_independently() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());

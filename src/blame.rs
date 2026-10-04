@@ -604,6 +604,48 @@ mod tests {
         assert!(output.status.success(), "{output:?}");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn blame_parent_preserves_non_utf8_paths_across_renames() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        // Import historical names without creating them on disk: macOS
+        // filesystems reject these bytes, but Git trees can still contain them.
+        let history = concat!(
+            "commit refs/heads/review\n",
+            "committer Alice <alice@example.com> 1000000000 +0000\n",
+            "data 4\nbase\n",
+            "M 100644 inline \"old-\\377.txt\"\ndata 10\na\nb\nc\nd\ne\n\n",
+            "commit refs/heads/review\n",
+            "committer Alice <alice@example.com> 1000000001 +0000\n",
+            "data 4\nedit\n",
+            "M 100644 inline \"old-\\377.txt\"\ndata 10\na\nB\nc\nd\ne\n\n",
+            "commit refs/heads/review\n",
+            "committer Alice <alice@example.com> 1000000002 +0000\n",
+            "data 6\nrename\nR \"old-\\377.txt\" new.txt\n\ndone\n",
+        );
+        assert!(crate::git::pipe_through_bytes(
+            Command::new("git").args(["fast-import", "--quiet"]),
+            history.as_bytes(),
+        )
+        .is_some());
+        let (rows, _) = load(&["review".into(), "new.txt".into()]).unwrap();
+        let mut app = App::new(rows);
+        app.selected = 1;
+        app.blame_parent();
+        assert_eq!(app.status, None);
+        assert_eq!(app.selected, 1);
+        assert_eq!(code(app.commits[1].blame().unwrap()), "b");
+        app.blame_back();
+        app.switch_mode();
+        let file = app.show_rows[app.show_cursor].file.unwrap();
+        assert_eq!(
+            crate::diff::file_sections(&app.show_text)[file].path_bytes,
+            b"old-\xff.txt"
+        );
+    }
+
     #[test]
     fn blame_sha256_includes_uncommitted_lines() {
         let directory = TestDirectory::new();
