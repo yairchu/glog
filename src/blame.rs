@@ -642,6 +642,72 @@ mod tests {
     }
 
     #[test]
+    fn blame_parent_honors_relative_repository_environment() {
+        with_relative_repository_environment(
+            "blame_parent_honors_relative_repository_environment",
+            false,
+        );
+    }
+
+    #[test]
+    fn historical_blame_honors_relative_repository_environment() {
+        with_relative_repository_environment(
+            "historical_blame_honors_relative_repository_environment",
+            true,
+        );
+    }
+
+    fn with_relative_repository_environment(test: &str, historical_only: bool) {
+        // Isolate repository environment variables from concurrent tests.
+        const CHILD: &str = "GLOG_TEST_BLAME_REPOSITORY_ENV_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            let (rows, _) = load(&["../file.txt".into()]).unwrap();
+            assert_eq!(code(rows[2].blame().unwrap()), "B");
+            if historical_only {
+                // Exercise the second command independently of the parent diff.
+                let line = rows[2].blame().unwrap();
+                let (parent, path) = line.previous.as_ref().unwrap();
+                let rows =
+                    blame(Some(parent), path, Some(&line.file.top), &line.file.date).unwrap();
+                assert_eq!(code(rows[1].blame().unwrap()), "b");
+            } else {
+                let mut app = App::new(rows);
+                app.selected = 2;
+                app.blame_parent();
+                assert_eq!(app.status, None);
+                assert_eq!(app.selected, 1);
+                assert_eq!(code(app.commits[1].blame().unwrap()), "b");
+                app.blame_back();
+                assert_eq!(app.status, None);
+                assert_eq!(app.selected, 2);
+                assert_eq!(code(app.commits[2].blame().unwrap()), "B");
+            }
+            return;
+        }
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file.txt", "a\nb\nc\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        fs::write("file.txt", "prefix\na\nB\nc\n").unwrap();
+        git(&["commit", "-qam", "edit"]);
+        fs::create_dir("sub").unwrap();
+        let output = Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &format!("blame::tests::{test}")])
+            .current_dir(directory.path().join("sub"))
+            .env(CHILD, "1")
+            .env("GIT_DIR", "../.git")
+            .env("GIT_WORK_TREE", "..")
+            .output()
+            .unwrap();
+        drop(_cwd);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{stdout}");
+        assert!(stdout.contains("1 passed"), "{stdout}");
+    }
+
+    #[test]
     fn blame_bare_repository_follows_parent_and_returns() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
