@@ -284,7 +284,8 @@ Search, file folding, and `s` for the file summary work as in Show.
 
 `stash list --date=STYLE` overrides Git's `log.date` setting. `stash show`
 also accepts a stash commit hash. Browsing loads a snapshot of the stash list;
-it never creates, applies, or drops stashes.
+it never creates, applies, or drops stashes. Opening a stash requires Git 2.32
+or later.
 
 ## Working-tree status
 
