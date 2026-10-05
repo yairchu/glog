@@ -32,22 +32,11 @@ impl FileRevision {
     }
 }
 
-pub fn load_file(revision: &str, path: &str) -> Result<crate::app::App, String> {
-    if revision.is_empty() || path.is_empty() {
+/// Open `path` as it is in `revision`, a resolved commit hash.
+pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String> {
+    if path.is_empty() {
         return Err("use glog show REV:path to read a committed text file".into());
     }
-    let output = Command::new("git")
-        .args(["rev-parse", "--verify", "--end-of-options"])
-        .arg(format!("{revision}^{{commit}}"))
-        .output()
-        .map_err(|error| format!("could not resolve commit: {error}"))?;
-    if !output.status.success() {
-        return Err(git::stderr_message(
-            "could not resolve commit",
-            &output.stderr,
-        ));
-    }
-    let revision = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     let mut path = path.as_bytes().to_vec();
     // REV:path is rooted at the repository, except for Git's explicit ./ and
     // ../ forms. Resolve those before moving commands to the repository root.
@@ -128,7 +117,7 @@ pub fn load_file(revision: &str, path: &str) -> Result<crate::app::App, String> 
     let rows = render_lines(lines, HashMap::new(), top.clone(), "", &path);
     let mut app = crate::app::App::new(rows);
     app.history = crate::app::History::Blame;
-    for field in [Field::Hash, Field::Author, Field::Date] {
+    for field in Field::ATTRIBUTION {
         app.log_format.toggle(field);
     }
     app.pending_blame = Some(FileRevision {

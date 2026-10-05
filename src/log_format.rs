@@ -14,6 +14,22 @@ pub enum Field {
     Subject,
 }
 
+impl Field {
+    /// Blame rows have no refs or subjects; these columns attribute lines.
+    pub const ATTRIBUTION: [Field; 3] = [Field::Hash, Field::Date, Field::Author];
+
+    pub fn for_key(key: char) -> Option<Field> {
+        match key {
+            'a' => Some(Field::Author),
+            'd' => Some(Field::Date),
+            'r' => Some(Field::Refs),
+            's' => Some(Field::Subject),
+            'x' => Some(Field::Hash),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 struct Part {
     field: Field,

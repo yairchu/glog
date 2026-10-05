@@ -379,7 +379,7 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
                     if stat || separator != args.len() {
                         return Err("use glog show REV:path without --stat or path filters".into());
                     }
-                    return crate::blame::load_file(&hash, &revision[index + 1..]);
+                    return crate::blame::load_file(hash, &revision[index + 1..]);
                 }
             }
             return Err(error);

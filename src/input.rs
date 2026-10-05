@@ -73,31 +73,26 @@ pub fn handle(event: Event, app: &mut App) {
             }
             return;
         }
-        match key.code {
-            KeyCode::Char(c @ ('a' | 'd' | 'r' | 'x' | 's'))
-                if app.mode == Mode::Log
-                    && match app.history {
-                        History::Log => true,
-                        // Blame rows have no refs or subjects.
-                        History::Blame => matches!(c, 'a' | 'd' | 'x'),
-                        History::Stash => matches!(c, 'a' | 'd'),
-                        History::Reflog => false,
-                    } =>
-            {
-                use crate::log_format::Field;
-                let field = match c {
-                    'a' => Field::Author,
-                    'd' => Field::Date,
-                    'r' => Field::Refs,
-                    'x' => Field::Hash,
-                    _ => Field::Subject,
-                };
-                if !app.log_format.shows(field) && !app.ensure_blame() {
-                    return;
-                }
+        use crate::log_format::Field;
+        let field = match key.code {
+            KeyCode::Char(c) if app.mode == Mode::Log => {
+                Field::for_key(c).filter(|field| match app.history {
+                    History::Log => true,
+                    History::Blame => Field::ATTRIBUTION.contains(field),
+                    History::Stash => matches!(field, Field::Author | Field::Date),
+                    History::Reflog => false,
+                })
+            }
+            _ => None,
+        };
+        if let Some(field) = field {
+            if app.log_format.shows(field) || app.ensure_blame() {
                 app.log_format.toggle(field);
                 app.search_match = None;
             }
+            return;
+        }
+        match key.code {
             KeyCode::Char('q') => app.quit = true,
             KeyCode::Tab => app.switch_mode(),
             KeyCode::Enter if app.mode == Mode::Log => app.switch_mode(),

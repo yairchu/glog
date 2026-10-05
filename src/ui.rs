@@ -41,13 +41,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         History::Log => "Log",
         History::Reflog => "Reflog",
         History::Blame
-            if ![
-                crate::log_format::Field::Hash,
-                crate::log_format::Field::Date,
-                crate::log_format::Field::Author,
-            ]
-            .into_iter()
-            .any(|field| app.log_format.shows(field)) =>
+            if !crate::log_format::Field::ATTRIBUTION
+                .into_iter()
+                .any(|field| app.log_format.shows(field)) =>
         {
             "File"
         }
