@@ -898,7 +898,9 @@ mod tests {
         git(&["commit", "-qm", "fix: handle { inputs"]);
         git(&["branch", "brace{branch"]);
 
-        for spec in ["HEAD^{/handle {}:file.txt", "brace{branch:file.txt"] {
+        // Git uses extended regular expressions here. A bare opening brace
+        // is invalid on some platforms; [{] matches it portably.
+        for spec in ["HEAD^{/handle [{]}:file.txt", "brace{branch:file.txt"] {
             let mut app = git::load_show_app(&[spec.into()])
                 .unwrap_or_else(|error| panic!("{spec}: {error}"));
             assert!(app.pending_blame.is_some());
