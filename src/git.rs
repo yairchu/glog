@@ -369,36 +369,22 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
         [revision] if !revision.starts_with('-') => revision.as_str(),
         _ => return Err("usage: glog show [--stat] [commit] [-- pathspec...]".to_owned()),
     };
-    // Reflog dates and commit-message selectors may themselves contain colons.
-    let mut braces = 0usize;
-    let file_separator = revision.char_indices().find_map(|(index, ch)| {
-        match ch {
-            '{' => braces += 1,
-            '}' => braces = braces.saturating_sub(1),
-            ':' if braces == 0 => return Some(index),
-            _ => {}
+    let hash = match resolve_show_commit(revision) {
+        Ok(hash) => hash,
+        Err(error) => {
+            // Let Git interpret revision syntax: braces can be literal in ref
+            // names and search patterns, and selectors can contain colons.
+            for (index, _) in revision.match_indices(':') {
+                if let Ok(hash) = resolve_show_commit(&revision[..index]) {
+                    if stat || separator != args.len() {
+                        return Err("use glog show REV:path without --stat or path filters".into());
+                    }
+                    return crate::blame::load_file(&hash, &revision[index + 1..]);
+                }
+            }
+            return Err(error);
         }
-        None
-    });
-    if let Some(index) = file_separator {
-        if stat || separator != args.len() {
-            return Err("use glog show REV:path without --stat or path filters".into());
-        }
-        return crate::blame::load_file(&revision[..index], &revision[index + 1..]);
-    }
-    let output = Command::new("git")
-        .args([
-            "rev-parse",
-            "--verify",
-            "--end-of-options",
-            &format!("{revision}^{{commit}}"),
-        ])
-        .output()
-        .map_err(|error| format!("could not resolve commit: {error}"))?;
-    if !output.status.success() {
-        return Err(stderr_message("could not resolve commit", &output.stderr));
-    }
-    let hash = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    };
     let commits = load_log(&["-1".to_owned(), hash.clone(), "--".to_owned()])?;
     let mut app = crate::app::App::new(commits);
     app.show_stat = stat;
@@ -413,6 +399,22 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
     app.pending_history = Some(history);
     app.switch_mode();
     Ok(app)
+}
+
+fn resolve_show_commit(revision: &str) -> Result<String, String> {
+    let output = Command::new("git")
+        .args([
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{revision}^{{commit}}"),
+        ])
+        .output()
+        .map_err(|error| format!("could not resolve commit: {error}"))?;
+    if !output.status.success() {
+        return Err(stderr_message("could not resolve commit", &output.stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 /// Open a diff without traversing committed history.
