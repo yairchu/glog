@@ -40,6 +40,17 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let log_label = match app.history {
         History::Log => "Log",
         History::Reflog => "Reflog",
+        History::Blame
+            if ![
+                crate::log_format::Field::Hash,
+                crate::log_format::Field::Date,
+                crate::log_format::Field::Author,
+            ]
+            .into_iter()
+            .any(|field| app.log_format.shows(field)) =>
+        {
+            "File"
+        }
         History::Blame => "Blame",
         History::Stash => "Stash",
     };

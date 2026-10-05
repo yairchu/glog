@@ -5,6 +5,12 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- `glog show REV:path` opens a complete text file with blame columns hidden.
+  Attribution loads only when a column or history navigation needs it, keeping
+  initial file viewing independent of history traversal.
+
 ### Changed
 
 - Paths passed to `glog show REV -- path` now filter Log history as well as

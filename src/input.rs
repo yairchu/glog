@@ -92,6 +92,9 @@ pub fn handle(event: Event, app: &mut App) {
                     'x' => Field::Hash,
                     _ => Field::Subject,
                 };
+                if !app.log_format.shows(field) && !app.ensure_blame() {
+                    return;
+                }
                 app.log_format.toggle(field);
                 app.search_match = None;
             }

@@ -369,6 +369,23 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
         [revision] if !revision.starts_with('-') => revision.as_str(),
         _ => return Err("usage: glog show [--stat] [commit] [-- pathspec...]".to_owned()),
     };
+    // Reflog dates and commit-message selectors may themselves contain colons.
+    let mut braces = 0usize;
+    let file_separator = revision.char_indices().find_map(|(index, ch)| {
+        match ch {
+            '{' => braces += 1,
+            '}' => braces = braces.saturating_sub(1),
+            ':' if braces == 0 => return Some(index),
+            _ => {}
+        }
+        None
+    });
+    if let Some(index) = file_separator {
+        if stat || separator != args.len() {
+            return Err("use glog show REV:path without --stat or path filters".into());
+        }
+        return crate::blame::load_file(&revision[..index], &revision[index + 1..]);
+    }
     let output = Command::new("git")
         .args([
             "rev-parse",
@@ -3750,7 +3767,6 @@ pub(crate) mod tests {
             vec!["HEAD", "HEAD~1"],
             vec!["HEAD~1..HEAD"],
             vec!["--watch"],
-            vec!["HEAD:first.txt"],
         ] {
             assert!(
                 load_show_app(&args.into_iter().map(str::to_owned).collect::<Vec<_>>()).is_err()

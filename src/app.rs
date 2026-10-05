@@ -65,6 +65,7 @@ pub struct App {
     pub status_view: Option<crate::status::StatusView>,
     pub commits: Vec<Commit>,
     pub history: History,
+    pub pending_blame: Option<crate::blame::FileRevision>,
     blame_stack: Vec<BlameFrame>,
     // Scroll the Log so the selection is centered on the next draw.
     pub center_selection: bool,
@@ -136,6 +137,7 @@ impl App {
                 Some(git::Annotation::Stash(_)) => History::Stash,
             },
             commits,
+            pending_blame: None,
             blame_stack: Vec::new(),
             center_selection: false,
             log_folds: crate::log_folds::LogFolds::default(),
@@ -188,6 +190,28 @@ impl App {
         }
     }
 
+    /// Resolve attribution only when a column or a history action needs it.
+    /// Keep the file and pending request intact on failure so the user can retry.
+    pub fn ensure_blame(&mut self) -> bool {
+        let Some(file) = &self.pending_blame else {
+            return true;
+        };
+        match file.blame() {
+            Ok(commits) => {
+                self.commits = commits;
+                self.selected = self.selected.min(self.commits.len().saturating_sub(1));
+                self.pending_blame = None;
+                self.search_match = None;
+                self.status = None;
+                true
+            }
+            Err(error) => {
+                self.status = Some(error);
+                false
+            }
+        }
+    }
+
     fn load_history(&mut self) {
         let Some(args) = self.pending_history.clone() else {
             return;
@@ -229,6 +253,9 @@ impl App {
     }
 
     pub fn switch_mode(&mut self) {
+        if self.mode == Mode::Log && !self.ensure_blame() {
+            return;
+        }
         if !self.has_log_view() {
             return;
         }
@@ -326,6 +353,9 @@ impl App {
 
     /// Move to the previous or next commit, or blame chunk.
     pub fn move_adjacent(&mut self, delta: isize) {
+        if !self.ensure_blame() {
+            return;
+        }
         self.selected = self.adjacent_selection(delta);
     }
 
@@ -357,6 +387,9 @@ impl App {
 
     /// Blame the selected line's file as it was before the selected commit.
     pub fn blame_parent(&mut self) {
+        if !self.ensure_blame() {
+            return;
+        }
         let Some(commit) = self.commits.get(self.selected) else {
             return;
         };

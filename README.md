@@ -138,6 +138,24 @@ first switching to Log with `Escape` (or cycling tabs) or navigating with the ar
 usual. `glog log` explicitly selects Log mode and otherwise accepts the same
 arguments as the shorthand `glog` invocation.
 
+To read a complete text file at a revision, use `glog show REV:path`:
+
+```bash
+glog show HEAD:src/main.rs
+glog show v0.4.0:src/main.rs
+```
+
+This opens a file view with line numbers and syntax highlighting, without
+computing blame. Press `x`, `d`, or `a` to enable hash, date, or author columns;
+attribution loads on demand and is then reused. Enter opens the selected line's
+commit, `p` explores its earlier history, and Backspace returns. These history
+actions also load attribution when needed. The view keeps the original revision
+even if a branch moves while it is open.
+
+Paths are relative to the repository root; use `REV:./file` or `REV:../file`
+for paths relative to the current directory. `REV:path` reads the entire file,
+while `REV -- path` shows its changes in that commit.
+
 Open working-tree changes or revision comparisons directly in Show:
 
 ```bash

@@ -100,6 +100,7 @@ fn main() -> ExitCode {
             Command::Diff => "no changes",
             Command::Reflog => "no reflog entries matched",
             Command::Blame => "the file is empty",
+            _ if app.history == app::History::Blame => "the file is empty",
             Command::Stash => "no stashes matched",
             _ => "no commits matched",
         };
@@ -118,7 +119,9 @@ fn main() -> ExitCode {
     };
     let mut guard = TerminalGuard(true);
     app.enable_images();
-    app.log_format = log_format;
+    if command == Command::Log {
+        app.log_format = log_format;
+    }
     app.watch = watch;
     app.context = args.join(" ");
     let result = run(&mut terminal, &mut app);
@@ -192,6 +195,7 @@ Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
        glog stash [list [-n COUNT] [--date=STYLE]]
        glog stash show [--stat] [stash]
        glog show [--stat] [commit] [-- pathspec...]
+       glog show REV:path
        glog diff [--cached] [--stat] [revision [revision]] [[--] pathspec...]
        glog status
 
@@ -221,6 +225,9 @@ Blame shows which commit last changed each line; Enter opens it, p blames
 the file before it, and Backspace returns.
 Show opens HEAD or the specified commit, with history available via Tab.
 Paths after -- filter both Show patches and the Log history.
+Show REV:path reads the complete text file with blame columns hidden.
+Enable x/d/a for hash/date/author, or use Enter/p to explore line history;
+attribution is loaded only when needed.
 Diff opens unstaged changes (including untracked files), or staged changes
 with --cached. Revisions compare commits (A..B, A...B, A B) or a commit
 against the working tree (A); omitted range endpoints default to HEAD.

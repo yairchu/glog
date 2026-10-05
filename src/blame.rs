@@ -18,6 +18,108 @@ const MAX_AUTHOR_WIDTH: usize = 20;
 const TAB_WIDTH: usize = 4;
 const USAGE: &str = "use glog blame [-L LINE] [--date=STYLE] [revision] [--] file";
 
+/// A pinned file snapshot whose attribution has not been requested yet.
+pub struct FileRevision {
+    revision: String,
+    path: Vec<u8>,
+    top: PathBuf,
+}
+
+impl FileRevision {
+    pub fn blame(&self) -> Result<Vec<Commit>, String> {
+        let date = git::configured_log_date("format-local:%Y-%m-%d")?;
+        blame(Some(&self.revision), &self.path, Some(&self.top), &date)
+    }
+}
+
+pub fn load_file(revision: &str, path: &str) -> Result<crate::app::App, String> {
+    if revision.is_empty() || path.is_empty() {
+        return Err("use glog show REV:path to read a committed text file".into());
+    }
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", "--end-of-options"])
+        .arg(format!("{revision}^{{commit}}"))
+        .output()
+        .map_err(|error| format!("could not resolve commit: {error}"))?;
+    if !output.status.success() {
+        return Err(git::stderr_message(
+            "could not resolve commit",
+            &output.stderr,
+        ));
+    }
+    let revision = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    let mut path = path.as_bytes().to_vec();
+    // REV:path is rooted at the repository, except for Git's explicit ./ and
+    // ../ forms. Resolve those before moving commands to the repository root.
+    if path.starts_with(b"./") || path.starts_with(b"../") {
+        let prefix = Command::new("git")
+            .args(["rev-parse", "--show-prefix"])
+            .output()
+            .map_err(|error| format!("could not resolve file path: {error}"))?;
+        if !prefix.status.success() {
+            return Err(git::stderr_message(
+                "could not resolve file path",
+                &prefix.stderr,
+            ));
+        }
+        let mut full = prefix
+            .stdout
+            .strip_suffix(b"\n")
+            .unwrap_or(&prefix.stdout)
+            .to_vec();
+        full.extend(path);
+        let mut parts = Vec::new();
+        for part in full.split(|&byte| byte == b'/') {
+            match part {
+                b"" | b"." => {}
+                b".." => {
+                    parts.pop().ok_or("file path is outside the repository")?;
+                }
+                _ => parts.push(part),
+            }
+        }
+        path = parts.join(&b'/');
+    }
+    let top = git::repository_directory()?;
+    let output = git::repository_env(&mut Command::new("git"), &top)
+        .current_dir(&top)
+        .args(["cat-file", "blob"])
+        .arg(blob_spec(&revision, &path))
+        .output()
+        .map_err(|error| format!("could not read file: {error}"))?;
+    if !output.status.success() {
+        return Err(git::stderr_message("could not read file", &output.stderr));
+    }
+    if output.stdout.contains(&0) {
+        return Err("the file is binary; this view supports text files".into());
+    }
+    let contents = String::from_utf8_lossy(&output.stdout);
+    let lines = contents
+        .split_terminator('\n')
+        .enumerate()
+        .map(|(index, code)| PorcelainLine {
+            hash: revision.clone(),
+            number: index + 1,
+            code: code.to_owned(),
+            source_path: path.clone(),
+            source_number: index + 1,
+            previous: None,
+        })
+        .collect();
+    let rows = render_lines(lines, HashMap::new(), top.clone(), "", &path);
+    let mut app = crate::app::App::new(rows);
+    app.history = crate::app::History::Blame;
+    for field in [Field::Hash, Field::Author, Field::Date] {
+        app.log_format.toggle(field);
+    }
+    app.pending_blame = Some(FileRevision {
+        revision,
+        path,
+        top,
+    });
+    Ok(app)
+}
+
 /// The blamed file version and what its rows share.
 #[derive(Debug, PartialEq, Eq)]
 pub struct BlameFile {
@@ -216,6 +318,16 @@ fn blame(
         None => git::repository_directory()?,
     };
     let details = commit_details(&lines, date)?;
+    Ok(render_lines(lines, details, top, date, path))
+}
+
+fn render_lines(
+    lines: Vec<PorcelainLine>,
+    details: HashMap<String, Details>,
+    top: PathBuf,
+    date: &str,
+    path: &[u8],
+) -> Vec<Commit> {
     let mut highlighted = highlight(&crate::diff::display_path(path), &lines).map(Vec::into_iter);
     let width = |text: &str| Span::raw(text).width();
     let file = Arc::new(BlameFile {
@@ -242,7 +354,7 @@ fn blame(
         number_width: lines.len().to_string().len(),
     });
     let mut previous_hash = None;
-    Ok(lines
+    lines
         .into_iter()
         .map(|line| {
             let starts_chunk = previous_hash.as_ref() != Some(&line.hash);
@@ -255,7 +367,11 @@ fn blame(
                 short_hash: line.hash[..file.hash_width.min(line.hash.len())].to_owned(),
                 decorations: String::new(),
                 subject: String::new(),
-                author: UNCOMMITTED_AUTHOR.to_owned(),
+                author: if line.is_uncommitted() {
+                    UNCOMMITTED_AUTHOR.to_owned()
+                } else {
+                    String::new()
+                },
                 author_email: String::new(),
                 author_date: String::new(),
                 collaborators: Collaborators::default(),
@@ -268,7 +384,7 @@ fn blame(
                 commit.author_email = details.author_email.clone();
                 commit.author_date = details.date.clone();
                 commit.collaborators = details.collaborators.clone();
-            } else {
+            } else if line.is_uncommitted() {
                 // Enter opens Status for lines changed in the working tree.
                 commit.kind = CommitKind::WorkingTree;
             }
@@ -286,7 +402,7 @@ fn blame(
             }));
             commit
         })
-        .collect())
+        .collect()
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -613,6 +729,166 @@ mod tests {
             .output()
             .unwrap();
         assert!(output.status.success(), "{output:?}");
+    }
+
+    #[test]
+    fn file_view_defers_blame_and_retries_the_pinned_snapshot() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file.txt", "a\nb\nc\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        let hash = || {
+            String::from_utf8(
+                Command::new("git")
+                    .args(["rev-parse", "HEAD"])
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .unwrap()
+            .trim()
+            .to_owned()
+        };
+        let base = hash();
+        fs::write("file.txt", "A\nb\nc\n").unwrap();
+        git(&["commit", "-qam", "edit"]);
+        let snapshot = hash();
+        let tree = String::from_utf8(
+            Command::new("git")
+                .args(["rev-parse", &format!("{base}^{{tree}}")])
+                .output()
+                .unwrap()
+                .stdout,
+        )
+        .unwrap()
+        .trim()
+        .to_owned();
+        let object = format!(".git/objects/{}/{}", &tree[..2], &tree[2..]);
+        let saved = ".git/saved-parent-tree";
+        // Reading a blob must work without walking history at all.
+        fs::rename(&object, saved).unwrap();
+        let mut app = git::load_show_app(&["HEAD:file.txt".into()]).unwrap();
+        assert!(app.pending_blame.is_some());
+        assert_eq!(app.log_format.text(&app.commits[0]), "1 A");
+        assert_eq!(app.commits.len(), 3);
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.contains("File"));
+        assert!(app.pending_blame.is_some());
+        app.selected = 1;
+        app.log_offset = 1;
+        let key = |code, app: &mut App| {
+            input::handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), app)
+        };
+        key(KeyCode::Char('x'), &mut app);
+        assert!(app.status.is_some());
+        assert!(!app.log_format.shows(Field::Hash));
+        assert!(app.pending_blame.is_some());
+        assert_eq!(app.selected, 1);
+        fs::rename(saved, &object).unwrap();
+        fs::write("file.txt", "new tip\n").unwrap();
+        git(&["commit", "-qam", "later"]);
+        key(KeyCode::Char('x'), &mut app);
+        assert!(app.status.is_none());
+        assert!(app.pending_blame.is_none());
+        assert!(app.log_format.shows(Field::Hash));
+        assert!(!app.log_format.shows(Field::Author));
+        assert!(!app.log_format.shows(Field::Date));
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.log_offset, 1);
+        assert_eq!(app.commits.len(), 3);
+        assert_eq!(app.commits[0].hash, snapshot);
+        assert_eq!(app.commits[1].hash, base);
+        // Once loaded, additional columns must reuse attribution.
+        fs::rename(&object, saved).unwrap();
+        key(KeyCode::Char('a'), &mut app);
+        assert!(app.log_format.shows(Field::Author));
+        assert!(app.status.is_none());
+        fs::rename(saved, &object).unwrap();
+
+        let spec = format!("{snapshot}:file.txt");
+        let mut parent = git::load_show_app(std::slice::from_ref(&spec)).unwrap();
+        key(KeyCode::Char('p'), &mut parent);
+        assert!(parent.status.is_none(), "{:?}", parent.status);
+        assert_eq!(code(parent.commits[0].blame().unwrap()), "a");
+        key(KeyCode::Backspace, &mut parent);
+        assert_eq!(code(parent.commits[0].blame().unwrap()), "A");
+        let mut detail = git::load_show_app(&[spec]).unwrap();
+        key(KeyCode::Enter, &mut detail);
+        assert_eq!(detail.mode, Mode::Show);
+        assert_eq!(detail.commits[detail.selected].hash, snapshot);
+        assert!(detail.pending_blame.is_none());
+    }
+
+    #[test]
+    fn file_view_resolves_paths_and_rejects_non_text_objects() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::create_dir("nested").unwrap();
+        fs::write("root.txt", "root\n").unwrap();
+        fs::write("nested/file.txt", "line\n\nlast").unwrap();
+        fs::write("empty.txt", "").unwrap();
+        fs::write("binary", b"a\0b").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "files: original"]);
+        std::env::set_current_dir("nested").unwrap();
+        for spec in ["HEAD:nested/file.txt", "HEAD:./file.txt"] {
+            let mut app = git::load_show_app(&[spec.into()]).unwrap();
+            assert_eq!(app.commits.len(), 3);
+            assert_eq!(app.log_format.text(&app.commits[1]), "2 ");
+            assert_eq!(app.log_format.text(&app.commits[2]), "3 last");
+            assert!(app.ensure_blame(), "{:?}", app.status);
+            assert_eq!(app.commits.len(), 3);
+        }
+        for spec in ["HEAD:root.txt", "HEAD:../root.txt"] {
+            assert_eq!(git::load_show_app(&[spec.into()]).unwrap().commits.len(), 1);
+        }
+        assert_eq!(
+            git::load_show_app(&["HEAD^{/files: original}".into()])
+                .unwrap()
+                .mode,
+            Mode::Show
+        );
+        assert_eq!(
+            git::load_show_app(&["HEAD^{/files: original}:root.txt".into()])
+                .unwrap()
+                .commits
+                .len(),
+            1
+        );
+        assert!(git::load_show_app(&["HEAD:empty.txt".into()])
+            .unwrap()
+            .commits
+            .is_empty());
+        for args in [
+            vec!["HEAD:binary"],
+            vec!["HEAD:nested"],
+            vec!["HEAD:missing"],
+            vec!["HEAD:../../root.txt"],
+            vec!["HEAD:"],
+            vec![":root.txt"],
+            vec!["--stat", "HEAD:root.txt"],
+            vec!["HEAD:root.txt", "--", "root.txt"],
+        ] {
+            assert!(
+                git::load_show_app(&args.iter().map(|arg| (*arg).into()).collect::<Vec<_>>())
+                    .is_err(),
+                "{args:?}"
+            );
+        }
     }
 
     #[test]
