@@ -732,6 +732,43 @@ mod tests {
     }
 
     #[test]
+    fn file_view_uses_textconv_before_and_after_loading_blame() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::create_dir("nested").unwrap();
+        fs::write(".gitattributes", "nested/* diff=readable\n").unwrap();
+        git(&["config", "diff.readable.textconv", "sed '1d'"]);
+        fs::write("nested/text.txt", "header\nfirst\nsecond\n").unwrap();
+        fs::write("nested/binary.dat", b"header\0\nfirst\nsecond\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "files with readable text conversion"]);
+        std::env::set_current_dir("nested").unwrap();
+
+        for path in ["text.txt", "binary.dat"] {
+            let mut app = git::load_show_app(&[format!("HEAD:./{path}")]).unwrap();
+            let contents = |app: &App| {
+                app.commits
+                    .iter()
+                    .map(|commit| code(commit.blame().unwrap()))
+                    .collect::<Vec<_>>()
+            };
+            assert!(app.pending_blame.is_some());
+            assert_eq!(contents(&app), ["first", "second"]);
+            app.selected = 1;
+            input::handle(
+                Event::Key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE)),
+                &mut app,
+            );
+            assert!(app.status.is_none(), "{:?}", app.status);
+            assert!(app.pending_blame.is_none());
+            assert!(app.log_format.shows(Field::Hash));
+            assert_eq!(contents(&app), ["first", "second"]);
+            assert_eq!(app.selected, 1);
+        }
+    }
+
+    #[test]
     fn file_view_defers_blame_and_retries_the_pinned_snapshot() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
