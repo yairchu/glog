@@ -9,8 +9,6 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - `glog show REV:path` opens a complete text file with blame columns hidden.
   Configured Git textconv filters provide the readable contents, as in blame.
-  Attribution loads only when a column or history navigation needs it, keeping
-  initial file viewing independent of history traversal.
 
 ### Changed
 

@@ -129,13 +129,12 @@ glog status               # live working-tree overview
 
 Show accepts one commit and optional pathspecs after `--`. Pathspecs filter both
 the patches and the Log history. Show initially opens the requested commit even
-if it has no matching changes; switching to Log selects the latest matching commit.
-With an
-explicit commit, history remains rooted at that commit. With
-no commit argument, Log shows committed history and keeps HEAD selected. History loads on
-first switching to Log with `Escape` (or cycling tabs) or navigating with the arrow keys;
-`q` quits directly. The existing folding, search, and file navigation work as
-usual. `glog log` explicitly selects Log mode and otherwise accepts the same
+if it has no matching changes; switching to Log selects the latest matching
+commit. With an explicit commit, history remains rooted at that commit. With no
+commit argument, Log shows committed history and keeps HEAD selected. History
+loads on first switching to Log with `Escape` (or cycling tabs) or navigating
+with the arrow keys; `q` quits directly. The existing folding, search, and file
+navigation work as usual. `glog log` explicitly selects Log mode and otherwise accepts the same
 arguments as the shorthand `glog` invocation.
 
 To read a complete text file at a revision, use `glog show REV:path`:
@@ -147,11 +146,11 @@ glog show v0.4.0:src/main.rs
 
 This opens a file view with line numbers and syntax highlighting, without
 computing blame. Configured Git textconv filters are honored, including for
-binary files that convert to text. Press `x`, `d`, or `a` to enable hash, date, or
-author columns; attribution loads on demand and is then reused. Enter opens the
-selected line's commit, `p` explores its earlier history, and Backspace returns. These history
-actions also load attribution when needed. The view keeps the original revision
-even if a branch moves while it is open.
+binary files that convert to text. Press `x`, `d`, or `a` to enable hash, date,
+or author columns; attribution loads on demand and is then reused. Enter opens
+the selected line's commit, `p` explores its earlier history, and Backspace
+returns. These history actions also load attribution when needed. The view
+keeps the original revision even if a branch moves while it is open.
 
 Paths are relative to the repository root; use `REV:./file` or `REV:../file`
 for paths relative to the current directory. `REV:path` reads the entire file,
