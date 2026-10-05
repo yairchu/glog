@@ -385,12 +385,15 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
     let commits = load_log(&["-1".to_owned(), hash.clone(), "--".to_owned()])?;
     let mut app = crate::app::App::new(commits);
     app.show_stat = stat;
-    app.pending_history = Some(if revisions.is_empty() {
+    app.show_paths = args.get(separator + 1..).unwrap_or_default().to_vec();
+    let mut history = if revisions.is_empty() {
         Vec::new()
     } else {
-        vec![hash, "--".to_owned()]
-    });
-    app.show_paths = args.get(separator + 1..).unwrap_or_default().to_vec();
+        vec![hash]
+    };
+    history.push("--".to_owned());
+    history.extend(app.show_paths.iter().cloned());
+    app.pending_history = Some(history);
     app.switch_mode();
     Ok(app)
 }
@@ -721,7 +724,11 @@ fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
     if !output.status.success() {
         return Err(stderr_message("git show failed", &output.stderr));
     }
-    format_output(output.stdout)
+    let mut text = format_output(output.stdout)?;
+    if !paths.is_empty() && crate::diff::file_sections(&text).is_empty() {
+        text.push_str("\nNo changes matched the supplied paths.\n");
+    }
+    Ok(text)
 }
 
 fn show_diff(args: &[&str], paths: &[String]) -> Result<String, String> {
@@ -3577,6 +3584,75 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn show_paths_filter_history_and_do_not_skip_the_first_matching_commit() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(["-c", "commit.gpgsign=false"])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::create_dir("nested").unwrap();
+        for path in ["nested/a.rs", "nested/b.txt", "other.txt"] {
+            fs::write(path, format!("original {path}\n")).unwrap();
+        }
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        fs::write("nested/a.rs", "changed\n").unwrap();
+        git(&["commit", "-qam", "matching"]);
+        fs::write("other.txt", "unrelated\n").unwrap();
+        git(&["commit", "-qam", "unrelated"]);
+        std::env::set_current_dir("nested").unwrap();
+
+        for revision in [None, Some("HEAD"), Some("HEAD~1")] {
+            for paths in [vec![":(glob)*.rs"], vec![".", ":(exclude)b.txt"]] {
+                let mut args: Vec<String> = revision.into_iter().map(str::to_owned).collect();
+                args.push("--".to_owned());
+                args.extend(paths.into_iter().map(str::to_owned));
+                let mut app = load_show_app(&args).unwrap();
+                if revision != Some("HEAD~1") {
+                    assert_eq!(app.commits[0].subject, "unrelated");
+                    assert!(app.show_text.contains("No changes matched"));
+                    // Going directly to the next commit must land on the
+                    // newest matching change, not skip it after loading Log.
+                    assert!(app.move_selection(1));
+                    assert_eq!(app.commits[app.selected].subject, "matching");
+                }
+                app.switch_mode();
+                assert_eq!(app.mode, crate::app::Mode::Log);
+                assert_eq!(
+                    app.commits
+                        .iter()
+                        .map(|commit| commit.subject.as_str())
+                        .collect::<Vec<_>>(),
+                    ["matching", "base"]
+                );
+                app.switch_mode();
+                assert!(app.move_selection(1));
+                app.load_show();
+                assert_eq!(app.commits[app.selected].subject, "base");
+                let files = crate::diff::file_sections(&app.show_text);
+                assert_eq!(files.len(), 1);
+                assert_eq!(files[0].path, "nested/a.rs");
+            }
+        }
+
+        let mut missing = load_show_app(&["--".into(), "missing".into()]).unwrap();
+        assert_eq!(missing.commits[0].subject, "unrelated");
+        assert!(missing.show_text.contains("No changes matched"));
+        missing.switch_mode();
+        assert!(missing.commits.is_empty());
+        assert!(!missing.move_selection(1));
+        missing.switch_mode();
+    }
+
+    #[test]
     fn show_opens_exact_commit_and_loads_history_on_navigation() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
@@ -3626,8 +3702,9 @@ pub(crate) mod tests {
         assert!(!app.show_text.contains("second.txt"));
         app.switch_mode();
         assert_eq!(app.mode, crate::app::Mode::Log);
-        assert_eq!(app.commits.len(), 2);
+        assert_eq!(app.commits.len(), 1);
         assert_eq!(app.selected, 0);
+        assert_eq!(app.commits[0].subject, "first");
 
         for args in [
             vec!["--stat"],

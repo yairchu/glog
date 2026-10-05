@@ -220,6 +220,7 @@ Stash show opens a stash by index or reference (the latest by default).
 Blame shows which commit last changed each line; Enter opens it, p blames
 the file before it, and Backspace returns.
 Show opens HEAD or the specified commit, with history available via Tab.
+Paths after -- filter both Show patches and the Log history.
 Diff opens unstaged changes (including untracked files), or staged changes
 with --cached. Revisions compare commits (A..B, A...B, A B) or a commit
 against the working tree (A); omitted range endpoints default to HEAD.

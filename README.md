@@ -127,8 +127,10 @@ glog log --all
 glog status               # live working-tree overview
 ```
 
-Show accepts one commit and optional pathspecs after `--`. Pathspecs restrict
-committed patches. With an
+Show accepts one commit and optional pathspecs after `--`. Pathspecs filter both
+the patches and the Log history. Show initially opens the requested commit even
+if it has no matching changes; switching to Log selects the latest matching commit.
+With an
 explicit commit, history remains rooted at that commit. With
 no commit argument, Log shows committed history and keeps HEAD selected. History loads on
 first switching to Log with `Escape` (or cycling tabs) or navigating with the arrow keys;

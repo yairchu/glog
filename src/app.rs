@@ -303,9 +303,18 @@ impl App {
         if !self.has_log_view() {
             return false;
         }
+        let previous = self
+            .commits
+            .get(self.selected)
+            .map(|commit| commit.hash.clone());
         self.load_history();
         if self.commits.is_empty() {
             return false;
+        }
+        // Loading path-filtered history may already move off an unmatched
+        // starting commit. Do not skip the first match by moving again.
+        if self.commits.get(self.selected).map(|commit| &commit.hash) != previous.as_ref() {
+            return true;
         }
         let selected = self.adjacent_selection(delta);
         if selected == self.selected {

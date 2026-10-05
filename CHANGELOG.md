@@ -5,6 +5,12 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Changed
+
+- Paths passed to `glog show REV -- path` now filter Log history as well as
+  Show patches. Show still opens the requested commit first, even if it has
+  no matching changes.
+
 ## 0.5.0 - 2026-10-04
 
 ### Added
