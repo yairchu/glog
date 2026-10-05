@@ -146,9 +146,10 @@ glog show v0.4.0:src/main.rs
 ```
 
 This opens a file view with line numbers and syntax highlighting, without
-computing blame. Press `x`, `d`, or `a` to enable hash, date, or author columns;
-attribution loads on demand and is then reused. Enter opens the selected line's
-commit, `p` explores its earlier history, and Backspace returns. These history
+computing blame. Configured Git textconv filters are honored, including for
+binary files that convert to text. Press `x`, `d`, or `a` to enable hash, date, or
+author columns; attribution loads on demand and is then reused. Enter opens the
+selected line's commit, `p` explores its earlier history, and Backspace returns. These history
 actions also load attribution when needed. The view keeps the original revision
 even if a branch moves while it is open.
 

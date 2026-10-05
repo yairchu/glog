@@ -81,9 +81,28 @@ pub fn load_file(revision: &str, path: &str) -> Result<crate::app::App, String> 
         path = parts.join(&b'/');
     }
     let top = git::repository_directory()?;
+    // Unlike `cat-file blob`, --textconv also accepts trees. Keep this view
+    // restricted to files before asking Git to convert their contents.
     let output = git::repository_env(&mut Command::new("git"), &top)
         .current_dir(&top)
-        .args(["cat-file", "blob"])
+        .args(["cat-file", "-t"])
+        .arg(blob_spec(&revision, &path))
+        .output()
+        .map_err(|error| format!("could not inspect file: {error}"))?;
+    if !output.status.success() {
+        return Err(git::stderr_message(
+            "could not inspect file",
+            &output.stderr,
+        ));
+    }
+    if output.stdout != b"blob\n" {
+        return Err("the path is not a file; this view supports text files".into());
+    }
+    let output = git::repository_env(&mut Command::new("git"), &top)
+        .current_dir(&top)
+        // Match blame's text conversion so loading attribution keeps the
+        // displayed lines and their positions unchanged.
+        .args(["cat-file", "--textconv"])
         .arg(blob_spec(&revision, &path))
         .output()
         .map_err(|error| format!("could not read file: {error}"))?;
