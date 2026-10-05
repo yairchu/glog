@@ -889,6 +889,26 @@ mod tests {
     }
 
     #[test]
+    fn file_view_accepts_literal_braces_in_revisions() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file.txt", "contents\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "fix: handle { inputs"]);
+        git(&["branch", "brace{branch"]);
+
+        for spec in ["HEAD^{/handle {}:file.txt", "brace{branch:file.txt"] {
+            let mut app = git::load_show_app(&[spec.into()])
+                .unwrap_or_else(|error| panic!("{spec}: {error}"));
+            assert!(app.pending_blame.is_some());
+            assert_eq!(app.log_format.text(&app.commits[0]), "1 contents");
+            assert!(app.ensure_blame(), "{spec}: {:?}", app.status);
+            assert_eq!(app.log_format.text(&app.commits[0]), "1 contents");
+        }
+    }
+
+    #[test]
     fn file_view_resolves_paths_and_rejects_non_text_objects() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
