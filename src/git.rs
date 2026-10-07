@@ -402,19 +402,20 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
 }
 
 fn resolve_show_commit(revision: &str) -> Result<String, String> {
-    let output = Command::new("git")
-        .args([
-            "rev-parse",
-            "--verify",
-            "--end-of-options",
-            &format!("{revision}^{{commit}}"),
-        ])
-        .output()
-        .map_err(|error| format!("could not resolve commit: {error}"))?;
-    if !output.status.success() {
-        return Err(stderr_message("could not resolve commit", &output.stderr));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    let resolve = |spec: &str| -> Result<String, String> {
+        let output = Command::new("git")
+            .args(["rev-parse", "--verify", "--end-of-options", spec])
+            .output()
+            .map_err(|error| format!("could not resolve commit: {error}"))?;
+        if !output.status.success() {
+            return Err(stderr_message("could not resolve commit", &output.stderr));
+        }
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    // Peel the resolved object: after REV:, Git treats an appended
+    // ^{commit} as part of the filename instead of a type requirement.
+    let object = resolve(revision)?;
+    resolve(&format!("{object}^{{commit}}"))
 }
 
 /// Open a diff without traversing committed history.
