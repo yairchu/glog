@@ -3639,10 +3639,15 @@ pub(crate) mod tests {
                 if revision != Some("HEAD~1") {
                     assert_eq!(app.commits[0].subject, "unrelated");
                     assert!(app.show_text.contains("No changes matched"));
+                    // Nothing is newer than the starting commit.
+                    assert!(!app.move_selection(-1));
+                    assert_eq!(app.commits[app.selected].subject, "unrelated");
                     // Going directly to the next commit must land on the
                     // newest matching change, not skip it after loading Log.
                     assert!(app.move_selection(1));
                     assert_eq!(app.commits[app.selected].subject, "matching");
+                    // The unmatched starting commit is not part of the history.
+                    assert!(!app.move_selection(-1));
                 }
                 app.switch_mode();
                 assert_eq!(app.mode, crate::app::Mode::Log);

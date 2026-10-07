@@ -332,6 +332,12 @@ impl App {
         if !self.has_log_view() {
             return false;
         }
+        // History starts at the opened commit, so it has nothing newer. Avoid
+        // loading it only to stay put, or to leave an unmatched starting commit
+        // for an older one when path filters apply.
+        if delta < 0 && self.pending_history.is_some() {
+            return false;
+        }
         let previous = self
             .commits
             .get(self.selected)
