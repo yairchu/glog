@@ -16,6 +16,8 @@
   changelog.
 - Keep the website concise and to the point: omit requirements and details
   that go without saying, such as needing Git.
+- Keep the README and website focused on common workflows. Document esoteric
+  options in command-line help rather than adding them to introductory docs.
 - Don't add tests for behavior that works and was never broken. Add a
   regression test when something breaks or proves verifiably error-prone.
 - Prefer code structures that make mistakes hard over ones that rely on
