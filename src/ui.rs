@@ -159,6 +159,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 _ if !has_log => HelpView::Detail,
                 History::Log => HelpView::Log,
                 History::Reflog => HelpView::Reflog,
+                History::Blame if file_view => HelpView::File,
                 History::Blame => HelpView::Blame,
                 History::Stash => HelpView::Stash,
             },
@@ -175,15 +176,31 @@ enum HelpView {
     Stash,
     /// Show, Diff, or Status without a Log to return to.
     Detail,
+    File,
 }
 
-/// A key and its description in the Log, Reflog, Blame, Stash, and Detail help
-/// screens, in that order; `None` omits the row. Rows without a key are shown
+/// A key and its description in the Log, Reflog, Blame, Stash, Detail, and File
+/// help screens, in that order; `None` omits the row. Rows without a key are shown
 /// verbatim.
-type HelpRow = (&'static str, [Option<&'static str>; 5]);
+type HelpRow = (&'static str, [Option<&'static str>; 6]);
 
 const fn every(key: &'static str, text: &'static str) -> HelpRow {
-    (key, [Some(text); 5])
+    (key, [Some(text); 6])
+}
+
+/// Detail actions are available in every session except the plain file view.
+const fn detail(key: &'static str, text: &'static str) -> HelpRow {
+    (
+        key,
+        [
+            Some(text),
+            Some(text),
+            Some(text),
+            Some(text),
+            Some(text),
+            None,
+        ],
+    )
 }
 
 const AUTHOR_BADGES: &str = "  Author badges: +꩜ Codex  +❋ Claude Code  +N other coauthors";
@@ -192,7 +209,17 @@ const FILE_SUMMARY: Option<&str> = Some("toggle file summary / patch (Show/Statu
 
 const HELP_ROWS: &[HelpRow] = &[
     every("", "Navigation"),
-    every("↑/k, ↓/j", "previous / next; move Show cursor"),
+    (
+        "↑/k, ↓/j",
+        [
+            Some("previous / next; move Show cursor"),
+            Some("previous / next; move Show cursor"),
+            Some("previous / next; move Show cursor"),
+            Some("previous / next; move Show cursor"),
+            Some("previous / next; move Show cursor"),
+            Some("previous / next line"),
+        ],
+    ),
     every("Page Up/b", "page up"),
     every("Page Down/Space/f", "page down"),
     (
@@ -203,9 +230,10 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("previous / next commit chunk"),
             Some("previous / next stash"),
             None,
+            None,
         ],
     ),
-    every("[, ]", "previous / next changed file (Show)"),
+    detail("[, ]", "previous / next changed file (Show)"),
     every("g/<, G/>", "top / bottom (also Home/End)"),
     every("", ""),
     (
@@ -216,19 +244,41 @@ const HELP_ROWS: &[HelpRow] = &[
             None,
             None,
             None,
+            None,
         ],
     ),
     (
         "a/d/x",
-        [None, None, Some("toggle author/date/hash"), None, None],
+        [
+            None,
+            None,
+            Some("toggle author/date/hash"),
+            None,
+            None,
+            Some("show author/date/hash; enable line history"),
+        ],
     ),
     (
         "a/d",
-        [None, None, None, Some("toggle author/date (Stash)"), None],
+        [
+            None,
+            None,
+            None,
+            Some("toggle author/date (Stash)"),
+            None,
+            None,
+        ],
     ),
     (
         "",
-        [Some(AUTHOR_BADGES), None, Some(AUTHOR_BADGES), None, None],
+        [
+            Some(AUTHOR_BADGES),
+            None,
+            Some(AUTHOR_BADGES),
+            None,
+            None,
+            None,
+        ],
     ),
     every("", "Views and search"),
     (
@@ -239,6 +289,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("open commit / toggle section or file"),
             Some("open stash / toggle section or file"),
             Some("toggle section or file"),
+            None,
         ],
     ),
     (
@@ -249,12 +300,14 @@ const HELP_ROWS: &[HelpRow] = &[
             FILE_FOLD,
             FILE_FOLD,
             FILE_FOLD,
+            None,
         ],
     ),
     (
         "m",
         [
             Some("expand / fold all merges (Log)"),
+            None,
             None,
             None,
             None,
@@ -269,12 +322,14 @@ const HELP_ROWS: &[HelpRow] = &[
             None,
             None,
             None,
+            None,
         ],
     ),
     (
         "M",
         [
             Some("hide / show merge commits (Log)"),
+            None,
             None,
             None,
             None,
@@ -289,13 +344,21 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("blame the file before this commit"),
             None,
             None,
+            None,
         ],
     ),
     (
         "Backspace",
-        [None, None, Some("return to the previous blame"), None, None],
+        [
+            None,
+            None,
+            Some("return to the previous blame"),
+            None,
+            None,
+            Some("return to the previous blame, if any"),
+        ],
     ),
-    every("L", "expand / fold all lockfiles (Show)"),
+    detail("L", "expand / fold all lockfiles (Show)"),
     (
         "s",
         [
@@ -304,6 +367,7 @@ const HELP_ROWS: &[HelpRow] = &[
             FILE_SUMMARY,
             Some("toggle file summary / patch (Show)"),
             FILE_SUMMARY,
+            None,
         ],
     ),
     (
@@ -314,6 +378,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("return to Blame / cancel"),
             Some("return to Stash / cancel"),
             None,
+            Some("close help / cancel search"),
         ],
     ),
     (
@@ -323,6 +388,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("switch Reflog / Show"),
             Some("switch Blame / detail"),
             Some("switch Stash / Show"),
+            None,
             None,
         ],
     ),
@@ -930,6 +996,50 @@ mod tests {
     use crate::input::handle;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn file_help_explains_how_to_enable_line_history() {
+        use crate::log_format::Field;
+
+        let mut app = App::new(Vec::new());
+        app.history = History::Blame;
+        app.show_help = true;
+        for field in Field::ATTRIBUTION {
+            app.log_format.toggle(field);
+        }
+        let mut terminal = Terminal::new(TestBackend::new(100, 32)).unwrap();
+        let render = |app: &mut App, terminal: &mut Terminal<TestBackend>| {
+            terminal.draw(|frame| draw(frame, app)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+        let file_help = render(&mut app, &mut terminal);
+        assert!(file_help.contains("show author/date/hash; enable line history"));
+        assert!(file_help.contains("previous / next line"));
+        for unavailable in [
+            "Enter",
+            "←/→",
+            "Tab",
+            "before this commit",
+            "(Show)",
+            "Show/Status",
+        ] {
+            assert!(!file_help.contains(unavailable), "{unavailable}");
+        }
+        for field in Field::ATTRIBUTION {
+            app.log_format.toggle(field);
+            let blame_help = render(&mut app, &mut terminal);
+            assert!(blame_help.contains("previous / next commit chunk"));
+            assert!(blame_help.contains("blame the file before this commit"));
+            app.log_format.toggle(field);
+            assert_eq!(render(&mut app, &mut terminal), file_help);
+        }
+    }
 
     #[test]
     fn all_hidden_message_ignores_graph_only_merge_rows() {
