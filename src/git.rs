@@ -51,6 +51,9 @@ pub struct Collaborators {
     pub codex: bool,
     pub claude: bool,
     pub others: usize,
+    /// `Co-authored-by` values crediting an agent, as Git parsed them from the
+    /// trailers, so Show can mark them without asking Git again.
+    pub agent_trailers: Vec<String>,
 }
 
 /// What a row of a view other than Log describes beyond its commit.
@@ -201,24 +204,49 @@ impl Collaborators {
         let mut seen = HashSet::new();
         seen.insert(author_email.trim().to_ascii_lowercase());
         for trailer in trailers.split(COAUTHOR) {
-            let Some((name, email)) = trailer.trim().rsplit_once('<') else {
+            let Some(email) = coauthor_email(trailer) else {
                 continue;
             };
-            let Some(email) = email.strip_suffix('>') else {
-                continue;
-            };
-            let email = email.trim().to_ascii_lowercase();
-            if name.trim().is_empty() || !email.contains('@') || !seen.insert(email.clone()) {
+            let agent = Agent::from_email(&email);
+            if agent.is_some() {
+                // Keep repeated credits too: Show marks every line.
+                result.agent_trailers.push(trailer.trim().to_owned());
+            }
+            if !seen.insert(email) {
                 continue;
             }
-            match email.as_str() {
-                "codex@openai.com" | "noreply@openai.com" => result.codex = true,
-                "noreply@anthropic.com" => result.claude = true,
-                _ => result.others += 1,
+            match agent {
+                Some(Agent::Codex) => result.codex = true,
+                Some(Agent::Claude) => result.claude = true,
+                None => result.others += 1,
             }
         }
         result
     }
+}
+
+/// A coding agent recognized from its `Co-authored-by` email.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Agent {
+    Codex,
+    Claude,
+}
+
+impl Agent {
+    fn from_email(email: &str) -> Option<Self> {
+        match email {
+            "codex@openai.com" | "noreply@openai.com" => Some(Self::Codex),
+            "noreply@anthropic.com" => Some(Self::Claude),
+            _ => None,
+        }
+    }
+}
+
+/// The lowercase email of a `Name <email>` trailer value.
+fn coauthor_email(value: &str) -> Option<String> {
+    let (name, email) = value.trim().rsplit_once('<')?;
+    let email = email.strip_suffix('>')?.trim().to_ascii_lowercase();
+    (!name.trim().is_empty() && email.contains('@')).then_some(email)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -714,7 +742,13 @@ pub fn show(commit: &Commit, paths: &[String]) -> Result<String, String> {
             args.extend(commit.diff_args.iter().map(String::as_str));
             show_diff(&args, paths)
         }
-        CommitKind::Revision => show_revision(&commit.hash, paths),
+        CommitKind::Revision => {
+            let text = show_revision(&commit.hash, paths)?;
+            Ok(mark_agent_coauthors(
+                &text,
+                &commit.collaborators.agent_trailers,
+            ))
+        }
         CommitKind::Staged => show_diff(
             &["diff", "--cached", "--color=always", "--no-ext-diff"],
             paths,
@@ -749,6 +783,56 @@ fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
         text.push_str("\nNo changes matched the supplied paths.\n");
     }
     Ok(text)
+}
+
+/// Put Log's agent icons before the names of agent coauthors in Show's message.
+/// Only `Co-authored-by` lines of the message's final paragraph whose values Git
+/// reported as trailers are marked, so quoted trailers in the body stay as written.
+fn mark_agent_coauthors(text: &str, agent_trailers: &[String]) -> String {
+    if agent_trailers.is_empty() {
+        return text.to_owned();
+    }
+    let mut lines: Vec<String> = text.split_inclusive('\n').map(str::to_owned).collect();
+    // The message follows the header's first blank line, indented by four spaces.
+    let Some(blank) = lines
+        .iter()
+        .position(|line| crate::ansi::plain(line).trim().is_empty())
+    else {
+        return text.to_owned();
+    };
+    let message = blank + 1;
+    let end = message
+        + lines[message..]
+            .iter()
+            .take_while(|line| line.starts_with("    "))
+            .count();
+    let paragraph = (message..end)
+        .rev()
+        .find(|&index| lines[index].trim().is_empty())
+        .map_or(message, |index| index + 1);
+    for line in &mut lines[paragraph..end] {
+        if line.contains('\x1b') {
+            continue;
+        }
+        let Some((key, value)) = line.trim().split_once(':') else {
+            continue;
+        };
+        if !key.eq_ignore_ascii_case("co-authored-by")
+            || !agent_trailers.iter().any(|trailer| trailer == value.trim())
+        {
+            continue;
+        }
+        let Some(agent) = coauthor_email(value).and_then(|email| Agent::from_email(&email)) else {
+            continue;
+        };
+        let newline = if line.ends_with('\n') { "\n" } else { "" };
+        *line = format!(
+            "    {key}: {} {}{newline}",
+            crate::log_format::agent_icon_ansi(agent),
+            value.trim()
+        );
+    }
+    lines.concat()
 }
 
 fn show_diff(args: &[&str], paths: &[String]) -> Result<String, String> {
@@ -4248,15 +4332,16 @@ pub(crate) mod tests {
     #[test]
     fn codex_noreply_address_is_recognized_and_deduplicated() {
         for trailers in [
-            "Codex <noreply@openai.com>".to_owned(),
-            ["Codex <NOREPLY@OPENAI.COM>", "Codex <codex@openai.com>"].join(&COAUTHOR.to_string()),
+            vec!["Codex <noreply@openai.com>"],
+            vec!["Codex <NOREPLY@OPENAI.COM>", "Codex <codex@openai.com>"],
         ] {
             assert_eq!(
-                Collaborators::parse(&trailers, "yairchu@gmail.com"),
+                Collaborators::parse(&trailers.join(&COAUTHOR.to_string()), "yairchu@gmail.com"),
                 Collaborators {
                     codex: true,
                     claude: false,
                     others: 0,
+                    agent_trailers: trailers.into_iter().map(str::to_owned).collect(),
                 }
             );
         }
@@ -4283,6 +4368,14 @@ pub(crate) mod tests {
                 codex: true,
                 claude: true,
                 others: 2,
+                agent_trailers: [
+                    "Codex <CODEX@OPENAI.COM>",
+                    "Codex <codex@openai.com>",
+                    "Claude Opus <noreply@anthropic.com>",
+                    "Claude Code <noreply@anthropic.com>",
+                ]
+                .map(str::to_owned)
+                .into(),
             }
         );
         assert_eq!(
@@ -4318,7 +4411,13 @@ pub(crate) mod tests {
             Collaborators {
                 codex: true,
                 claude: true,
-                others: 1
+                others: 1,
+                agent_trailers: [
+                    "Codex <codex@openai.com>",
+                    "Claude Code <noreply@anthropic.com>",
+                ]
+                .map(str::to_owned)
+                .into(),
             }
         );
         assert_eq!(commits[1].collaborators, Collaborators::default());

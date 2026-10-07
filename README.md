@@ -391,7 +391,8 @@ They are static and follow the author toggle. Credits come only from
 `Co-authored-by` trailers: `codex@openai.com` identifies Codex and
 `noreply@anthropic.com` identifies Claude Code, including model-specific names.
 Other identities use the generic badge. Emails are deduplicated without regard
-to case, and the primary author is excluded. Full credits remain in Show.
+to case, and the primary author is excluded. Full credits remain in Show, where
+Codex and Claude Code trailers carry the same icons before their names.
 
 ## Commit filters
 

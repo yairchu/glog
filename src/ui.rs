@@ -1385,6 +1385,7 @@ mod tests {
                 codex,
                 claude,
                 others,
+                ..Default::default()
             };
             let mut app = App::new(vec![c]);
             app.log_format = crate::log_format::LogFormat::parse("%an").unwrap();

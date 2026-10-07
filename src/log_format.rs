@@ -3,7 +3,7 @@ use ratatui::{
     text::Span,
 };
 
-use crate::git::{Annotation, Collaborators, Commit, CommitKind, ReflogEntry};
+use crate::git::{Agent, Annotation, Collaborators, Commit, CommitKind, ReflogEntry};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
@@ -236,6 +236,29 @@ impl LogFormat {
     }
 }
 
+/// An agent's symbol and its color, or None for the terminal foreground.
+fn agent_symbol(agent: Agent) -> (&'static str, Option<(u8, u8, u8)>) {
+    match agent {
+        Agent::Codex => ("꩜", None),
+        Agent::Claude => ("❋", Some((215, 119, 87))),
+    }
+}
+
+fn agent_icon(agent: Agent) -> Span<'static> {
+    match agent_symbol(agent) {
+        (symbol, None) => Span::raw(symbol),
+        (symbol, Some((r, g, b))) => Span::styled(symbol, Style::default().fg(Color::Rgb(r, g, b))),
+    }
+}
+
+/// The agent's icon as ANSI text, for views rendered from Git's output.
+pub fn agent_icon_ansi(agent: Agent) -> String {
+    match agent_symbol(agent) {
+        (symbol, None) => symbol.to_owned(),
+        (symbol, Some((r, g, b))) => format!("\x1b[38;2;{r};{g};{b}m{symbol}\x1b[m"),
+    }
+}
+
 /// A `+` and a symbol for an agent coauthor, or the number of coauthors.
 pub fn coauthor_badge(collaborators: &Collaborators) -> Vec<Span<'static>> {
     let total =
@@ -244,9 +267,9 @@ pub fn coauthor_badge(collaborators: &Collaborators) -> Vec<Span<'static>> {
         return Vec::new();
     }
     let badge = if total == 1 && collaborators.codex {
-        Span::raw("꩜")
+        agent_icon(Agent::Codex)
     } else if total == 1 && collaborators.claude {
-        Span::styled("❋", Style::default().fg(Color::Rgb(215, 119, 87)))
+        agent_icon(Agent::Claude)
     } else {
         Span::styled(total.to_string(), Style::default().fg(Color::Gray))
     };
@@ -603,6 +626,7 @@ pub(crate) mod tests {
                 codex,
                 claude,
                 others,
+                ..Default::default()
             };
             assert_eq!(LogFormat::parse("%an").unwrap().text(&c), expected);
         }
@@ -615,6 +639,7 @@ pub(crate) mod tests {
             codex: true,
             claude: true,
             others: 2,
+            ..Default::default()
         };
         for (source, expected) in [
             ("%h (%an) %s", "abcdef0 (Alice)+4 A subject"),

@@ -13,6 +13,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - `glog show REV:path` opens a complete text file with blame columns hidden.
   Configured Git textconv filters provide the readable contents, as in blame.
 
+- Show marks Codex and Claude Code `Co-authored-by` trailers with the same
+  icons as Log's coauthor badges.
+
 ### Changed
 
 - Paths passed to `glog show REV -- path` now filter Log history as well as
