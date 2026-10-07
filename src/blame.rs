@@ -976,6 +976,11 @@ mod tests {
                 .len(),
             1
         );
+        // :/files resolves, but the whole search pattern does not.
+        let error = git::load_show_app(&[":/files: missing".into()])
+            .err()
+            .unwrap();
+        assert!(error.contains("Not a valid object name"), "{error}");
         assert!(git::load_show_app(&["HEAD:empty.txt".into()])
             .unwrap()
             .commits

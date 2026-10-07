@@ -397,7 +397,10 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
         [revision] if !revision.starts_with('-') => revision.as_str(),
         _ => return Err("usage: glog show [--stat] [commit] [-- pathspec...]".to_owned()),
     };
-    let hash = match resolve_show_commit(revision) {
+    // An unresolvable revision keeps Git's error, rather than one about a
+    // file found by splitting a search pattern such as :/fix: at a colon.
+    let object = resolve_revision(revision)?;
+    let hash = match peel_commit(&object) {
         Ok(hash) => hash,
         Err(error) => {
             // Let Git interpret revision syntax: braces can be literal in ref
@@ -430,20 +433,40 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
 }
 
 fn resolve_show_commit(revision: &str) -> Result<String, String> {
-    let resolve = |spec: &str| -> Result<String, String> {
-        let output = Command::new("git")
-            .args(["rev-parse", "--verify", "--end-of-options", spec])
-            .output()
-            .map_err(|error| format!("could not resolve commit: {error}"))?;
-        if !output.status.success() {
-            return Err(stderr_message("could not resolve commit", &output.stderr));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-    };
-    // Peel the resolved object: after REV:, Git treats an appended
-    // ^{commit} as part of the filename instead of a type requirement.
-    let object = resolve(revision)?;
-    resolve(&format!("{object}^{{commit}}"))
+    peel_commit(&resolve_revision(revision)?)
+}
+
+fn resolve_revision(revision: &str) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", "--end-of-options", revision])
+        .output()
+        .map_err(|error| format!("could not resolve revision: {error}"))?;
+    if output.status.success() {
+        return Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned());
+    }
+    // rev-parse --verify only says it needed a single revision; cat-file
+    // names the missing object or path.
+    let stderr = Command::new("git")
+        .args(["cat-file", "-t", revision])
+        .output()
+        .ok()
+        .filter(|diagnosis| !diagnosis.status.success())
+        .map_or(output.stderr, |diagnosis| diagnosis.stderr);
+    Err(stderr_message("could not resolve revision", &stderr))
+}
+
+/// Peel a resolved object: after REV:, Git treats an appended ^{commit} as
+/// part of the filename instead of a type requirement.
+fn peel_commit(object: &str) -> Result<String, String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", "--end-of-options"])
+        .arg(format!("{object}^{{commit}}"))
+        .output()
+        .map_err(|error| format!("could not resolve commit: {error}"))?;
+    if !output.status.success() {
+        return Err(stderr_message("could not resolve commit", &output.stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
 /// Open a diff without traversing committed history.
