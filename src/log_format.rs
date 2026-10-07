@@ -300,6 +300,7 @@ fn reflog_spans(commit: &Commit, entry: &ReflogEntry) -> Vec<Span<'static>> {
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LogOptions {
+    pub exit_on_esc: bool,
     pub fold_merges: bool,
     pub hide_merges: bool,
     pub hidden_types: std::collections::BTreeSet<String>,
@@ -366,6 +367,8 @@ pub fn parse_args(args: &[String]) -> Result<(LogFormat, LogOptions, Vec<String>
             } else {
                 LogFormat::parse(value)?
             };
+        } else if arg == "--exit-on-esc" {
+            options.exit_on_esc = true;
         } else if arg == "--fold-merges" {
             options.fold_merges = true;
         } else if arg == "--hide-merges" {
@@ -507,6 +510,34 @@ pub(crate) mod tests {
             let (_, options, git) = parse_args(&args).unwrap();
             assert_eq!(options, LogOptions::default());
             assert_eq!(git, args);
+        }
+    }
+
+    #[test]
+    fn exit_on_esc_preserves_git_patterns_and_paths() {
+        for (args, enabled, forwarded) in [
+            (
+                vec!["--exit-on-esc", "main..HEAD"],
+                true,
+                vec!["main..HEAD"],
+            ),
+            (vec!["--watch", "--exit-on-esc"], true, vec!["--watch"]),
+            (
+                vec!["--grep", "--exit-on-esc"],
+                false,
+                vec!["--grep", "--exit-on-esc"],
+            ),
+            (
+                vec!["--", "--exit-on-esc"],
+                false,
+                vec!["--", "--exit-on-esc"],
+            ),
+            (vec!["--format", "--exit-on-esc %s"], false, vec![]),
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            let (_, options, git) = parse_args(&args).unwrap();
+            assert_eq!(options.exit_on_esc, enabled);
+            assert_eq!(git, forwarded);
         }
     }
 

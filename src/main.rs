@@ -108,6 +108,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    app.exit_on_esc = log_options.exit_on_esc;
     initialize_log_filters(&mut app, log_options);
 
     let mut terminal = match start_terminal() {
@@ -189,6 +190,7 @@ fn parse_information(args: &[String]) -> Option<&'static str> {
 const HELP: &str = "glog — an interactive git log and git show browser
 
 Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
+            [--exit-on-esc]
        glog [log] [git log arguments] [--] [pathspec...]
        glog reflog [ref] [--all] [-n COUNT] [--date=STYLE]
        glog blame [-L LINE] [--date=STYLE] [revision] [--] file
@@ -212,6 +214,7 @@ Options:
                 Hide comma-separated commit types (e.g. test,refactor,docs);
                 T clears filters
   --watch       Include a Working tree item and refresh the default HEAD view
+  --exit-on-esc Exit from the Log list with Escape (glog / glog log)
   -h, --help    Print help
   -V, --version Print version
 

@@ -7,6 +7,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- `glog --exit-on-esc` lets Escape exit from the Log list, for returning to
+  a calling tool after browsing commits.
+
 - `glog show REV:path` opens a complete text file with blame columns hidden.
   Configured Git textconv filters provide the readable contents, as in blame.
 

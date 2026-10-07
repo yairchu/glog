@@ -116,6 +116,7 @@ pub fn handle(event: Event, app: &mut App) {
             KeyCode::Char('[') if app.mode == Mode::Show => app.jump_show_file(-1),
             KeyCode::Char(']') if app.mode == Mode::Show => app.jump_show_file(1),
             KeyCode::Esc if app.mode == Mode::Show => app.switch_mode(),
+            KeyCode::Esc if app.exit_on_esc => app.quit = true,
             KeyCode::Up | KeyCode::Char('k') => app.move_by(-1, 1),
             KeyCode::Down | KeyCode::Char('j') => app.move_by(1, 1),
             KeyCode::PageUp | KeyCode::Char('b') if app.mode == Mode::Show => {
@@ -262,6 +263,26 @@ mod tests {
         assert_eq!(app.mode, Mode::Log);
         handle(key(KeyCode::Esc), &mut app);
         assert!(!app.quit);
+
+        app.exit_on_esc = true;
+        handle(key(KeyCode::Enter), &mut app);
+        handle(key(KeyCode::Esc), &mut app);
+        assert_eq!(app.mode, Mode::Log);
+        assert!(!app.quit);
+        app.begin_search(false);
+        handle(key(KeyCode::Esc), &mut app);
+        assert!(app.search_input.is_none());
+        assert!(!app.quit);
+        app.show_help = true;
+        handle(key(KeyCode::Esc), &mut app);
+        assert!(!app.show_help);
+        assert!(!app.quit);
+        app.mode = Mode::Status;
+        handle(key(KeyCode::Esc), &mut app);
+        assert_eq!(app.mode, Mode::Log);
+        assert!(!app.quit);
+        handle(key(KeyCode::Esc), &mut app);
+        assert!(app.quit);
     }
 
     #[test]
