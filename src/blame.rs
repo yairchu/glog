@@ -900,6 +900,24 @@ mod tests {
     }
 
     #[test]
+    fn file_view_is_not_shadowed_by_a_commit_suffix_in_another_filename() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file", "expected\n").unwrap();
+        fs::write("file^{commit}", "other\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "files with revision syntax in their names"]);
+
+        let mut app = git::load_show_app(&["HEAD:file".into()]).unwrap();
+        assert!(app.pending_blame.is_some());
+        assert_eq!(app.commits.len(), 1);
+        assert_eq!(app.log_format.text(&app.commits[0]), "1 expected");
+        assert!(app.ensure_blame(), "{:?}", app.status);
+        assert_eq!(app.log_format.text(&app.commits[0]), "1 expected");
+    }
+
+    #[test]
     fn file_view_resolves_paths_and_rejects_non_text_objects() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
