@@ -146,11 +146,10 @@ glog show v0.4.0:src/main.rs
 
 This opens a file view with line numbers and syntax highlighting, without
 computing blame. Configured Git textconv filters are honored, including for
-binary files that convert to text. Press `x`, `d`, or `a` to enable hash, date,
-or author columns; attribution loads on demand and is then reused. Enter opens
-the selected line's commit, `p` explores its earlier history, and Backspace
-returns. These history actions also load attribution when needed. The view
-keeps the original revision even if a branch moves while it is open.
+binary files that convert to text. Press `x`, `d`, or `a` to show the hash,
+date, or author column and turn the view into a [blame](#blame); attribution
+loads then and is reused. The view keeps the original revision even if a
+branch moves while it is open.
 
 Paths are relative to the repository root; use `REV:./file` or `REV:../file`
 for paths relative to the current directory. `REV:path` reads the entire file,
@@ -269,7 +268,8 @@ glog blame -L 120 src/main.rs    # open at line 120
 Each run of lines from the same commit starts with its hash, author date, and
 author, with the same coauthor badges as Log; the first line on screen names
 its commit too. As in Log, `x`, `d`, and `a` hide or show the hash, date, and
-author columns, leaving more room for code. The code is syntax-highlighted when
+author columns, leaving more room for code; with all three hidden, it is a
+plain file view until one returns. The code is syntax-highlighted when
 [`delta`](#delta-and-color) is available. Dates default to `YYYY-MM-DD` in your local timezone. Git's
 `log.date` configuration is respected, and `--date=STYLE` overrides it.
 

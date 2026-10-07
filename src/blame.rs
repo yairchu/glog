@@ -818,19 +818,20 @@ mod tests {
         assert!(app.pending_blame.is_some());
         assert_eq!(app.log_format.text(&app.commits[0]), "1 A");
         assert_eq!(app.commits.len(), 3);
-        let mut terminal =
-            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
-        terminal
-            .draw(|frame| crate::ui::draw(frame, &mut app))
-            .unwrap();
-        let rendered: String = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect();
-        assert!(rendered.contains("File"));
+        let render = |app: &mut App| {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 20)).unwrap();
+            terminal.draw(|frame| crate::ui::draw(frame, app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            buffer.content[..usize::from(buffer.area.width)]
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>()
+        };
+        let header = render(&mut app);
+        assert!(header.contains("File"));
+        // The file view has no detail tab.
+        assert!(!header.contains("Show"));
         assert!(app.pending_blame.is_some());
         app.selected = 1;
         app.log_offset = 1;
@@ -862,19 +863,40 @@ mod tests {
         assert!(app.log_format.shows(Field::Author));
         assert!(app.status.is_none());
         fs::rename(saved, &object).unwrap();
+        assert!(render(&mut app).contains("Blame"));
+        // Hiding attribution returns to the file view, with blame kept.
+        key(KeyCode::Char('x'), &mut app);
+        key(KeyCode::Char('a'), &mut app);
+        let header = render(&mut app);
+        assert!(header.contains("File"));
+        assert!(!header.contains("Show"));
+        key(KeyCode::Enter, &mut app);
+        assert_eq!(app.mode, Mode::Log);
+        assert!(app.status.is_some());
 
+        // Line history needs a visible column; the file view does not load it.
         let spec = format!("{snapshot}:file.txt");
-        let mut parent = git::load_show_app(std::slice::from_ref(&spec)).unwrap();
-        key(KeyCode::Char('p'), &mut parent);
-        assert!(parent.status.is_none(), "{:?}", parent.status);
-        assert_eq!(code(parent.commits[0].blame().unwrap()), "a");
-        key(KeyCode::Backspace, &mut parent);
-        assert_eq!(code(parent.commits[0].blame().unwrap()), "A");
-        let mut detail = git::load_show_app(&[spec]).unwrap();
-        key(KeyCode::Enter, &mut detail);
-        assert_eq!(detail.mode, Mode::Show);
-        assert_eq!(detail.commits[detail.selected].hash, snapshot);
-        assert!(detail.pending_blame.is_none());
+        let mut file = git::load_show_app(&[spec]).unwrap();
+        for code in [
+            KeyCode::Enter,
+            KeyCode::Tab,
+            KeyCode::Char('p'),
+            KeyCode::Right,
+        ] {
+            key(code, &mut file);
+            assert_eq!(file.mode, Mode::Log);
+            assert_eq!(file.selected, 0);
+            assert!(file.pending_blame.is_some());
+        }
+        key(KeyCode::Char('x'), &mut file);
+        key(KeyCode::Char('p'), &mut file);
+        assert!(file.status.is_none(), "{:?}", file.status);
+        assert_eq!(code(file.commits[0].blame().unwrap()), "a");
+        key(KeyCode::Backspace, &mut file);
+        assert_eq!(code(file.commits[0].blame().unwrap()), "A");
+        key(KeyCode::Enter, &mut file);
+        assert_eq!(file.mode, Mode::Show);
+        assert_eq!(file.commits[file.selected].hash, snapshot);
     }
 
     #[test]
@@ -1375,7 +1397,6 @@ mod tests {
         assert_eq!(text(&app, 3), "4 x");
         key(KeyCode::Char('d'), &mut app);
         assert_eq!(text(&app, 3), "2020-02-01 4 x");
-        key(KeyCode::Char('d'), &mut app);
 
         // x was added in the rename, so the parent's old.txt opens at the
         // line before it.

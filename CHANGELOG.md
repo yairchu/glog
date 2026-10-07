@@ -10,8 +10,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - `glog --exit-on-esc` lets Escape exit from the Log list, for returning to
   a calling tool after browsing commits.
 
-- `glog show REV:path` opens a complete text file with blame columns hidden.
-  Configured Git textconv filters provide the readable contents, as in blame.
+- `glog show REV:path` opens a complete text file. Showing a hash, date, or
+  author column turns it into a blame. Configured Git textconv filters
+  provide the readable contents, as in blame.
 
 - Show marks Codex and Claude Code `Co-authored-by` trailers with the same
   icons as Log's coauthor badges.

@@ -228,9 +228,8 @@ Blame shows which commit last changed each line; Enter opens it, p blames
 the file before it, and Backspace returns.
 Show opens HEAD or the specified commit, with history available via Tab.
 Paths after -- filter both Show patches and the Log history.
-Show REV:path reads the complete text file with blame columns hidden.
-Enable x/d/a for hash/date/author, or use Enter/p to explore line history;
-attribution is loaded only when needed.
+Show REV:path reads the complete text file; x/d/a show the hash/date/author
+column and turn it into a blame, loading attribution only then.
 Diff opens unstaged changes (including untracked files), or staged changes
 with --cached. Revisions compare commits (A..B, A...B, A B) or a commit
 against the working tree (A); omitted range endpoints default to HEAD.

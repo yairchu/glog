@@ -192,7 +192,26 @@ impl App {
         }
     }
 
-    /// Resolve attribution only when a column or a history action needs it.
+    /// Blame without attribution columns is a plain file view: line history
+    /// starts from a visible column.
+    pub fn file_view(&self) -> bool {
+        self.history == History::Blame
+            && !crate::log_format::Field::ATTRIBUTION
+                .into_iter()
+                .any(|field| self.log_format.shows(field))
+    }
+
+    /// Explain how to reach line history when the file view has none.
+    fn refuse_in_file_view(&mut self) -> bool {
+        if self.file_view() {
+            self.status = Some(
+                "Show a hash, date, or author column (x, d, a) to explore line history".into(),
+            );
+        }
+        self.file_view()
+    }
+
+    /// Resolve attribution only once a column needs it.
     /// Keep the file and pending request intact on failure so the user can retry.
     pub fn ensure_blame(&mut self) -> bool {
         let Some(file) = &self.pending_blame else {
@@ -255,7 +274,7 @@ impl App {
     }
 
     pub fn switch_mode(&mut self) {
-        if self.mode == Mode::Log && !self.ensure_blame() {
+        if self.mode == Mode::Log && self.refuse_in_file_view() {
             return;
         }
         if !self.has_log_view() {
@@ -361,7 +380,7 @@ impl App {
 
     /// Move to the previous or next commit, or blame chunk.
     pub fn move_adjacent(&mut self, delta: isize) {
-        if !self.ensure_blame() {
+        if self.refuse_in_file_view() {
             return;
         }
         self.selected = self.adjacent_selection(delta);
@@ -395,7 +414,7 @@ impl App {
 
     /// Blame the selected line's file as it was before the selected commit.
     pub fn blame_parent(&mut self) {
-        if !self.ensure_blame() {
+        if self.refuse_in_file_view() {
             return;
         }
         let Some(commit) = self.commits.get(self.selected) else {

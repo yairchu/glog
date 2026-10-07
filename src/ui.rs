@@ -37,32 +37,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         "Show"
     };
+    let file_view = app.file_view();
     let log_label = match app.history {
         History::Log => "Log",
         History::Reflog => "Reflog",
-        History::Blame
-            if !crate::log_format::Field::ATTRIBUTION
-                .into_iter()
-                .any(|field| app.log_format.shows(field)) =>
-        {
-            "File"
-        }
+        History::Blame if file_view => "File",
         History::Blame => "Blame",
         History::Stash => "Stash",
     };
+    // The file view has no commit to open.
+    let labels: &[&str] = match (has_log, file_view) {
+        (false, _) => &[],
+        (true, true) => &[log_label],
+        (true, false) => &[log_label, detail],
+    };
     // Tabs pads each label with a space on either side and separates them
     // with a one-cell divider.
-    let (log_width, detail_width) = if has_log {
-        (log_label.len() as u16 + 2, detail.len() as u16 + 2)
-    } else {
-        (0, 0)
-    };
-    let tab_width = if has_log {
-        log_width + 1 + detail_width + 1
-    } else {
-        0
-    };
-    let tabs = Tabs::new([log_label, detail])
+    let width = |label: &&str| label.len() as u16 + 2;
+    let log_width = labels.first().map_or(0, width);
+    let detail_width = labels.get(1).map_or(0, width);
+    let tab_width = labels.iter().map(|label| width(label) + 1).sum();
+    let tabs = Tabs::new(labels.to_vec())
         .select(selected)
         .style(header_style)
         .highlight_style(
@@ -134,6 +129,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         "h help  q quit  ↑/k ↓/j  ←/→ entry  Enter show  / ? search".to_owned()
     } else if app.mode == Mode::Log && app.history == History::Stash {
         "h help  q quit  ↑/k ↓/j  ←/→ stash  Enter show  a author  d date  / ? search".to_owned()
+    } else if app.mode == Mode::Log && file_view {
+        "h help  q quit  ↑/k ↓/j  a author  d date  x hash  / ? search".to_owned()
     } else if app.mode == Mode::Log && app.history == History::Blame {
         "h help  q quit  ↑/k ↓/j  ←/→ chunk  Enter show  p blame parent  Backspace back  a author  d date  x hash  / ? search"
             .to_owned()
