@@ -1,6 +1,6 @@
 [package]
 name = "glog-tui"
-version = "0.5.1"
+version = "0.5.2"
 edition = "2021"
 description = "An interactive git log and git show browser"
 license = "MIT"
