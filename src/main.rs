@@ -1,6 +1,7 @@
 mod ansi;
 mod app;
 mod blame;
+mod commit_links;
 mod diff;
 mod git;
 mod images;
@@ -215,6 +216,8 @@ Stash show opens a stash by index or reference (the latest by default).
 Blame shows which commit last changed each line; Enter opens it, p blames
 the file before it, and Backspace returns.
 Show opens HEAD or the specified commit, with history available via Tab.
+Click underlined commit hashes in Show messages to follow them; Backspace returns.
+Hashes use lowercase hex: 7+ characters, or 4+ with a # prefix.
 Paths after -- filter both Show patches and the Log history.
 Show REV:path reads the complete text file; x/d/a show the hash/date/author
 column and turn it into a blame, loading attribution only then.

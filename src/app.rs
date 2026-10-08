@@ -78,6 +78,9 @@ pub struct App {
     pub show_offset: usize,
     pub show_cursor: usize,
     pub show_text: String,
+    pub show_links: HashMap<usize, Vec<crate::commit_links::Link>>,
+    pub visible_commit_links: Vec<(ratatui::layout::Rect, String)>,
+    reference_back: Option<Box<App>>,
     pub show_stat: bool,
     // Status shares show_stat, so it can change while Show's rows are hidden.
     show_rows_stat: bool,
@@ -149,6 +152,9 @@ impl App {
             show_offset: 0,
             show_cursor: 0,
             show_text: String::new(),
+            show_links: HashMap::new(),
+            visible_commit_links: Vec::new(),
+            reference_back: None,
             show_stat: false,
             show_rows_stat: false,
             stat_bookmark: None,
@@ -852,6 +858,15 @@ impl App {
     }
 
     fn reset_show_folds(&mut self) {
+        self.visible_commit_links.clear();
+        self.show_links = if self.commits.get(self.selected).is_some_and(|commit| {
+            commit.kind == CommitKind::Revision
+                && !matches!(commit.annotation, Some(git::Annotation::Stash(_)))
+        }) {
+            crate::commit_links::collect(&self.show_text)
+        } else {
+            HashMap::new()
+        };
         self.show_search_location = None;
         self.show_files = diff::file_sections(&self.show_text);
         self.submodules.clear();
@@ -1428,6 +1443,43 @@ impl App {
             .partition_point(|&start| start <= screen)
             .saturating_sub(1)
             .min(self.show_rows.len().saturating_sub(1))
+    }
+
+    pub fn has_reference_back(&self) -> bool {
+        self.reference_back.is_some()
+    }
+
+    /// Open references independently of the current history/path filters.
+    pub fn follow_reference(&mut self, hash: &str) {
+        let args = if self.show_stat {
+            vec!["--stat".to_owned(), hash.to_owned()]
+        } else {
+            vec![hash.to_owned()]
+        };
+        match git::load_show_app(&args) {
+            Ok(mut target) => {
+                // Failed loads leave the current view and its return path intact.
+                if let Some(error) = target.status.take() {
+                    self.status = Some(error);
+                    return;
+                }
+                target.context = format!("show {hash}");
+                target.exit_on_esc = self.exit_on_esc;
+                target.images = std::mem::take(&mut self.images);
+                target.rebuild_show_rows();
+                let origin = std::mem::replace(self, target);
+                self.reference_back = Some(Box::new(origin));
+            }
+            Err(error) => self.status = Some(error),
+        }
+    }
+
+    pub fn reference_back(&mut self) {
+        if let Some(mut origin) = self.reference_back.take() {
+            origin.images = std::mem::take(&mut self.images);
+            *self = *origin;
+            self.redraw = true;
+        }
     }
 
     pub fn click_show_row(&mut self, visible_row: usize) {

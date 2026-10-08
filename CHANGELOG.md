@@ -5,6 +5,15 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Click underlined commit hashes in Show messages to browse the referenced
+  commit, including commits outside the current history or path filters.
+  Hashes use lowercase hex; abbreviations shorter than seven characters
+  require a `#` prefix and at least four characters.
+  Backspace returns through followed references, preserving the previous
+  view's reading position and expanded files.
+
 ## 0.5.2 - 2026-10-08
 
 ### Changed

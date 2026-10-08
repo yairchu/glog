@@ -35,6 +35,10 @@ pub fn handle(event: Event, app: &mut App) {
             }
             return;
         }
+        if key.code == KeyCode::Backspace && app.has_reference_back() {
+            app.reference_back();
+            return;
+        }
         if app.mode == Mode::Status {
             match key.code {
                 KeyCode::Tab | KeyCode::Esc => app.switch_mode(),
@@ -210,7 +214,16 @@ pub fn handle(event: Event, app: &mut App) {
             {
                 let row = usize::from(mouse.row - app.show_row_origin);
                 if row < app.visible_show_rows {
-                    app.click_show_row(row);
+                    let reference = app
+                        .visible_commit_links
+                        .iter()
+                        .find(|(rect, _)| rect.contains((mouse.column, mouse.row).into()))
+                        .map(|(_, hash)| hash.clone());
+                    if let Some(hash) = reference {
+                        app.follow_reference(&hash);
+                    } else {
+                        app.click_show_row(row);
+                    }
                 }
             }
             _ => {}

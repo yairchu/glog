@@ -12,6 +12,7 @@ use ratatui::{
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     app.type_buttons.clear();
+    app.visible_commit_links.clear();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -118,7 +119,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Log => draw_log(frame, app, chunks[1]),
         Mode::Show => draw_show(frame, app, chunks[1]),
     }
-    let help = if app.mode == Mode::Status {
+    let mut help = if app.mode == Mode::Status {
         app.status_view.as_ref().and_then(|view| view.error.clone()).or_else(|| app.status.clone()).unwrap_or_else(|| "h help  q quit  ↑/k ↓/j  Enter/z fold  s summary  ←/→ commit  Shift-←/→ pan  Tab Log  Esc Log  Ctrl-L redraw · WATCH".to_owned())
     } else if let Some(input) = &app.search_input {
         let prefix = if app.search_reverse { '?' } else { '/' };
@@ -148,6 +149,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         "h help  q quit  ↑/k ↓/j  ←/→ commit  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search"
             .to_owned()
     };
+    if app.has_reference_back() && app.search_input.is_none() && app.status.is_none() {
+        help = format!("Backspace back  {help}");
+    }
     frame.render_widget(
         Paragraph::new(help).style(Style::default().fg(Color::Gray)),
         chunks[2],
@@ -234,6 +238,7 @@ const HELP_ROWS: &[HelpRow] = &[
         ],
     ),
     detail("[, ]", "previous / next changed file (Show)"),
+    detail("Click hash", "follow an underlined commit reference (Show)"),
     every("g/<, G/>", "top / bottom (also Home/End)"),
     every("", ""),
     (
@@ -350,11 +355,11 @@ const HELP_ROWS: &[HelpRow] = &[
     (
         "Backspace",
         [
-            None,
-            None,
+            Some("return after following a commit reference"),
+            Some("return after following a commit reference"),
             Some("return to the previous blame"),
-            None,
-            None,
+            Some("return after following a commit reference"),
+            Some("return after following a commit reference"),
             Some("return to the previous blame, if any"),
         ],
     ),
@@ -652,6 +657,8 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
     app.ensure_show_rows();
     app.show_row_origin = area.y;
     app.visible_show_rows = area.height as usize;
+    let mut marker_lines = Vec::new();
+    let mut targets = Vec::new();
     let mut lines: Vec<_> = app
         .show_rows
         .iter()
@@ -664,6 +671,26 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 ansi::normalized_line(&row.text)
             };
+            let links = app
+                .show_links
+                .get(&row.source)
+                .filter(|_| row.file.is_none());
+            if !app.show_links.is_empty() {
+                let mut marked = Line::raw(line.to_string());
+                if let Some(links) = links {
+                    marked = crate::commit_links::style_links(marked, links, |link| {
+                        targets.push(link.hash.clone());
+                        let id = targets.len() as u32;
+                        Style::default().fg(Color::Rgb((id >> 16) as u8, (id >> 8) as u8, id as u8))
+                    });
+                    line = crate::commit_links::style_links(line, links, |_| {
+                        Style::default()
+                            .fg(Color::LightCyan)
+                            .add_modifier(Modifier::UNDERLINED)
+                    });
+                }
+                marker_lines.push(marked);
+            }
             if row.file.is_none() {
                 let text = line.to_string();
                 if text == "Notes:" || (text.starts_with("Notes (") && text.ends_with("):")) {
@@ -772,6 +799,29 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
         .saturating_sub(1)
         .min(lines.len());
     let within = app.show_offset - app.show_row_starts[first];
+    if !targets.is_empty() && area.width > 0 && area.height > 0 {
+        // Render an ID mask with exactly the viewport's wrapping and scroll rules.
+        // This keeps hit targets correct for wide characters and wrapped hashes.
+        use ratatui::{buffer::Buffer, widgets::Widget};
+        let mut mask = Buffer::empty(area);
+        Paragraph::new(Text::from(
+            marker_lines.into_iter().skip(first).collect::<Vec<_>>(),
+        ))
+        .scroll((within.min(u16::MAX as usize) as u16, 0))
+        .wrap(Wrap { trim: false })
+        .render(area, &mut mask);
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                if let Color::Rgb(r, g, b) = mask[(x, y)].fg {
+                    let id = (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b);
+                    if let Some(hash) = id.checked_sub(1).and_then(|index| targets.get(index)) {
+                        app.visible_commit_links
+                            .push((Rect::new(x, y, 1, 1), hash.clone()));
+                    }
+                }
+            }
+        }
+    }
     frame.render_widget(
         Paragraph::new(Text::from(
             lines.into_iter().skip(first).collect::<Vec<_>>(),

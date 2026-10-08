@@ -432,6 +432,36 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
     Ok(app)
 }
 
+/// Accept only an unambiguous object hash naming a commit, never a hex-like ref name.
+pub(crate) fn resolve_commit_reference(reference: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", "--end-of-options"])
+        .arg(format!("{reference}^{{commit}}"))
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let hash = String::from_utf8(output.stdout).ok()?.trim().to_owned();
+    hash.starts_with(reference).then_some(hash)
+}
+
+/// Git's default Show format places the indented message after the header.
+pub(crate) fn commit_message_range(text: &str) -> std::ops::Range<usize> {
+    let mut lines = text.lines().enumerate();
+    let Some((blank, _)) = lines.find(|(_, line)| crate::ansi::plain(line).trim().is_empty())
+    else {
+        return 0..0;
+    };
+    let start = blank + 1;
+    let end = start
+        + lines
+            .take_while(|(_, line)| crate::ansi::plain(line).starts_with("    "))
+            .count();
+    start..end
+}
+
 fn resolve_show_commit(revision: &str) -> Result<String, String> {
     peel_commit(&resolve_revision(revision)?)
 }
@@ -816,19 +846,9 @@ fn mark_agent_coauthors(text: &str, agent_trailers: &[String]) -> String {
         return text.to_owned();
     }
     let mut lines: Vec<String> = text.split_inclusive('\n').map(str::to_owned).collect();
-    // The message follows the header's first blank line, indented by four spaces.
-    let Some(blank) = lines
-        .iter()
-        .position(|line| crate::ansi::plain(line).trim().is_empty())
-    else {
-        return text.to_owned();
-    };
-    let message = blank + 1;
-    let end = message
-        + lines[message..]
-            .iter()
-            .take_while(|line| line.starts_with("    "))
-            .count();
+    let message_range = commit_message_range(text);
+    let message = message_range.start;
+    let end = message_range.end;
     let paragraph = (message..end)
         .rev()
         .find(|&index| lines[index].trim().is_empty())
