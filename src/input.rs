@@ -215,12 +215,12 @@ pub fn handle(event: Event, app: &mut App) {
                 let row = usize::from(mouse.row - app.show_row_origin);
                 if row < app.visible_show_rows {
                     let reference = app
-                        .visible_commit_links
+                        .visible_show_links
                         .iter()
                         .find(|(rect, _)| rect.contains((mouse.column, mouse.row).into()))
-                        .map(|(_, hash)| hash.clone());
-                    if let Some(hash) = reference {
-                        app.follow_reference(&hash);
+                        .map(|(_, target)| target.clone());
+                    if let Some(target) = reference {
+                        app.follow_link(&target);
                     } else {
                         app.click_show_row(row);
                     }

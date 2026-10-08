@@ -79,8 +79,9 @@ pub struct App {
     pub show_cursor: usize,
     pub show_text: String,
     pub show_links: HashMap<usize, Vec<crate::commit_links::Link>>,
-    pub visible_commit_links: Vec<(ratatui::layout::Rect, String)>,
+    pub visible_show_links: Vec<(ratatui::layout::Rect, crate::commit_links::Target)>,
     reference_back: Option<Box<App>>,
+    browser_result: Option<crate::commit_links::BrowserResult>,
     pub show_stat: bool,
     // Status shares show_stat, so it can change while Show's rows are hidden.
     show_rows_stat: bool,
@@ -153,8 +154,9 @@ impl App {
             show_cursor: 0,
             show_text: String::new(),
             show_links: HashMap::new(),
-            visible_commit_links: Vec::new(),
+            visible_show_links: Vec::new(),
             reference_back: None,
+            browser_result: None,
             show_stat: false,
             show_rows_stat: false,
             stat_bookmark: None,
@@ -858,7 +860,7 @@ impl App {
     }
 
     fn reset_show_folds(&mut self) {
-        self.visible_commit_links.clear();
+        self.visible_show_links.clear();
         self.show_links = if self.commits.get(self.selected).is_some_and(|commit| {
             commit.kind == CommitKind::Revision
                 && !matches!(commit.annotation, Some(git::Annotation::Stash(_)))
@@ -1447,6 +1449,35 @@ impl App {
 
     pub fn has_reference_back(&self) -> bool {
         self.reference_back.is_some()
+    }
+
+    pub fn follow_link(&mut self, target: &crate::commit_links::Target) {
+        match target {
+            crate::commit_links::Target::Commit(hash) => self.follow_reference(hash),
+            crate::commit_links::Target::Issue(url) => match crate::commit_links::open_issue(url) {
+                Ok(result) => {
+                    self.browser_result = Some(result);
+                    self.status = None;
+                }
+                Err(error) => self.status = Some(error),
+            },
+        }
+    }
+
+    pub fn poll_browser(&mut self) {
+        let Some(receiver) = &self.browser_result else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok(result) => {
+                self.browser_result = None;
+                if let Err(error) = result {
+                    self.status = Some(error);
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.browser_result = None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
     }
 
     /// Open references independently of the current history/path filters.

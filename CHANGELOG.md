@@ -13,6 +13,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   require a `#` prefix and at least four characters.
   Backspace returns through followed references, preserving the previous
   view's reading position and expanded files.
+- Click issue references (`#` plus 1–6 digits) in Show messages to open them
+  in the browser. The GitHub repository is inferred from remotes, preferring
+  `origin`; numeric references with seven or more digits remain commit candidates.
 
 ## 0.5.2 - 2026-10-08
 

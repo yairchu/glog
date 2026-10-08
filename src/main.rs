@@ -218,6 +218,7 @@ the file before it, and Backspace returns.
 Show opens HEAD or the specified commit, with history available via Tab.
 Click underlined commit hashes in Show messages to follow them; Backspace returns.
 Hashes use lowercase hex: 7+ characters, or 4+ with a # prefix.
+On GitHub repositories, # plus 1-6 digits opens an issue in the browser.
 Paths after -- filter both Show patches and the Log history.
 Show REV:path reads the complete text file; x/d/a show the hash/date/author
 column and turn it into a blame, loading attribution only then.
@@ -265,6 +266,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
             app.redraw = false;
         }
         app.images.poll();
+        app.poll_browser();
         terminal.draw(|frame| ui::draw(frame, app))?;
         app.images.flush(&mut io::stdout())?;
         if event::poll(Duration::from_millis(250))? {

@@ -432,6 +432,83 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
     Ok(app)
 }
 
+/// Prefer origin; otherwise use the sole GitHub repository among the remotes.
+/// Preserve a stored GitHub URL even if transport is rewritten; resolve aliases locally.
+pub(crate) fn github_repository() -> Option<String> {
+    let output = Command::new("git").arg("remote").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let remotes = String::from_utf8(output.stdout).ok()?;
+    let mut repositories = std::collections::HashSet::new();
+    for remote in remotes.lines() {
+        let stored = Command::new("git")
+            .args(["config", "--get", &format!("remote.{remote}.url")])
+            .output()
+            .ok()?;
+        let stored = String::from_utf8(stored.stdout).ok()?;
+        let repo = github_repository_url(stored.trim()).or_else(|| {
+            let output = Command::new("git")
+                .args(["remote", "get-url", remote])
+                .output()
+                .ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            let url = String::from_utf8(output.stdout).ok()?;
+            github_repository_url(url.trim())
+        });
+        if let Some(repo) = repo {
+            if remote == "origin" {
+                return Some(repo);
+            }
+            repositories.insert(repo);
+        }
+    }
+    (repositories.len() == 1)
+        .then(|| repositories.into_iter().next())
+        .flatten()
+}
+
+fn github_repository_url(remote: &str) -> Option<String> {
+    let path = if let Some((scheme, rest)) = remote.split_once("://") {
+        if !matches!(scheme, "https" | "http" | "ssh" | "git") {
+            return None;
+        }
+        let (authority, path) = rest.split_once('/')?;
+        let host = authority.rsplit('@').next()?.split(':').next()?;
+        if !host.eq_ignore_ascii_case("github.com") {
+            return None;
+        }
+        path
+    } else {
+        let (authority, path) = remote.split_once(':')?;
+        if !authority
+            .rsplit('@')
+            .next()?
+            .eq_ignore_ascii_case("github.com")
+        {
+            return None;
+        }
+        path
+    };
+    let path = path.trim_end_matches('/');
+    let path = path.strip_suffix(".git").unwrap_or(path);
+    let (owner, repo) = path.split_once('/')?;
+    let valid = |part: &str| {
+        !part.is_empty()
+            && part != "."
+            && part != ".."
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+    };
+    if !valid(owner) || !valid(repo) {
+        return None;
+    }
+    Some(format!("https://github.com/{owner}/{repo}"))
+}
+
 /// Accept only an unambiguous object hash naming a commit, never a hex-like ref name.
 pub(crate) fn resolve_commit_reference(reference: &str) -> Option<String> {
     let output = Command::new("git")
@@ -1377,6 +1454,69 @@ pub(crate) fn stderr_message(prefix: &str, stderr: &[u8]) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn github_remote_urls_and_repository_selection() {
+        for url in [
+            "https://github.com/owner/repo.git",
+            "git@github.com:owner/repo.git",
+            "ssh://git@github.com/owner/repo.git",
+            "ssh://git@github.com:22/owner/repo.git",
+            "git://github.com/owner/repo/",
+            "https://github.com/owner/repo",
+        ] {
+            assert_eq!(
+                github_repository_url(url).as_deref(),
+                Some("https://github.com/owner/repo"),
+                "{url}"
+            );
+        }
+        for url in [
+            "https://gitlab.com/owner/repo",
+            "https://github.com.evil/owner/repo",
+            "https://github.com/owner/repo/issues",
+            "https://github.com/../repo",
+            "https://github.com/owner/repo?query",
+            "owner/repo",
+            "/tmp/owner/repo",
+        ] {
+            assert!(github_repository_url(url).is_none(), "{url}");
+        }
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+        };
+        git(&["init", "-q"]);
+        assert!(github_repository().is_none());
+        git(&[
+            "config",
+            "url.https://transport.invalid/.insteadOf",
+            "git@github.com:",
+        ]);
+        git(&["remote", "add", "upstream", "git@github.com:owner/repo.git"]);
+        assert_eq!(
+            github_repository().as_deref(),
+            Some("https://github.com/owner/repo")
+        );
+        git(&[
+            "remote",
+            "add",
+            "other",
+            "https://github.com/another/repo.git",
+        ]);
+        assert!(
+            github_repository().is_none(),
+            "ambiguous repositories are not guessed"
+        );
+        git(&["config", "url.https://github.com/.insteadOf", "gh:"]);
+        git(&["remote", "add", "origin", "gh:me/fork.git"]);
+        assert_eq!(
+            github_repository().as_deref(),
+            Some("https://github.com/me/fork")
+        );
+    }
+
     use super::*;
     use crate::app::LogAction;
     use std::{

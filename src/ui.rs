@@ -12,7 +12,7 @@ use ratatui::{
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     app.type_buttons.clear();
-    app.visible_commit_links.clear();
+    app.visible_show_links.clear();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -238,7 +238,10 @@ const HELP_ROWS: &[HelpRow] = &[
         ],
     ),
     detail("[, ]", "previous / next changed file (Show)"),
-    detail("Click hash", "follow an underlined commit reference (Show)"),
+    detail(
+        "Click link",
+        "follow a commit or open a GitHub issue (Show)",
+    ),
     every("g/<, G/>", "top / bottom (also Home/End)"),
     every("", ""),
     (
@@ -679,7 +682,7 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
                 let mut marked = Line::raw(line.to_string());
                 if let Some(links) = links {
                     marked = crate::commit_links::style_links(marked, links, |link| {
-                        targets.push(link.hash.clone());
+                        targets.push(link.target.clone());
                         let id = targets.len() as u32;
                         Style::default().fg(Color::Rgb((id >> 16) as u8, (id >> 8) as u8, id as u8))
                     });
@@ -814,9 +817,9 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             for x in area.x..area.right() {
                 if let Color::Rgb(r, g, b) = mask[(x, y)].fg {
                     let id = (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b);
-                    if let Some(hash) = id.checked_sub(1).and_then(|index| targets.get(index)) {
-                        app.visible_commit_links
-                            .push((Rect::new(x, y, 1, 1), hash.clone()));
+                    if let Some(target) = id.checked_sub(1).and_then(|index| targets.get(index)) {
+                        app.visible_show_links
+                            .push((Rect::new(x, y, 1, 1), target.clone()));
                     }
                 }
             }
