@@ -62,19 +62,7 @@ fn main() -> ExitCode {
     };
     let git_args = if watch { &[][..] } else { &log_args };
     let loaded = match command {
-        Command::Status => {
-            if !command_args.is_empty() {
-                Err("usage: glog status".to_owned())
-            } else {
-                crate::status::StatusView::load().map(|view| {
-                    let mut app = App::new(vec![git::working_tree_commit(&view.summary())]);
-                    app.status_view = Some(view);
-                    app.mode = app::Mode::Status;
-                    app.pending_history = Some(Vec::new());
-                    app
-                })
-            }
-        }
+        Command::Status => status::load_app(command_args),
         Command::Show => git::load_show_app(command_args),
         Command::Diff => git::load_diff_app(command_args),
         Command::Reflog => git::load_reflog(command_args).map(App::new),

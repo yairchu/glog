@@ -223,6 +223,26 @@ pub fn working_tree_summary() -> Result<String, String> {
     Ok(load_snapshot(&crate::git::repository_root()?)?.summary())
 }
 
+/// Open details for changed files, or history when the working tree is clean.
+pub fn load_app(args: &[String]) -> Result<crate::app::App, String> {
+    if !args.is_empty() {
+        return Err("usage: glog status".to_owned());
+    }
+    let view = StatusView::load()?;
+    let clean = view.snapshot.entries.is_empty();
+    let mut commits = vec![crate::git::working_tree_commit(&view.summary())];
+    if clean {
+        commits.extend(crate::git::load_log(&[])?);
+    }
+    let mut app = crate::app::App::new(commits);
+    app.status_view = Some(view);
+    if !clean {
+        app.mode = crate::app::Mode::Status;
+        app.pending_history = Some(Vec::new());
+    }
+    Ok(app)
+}
+
 impl Snapshot {
     fn summary(&self) -> String {
         let changed = self
@@ -1172,6 +1192,64 @@ impl StatusView {
 mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn status_starts_in_log_when_clean_and_keeps_details_when_cleaned() {
+        use crate::{
+            app::Mode,
+            git::tests::{CurrentDirGuard, TestDirectory},
+        };
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+        };
+        git(&["init", "-q"]);
+        let unborn = load_app(&[]).unwrap();
+        assert_eq!(unborn.mode, Mode::Log);
+        assert_eq!(unborn.commits.len(), 1);
+        assert_eq!(
+            unborn.commits[unborn.selected].subject,
+            "Working tree · Clean"
+        );
+
+        std::fs::write("file.txt", "original\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "first"]);
+        let mut clean = load_app(&[]).unwrap();
+        assert_eq!(clean.mode, Mode::Log);
+        assert_eq!(clean.selected, 0);
+        assert_eq!(clean.commits[0].subject, "Working tree · Clean");
+        assert!(clean.pending_history.is_none());
+        clean.move_adjacent(1);
+        assert_eq!(clean.commits[clean.selected].subject, "first");
+
+        std::fs::write("file.txt", "changed\n").unwrap();
+        let mut dirty = load_app(&[]).unwrap();
+        assert_eq!(dirty.mode, Mode::Status);
+        assert!(dirty.pending_history.is_some());
+        git(&["restore", "file.txt"]);
+        dirty.status_view.as_mut().unwrap().refresh().unwrap();
+        dirty.replace_commits(crate::git::load_watch_log().unwrap());
+        assert_eq!(dirty.mode, Mode::Status);
+        assert_eq!(
+            dirty.commits[dirty.selected].subject,
+            "Working tree · Clean"
+        );
+    }
 
     #[cfg(unix)]
     #[test]

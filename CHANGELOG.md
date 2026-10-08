@@ -5,6 +5,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Changed
+
+- `glog status` starts in Log with the Clean working-tree row selected when
+  there are no changes. Status refreshes keep the current view.
+
 ## 0.5.1 - 2026-10-07
 
 ### Added
