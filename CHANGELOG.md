@@ -7,6 +7,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Mark Gemini CLI and Gemini Code Assist coauthors with a blue `✦` in Log,
+  Blame, and Show.
+
 - Click underlined commit hashes in Show messages to browse the referenced
   commit, including commits outside the current history or path filters.
   Hashes use lowercase hex; abbreviations shorter than seven characters

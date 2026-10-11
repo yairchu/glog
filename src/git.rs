@@ -50,6 +50,7 @@ pub struct Commit {
 pub struct Collaborators {
     pub codex: bool,
     pub claude: bool,
+    pub gemini: bool,
     pub others: usize,
     /// `Co-authored-by` values crediting an agent, as Git parsed them from the
     /// trailers, so Show can mark them without asking Git again.
@@ -218,6 +219,7 @@ impl Collaborators {
             match agent {
                 Some(Agent::Codex) => result.codex = true,
                 Some(Agent::Claude) => result.claude = true,
+                Some(Agent::Gemini) => result.gemini = true,
                 None => result.others += 1,
             }
         }
@@ -230,6 +232,7 @@ impl Collaborators {
 pub enum Agent {
     Codex,
     Claude,
+    Gemini,
 }
 
 impl Agent {
@@ -237,6 +240,8 @@ impl Agent {
         match email {
             "codex@openai.com" | "noreply@openai.com" => Some(Self::Codex),
             "noreply@anthropic.com" => Some(Self::Claude),
+            "gemini-cli@google.com"
+            | "176961590+gemini-code-assist[bot]@users.noreply.github.com" => Some(Self::Gemini),
             _ => None,
         }
     }
@@ -4523,11 +4528,84 @@ pub(crate) mod tests {
                 Collaborators {
                     codex: true,
                     claude: false,
+                    gemini: false,
                     others: 0,
                     agent_trailers: trailers.into_iter().map(str::to_owned).collect(),
                 }
             );
         }
+    }
+
+    #[test]
+    fn gemini_coauthors_use_exact_emails_and_share_one_agent_badge() {
+        let recognized = [
+            "Gemini CLI <GEMINI-CLI@GOOGLE.COM>",
+            "gemini-code-assist[bot] <176961590+gemini-code-assist[bot]@users.noreply.github.com>",
+        ];
+        for trailer in recognized {
+            let collaborators = Collaborators::parse(trailer, "human@example.com");
+            assert!(collaborators.gemini);
+            assert_eq!(collaborators.others, 0);
+            assert_eq!(
+                crate::log_format::coauthor_badge(&collaborators)[1].content,
+                "✦"
+            );
+        }
+        let trailers = [
+            recognized[0],
+            recognized[0],
+            recognized[1],
+            "Gemini <person@google.com>",
+            "Gemini <human@example.com>",
+        ];
+        let collaborators =
+            Collaborators::parse(&trailers.join(&COAUTHOR.to_string()), "author@example.com");
+        assert!(collaborators.gemini);
+        assert_eq!(
+            collaborators.others, 2,
+            "names and company domains alone are not agent identities"
+        );
+        assert_eq!(
+            crate::log_format::coauthor_badge(&collaborators)[1].content,
+            "3"
+        );
+        assert_eq!(
+            collaborators.agent_trailers,
+            [recognized[0], recognized[0], recognized[1]]
+        );
+    }
+
+    #[test]
+    fn show_marks_gemini_trailers_in_blue_without_marking_quoted_credits() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        let message = "Gemini assistance\n\nQuoted credit:\nCo-authored-by: Gemini CLI <gemini-cli@google.com>\n\nActual credits:\n\nCo-authored-by: Gemini CLI <gemini-cli@google.com>\nCo-authored-by: Gemini Code Assist <176961590+gemini-code-assist[bot]@users.noreply.github.com>";
+        for args in [
+            vec!["init", "-q"],
+            vec![
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--allow-empty",
+                "-qm",
+                message,
+            ],
+        ] {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(output.status.success(), "{output:?}");
+        }
+        let commit = load_log(&[]).unwrap().remove(0);
+        assert!(commit.collaborators.gemini);
+        let text = show(&commit, &[]).unwrap();
+        let plain = crate::ansi::plain(&text);
+        assert!(plain.contains("    Co-authored-by: Gemini CLI <gemini-cli@google.com>"));
+        assert!(plain.contains("    Co-authored-by: ✦ Gemini CLI <gemini-cli@google.com>"));
+        assert!(plain.contains("    Co-authored-by: ✦ Gemini Code Assist <176961590+gemini-code-assist[bot]@users.noreply.github.com>"));
+        assert_eq!(text.matches("\x1b[38;2;66;133;244m✦\x1b[m").count(), 2);
     }
 
     #[test]
@@ -4550,6 +4628,7 @@ pub(crate) mod tests {
             Collaborators {
                 codex: true,
                 claude: true,
+                gemini: false,
                 others: 2,
                 agent_trailers: [
                     "Codex <CODEX@OPENAI.COM>",
@@ -4594,6 +4673,7 @@ pub(crate) mod tests {
             Collaborators {
                 codex: true,
                 claude: true,
+                gemini: false,
                 others: 1,
                 agent_trailers: [
                     "Codex <codex@openai.com>",

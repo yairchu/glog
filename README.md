@@ -383,16 +383,18 @@ entries retain their identifying hash and subject regardless of format.
 
 A collaborator badge appears once after the last visible author name/email field.
 A single coauthor uses `꩜` for Codex in the terminal foreground color, `❋` for
-Claude Code in warm terracotta, or a gray `1` for an unrecognized coauthor.
-Two or more coauthors always use a gray total count, including Codex and Claude
-together. The badge has a medium gray `+` separator: `Alice+❋`, `Alice+1`, or
+Claude Code in warm terracotta, `✦` for Gemini in blue, or a gray `1` for an
+unrecognized coauthor.
+Two or more coauthors always use a gray total count. The badge has a medium gray
+`+` separator: `Alice+❋`, `Alice+1`, or
 `Alice+2`. The separator has its own color, independent of the icon or count.
 They are static and follow the author toggle. Credits come only from
-`Co-authored-by` trailers: `codex@openai.com` identifies Codex and
-`noreply@anthropic.com` identifies Claude Code, including model-specific names.
+`Co-authored-by` trailers: `codex@openai.com` and `noreply@openai.com` identify
+Codex; `noreply@anthropic.com` identifies Claude Code, including model-specific
+names. Gemini CLI and Gemini Code Assist's known coauthor emails identify Gemini.
 Other identities use the generic badge. Emails are deduplicated without regard
 to case, and the primary author is excluded. Full credits remain in Show, where
-Codex and Claude Code trailers carry the same icons before their names.
+recognized agent trailers carry the same icons before their names.
 
 ## Commit filters
 

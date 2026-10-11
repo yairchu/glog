@@ -241,6 +241,7 @@ fn agent_symbol(agent: Agent) -> (&'static str, Option<(u8, u8, u8)>) {
     match agent {
         Agent::Codex => ("꩜", None),
         Agent::Claude => ("❋", Some((215, 119, 87))),
+        Agent::Gemini => ("✦", Some((66, 133, 244))),
     }
 }
 
@@ -261,17 +262,21 @@ pub fn agent_icon_ansi(agent: Agent) -> String {
 
 /// A `+` and a symbol for an agent coauthor, or the number of coauthors.
 pub fn coauthor_badge(collaborators: &Collaborators) -> Vec<Span<'static>> {
-    let total =
-        usize::from(collaborators.codex) + usize::from(collaborators.claude) + collaborators.others;
+    let mut agents = [
+        (Agent::Codex, collaborators.codex),
+        (Agent::Claude, collaborators.claude),
+        (Agent::Gemini, collaborators.gemini),
+    ]
+    .into_iter()
+    .filter_map(|(agent, present)| present.then_some(agent));
+    let first = agents.next();
+    let total = usize::from(first.is_some()) + agents.count() + collaborators.others;
     if total == 0 {
         return Vec::new();
     }
-    let badge = if total == 1 && collaborators.codex {
-        agent_icon(Agent::Codex)
-    } else if total == 1 && collaborators.claude {
-        agent_icon(Agent::Claude)
-    } else {
-        Span::styled(total.to_string(), Style::default().fg(Color::Gray))
+    let badge = match (total, first) {
+        (1, Some(agent)) => agent_icon(agent),
+        _ => Span::styled(total.to_string(), Style::default().fg(Color::Gray)),
     };
     vec![
         Span::styled("+", Style::default().fg(Color::Rgb(160, 160, 160))),
@@ -610,21 +615,27 @@ pub(crate) mod tests {
 
     #[test]
     fn only_single_recognized_coauthors_use_icons() {
-        for (codex, claude, others, expected) in [
-            (false, false, 0, "Alice"),
-            (true, false, 0, "Alice+꩜"),
-            (false, true, 0, "Alice+❋"),
-            (false, false, 1, "Alice+1"),
-            (true, true, 0, "Alice+2"),
-            (false, true, 1, "Alice+2"),
-            (true, false, 1, "Alice+2"),
-            (false, false, 2, "Alice+2"),
-            (true, true, 2, "Alice+4"),
+        for (codex, claude, gemini, others, expected) in [
+            (false, false, false, 0, "Alice"),
+            (true, false, false, 0, "Alice+꩜"),
+            (false, true, false, 0, "Alice+❋"),
+            (false, false, true, 0, "Alice+✦"),
+            (false, false, false, 1, "Alice+1"),
+            (true, true, false, 0, "Alice+2"),
+            (false, true, false, 1, "Alice+2"),
+            (true, false, false, 1, "Alice+2"),
+            (false, false, true, 1, "Alice+2"),
+            (true, false, true, 0, "Alice+2"),
+            (false, true, true, 0, "Alice+2"),
+            (false, false, false, 2, "Alice+2"),
+            (true, true, false, 2, "Alice+4"),
+            (true, true, true, 2, "Alice+5"),
         ] {
             let mut c = commit();
             c.collaborators = crate::git::Collaborators {
                 codex,
                 claude,
+                gemini,
                 others,
                 ..Default::default()
             };

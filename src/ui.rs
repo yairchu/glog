@@ -207,7 +207,8 @@ const fn detail(key: &'static str, text: &'static str) -> HelpRow {
     )
 }
 
-const AUTHOR_BADGES: &str = "  Author badges: +꩜ Codex  +❋ Claude Code  +N other coauthors";
+const AUTHOR_BADGES: &str =
+    "  Author badges: +꩜ Codex  +❋ Claude Code  +✦ Gemini  +N other coauthors";
 const FILE_FOLD: Option<&str> = Some("toggle current file fold (Show)");
 const FILE_SUMMARY: Option<&str> = Some("toggle file summary / patch (Show/Status)");
 
@@ -1533,17 +1534,20 @@ mod tests {
 
     #[test]
     fn collaborator_badges_have_distinct_colors_on_selected_rows() {
-        for (codex, claude, others, glyph, color) in [
-            (true, false, 0, "꩜", Color::Reset),
-            (false, true, 0, "❋", Color::Rgb(215, 119, 87)),
-            (false, false, 1, "1", Color::Gray),
-            (true, true, 0, "2", Color::Gray),
-            (false, true, 1, "2", Color::Gray),
+        for (codex, claude, gemini, others, glyph, color) in [
+            (true, false, false, 0, "꩜", Color::Reset),
+            (false, true, false, 0, "❋", Color::Rgb(215, 119, 87)),
+            (false, false, true, 0, "✦", Color::Rgb(66, 133, 244)),
+            (false, false, false, 1, "1", Color::Gray),
+            (true, true, false, 0, "2", Color::Gray),
+            (false, true, false, 1, "2", Color::Gray),
+            (false, false, true, 1, "2", Color::Gray),
         ] {
             let mut c = crate::log_format::tests::commit();
             c.collaborators = crate::git::Collaborators {
                 codex,
                 claude,
+                gemini,
                 others,
                 ..Default::default()
             };
