@@ -79,6 +79,7 @@ pub struct App {
     pub show_cursor: usize,
     pub show_text: String,
     pub show_links: HashMap<usize, Vec<crate::commit_links::Link>>,
+    pub show_message_styles: HashMap<usize, crate::message_format::Ranges>,
     pub visible_show_links: Vec<(ratatui::layout::Rect, crate::commit_links::Target)>,
     reference_back: Option<Box<App>>,
     browser_result: Option<crate::commit_links::BrowserResult>,
@@ -154,6 +155,7 @@ impl App {
             show_cursor: 0,
             show_text: String::new(),
             show_links: HashMap::new(),
+            show_message_styles: HashMap::new(),
             visible_show_links: Vec::new(),
             reference_back: None,
             browser_result: None,
@@ -504,16 +506,19 @@ impl App {
 
     /// The selected commit's type, unless that type is already filtered.
     /// Branch points, ref-labelled commits, and folded merges can stay visible.
-    pub fn selected_hideable_type(&self) -> Option<&str> {
+    pub fn selected_hideable_type(&self) -> Option<std::borrow::Cow<'_, str>> {
         self.commits
             .get(self.selected)
             .filter(|_| self.log_folds.visible(self.selected))
             .and_then(crate::log_folds::commit_type)
-            .filter(|kind| !self.log_folds.hidden_types.contains(*kind))
+            .filter(|kind| !self.log_folds.hidden_types.contains(kind.as_ref()))
     }
 
     fn hide_selected_type(&mut self) {
-        if let Some(kind) = self.selected_hideable_type().map(str::to_owned) {
+        if let Some(kind) = self
+            .selected_hideable_type()
+            .map(std::borrow::Cow::into_owned)
+        {
             self.toggle_commit_type(Some(&kind));
         } else if self.log_folds.visible(self.selected)
             && self
@@ -861,14 +866,17 @@ impl App {
 
     fn reset_show_folds(&mut self) {
         self.visible_show_links.clear();
-        self.show_links = if self.commits.get(self.selected).is_some_and(|commit| {
+        let has_message = self.commits.get(self.selected).is_some_and(|commit| {
             commit.kind == CommitKind::Revision
                 && !matches!(commit.annotation, Some(git::Annotation::Stash(_)))
-        }) {
-            crate::commit_links::collect(&self.show_text)
+        });
+        if has_message {
+            self.show_links = crate::commit_links::collect(&self.show_text);
+            self.show_message_styles = crate::message_format::collect(&self.show_text);
         } else {
-            HashMap::new()
-        };
+            self.show_links.clear();
+            self.show_message_styles.clear();
+        }
         self.show_search_location = None;
         self.show_files = diff::file_sections(&self.show_text);
         self.submodules.clear();

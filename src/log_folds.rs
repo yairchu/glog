@@ -313,13 +313,16 @@ impl LogFolds {
         (self.hide_merges && commit.kind == CommitKind::Revision && commit.parents.len() > 1)
             || (self.graph.branch_points.get(index) != Some(&true)
                 && commit.decorations.is_empty()
-                && commit_type(commit).is_some_and(|kind| self.hidden_types.contains(kind)))
+                && commit_type(commit)
+                    .is_some_and(|kind| self.hidden_types.contains(kind.as_ref())))
     }
 
     pub fn toggle_type(&mut self, kind: Option<&str>, commits: &[Commit]) -> Result<(), String> {
         if let Some(kind) = kind {
-            if !self.hidden_types.remove(kind) {
-                self.hidden_types.insert(kind.to_owned());
+            let kind =
+                normalize_type(kind).ok_or_else(|| format!("invalid commit type {kind:?}"))?;
+            if !self.hidden_types.remove(kind.as_ref()) {
+                self.hidden_types.insert(kind.into_owned());
             }
         } else {
             self.hidden_types.clear();
@@ -381,7 +384,7 @@ impl LogFolds {
 /// Conventional Commit prefix, taken only from the subject of a revision.
 /// Custom ASCII types and issue references before the scope are supported;
 /// ordinary prose remains unclassified.
-pub fn commit_type(commit: &Commit) -> Option<&str> {
+pub fn commit_type(commit: &Commit) -> Option<std::borrow::Cow<'_, str>> {
     commit_type_prefix(commit).and_then(normalize_type)
 }
 
@@ -429,17 +432,31 @@ pub fn subject_type_prefix(subject: &str) -> Option<&str> {
 }
 
 /// Validate a filter type and use the same aliases in the CLI and TUI.
-pub fn normalize_type(kind: &str) -> Option<&str> {
-    (kind.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
-        && kind
-            .bytes()
-            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-'))
-    .then_some(match kind {
-        "doc" => "docs",
-        "tests" => "test",
-        "feature" => "feat",
-        _ => kind,
+pub fn normalize_type(kind: &str) -> Option<std::borrow::Cow<'_, str>> {
+    use std::borrow::Cow;
+    if !kind.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+        || !kind.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-')
+    {
+        return None;
+    }
+    let lowercase = if kind.bytes().any(|c| c.is_ascii_uppercase()) {
+        Cow::Owned(kind.to_ascii_lowercase())
+    } else {
+        Cow::Borrowed(kind)
+    };
+    Some(match lowercase.as_ref() {
+        "doc" => Cow::Borrowed("docs"),
+        "tests" => Cow::Borrowed("test"),
+        "feature" => Cow::Borrowed("feat"),
+        _ => lowercase,
     })
+}
+
+/// The byte position of a Conventional Commit's explicit breaking-change marker.
+pub fn subject_breaking_marker(subject: &str) -> Option<usize> {
+    subject_type_prefix(subject)?;
+    let prefix = subject.split_once(": ")?.0;
+    prefix.ends_with('!').then(|| prefix.len() - 1)
 }
 
 /// The omitted commits that lead to a row. The rest, such as the history
@@ -1147,6 +1164,11 @@ mod tests {
     fn conventional_types_require_a_subject_prefix() {
         for (subject, expected) in [
             ("feat: add something", Some("feat")),
+            ("FIX: repair", Some("fix")),
+            ("Fix(api)!: repair", Some("fix")),
+            ("DoC(manual): guide", Some("docs")),
+            ("TESTS #234(failing): reproduce", Some("test")),
+            ("Custom-Type: thing", Some("custom-type")),
             ("feature(api)!: add something", Some("feat")),
             ("doc #290(manual): list Bypass", Some("docs")),
             ("docs: update guide", Some("docs")),
@@ -1175,7 +1197,7 @@ mod tests {
         ] {
             let mut c = commit("a", &[]);
             c.subject = subject.into();
-            assert_eq!(commit_type(&c), expected, "{subject}");
+            assert_eq!(commit_type(&c).as_deref(), expected, "{subject}");
             c.kind = CommitKind::WorkingTree;
             assert_eq!(commit_type(&c), None);
         }

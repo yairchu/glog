@@ -7,6 +7,13 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Emphasize breaking-change markers in Log, Reflog, and Show, including
+  `!`, `BREAKING CHANGE:`, and `BREAKING-CHANGE:`. Show also emphasizes
+  section headings and footer labels while keeping their values plain.
+- Recognize Conventional Commit types case-insensitively in highlighting
+  and filters, preserving the subject's original spelling. Show titles use
+  the same highlighting as Log.
+
 - Highlight branch names and revision targets in Reflog checkout, reset,
   branch creation/rename, and rebase start/finish messages.
 

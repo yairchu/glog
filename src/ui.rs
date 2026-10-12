@@ -461,7 +461,7 @@ fn draw_type_controls(frame: &mut Frame, app: &mut App, area: Rect) {
     if let Some(kind) = app.selected_hideable_type() {
         items.push((
             format!("[t hide {kind}] "),
-            LogAction::Type(kind.to_owned()),
+            LogAction::Type(kind.into_owned()),
             true,
         ));
     }
@@ -675,6 +675,13 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 ansi::normalized_line(&row.text)
             };
+            if let Some(ranges) = app
+                .show_message_styles
+                .get(&row.source)
+                .filter(|_| row.file.is_none())
+            {
+                line = ansi::style_ranges(line, ranges.iter().cloned());
+            }
             let links = app
                 .show_links
                 .get(&row.source)

@@ -408,8 +408,8 @@ glog --watch --hide-types=test,chore --hide-merges
 ```
 
 `--hide-types TYPES` also works, and repeated `--hide-types` options combine.
-These are reversible view filters: use the top-bar buttons, `t`, `M`, or `T` to
-change them after launch. Revision and path arguments still select which
+Type matching is case-insensitive. These are reversible view filters: use the
+top-bar buttons, `t`, `M`, or `T` to change them after launch. Revision and path arguments still select which
 history Git loads.
 
 ### Commit types
@@ -421,7 +421,7 @@ hides `test` commits except branch points and commits labelled with refs
 Branch points are commits with multiple children in the loaded history,
 including connections through intermediate commits omitted by Git.
 Scopes and breaking-change markers (`feat!:`,
-`feat(api)!:`) are supported, as are custom lowercase types and issue-number
+`feat(api)!:`) are supported, as are custom types and issue-number
 extensions such as `test #234(failing):`, `docs #290(manual):`, and
 `fix #233 #234:`.
 

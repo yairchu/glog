@@ -8,6 +8,7 @@ mod images;
 mod input;
 mod log_folds;
 mod log_format;
+mod message_format;
 mod stash;
 mod status;
 mod ui;
@@ -216,6 +217,7 @@ Stash show opens a stash by index or reference (the latest by default).
 Blame shows which commit last changed each line; Enter opens it, p blames
 the file before it, and Backspace returns.
 Show opens HEAD or the specified commit, with history available via Tab.
+Breaking-change markers, section headings, and footer labels are emphasized.
 Click underlined commit hashes in Show messages to follow them; Backspace returns.
 Hashes use lowercase hex: 7+ characters, or 4+ with a # prefix.
 On GitHub repositories, # plus 1-6 digits opens an issue in the browser.

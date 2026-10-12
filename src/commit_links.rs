@@ -1,10 +1,7 @@
 //! Commit and issue references in the message portion of Show, before any patch or notes.
 use std::{collections::HashMap, ops::Range};
 
-use ratatui::{
-    style::Style,
-    text::{Line, Span},
-};
+use ratatui::{style::Style, text::Line};
 
 #[derive(Clone, Debug)]
 pub struct Link {
@@ -130,40 +127,14 @@ pub fn open_issue(url: &str) -> Result<BrowserResult, String> {
 
 /// Preserve existing ANSI styling while decorating the byte ranges of links.
 pub fn style_links(
-    mut line: Line<'static>,
+    line: Line<'static>,
     links: &[Link],
     mut style: impl FnMut(&Link) -> Style,
 ) -> Line<'static> {
-    let mut spans = Vec::new();
-    let mut offset = 0;
-    for span in line.spans {
-        let end = offset + span.content.len();
-        let mut cursor = 0;
-        for link in links
-            .iter()
-            .filter(|link| link.range.start < end && link.range.end > offset)
-        {
-            let start = link.range.start.max(offset) - offset;
-            let stop = link.range.end.min(end) - offset;
-            if cursor < start {
-                spans.push(Span::styled(
-                    span.content[cursor..start].to_owned(),
-                    span.style,
-                ));
-            }
-            spans.push(Span::styled(
-                span.content[start..stop].to_owned(),
-                span.style.patch(style(link)),
-            ));
-            cursor = stop;
-        }
-        if cursor < span.content.len() {
-            spans.push(Span::styled(span.content[cursor..].to_owned(), span.style));
-        }
-        offset = end;
-    }
-    line.spans = spans;
-    line
+    crate::ansi::style_ranges(
+        line,
+        links.iter().map(|link| (link.range.clone(), style(link))),
+    )
 }
 
 #[cfg(test)]

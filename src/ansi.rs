@@ -47,6 +47,44 @@ pub fn plain(input: &str) -> String {
         .collect()
 }
 
+/// Patch non-overlapping, ordered byte ranges while preserving existing ANSI styles.
+pub fn style_ranges(
+    mut line: Line<'static>,
+    ranges: impl IntoIterator<Item = (std::ops::Range<usize>, Style)>,
+) -> Line<'static> {
+    let ranges: Vec<_> = ranges.into_iter().collect();
+    let mut spans = Vec::new();
+    let mut offset = 0;
+    for span in line.spans {
+        let end = offset + span.content.len();
+        let mut cursor = 0;
+        for (range, style) in ranges
+            .iter()
+            .filter(|(range, _)| range.start < end && range.end > offset)
+        {
+            let start = range.start.max(offset) - offset;
+            let stop = range.end.min(end) - offset;
+            if cursor < start {
+                spans.push(Span::styled(
+                    span.content[cursor..start].to_owned(),
+                    span.style,
+                ));
+            }
+            spans.push(Span::styled(
+                span.content[start..stop].to_owned(),
+                span.style.patch(*style),
+            ));
+            cursor = stop;
+        }
+        if cursor < span.content.len() {
+            spans.push(Span::styled(span.content[cursor..].to_owned(), span.style));
+        }
+        offset = end;
+    }
+    line.spans = spans;
+    line
+}
+
 fn apply_sgr(style: &mut Style, params: &str) {
     let values: Vec<u16> = if params.is_empty() {
         vec![0]

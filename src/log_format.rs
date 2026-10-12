@@ -207,17 +207,18 @@ impl LogFormat {
                 Field::Refs => Style::default().fg(Color::Green),
                 Field::Subject => Style::default(),
             };
-            if let Some(kind) = (part.field == Field::Subject)
-                .then(|| crate::log_folds::commit_type_prefix(commit))
-                .flatten()
+            if part.field == Field::Subject
+                && crate::log_folds::commit_type_prefix(commit).is_some()
             {
                 // Preserve format literals and the subject's original spelling.
                 let start = text.len() - value.len() - part.suffix.len();
-                if start > 0 {
-                    spans.push(Span::styled(text[..start].to_owned(), style));
-                }
-                spans.push(Span::styled(kind.to_owned(), style.fg(Color::LightBlue)));
-                spans.push(Span::styled(text[start + kind.len()..].to_owned(), style));
+                spans.extend(
+                    crate::ansi::style_ranges(
+                        ratatui::text::Line::from(Span::styled(text, style)),
+                        crate::message_format::subject_ranges(&value, start),
+                    )
+                    .spans,
+                );
             } else {
                 spans.push(Span::styled(text, style));
             }
@@ -313,12 +314,14 @@ fn reflog_spans(commit: &Commit, entry: &ReflogEntry) -> Vec<Span<'static>> {
         spans.push(Span::raw(" "));
         if let Some(references) = reflog_reference_spans(action, message) {
             spans.extend(references);
-        } else if let Some(kind) = crate::log_folds::subject_type_prefix(message) {
-            spans.push(Span::styled(
-                kind.to_owned(),
-                Style::default().fg(Color::LightBlue),
-            ));
-            spans.push(Span::raw(message[kind.len()..].to_owned()));
+        } else if crate::log_folds::subject_type_prefix(message).is_some() {
+            spans.extend(
+                crate::ansi::style_ranges(
+                    ratatui::text::Line::raw(message.to_owned()),
+                    crate::message_format::subject_ranges(message, 0),
+                )
+                .spans,
+            );
         } else {
             spans.push(Span::raw(message.to_owned()));
         }
@@ -411,7 +414,7 @@ pub fn parse_args(args: &[String]) -> Result<(LogFormat, LogOptions, Vec<String>
             for kind in value.split(',') {
                 let kind = crate::log_folds::normalize_type(kind.trim())
                     .ok_or_else(|| format!("invalid commit type {kind:?} in --hide-types"))?;
-                options.hidden_types.insert(kind.to_owned());
+                options.hidden_types.insert(kind.into_owned());
             }
             continue;
         }
@@ -495,7 +498,13 @@ pub(crate) mod tests {
             for (color, expected) in [(Color::Rgb(255, 165, 0), label), (Color::LightBlue, kind)] {
                 let parts: Vec<_> = spans
                     .iter()
-                    .filter(|span| span.style.fg == Some(color))
+                    .filter(|span| {
+                        span.style.fg == Some(color)
+                            && !span
+                                .style
+                                .add_modifier
+                                .contains(ratatui::style::Modifier::BOLD)
+                    })
                     .map(|span| span.content.as_ref())
                     .collect();
                 assert_eq!(parts, expected.into_iter().collect::<Vec<_>>());
@@ -581,9 +590,54 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn breaking_markers_survive_custom_formats_and_case_insensitive_type_filters() {
+        let mut c = commit();
+        c.subject = "Feat(api)!: new API".into();
+        for source in ["%s", "«%s»", "%s / %s"] {
+            let format = LogFormat::parse(source).unwrap();
+            let spans = format.spans(&c);
+            let markers: Vec<_> = spans.iter().filter(|span| span.content == "!").collect();
+            assert_eq!(markers.len(), source.matches("%s").count());
+            assert!(markers
+                .iter()
+                .all(|span| span.style == crate::message_format::breaking_style()));
+            assert_eq!(format.text(&c), source.replace("%s", &c.subject));
+        }
+        let mut reflog = c.clone();
+        reflog.annotation = Some(Annotation::Reflog(ReflogEntry {
+            reference: "HEAD".into(),
+            show_reference: false,
+            updated_at: "2026-10-12".into(),
+            actor: "Alice".into(),
+            action: format!("commit: {}", c.subject),
+        }));
+        assert!(LogFormat::default().spans(&reflog).iter().any(|span| {
+            span.content == "!" && span.style == crate::message_format::breaking_style()
+        }));
+        let (_, options, _) =
+            parse_args(&["--hide-types=FIX,DoC,TESTS,Custom-Type".into()]).unwrap();
+        assert_eq!(
+            options.hidden_types,
+            ["fix", "docs", "test", "custom-type"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect()
+        );
+        c.decorations.clear();
+        let mut folds = crate::log_folds::LogFolds::default();
+        folds.refresh(&[c.clone()]).unwrap();
+        folds.toggle_type(Some("FEATURE"), &[c.clone()]).unwrap();
+        assert!(folds.filter_hidden(0, &c));
+        folds.toggle_type(Some("feat"), &[c]).unwrap();
+        assert!(folds.hidden_types.is_empty());
+    }
+
+    #[test]
     fn subject_types_keep_original_spelling_and_format_literals() {
         for (subject, kind) in [
             ("feat(log)!: add filtering", Some("feat")),
+            ("FIX(api)!: repair", Some("FIX")),
+            ("DoCs: explain", Some("DoCs")),
             ("tests #234(failing): reproduce crash", Some("tests")),
             ("doc: explain filtering", Some("doc")),
             ("feature: new view", Some("feature")),
