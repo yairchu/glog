@@ -311,7 +311,9 @@ fn reflog_spans(commit: &Commit, entry: &ReflogEntry) -> Vec<Span<'static>> {
             Style::default().fg(Color::Rgb(255, 165, 0)),
         ));
         spans.push(Span::raw(" "));
-        if let Some(kind) = crate::log_folds::subject_type_prefix(message) {
+        if let Some(references) = reflog_reference_spans(action, message) {
+            spans.extend(references);
+        } else if let Some(kind) = crate::log_folds::subject_type_prefix(message) {
             spans.push(Span::styled(
                 kind.to_owned(),
                 Style::default().fg(Color::LightBlue),
@@ -324,6 +326,44 @@ fn reflog_spans(commit: &Commit, entry: &ReflogEntry) -> Vec<Span<'static>> {
         spans.push(Span::raw(entry.action.clone()));
     }
     spans
+}
+
+/// Parse Git's structured action messages without depending on surviving refs.
+fn reflog_reference_spans(action: &str, message: &str) -> Option<Vec<Span<'static>>> {
+    let (prefix, pair) = match action {
+        "checkout" => ("moving from ", true),
+        "Branch" => ("renamed ", true),
+        "branch" => ("Created from ", false),
+        "reset" => ("moving to ", false),
+        "rebase (start)" => ("checkout ", false),
+        "rebase (finish)" => ("returning to ", false),
+        _ => return None,
+    };
+    let references = message.strip_prefix(prefix)?;
+    let valid =
+        |reference: &str| !reference.is_empty() && !reference.chars().any(char::is_whitespace);
+    let styled = |reference: &str| {
+        let hash = (7..=64).contains(&reference.len())
+            && reference.bytes().all(|byte| byte.is_ascii_hexdigit());
+        Span::styled(
+            reference.to_owned(),
+            Style::default().fg(if hash { Color::Yellow } else { Color::Green }),
+        )
+    };
+    let mut spans = vec![Span::raw(prefix)];
+    if pair {
+        let (from, to) = references.split_once(" to ")?;
+        if !valid(from) || !valid(to) {
+            return None;
+        }
+        spans.extend([styled(from), Span::raw(" to "), styled(to)]);
+    } else {
+        if !valid(references) {
+            return None;
+        }
+        spans.push(styled(references));
+    }
+    Some(spans)
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -460,6 +500,83 @@ pub(crate) mod tests {
                     .collect();
                 assert_eq!(parts, expected.into_iter().collect::<Vec<_>>());
             }
+        }
+    }
+
+    #[test]
+    fn reflog_structured_messages_highlight_only_reference_targets() {
+        for (action, targets) in [
+            (
+                "checkout: moving from deleted/topic to feature/café",
+                vec![
+                    ("deleted/topic", Color::Green),
+                    ("feature/café", Color::Green),
+                ],
+            ),
+            (
+                "checkout: moving from 0123456789abcdef0123456789abcdef01234567 to main",
+                vec![
+                    ("0123456789abcdef0123456789abcdef01234567", Color::Yellow),
+                    ("main", Color::Green),
+                ],
+            ),
+            (
+                "checkout: moving from main to abc1234",
+                vec![("main", Color::Green), ("abc1234", Color::Yellow)],
+            ),
+            (
+                "Branch: renamed refs/heads/old to refs/heads/new",
+                vec![
+                    ("refs/heads/old", Color::Green),
+                    ("refs/heads/new", Color::Green),
+                ],
+            ),
+            ("branch: Created from HEAD", vec![("HEAD", Color::Green)]),
+            ("reset: moving to HEAD~1", vec![("HEAD~1", Color::Green)]),
+            ("reset: moving to abc1234", vec![("abc1234", Color::Yellow)]),
+            (
+                "rebase (start): checkout main",
+                vec![("main", Color::Green)],
+            ),
+            (
+                "rebase (finish): returning to refs/heads/topic",
+                vec![("refs/heads/topic", Color::Green)],
+            ),
+            ("commit: moving from main to topic", vec![]),
+            ("checkout: moving from main to topic extra text", vec![]),
+            ("checkout: moving from main to ", vec![]),
+            ("checkout: moving from to topic", vec![]),
+            ("reset: moving to ", vec![]),
+            ("reset: moving to main with extra text", vec![]),
+            ("custom: main to topic", vec![]),
+        ] {
+            let mut c = commit();
+            c.annotation = Some(Annotation::Reflog(ReflogEntry {
+                reference: "HEAD".into(),
+                show_reference: false,
+                updated_at: "2026-10-12 10:00:01".into(),
+                actor: "Alice".into(),
+                action: action.into(),
+            }));
+            let spans = LogFormat::default().spans(&c);
+            assert_eq!(
+                spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+                format!("{} 2026-10-12 10:00:01 Alice {action}", c.short_hash)
+            );
+            let highlighted: Vec<_> = spans
+                .iter()
+                .skip(3)
+                .filter_map(|span| match span.style.fg {
+                    Some(color @ (Color::Green | Color::Yellow)) => {
+                        Some((span.content.as_ref(), color))
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(highlighted, targets, "{action}");
         }
     }
 

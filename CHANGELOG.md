@@ -7,6 +7,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Highlight branch names and revision targets in Reflog checkout, reset,
+  branch creation/rename, and rebase start/finish messages.
+
 - Mark Gemini CLI and Gemini Code Assist coauthors with a blue `✦` in Log,
   Blame, and Show.
 
