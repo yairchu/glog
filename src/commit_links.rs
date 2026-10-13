@@ -460,6 +460,9 @@ fi
             let mut app =
                 git::load_show_app(&[third.clone(), "--".into(), "only-third.txt".into()]).unwrap();
             app.watch = true;
+            app.log_format = crate::log_format::LogFormat::parse("%s").unwrap();
+            app.log_folds.hidden_types.insert("test".into());
+            app.log_folds.hide_merges = true;
             app.toggle_show_stat();
             app.show_cursor = app.show_rows.iter().position(|row| row.summary).unwrap();
             app.toggle_show_file();
@@ -510,6 +513,12 @@ fi
             assert!(app.show_paths.is_empty());
             assert!(app.show_stat);
             assert!(app.has_reference_back());
+            // The followed history keeps the Log's settings for when Tab opens it.
+            assert!(app.watch);
+            assert_eq!(app.context, format!("show {}", &second[..7]));
+            assert_eq!(app.log_format.text(&app.commits[app.selected]), "second");
+            assert!(app.log_folds.hidden_types.contains("test"));
+            assert!(app.log_folds.hide_merges);
             terminal
                 .draw(|frame| crate::ui::draw(frame, &mut app))
                 .unwrap();
