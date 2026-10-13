@@ -409,8 +409,8 @@ glog --watch --hide-types=test,chore --hide-merges
 
 `--hide-types TYPES` also works, and repeated `--hide-types` options combine.
 Type matching is case-insensitive. These are reversible view filters: use the
-top-bar buttons, `t`, `M`, or `T` to change them after launch. Revision and path arguments still select which
-history Git loads.
+top-bar buttons, `t`, `M`, or `T` to change them after launch. Revision and
+path arguments still select which history Git loads.
 
 ### Commit types
 

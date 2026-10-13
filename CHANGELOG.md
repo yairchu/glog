@@ -23,13 +23,13 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Click underlined commit hashes in Show messages to browse the referenced
   commit, including commits outside the current history or path filters.
-  Hashes use lowercase hex; four- and five-character abbreviations require a
-  `#` prefix. Six-character `#` references are left plain, as they are
-  usually colors.
+  Hashes use lowercase hex and need seven or more characters, or four or
+  more with a `#` prefix. Six-character `#` references are left plain, as
+  they are usually colors.
   Backspace returns through followed references, preserving the previous
   view's reading position and expanded files.
 
-- Click issue references (`#` plus 1–6 digits) in Show messages to open them
+- Click issue references (`#` plus 1–5 digits) in Show messages to open them
   in the browser. The GitHub repository is taken from `origin`, or without
   one, from the only GitHub remote; numeric references with seven or more
   digits remain commit candidates.

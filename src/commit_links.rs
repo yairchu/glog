@@ -37,8 +37,11 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
             let token = word.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');
             let prefixed = plain[..start].ends_with('#');
             let minimum = if prefixed { 4 } else { 7 };
-            let candidate = if prefixed
-                && (1..=6).contains(&token.len())
+            // #rrggbb is far more likely a color than an issue or an abbreviated hash.
+            let candidate = if prefixed && token.len() == 6 {
+                None
+            } else if prefixed
+                && (1..=5).contains(&token.len())
                 && token.bytes().all(|b| b.is_ascii_digit())
             {
                 // Short numeric references are issues even if they match a commit.
@@ -49,8 +52,6 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
                     .is_none_or(|c| !c.is_alphanumeric() && !matches!(c, '_' | '/' | '.' | '-'));
                 standalone.then_some(Candidate::Issue(token))
             } else if (minimum..=64).contains(&token.len())
-                // #rrggbb is far more likely a color than an abbreviated hash.
-                && !(prefixed && token.len() == 6)
                 && token
                     .bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -282,7 +283,7 @@ mod tests {
     }
 
     #[test]
-    fn short_numeric_references_are_issues_and_seven_digits_can_be_commits() {
+    fn short_numeric_references_are_issues_and_six_digits_are_colors() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         git(&["init", "-q"]);
@@ -299,12 +300,11 @@ mod tests {
             "#333".into(),
             "#4444".into(),
             "#55555".into(),
-            "#999999".into(),
-            format!("#{}", &hash[..6]),
         ];
         let line = format!("    Fix {} and #{}.", issue_tokens.join(", "), &hash[..7]);
         let text = format!(
-            "commit {hash}\n\n{line}\n    #12abc_thing #ABCDEF #1234567z owner/another#42\n"
+            "commit {hash}\n\n{line}\n    #12abc_thing #ABCDEF #999999 #{} #1234567z owner/another#42\n",
+            &hash[..6]
         );
         let without_remote = collect(&text, &mut None);
         assert_eq!(
