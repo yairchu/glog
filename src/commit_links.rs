@@ -492,12 +492,14 @@ fi
                 .draw(|frame| crate::ui::draw(frame, &mut app))
                 .unwrap();
             for (rect, _) in &app.visible_show_links {
-                let cell = &terminal.backend().buffer()[(rect.x, rect.y)];
-                assert!(
-                    cell.symbol().bytes().all(|byte| byte.is_ascii_hexdigit()),
-                    "hit target must cover the displayed hash: {cell:?}"
-                );
-                assert!(cell.modifier.contains(ratatui::style::Modifier::UNDERLINED));
+                for position in rect.positions() {
+                    let cell = &terminal.backend().buffer()[position];
+                    assert!(
+                        cell.symbol().bytes().all(|byte| byte.is_ascii_hexdigit()),
+                        "hit target must cover the displayed hash: {cell:?}"
+                    );
+                    assert!(cell.modifier.contains(ratatui::style::Modifier::UNDERLINED));
+                }
             }
             let origin_text = app.show_text.clone();
             let origin_rows: Vec<_> = app.show_rows.iter().map(|row| row.text.clone()).collect();

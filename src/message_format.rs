@@ -285,6 +285,12 @@ mod tests {
             .modifier
             .contains(Modifier::UNDERLINED));
         assert!(!buffer[(9, reference)].modifier.contains(Modifier::BOLD));
-        assert_eq!(app.visible_show_links.len(), 4);
+        assert_eq!(
+            app.visible_show_links
+                .iter()
+                .map(|(rect, _)| (rect.x, rect.y, rect.width))
+                .collect::<Vec<_>>(),
+            [(9, reference, 4)]
+        );
     }
 }

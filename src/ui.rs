@@ -661,8 +661,6 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
     app.ensure_show_rows();
     app.show_row_origin = area.y;
     app.visible_show_rows = area.height as usize;
-    let mut marker_lines = Vec::new();
-    let mut targets = Vec::new();
     let mut lines: Vec<_> = app
         .show_rows
         .iter()
@@ -682,25 +680,12 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             {
                 line = ansi::style_ranges(line, ranges.iter().cloned());
             }
-            let links = app
-                .show_links
-                .get(&row.source)
-                .filter(|_| row.file.is_none());
-            if !app.show_links.is_empty() {
-                let mut marked = Line::raw(line.to_string());
-                if let Some(links) = links {
-                    marked = crate::commit_links::style_links(marked, links, |link| {
-                        targets.push(link.target.clone());
-                        let id = targets.len() as u32;
-                        Style::default().fg(Color::Rgb((id >> 16) as u8, (id >> 8) as u8, id as u8))
-                    });
-                    line = crate::commit_links::style_links(line, links, |_| {
-                        Style::default()
-                            .fg(Color::LightCyan)
-                            .add_modifier(Modifier::UNDERLINED)
-                    });
-                }
-                marker_lines.push(marked);
+            if let Some(links) = row_links(app, row) {
+                line = crate::commit_links::style_links(line, links, |_| {
+                    Style::default()
+                        .fg(Color::LightCyan)
+                        .add_modifier(Modifier::UNDERLINED)
+                });
             }
             if row.file.is_none() {
                 let text = line.to_string();
@@ -810,26 +795,55 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
         .saturating_sub(1)
         .min(lines.len());
     let within = app.show_offset - app.show_row_starts[first];
-    if !targets.is_empty() && area.width > 0 && area.height > 0 {
+    // Each row takes at least one screen line, so no later row can be visible.
+    let visible = first..lines.len().min(first + height);
+    if app.show_rows[visible.clone()]
+        .iter()
+        .any(|row| row_links(app, row).is_some())
+    {
         // Render an ID mask with exactly the viewport's wrapping and scroll rules.
         // This keeps hit targets correct for wide characters and wrapped hashes.
         use ratatui::{buffer::Buffer, widgets::Widget};
+        let mut targets = Vec::new();
+        let marker_lines: Vec<_> = visible
+            .map(|index| {
+                let marked = Line::raw(lines[index].to_string());
+                let Some(links) = row_links(app, &app.show_rows[index]) else {
+                    return marked;
+                };
+                crate::commit_links::style_links(marked, links, |link| {
+                    targets.push(link.target.clone());
+                    let id = targets.len() as u32;
+                    Style::default().fg(Color::Rgb((id >> 16) as u8, (id >> 8) as u8, id as u8))
+                })
+            })
+            .collect();
         let mut mask = Buffer::empty(area);
-        Paragraph::new(Text::from(
-            marker_lines.into_iter().skip(first).collect::<Vec<_>>(),
-        ))
-        .scroll((within.min(u16::MAX as usize) as u16, 0))
-        .wrap(Wrap { trim: false })
-        .render(area, &mut mask);
+        Paragraph::new(Text::from(marker_lines))
+            .scroll((within.min(u16::MAX as usize) as u16, 0))
+            .wrap(Wrap { trim: false })
+            .render(area, &mut mask);
         for y in area.y..area.bottom() {
+            let mut previous = None;
             for x in area.x..area.right() {
-                if let Color::Rgb(r, g, b) = mask[(x, y)].fg {
-                    let id = (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b);
-                    if let Some(target) = id.checked_sub(1).and_then(|index| targets.get(index)) {
-                        app.visible_show_links
-                            .push((Rect::new(x, y, 1, 1), target.clone()));
+                let id = match mask[(x, y)].fg {
+                    Color::Rgb(r, g, b) => {
+                        (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b)
                     }
+                    _ => 0,
+                };
+                let Some(target) = id.checked_sub(1).and_then(|index| targets.get(index)) else {
+                    previous = None;
+                    continue;
+                };
+                // Adjacent cells of one link form a single hit target.
+                if previous == Some(id) {
+                    app.visible_show_links.last_mut().unwrap().0.width += 1;
+                } else {
+                    app.visible_show_links
+                        .push((Rect::new(x, y, 1, 1), target.clone()));
                 }
+                previous = Some(id);
             }
         }
     }
@@ -981,6 +995,16 @@ fn brighten_background(color: Color) -> Color {
         },
         _ => color,
     }
+}
+
+/// Links are only resolved in the message, never in patch text.
+fn row_links<'a>(
+    app: &'a App,
+    row: &crate::app::ShowRow,
+) -> Option<&'a Vec<crate::commit_links::Link>> {
+    app.show_links
+        .get(&row.source)
+        .filter(|_| row.file.is_none())
 }
 
 fn highlight_matches(mut line: Line<'static>, query: &str, current: bool) -> Line<'static> {
