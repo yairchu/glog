@@ -452,6 +452,40 @@ fi
     }
 
     #[test]
+    fn following_a_side_branch_suspends_watch_until_returning() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        commit("base");
+        git(&["checkout", "-qb", "side"]);
+        let side = commit("side");
+        git(&["checkout", "-q", "-"]);
+        let main = commit(&format!("main\n\nSee {side}"));
+        let mut app = crate::app::App::new(git::load_watch_log().unwrap());
+        app.watch = true;
+        app.selected = 1;
+        app.switch_mode();
+        app.follow_reference(&side);
+        assert_eq!(app.commits[app.selected].hash, side);
+        // The event loop must not replace this snapshot with default HEAD history.
+        assert!(!app.watch);
+        std::fs::write("new-file", "change\n").unwrap();
+        app.switch_mode();
+        assert_eq!(app.commits[app.selected].hash, side);
+        assert!(app
+            .commits
+            .iter()
+            .all(|commit| commit.kind == git::CommitKind::Revision));
+        app.switch_mode();
+        assert_eq!(app.commits[app.selected].hash, side);
+        app.reference_back();
+        assert!(app.watch);
+        app.replace_commits(git::load_watch_log().unwrap());
+        assert_eq!(app.commits[app.selected].hash, main);
+        assert_eq!(app.mode, Mode::Show);
+    }
+
+    #[test]
     fn wrapped_clicks_follow_nested_references_and_back_restores_the_original_view() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
@@ -527,7 +561,7 @@ fi
             assert!(app.show_stat);
             assert!(app.has_reference_back());
             // The followed history keeps the Log's settings for when Tab opens it.
-            assert!(app.watch);
+            assert!(!app.watch);
             assert_eq!(app.context, format!("show {}", &second[..7]));
             assert_eq!(app.log_format.text(&app.commits[app.selected]), "second");
             assert!(app.log_folds.hidden_types.contains("test"));

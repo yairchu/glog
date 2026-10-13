@@ -1530,7 +1530,8 @@ impl App {
                 let short = target.commits[target.selected].short_hash.clone();
                 target.context = format!("show {short}");
                 target.exit_on_esc = self.exit_on_esc;
-                target.watch = self.watch;
+                // Followed commits have their own fixed history. Leave watch on
+                // the saved origin so returning resumes default HEAD refreshes.
                 // Reflog, stash, and blame views have their own formats and no type
                 // filters; only a Log's settings carry over to the followed history.
                 if self.history == History::Log {
