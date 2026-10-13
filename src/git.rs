@@ -934,6 +934,8 @@ fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
         .args([
             "--no-pager",
             "show",
+            // Message links and styles require the full, indented message.
+            "--format=medium",
             "--decorate=short",
             "--color=always",
             "--no-ext-diff",
