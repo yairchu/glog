@@ -1754,6 +1754,8 @@ mod tests {
             collaborators: crate::git::Collaborators::default(),
             subject: subject.to_owned(),
             graph: vec!["* ".to_owned()],
+            first_parent_only: false,
+            boundary: false,
         }
     }
     #[test]

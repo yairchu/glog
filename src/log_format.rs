@@ -805,6 +805,8 @@ pub(crate) mod tests {
             author_date: "2026-09-14".into(),
             collaborators: crate::git::Collaborators::default(),
             graph: vec!["* ".into()],
+            first_parent_only: false,
+            boundary: false,
         }
     }
 

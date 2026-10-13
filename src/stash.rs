@@ -132,6 +132,8 @@ fn load_list(args: &[String]) -> Result<Vec<Commit>, String> {
                 collaborators: Collaborators::default(),
                 decorations: String::new(),
                 graph: vec![String::new()],
+                first_parent_only: false,
+                boundary: false,
                 parents: Vec::new(),
             })
         })

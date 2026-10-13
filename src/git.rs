@@ -44,6 +44,9 @@ pub struct Commit {
     pub collaborators: Collaborators,
     pub graph: Vec<String>,
     pub parents: Vec<String>,
+    /// Graph traversal can follow only the first parent while retaining merge identity.
+    pub first_parent_only: bool,
+    pub boundary: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -66,6 +69,14 @@ pub enum Annotation {
 }
 
 impl Commit {
+    pub fn graph_parents(&self) -> &[String] {
+        if self.first_parent_only {
+            &self.parents[..self.parents.len().min(1)]
+        } else {
+            &self.parents
+        }
+    }
+
     /// Stash headings identify a list entry as well as its saved commit.
     pub fn show_cache_key(&self) -> String {
         match &self.annotation {
@@ -299,7 +310,7 @@ fn log_command(user_args: &[String]) -> Result<Command, String> {
         "--decorate=short",
         "--color=always",
         "--no-abbrev-commit",
-        "--pretty=format:%x1e%H%x1f%h%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)%x1f%P%x1f%s",
+        "--pretty=format:%x1e%H%x1f%h%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)%x1f%P%x1f%m%x1f%s",
     ]);
     command.args(user_args);
     Ok(command)
@@ -313,7 +324,7 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
             format!("could not run git log: {error}")
         }
     })?;
-    let commits = if !output.status.success() {
+    let mut commits = if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("does not have any commits yet")
             || stderr.contains("your current branch appears to be broken")
@@ -325,6 +336,18 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
     } else {
         parse_log(&String::from_utf8_lossy(&output.stdout))?
     };
+    // Options after -- are pathspecs. Git lets the last traversal option win.
+    let first_parent_only = user_args
+        .iter()
+        .take_while(|arg| arg.as_str() != "--")
+        .fold(false, |enabled, arg| match arg.as_str() {
+            "--first-parent" => true,
+            "--no-first-parent" => false,
+            _ => enabled,
+        });
+    for commit in &mut commits {
+        commit.first_parent_only = first_parent_only;
+    }
     Ok(commits)
 }
 
@@ -344,19 +367,21 @@ pub fn log_ancestry(
         input.push('\n');
     }
     // Exclude the ancestors of the oldest displayed commit.
-    let oldest = revisions.last().into_iter().flat_map(|c| &c.parents);
+    let oldest = revisions.last().into_iter().flat_map(|c| c.graph_parents());
     for parent in oldest {
         input.push('^');
         input.push_str(parent);
         input.push('\n');
     }
-    let output = pipe_through(
-        Command::new("git")
-            .args(["rev-list", "--parents", "--stdin"])
-            .env("GIT_NO_LAZY_FETCH", "1"),
-        input.as_bytes(),
-    )
-    .ok_or("could not read ancestry for merge folding")?;
+    let mut command = Command::new("git");
+    command
+        .args(["rev-list", "--parents", "--stdin"])
+        .env("GIT_NO_LAZY_FETCH", "1");
+    if revisions.iter().any(|commit| commit.first_parent_only) {
+        command.arg("--first-parent");
+    }
+    let output = pipe_through(&mut command, input.as_bytes())
+        .ok_or("could not read ancestry for merge folding")?;
     Ok(output
         .lines()
         .filter_map(|line| {
@@ -827,8 +852,8 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
     let mut commits = Vec::new();
     for line in output.lines() {
         if let Some(marker) = line.find(RECORD) {
-            let fields: Vec<_> = line[marker + 1..].splitn(9, FIELD).collect();
-            if fields.len() == 9 {
+            let fields: Vec<_> = line[marker + 1..].splitn(10, FIELD).collect();
+            if fields.len() == 10 {
                 pending_graph.push(line[..marker].to_owned());
                 commits.push(Commit {
                     kind: CommitKind::Revision,
@@ -842,8 +867,10 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
                     author_date: fields[5].to_owned(),
                     collaborators: Collaborators::parse(fields[6], fields[4]),
                     parents: fields[7].split_whitespace().map(str::to_owned).collect(),
-                    subject: fields[8].to_owned(),
+                    subject: fields[9].to_owned(),
                     graph: std::mem::take(&mut pending_graph),
+                    first_parent_only: false,
+                    boundary: fields[8] == "-",
                 });
             }
         } else if !line.is_empty() {
@@ -886,6 +913,8 @@ fn pseudo_commit(kind: CommitKind, short_hash: &str, subject: &str) -> Commit {
         collaborators: Collaborators::default(),
         subject: subject.to_owned(),
         graph: vec!["* ".to_owned()],
+        first_parent_only: false,
+        boundary: false,
         parents: Vec::new(),
     }
 }
@@ -4883,7 +4912,7 @@ pub(crate) mod tests {
 
     #[test]
     fn parses_full_identity_and_graph_lines() {
-        let input = "|\\\n* \u{1e}abcdef\u{1f}abcdef0\u{1f}HEAD -> main\u{1f}Alice\u{1f}alice@example.com\u{1f}2026-09-14\u{1f}\u{1f}123456\u{1f}hello\n| * \u{1e}123456\u{1f}1234567\u{1f}\u{1f}Bob\u{1f}bob@example.com\u{1f}2026-09-13\u{1f}\u{1f}\u{1f}world\n";
+        let input = "|\\\n* \u{1e}abcdef\u{1f}abcdef0\u{1f}HEAD -> main\u{1f}Alice\u{1f}alice@example.com\u{1f}2026-09-14\u{1f}\u{1f}123456\u{1f}>\u{1f}hello\n| * \u{1e}123456\u{1f}1234567\u{1f}\u{1f}Bob\u{1f}bob@example.com\u{1f}2026-09-13\u{1f}\u{1f}\u{1f}>\u{1f}world\n";
         let commits = parse_log(input).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].hash, "abcdef");

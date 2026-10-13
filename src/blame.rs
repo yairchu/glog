@@ -384,6 +384,8 @@ fn render_lines(
                 author_date: String::new(),
                 collaborators: Collaborators::default(),
                 graph: vec![String::new()],
+                first_parent_only: false,
+                boundary: false,
                 parents: Vec::new(),
             };
             if let Some(details) = details.get(&line.hash) {

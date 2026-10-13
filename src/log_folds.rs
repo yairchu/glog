@@ -22,7 +22,7 @@ pub struct LogFolds {
     seen: HashSet<String>,
     // Ancestry through omitted commits stays valid while the loaded
     // revisions and their parents are unchanged.
-    revisions: Vec<(String, Vec<String>)>,
+    revisions: Vec<(String, Vec<String>, bool)>,
     ancestry: Option<Ancestry>,
     graph: Graph,
     // Complete ancestry for drawing through Git-omitted rows, without changing
@@ -149,7 +149,7 @@ impl LogFolds {
         let revisions: Vec<_> = commits
             .iter()
             .filter(|c| c.kind == CommitKind::Revision)
-            .map(|c| (c.hash.clone(), c.parents.clone()))
+            .map(|c| (c.hash.clone(), c.parents.clone(), c.first_parent_only))
             .collect();
         if revisions != self.revisions {
             self.ancestry = None;
@@ -571,12 +571,12 @@ impl Graph {
             .iter()
             .rfind(|c| c.kind == CommitKind::Revision)
             .into_iter()
-            .flat_map(|c| &c.parents)
+            .flat_map(|c| c.graph_parents())
             .collect();
         let mut unknown_below = None;
         let mut parents = vec![Vec::new(); nodes];
         for (row, commit) in commits.iter().enumerate() {
-            for (slot, parent) in commit.parents.iter().enumerate() {
+            for (slot, parent) in commit.graph_parents().iter().enumerate() {
                 match index.get(parent) {
                     Some(&node) => parents[row].push((node, slot > 0)),
                     None if ancestry.is_none() && !boundary.contains(parent) => {
@@ -586,9 +586,15 @@ impl Graph {
                 }
             }
         }
+        let first_parent_only = commits.iter().any(|commit| commit.first_parent_only);
         for (hash, links) in ancestry.into_iter().flatten() {
             let node = index[hash];
             if node >= rows {
+                let links = if first_parent_only {
+                    &links[..links.len().min(1)]
+                } else {
+                    links.as_slice()
+                };
                 parents[node] = links
                     .iter()
                     .filter_map(|parent| index.get(parent))
@@ -924,7 +930,7 @@ impl Layout {
                     .enumerate()
                     .map(|(i, &(_, colour))| {
                         if i == column {
-                            "● ".to_owned()
+                            if commit.boundary { "○ " } else { "● " }.to_owned()
                         } else {
                             format!("{} ", paint('│', colour))
                         }
