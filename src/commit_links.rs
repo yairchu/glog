@@ -15,25 +15,29 @@ pub enum Target {
     Issue(String),
 }
 
-pub fn collect(text: &str) -> HashMap<usize, Vec<Link>> {
-    let mut resolved = HashMap::new();
-    let mut issue_repository = None;
-    let mut links = HashMap::new();
+/// `repository` caches the GitHub repository across calls; it's looked up
+/// only once an issue reference appears.
+pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<usize, Vec<Link>> {
+    enum Candidate<'a> {
+        Commit(&'a str),
+        Issue(&'a str),
+    }
+    let mut candidates = Vec::new();
     let message = crate::git::commit_message_range(text);
-    for (source, line) in text
+    let lines: Vec<_> = text
         .lines()
-        .enumerate()
         .skip(message.start)
         .take(message.len())
-    {
-        let plain = crate::ansi::plain(line);
+        .map(crate::ansi::plain)
+        .collect();
+    for (index, plain) in lines.iter().enumerate() {
         let mut start = 0;
         // Treat an entire word as one token so identifiers containing hex aren't links.
         for word in plain.split_inclusive(|c: char| !c.is_alphanumeric() && c != '_') {
             let token = word.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');
             let prefixed = plain[..start].ends_with('#');
             let minimum = if prefixed { 4 } else { 7 };
-            let target = if prefixed
+            let candidate = if prefixed
                 && (1..=6).contains(&token.len())
                 && token.bytes().all(|b| b.is_ascii_digit())
             {
@@ -43,34 +47,44 @@ pub fn collect(text: &str) -> HashMap<usize, Vec<Link>> {
                     .chars()
                     .next_back()
                     .is_none_or(|c| !c.is_alphanumeric() && !matches!(c, '_' | '/' | '.' | '-'));
-                if standalone {
-                    issue_repository
-                        .get_or_insert_with(crate::git::github_repository)
-                        .as_ref()
-                        .map(|repo| Target::Issue(format!("{repo}/issues/{token}")))
-                } else {
-                    None
-                }
+                standalone.then_some(Candidate::Issue(token))
             } else if (minimum..=64).contains(&token.len())
                 && token
                     .bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
             {
-                resolved
-                    .entry(token.to_owned())
-                    .or_insert_with(|| crate::git::resolve_commit_reference(token))
-                    .as_ref()
-                    .map(|hash| Target::Commit(hash.clone()))
+                Some(Candidate::Commit(token))
             } else {
                 None
             };
-            if let Some(target) = target {
-                links.entry(source).or_insert_with(Vec::new).push(Link {
-                    range: start - usize::from(prefixed)..start + token.len(),
-                    target,
-                });
+            if let Some(candidate) = candidate {
+                let range = start - usize::from(prefixed)..start + token.len();
+                candidates.push((message.start + index, range, candidate));
             }
             start += word.len();
+        }
+    }
+    let commits =
+        crate::git::resolve_commit_references(candidates.iter().filter_map(|(_, _, candidate)| {
+            match candidate {
+                Candidate::Commit(token) => Some(*token),
+                Candidate::Issue(_) => None,
+            }
+        }));
+    let mut links = HashMap::new();
+    for (source, range, candidate) in candidates {
+        let target = match candidate {
+            Candidate::Commit(token) => commits.get(token).cloned().map(Target::Commit),
+            Candidate::Issue(token) => repository
+                .get_or_insert_with(crate::git::github_repository)
+                .as_ref()
+                .map(|repo| Target::Issue(format!("{repo}/issues/{token}"))),
+        };
+        if let Some(target) = target {
+            links
+                .entry(source)
+                .or_insert_with(Vec::new)
+                .push(Link { range, target });
         }
     }
     links
@@ -186,7 +200,7 @@ mod tests {
         let short = &hash[..7];
         let blob = git(&["rev-parse", "HEAD:file"]);
         let text = format!("commit {hash}\nAuthor: Test\n\n    Fix ({short}), reverting {hash}.\n    {short}_identifier identifier{short} {blob} 0000000\n\nNotes:\n    {hash}\ndiff --git a/file b/file\n    {hash}\n");
-        let links = collect(&text);
+        let links = collect(&text, &mut None);
         assert_eq!(
             links.len(),
             1,
@@ -251,7 +265,7 @@ mod tests {
             &hash[..6],
             &hash[..3]
         );
-        let links = collect(&text);
+        let links = collect(&text, &mut None);
         assert_eq!(
             links.len(),
             1,
@@ -289,7 +303,7 @@ mod tests {
         let text = format!(
             "commit {hash}\n\n{line}\n    #12abc_thing #ABCDEF #1234567z owner/another#42\n"
         );
-        let without_remote = collect(&text);
+        let without_remote = collect(&text, &mut None);
         assert_eq!(
             without_remote[&2].len(),
             1,
@@ -297,7 +311,7 @@ mod tests {
         );
         assert_eq!(without_remote[&2][0].target, Target::Commit(hash.clone()));
         git(&["remote", "add", "origin", "git@github.com:owner/repo.git"]);
-        let links = collect(&text);
+        let links = collect(&text, &mut None);
         assert_eq!(links.len(), 1);
         assert_eq!(links[&2].len(), issue_tokens.len() + 1);
         for (link, token) in links[&2].iter().zip(issue_tokens) {

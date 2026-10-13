@@ -82,6 +82,8 @@ pub struct App {
     pub show_message_styles: HashMap<usize, crate::message_format::Ranges>,
     pub visible_show_links: Vec<(ratatui::layout::Rect, crate::commit_links::Target)>,
     reference_back: Option<Box<App>>,
+    /// Remotes rarely change during a session, so look up issue links once.
+    github_repository: Option<Option<String>>,
     browser_result: Option<crate::commit_links::BrowserResult>,
     pub show_stat: bool,
     // Status shares show_stat, so it can change while Show's rows are hidden.
@@ -158,6 +160,7 @@ impl App {
             show_message_styles: HashMap::new(),
             visible_show_links: Vec::new(),
             reference_back: None,
+            github_repository: None,
             browser_result: None,
             show_stat: false,
             show_rows_stat: false,
@@ -871,7 +874,8 @@ impl App {
                 && !matches!(commit.annotation, Some(git::Annotation::Stash(_)))
         });
         if has_message {
-            self.show_links = crate::commit_links::collect(&self.show_text);
+            self.show_links =
+                crate::commit_links::collect(&self.show_text, &mut self.github_repository);
             self.show_message_styles = crate::message_format::collect(&self.show_text);
         } else {
             self.show_links.clear();

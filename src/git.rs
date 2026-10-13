@@ -514,19 +514,50 @@ fn github_repository_url(remote: &str) -> Option<String> {
     Some(format!("https://github.com/{owner}/{repo}"))
 }
 
-/// Accept only an unambiguous object hash naming a commit, never a hex-like ref name.
-pub(crate) fn resolve_commit_reference(reference: &str) -> Option<String> {
-    let output = Command::new("git")
-        .args(["rev-parse", "--verify", "--end-of-options"])
-        .arg(format!("{reference}^{{commit}}"))
-        .env("GIT_NO_LAZY_FETCH", "1")
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
+/// Map each unambiguous object hash naming a commit to its full hash, never
+/// accepting a hex-like ref name. One Git process checks every reference.
+pub(crate) fn resolve_commit_references<'a>(
+    references: impl IntoIterator<Item = &'a str>,
+) -> std::collections::HashMap<String, String> {
+    let mut references: Vec<_> = references.into_iter().collect();
+    references.sort_unstable();
+    references.dedup();
+    let mut resolved = std::collections::HashMap::new();
+    if references.is_empty() {
+        return resolved;
     }
-    let hash = String::from_utf8(output.stdout).ok()?.trim().to_owned();
-    hash.starts_with(reference).then_some(hash)
+    let input: String = references
+        .iter()
+        .map(|reference| format!("{reference}^{{commit}}\n"))
+        .collect();
+    let Ok(mut child) = Command::new("git")
+        .args(["cat-file", "--batch-check=%(objectname)"])
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return resolved;
+    };
+    // Write from another thread so a full output pipe can't deadlock Git.
+    let mut stdin = child.stdin.take().unwrap();
+    let writer = std::thread::spawn(move || stdin.write_all(input.as_bytes()));
+    let output = child.wait_with_output();
+    let _ = writer.join();
+    let Ok(output) = output else {
+        return resolved;
+    };
+    // Git answers each line in order; failures echo the input and a reason.
+    for (reference, line) in references
+        .into_iter()
+        .zip(String::from_utf8_lossy(&output.stdout).lines())
+    {
+        if line.starts_with(reference) && !line.contains(' ') {
+            resolved.insert(reference.to_owned(), line.to_owned());
+        }
+    }
+    resolved
 }
 
 /// Git's default Show format places the indented message after the header.
