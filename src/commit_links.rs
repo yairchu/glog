@@ -374,6 +374,11 @@ mod tests {
             let capture = env::var_os(CAPTURE).unwrap();
             let deadline = Instant::now() + Duration::from_secs(5);
             loop {
+            if scenario == "followed" {
+                // The opener's result must reach whichever view is active when it finishes.
+                app.follow_reference(&hash);
+                assert!(app.has_reference_back());
+            }
                 app.poll_browser();
                 if std::path::Path::new(&capture).exists()
                     && (scenario == "success" || app.status.is_some())
@@ -386,12 +391,14 @@ mod tests {
             assert_eq!(std::fs::read_to_string(capture).unwrap().trim(), expected);
             assert_eq!(app.commits[app.selected].hash, hash);
             assert_eq!(app.mode, Mode::Show);
-            assert_eq!(
-                (app.show_text.clone(), app.show_cursor, app.show_offset),
-                before
-            );
-            assert!(!app.has_reference_back());
-            if scenario == "failure" {
+            if scenario != "followed" {
+                assert_eq!(
+                    (app.show_text.clone(), app.show_cursor, app.show_offset),
+                    before
+                );
+                assert!(!app.has_reference_back());
+            }
+            if scenario != "success" {
                 assert!(app.status.unwrap().contains("test browser failure"));
             } else {
                 assert!(app.status.is_none());
@@ -419,7 +426,8 @@ mod tests {
             &opener,
             r##"#!/bin/sh
 printf '%s\n' "$1" > "$GLOG_TEST_ISSUE_BROWSER_CAPTURE"
-if [ "$GLOG_TEST_ISSUE_BROWSER_CHILD" = failure ]; then
+if [ "$GLOG_TEST_ISSUE_BROWSER_CHILD" != success ]; then
+    sleep 0.1
     echo 'test browser failure' >&2
     exit 1
 fi
@@ -430,7 +438,7 @@ fi
         let original_path = env::var_os("PATH").unwrap();
         let path =
             env::join_paths(std::iter::once(bin).chain(env::split_paths(&original_path))).unwrap();
-        for scenario in ["success", "failure"] {
+        for scenario in ["success", "failure", "followed"] {
             let output = Command::new(env::current_exe().unwrap())
                 .args(["--exact", "commit_links::tests::issue_click_opens_browser_and_reports_failures_without_leaving_show", "--nocapture"])
                 .env("PATH", &path).env(CHILD, scenario)

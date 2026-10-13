@@ -1518,7 +1518,7 @@ impl App {
                     target.log_folds.hidden_types = self.log_folds.hidden_types.clone();
                     target.log_folds.hide_merges = self.log_folds.hide_merges;
                 }
-                target.images = std::mem::take(&mut self.images);
+                self.hand_over(&mut target);
                 target.rebuild_show_rows();
                 let origin = std::mem::replace(self, target);
                 self.reference_back = Some(Box::new(origin));
@@ -1529,7 +1529,7 @@ impl App {
 
     pub fn reference_back(&mut self) {
         if let Some(mut origin) = self.reference_back.take() {
-            origin.images = std::mem::take(&mut self.images);
+            self.hand_over(&mut origin);
             *self = *origin;
             self.redraw = true;
         }
@@ -1556,6 +1556,17 @@ impl App {
             if let Some(old) = self.cache_order.pop_front() {
                 self.cache.remove(&old);
             }
+    /// Move state that belongs to the session, rather than to a view, into the
+    /// view replacing this one. Only the active view is drawn and polled.
+    fn hand_over(&mut self, view: &mut App) {
+        view.images = std::mem::take(&mut self.images);
+        view.browser_result = self.browser_result.take();
+        // Followed references stay in the same repository.
+        if self.github_repository.is_some() {
+            view.github_repository = self.github_repository.clone();
+        }
+    }
+
         }
         self.cache_order.push_back(key.clone());
         self.cache.insert(key, text);
