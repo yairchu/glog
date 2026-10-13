@@ -1541,7 +1541,11 @@ impl App {
                 }
                 self.hand_over(&mut target);
                 target.rebuild_show_rows();
-                let origin = std::mem::replace(self, target);
+                let mut origin = std::mem::replace(self, target);
+                // Keep the views behind a chain of references small. Returning
+                // restores the displayed text; only other commits reload.
+                origin.cache.clear();
+                origin.cache_order.clear();
                 self.reference_back = Some(Box::new(origin));
             }
             Err(error) => self.status = Some(error),
