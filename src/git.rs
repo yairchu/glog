@@ -2546,6 +2546,70 @@ pub(crate) mod tests {
     mod graph_regressions {
         use super::*;
 
+        fn assert_comparison_markers(option: &str, expected: &[(String, char)]) {
+            let commits = load_log(&[option.into(), "left...right".into()]).unwrap();
+            let mut folds = crate::log_folds::LogFolds::default();
+            folds.refresh(&commits).unwrap();
+            for ascii in [false, true] {
+                folds.ascii_graph = ascii;
+                for filtered in [false, true] {
+                    if filtered {
+                        // Redraw without hiding any of the comparison commits.
+                        folds.toggle_type(Some("nonexistent"), &commits).unwrap();
+                    }
+                    for (hash, marker) in expected {
+                        let index = commits.iter().position(|c| &c.hash == hash).unwrap();
+                        let node = crate::ansi::plain(
+                            folds.display_graph(index, &commits[index]).last().unwrap(),
+                        );
+                        let marker = if !ascii && *marker == '*' {
+                            '●'
+                        } else {
+                            *marker
+                        };
+                        assert!(
+                            node.contains(marker),
+                            "{option}, ascii={ascii}, filtered={filtered}: expected {marker} in {node:?}"
+                        );
+                    }
+                    if filtered {
+                        folds.toggle_type(None, &commits).unwrap();
+                    }
+                }
+            }
+        }
+
+        #[test]
+        fn comparison_graphs_preserve_left_and_right_markers() {
+            let history = History::new();
+            git(&["update-ref", "refs/heads/left", &history.merge]);
+            // Give the right side an independent commit with the same parent.
+            let tree = git(&["mktree"]);
+            let right = git(&["commit-tree", &tree, "-p", &history.base, "-m", "right"]);
+            git(&["update-ref", "refs/heads/right", &right]);
+            assert_comparison_markers(
+                "--left-right",
+                &[(history.merge.clone(), '<'), (right, '>')],
+            );
+        }
+
+        #[test]
+        fn comparison_graphs_preserve_patch_equivalence_markers() {
+            let history = History::new();
+            std::fs::write("file", "shared patch\n").unwrap();
+            git(&["add", "file"]);
+            let shared = git(&["write-tree"]);
+            let left = git(&["commit-tree", &shared, "-p", &history.base, "-m", "left"]);
+            let right = git(&["commit-tree", &shared, "-p", &history.base, "-m", "right"]);
+            std::fs::write("file", "unique patch\n").unwrap();
+            git(&["add", "file"]);
+            let unique = git(&["write-tree"]);
+            let tip = git(&["commit-tree", &unique, "-p", &left, "-m", "tip"]);
+            git(&["update-ref", "refs/heads/left", &tip]);
+            git(&["update-ref", "refs/heads/right", &right]);
+            assert_comparison_markers("--cherry-mark", &[(left, '='), (right, '='), (tip, '*')]);
+        }
+
         fn git(args: &[&str]) -> String {
             let output = Command::new("git")
                 .args([
