@@ -2514,6 +2514,117 @@ pub(crate) mod tests {
         assert!(stdout.contains("1 passed"), "{stdout}");
     }
 
+    mod graph_regressions {
+        use super::*;
+
+        fn git(args: &[&str]) -> String {
+            let output = Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "-c",
+                    "commit.gpgsign=false",
+                ])
+                .args(args)
+                .stdin(Stdio::null())
+                .output()
+                .unwrap();
+            assert!(output.status.success(), "{output:?}");
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        }
+
+        struct History {
+            // Restore the working directory before deleting the fixture.
+            _cwd: CurrentDirGuard,
+            _directory: TestDirectory,
+            base: String,
+            merge: String,
+            side: String,
+        }
+
+        impl History {
+            fn new() -> Self {
+                let directory = TestDirectory::new();
+                let cwd = CurrentDirGuard::enter(directory.path());
+                git(&["init", "-q"]);
+                let tree = git(&["mktree"]);
+                let commit = |name: &str, parents: &[&str]| {
+                    let mut args = vec!["commit-tree", &tree, "-m", name];
+                    for parent in parents {
+                        args.extend(["-p", parent]);
+                    }
+                    git(&args)
+                };
+                let base = commit("base", &[]);
+                let main = commit("main", &[&base]);
+                let side = commit("side", &[&base]);
+                let merge = commit("merge", &[&main, &side]);
+                git(&["update-ref", "refs/heads/main", &merge]);
+                git(&["update-ref", "refs/heads/side", &side]);
+                git(&["symbolic-ref", "HEAD", "refs/heads/main"]);
+                Self {
+                    _cwd: cwd,
+                    _directory: directory,
+                    base,
+                    merge,
+                    side,
+                }
+            }
+        }
+
+        #[test]
+        fn unicode_graph_keeps_first_parent_histories_independent() {
+            let history = History::new();
+            let commits = load_log(&["--first-parent".into(), "--all".into()]).unwrap();
+            let mut folds = crate::log_folds::LogFolds::default();
+            folds.refresh(&commits).unwrap();
+            let merge = commits
+                .iter()
+                .position(|c| c.hash == history.merge)
+                .unwrap();
+            let side = commits.iter().position(|c| c.hash == history.side).unwrap();
+            // Keep the merge's identity for the existing merge filter.
+            assert_eq!(commits[merge].parents.len(), 2);
+            let drawing: String = commits
+                .iter()
+                .enumerate()
+                .take(side + 1)
+                .flat_map(|(i, c)| folds.display_graph(i, c))
+                .map(|row| crate::ansi::plain(row))
+                .collect();
+            assert!(!drawing.contains(['├', '┤', '╭', '╮', '─']), "{drawing}");
+            assert_eq!(folds.marker(merge), None);
+            folds.toggle_merges(&commits).unwrap();
+            assert!(!folds.visible(merge));
+            assert!(folds.visible(side));
+        }
+
+        #[test]
+        fn unicode_graph_distinguishes_excluded_boundary_commits() {
+            let history = History::new();
+            let commits = load_log(&[
+                "--boundary".into(),
+                format!("{}..{}", history.base, history.merge),
+            ])
+            .unwrap();
+            let mut folds = crate::log_folds::LogFolds::default();
+            folds.refresh(&commits).unwrap();
+            let base = commits.iter().position(|c| c.hash == history.base).unwrap();
+            assert!(crate::ansi::plain(commits[base].graph.last().unwrap()).contains('o'));
+            for (i, commit) in commits.iter().enumerate() {
+                let node = crate::ansi::plain(folds.display_graph(i, commit).last().unwrap());
+                assert!(node.contains(if i == base { '○' } else { '●' }), "{node}");
+            }
+            folds.toggle_merges(&commits).unwrap();
+            assert!(
+                crate::ansi::plain(folds.display_graph(base, &commits[base]).last().unwrap())
+                    .contains('○')
+            );
+        }
+    }
+
     pub(crate) struct TestDirectory(PathBuf);
 
     impl TestDirectory {
