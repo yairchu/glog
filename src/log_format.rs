@@ -333,40 +333,56 @@ fn reflog_spans(commit: &Commit, entry: &ReflogEntry) -> Vec<Span<'static>> {
 
 /// Parse Git's structured action messages without depending on surviving refs.
 fn reflog_reference_spans(action: &str, message: &str) -> Option<Vec<Span<'static>>> {
-    let (prefix, pair) = match action {
-        "checkout" => ("moving from ", true),
-        "Branch" => ("renamed ", true),
-        "branch" => ("Created from ", false),
-        "reset" => ("moving to ", false),
-        "rebase (start)" => ("checkout ", false),
-        "rebase (finish)" => ("returning to ", false),
+    use Reference::*;
+    let (prefix, from, to) = match action {
+        "checkout" => ("moving from ", Some(Current), Argument),
+        "Branch" => ("renamed ", Some(Current), Current),
+        "branch" => ("Created from ", None, Argument),
+        "reset" => ("moving to ", None, Argument),
+        "rebase (start)" => ("checkout ", None, Argument),
+        "rebase (finish)" => ("returning to ", None, Current),
         _ => return None,
     };
     let references = message.strip_prefix(prefix)?;
     let valid =
         |reference: &str| !reference.is_empty() && !reference.chars().any(char::is_whitespace);
-    let styled = |reference: &str| {
-        let hash = (7..=64).contains(&reference.len())
-            && reference.bytes().all(|byte| byte.is_ascii_hexdigit());
-        Span::styled(
-            reference.to_owned(),
-            Style::default().fg(if hash { Color::Yellow } else { Color::Green }),
-        )
-    };
     let mut spans = vec![Span::raw(prefix)];
-    if pair {
-        let (from, to) = references.split_once(" to ")?;
-        if !valid(from) || !valid(to) {
+    if let Some(from) = from {
+        let (source, target) = references.split_once(" to ")?;
+        if !valid(source) || !valid(target) {
             return None;
         }
-        spans.extend([styled(from), Span::raw(" to "), styled(to)]);
+        spans.extend([from.span(source), Span::raw(" to "), to.span(target)]);
     } else {
         if !valid(references) {
             return None;
         }
-        spans.push(styled(references));
+        spans.push(to.span(references));
     }
     Some(spans)
+}
+
+/// How Git wrote a reference into a reflog message.
+#[derive(Clone, Copy)]
+enum Reference {
+    /// A ref name, or the full hash of a detached HEAD.
+    Current,
+    /// The revision as the user typed it, so a hex name may be a branch.
+    Argument,
+}
+
+impl Reference {
+    fn span(self, reference: &str) -> Span<'static> {
+        let length = reference.len();
+        let hash = match self {
+            Self::Current => matches!(length, 40 | 64),
+            Self::Argument => (7..=64).contains(&length),
+        } && reference.bytes().all(|byte| byte.is_ascii_hexdigit());
+        Span::styled(
+            reference.to_owned(),
+            Style::default().fg(if hash { Color::Yellow } else { Color::Green }),
+        )
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -532,6 +548,10 @@ pub(crate) mod tests {
             (
                 "checkout: moving from main to abc1234",
                 vec![("main", Color::Green), ("abc1234", Color::Yellow)],
+            ),
+            (
+                "checkout: moving from 1234567 to main",
+                vec![("1234567", Color::Green), ("main", Color::Green)],
             ),
             (
                 "Branch: renamed refs/heads/old to refs/heads/new",
