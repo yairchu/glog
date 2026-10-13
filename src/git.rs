@@ -2550,6 +2550,47 @@ pub(crate) mod tests {
     mod graph_regressions {
         use super::*;
 
+        #[test]
+        fn unicode_graph_connects_both_parents_of_a_grep_omitted_merge() {
+            let history = History::new();
+            let tree = git(&["mktree"]);
+            let tip = git(&["commit-tree", &tree, "-p", &history.merge, "-m", "tip"]);
+            let commits = load_log(&["--grep=merge".into(), "--invert-grep".into(), tip]).unwrap();
+            assert_eq!(commits.len(), 4);
+            assert!(commits.iter().all(|c| c.hash != history.merge));
+
+            let mut folds = crate::log_folds::LogFolds::default();
+            folds.refresh(&commits).unwrap();
+            let drawing = |folds: &crate::log_folds::LogFolds| {
+                commits
+                    .iter()
+                    .enumerate()
+                    .map(|(i, c)| {
+                        folds
+                            .display_graph(i, c)
+                            .iter()
+                            .map(|row| crate::ansi::plain(row))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            // Whichever parent Git visits first, both paths must originate
+            // at tip and join at base; neither parent is an independent root.
+            let expected = vec![
+                vec!["● ".to_owned()],
+                vec!["├─╮ ".to_owned(), "│ ● ".to_owned()],
+                vec!["● │ ".to_owned()],
+                vec!["├─╯ ".to_owned(), "● ".to_owned()],
+            ];
+            assert_eq!(drawing(&folds), expected);
+            // View filters redraw the graph after loading omitted ancestry.
+            folds.toggle_type(Some("nonexistent"), &commits).unwrap();
+            assert_eq!(folds.hidden_count, 0);
+            assert_eq!(drawing(&folds), expected);
+            folds.toggle_type(None, &commits).unwrap();
+            assert_eq!(drawing(&folds), expected);
+        }
+
         fn assert_comparison_markers(option: &str, expected: &[(String, char)]) {
             let commits = load_log(&[option.into(), "left...right".into()]).unwrap();
             let mut folds = crate::log_folds::LogFolds::default();
