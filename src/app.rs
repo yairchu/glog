@@ -60,6 +60,12 @@ pub enum LogAction {
     FoldAll,
 }
 
+/// Links are resolved on first display, so revisiting a commit runs no Git process.
+struct CachedShow {
+    text: String,
+    links: Option<HashMap<usize, Vec<crate::commit_links::Link>>>,
+}
+
 pub struct App {
     pub images: crate::images::Images,
     pub status_view: Option<crate::status::StatusView>,
@@ -121,7 +127,7 @@ pub struct App {
     search_history: Vec<String>,
     search_history_index: usize,
     search_draft: String,
-    cache: HashMap<String, String>,
+    cache: HashMap<String, CachedShow>,
     cache_order: VecDeque<String>,
     show_files: Vec<FileSection>,
     expanded_folds: HashSet<Vec<u8>>,
@@ -819,9 +825,9 @@ impl App {
             return;
         };
         if commit.kind == CommitKind::Revision {
-            if let Some(text) = self.cache.get(&commit.show_cache_key()) {
-                let changed = self.show_text != *text;
-                self.show_text = text.clone();
+            if let Some(cached) = self.cache.get(&commit.show_cache_key()) {
+                let changed = self.show_text != cached.text;
+                self.show_text = cached.text.clone();
                 if changed {
                     self.reset_show_folds();
                     self.focus_blamed_file();
@@ -837,11 +843,11 @@ impl App {
         match git::show(&commit, &self.show_paths) {
             Ok(text) => {
                 self.show_text = text.clone();
-                self.reset_show_folds();
-                self.focus_blamed_file();
                 if commit.kind == CommitKind::Revision {
                     self.insert_cache(commit.show_cache_key(), text);
                 }
+                self.reset_show_folds();
+                self.focus_blamed_file();
                 self.status = None;
             }
             Err(error) => {
@@ -869,13 +875,28 @@ impl App {
 
     fn reset_show_folds(&mut self) {
         self.visible_show_links.clear();
-        let has_message = self.commits.get(self.selected).is_some_and(|commit| {
+        let message = self.commits.get(self.selected).filter(|commit| {
             commit.kind == CommitKind::Revision
                 && !matches!(commit.annotation, Some(git::Annotation::Stash(_)))
         });
-        if has_message {
-            self.show_links =
-                crate::commit_links::collect(&self.show_text, &mut self.github_repository);
+        if let Some(commit) = message {
+            let cached = self
+                .cache
+                .get_mut(&commit.show_cache_key())
+                .filter(|cached| cached.text == self.show_text);
+            self.show_links = match cached {
+                Some(CachedShow {
+                    links: Some(links), ..
+                }) => links.clone(),
+                cached => {
+                    let links =
+                        crate::commit_links::collect(&self.show_text, &mut self.github_repository);
+                    if let Some(cached) = cached {
+                        cached.links = Some(links.clone());
+                    }
+                    links
+                }
+            };
             self.show_message_styles = crate::message_format::collect(&self.show_text);
         } else {
             self.show_links.clear();
@@ -1535,6 +1556,17 @@ impl App {
         }
     }
 
+    /// Move state that belongs to the session, rather than to a view, into the
+    /// view replacing this one. Only the active view is drawn and polled.
+    fn hand_over(&mut self, view: &mut App) {
+        view.images = std::mem::take(&mut self.images);
+        view.browser_result = self.browser_result.take();
+        // Followed references stay in the same repository.
+        if self.github_repository.is_some() {
+            view.github_repository = self.github_repository.clone();
+        }
+    }
+
     pub fn click_show_row(&mut self, visible_row: usize) {
         let screen = self.show_offset.saturating_add(visible_row);
         if self
@@ -1556,20 +1588,9 @@ impl App {
             if let Some(old) = self.cache_order.pop_front() {
                 self.cache.remove(&old);
             }
-    /// Move state that belongs to the session, rather than to a view, into the
-    /// view replacing this one. Only the active view is drawn and polled.
-    fn hand_over(&mut self, view: &mut App) {
-        view.images = std::mem::take(&mut self.images);
-        view.browser_result = self.browser_result.take();
-        // Followed references stay in the same repository.
-        if self.github_repository.is_some() {
-            view.github_repository = self.github_repository.clone();
-        }
-    }
-
         }
         self.cache_order.push_back(key.clone());
-        self.cache.insert(key, text);
+        self.cache.insert(key, CachedShow { text, links: None });
     }
 
     pub fn begin_search(&mut self, reverse: bool) {
