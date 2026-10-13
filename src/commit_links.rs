@@ -49,6 +49,8 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
                     .is_none_or(|c| !c.is_alphanumeric() && !matches!(c, '_' | '/' | '.' | '-'));
                 standalone.then_some(Candidate::Issue(token))
             } else if (minimum..=64).contains(&token.len())
+                // #rrggbb is far more likely a color than an abbreviated hash.
+                && !(prefixed && token.len() == 6)
                 && token
                     .bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -254,22 +256,23 @@ mod tests {
         let tokens = [
             format!("#{}", &hash[..4]),
             format!("#{}", &hash[..5]),
-            format!("#{}", &hash[..6]),
+            format!("#{}", &hash[..7]),
             hash.clone(),
         ];
         let message = format!("    See {}.", tokens.join(", "));
         let text = format!(
-            "commit {hash}\n\n{message}\n    {} {} {} #{} 2026 {uppercase} {mixed} #{uppercase} #{mixed}\n",
+            "commit {hash}\n\n{message}\n    {} {} {} #{} #{} 2026 {uppercase} {mixed} #{uppercase} #{mixed}\n",
             &hash[..4],
             &hash[..5],
             &hash[..6],
-            &hash[..3]
+            &hash[..3],
+            &hash[..6]
         );
         let links = collect(&text, &mut None);
         assert_eq!(
             links.len(),
             1,
-            "bare short hashes, prefixes below four characters, and uppercase or mixed-case hashes stay plain"
+            "bare short hashes, prefixes below four characters, color-like #rrggbb, and uppercase or mixed-case hashes stay plain"
         );
         assert_eq!(links[&2].len(), tokens.len());
         for (link, token) in links[&2].iter().zip(tokens) {
@@ -371,14 +374,14 @@ mod tests {
                 }),
                 &mut app,
             );
-            let capture = env::var_os(CAPTURE).unwrap();
-            let deadline = Instant::now() + Duration::from_secs(5);
-            loop {
             if scenario == "followed" {
                 // The opener's result must reach whichever view is active when it finishes.
                 app.follow_reference(&hash);
                 assert!(app.has_reference_back());
             }
+            let capture = env::var_os(CAPTURE).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
                 app.poll_browser();
                 if std::path::Path::new(&capture).exists()
                     && (scenario == "success" || app.status.is_some())
