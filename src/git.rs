@@ -437,22 +437,29 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
     Ok(app)
 }
 
-/// Prefer origin; otherwise use the sole GitHub repository among the remotes.
+/// Use origin if it exists; otherwise the sole GitHub repository among the remotes.
 /// Preserve a stored GitHub URL even if transport is rewritten; resolve aliases locally.
 pub(crate) fn github_repository() -> Option<String> {
-    let output = Command::new("git").arg("remote").output().ok()?;
-    if !output.status.success() {
-        return None;
+    let output = Command::new("git")
+        .args(["config", "--get-regexp", r"^remote\..*\.url$"])
+        .output()
+        .ok()?;
+    let config = String::from_utf8(output.stdout).ok()?;
+    // Git fetches from a remote's first URL.
+    let mut remotes: Vec<(&str, &str)> = Vec::new();
+    for line in config.lines() {
+        let Some((remote, url)) = line
+            .split_once(' ')
+            .and_then(|(key, url)| Some((key.strip_prefix("remote.")?.strip_suffix(".url")?, url)))
+        else {
+            continue;
+        };
+        if !remotes.iter().any(|(seen, _)| *seen == remote) {
+            remotes.push((remote, url));
+        }
     }
-    let remotes = String::from_utf8(output.stdout).ok()?;
-    let mut repositories = std::collections::HashSet::new();
-    for remote in remotes.lines() {
-        let stored = Command::new("git")
-            .args(["config", "--get", &format!("remote.{remote}.url")])
-            .output()
-            .ok()?;
-        let stored = String::from_utf8(stored.stdout).ok()?;
-        let repo = github_repository_url(stored.trim()).or_else(|| {
+    let repository = |(remote, stored): (&str, &str)| {
+        github_repository_url(stored).or_else(|| {
             let output = Command::new("git")
                 .args(["remote", "get-url", remote])
                 .output()
@@ -462,14 +469,13 @@ pub(crate) fn github_repository() -> Option<String> {
             }
             let url = String::from_utf8(output.stdout).ok()?;
             github_repository_url(url.trim())
-        });
-        if let Some(repo) = repo {
-            if remote == "origin" {
-                return Some(repo);
-            }
-            repositories.insert(repo);
-        }
+        })
+    };
+    if let Some(&origin) = remotes.iter().find(|(remote, _)| *remote == "origin") {
+        return repository(origin);
     }
+    let repositories: std::collections::HashSet<_> =
+        remotes.into_iter().filter_map(repository).collect();
     (repositories.len() == 1)
         .then(|| repositories.into_iter().next())
         .flatten()
@@ -1545,8 +1551,13 @@ pub(crate) mod tests {
             github_repository().is_none(),
             "ambiguous repositories are not guessed"
         );
+        git(&["remote", "add", "origin", "https://gitlab.com/me/fork.git"]);
+        assert!(
+            github_repository().is_none(),
+            "a non-GitHub origin is not replaced by another remote"
+        );
         git(&["config", "url.https://github.com/.insteadOf", "gh:"]);
-        git(&["remote", "add", "origin", "gh:me/fork.git"]);
+        git(&["remote", "set-url", "origin", "gh:me/fork.git"]);
         assert_eq!(
             github_repository().as_deref(),
             Some("https://github.com/me/fork")
