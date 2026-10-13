@@ -45,22 +45,54 @@ fn footer_label(text: &str) -> Option<usize> {
     Some(label_end)
 }
 
+fn breaking_marker(body: &str) -> Option<&'static str> {
+    ["BREAKING CHANGE:", "BREAKING-CHANGE:"]
+        .into_iter()
+        .find(|marker| {
+            body.strip_prefix(marker)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+        })
+}
+
+/// Footers form the final paragraph after the subject, which holds only
+/// footer lines and their indented continuations.
+fn footer_start(bodies: &[(usize, String)]) -> Option<usize> {
+    let is_footer = |body: &str| breaking_marker(body).is_some() || footer_label(body).is_some();
+    let end = bodies
+        .iter()
+        .rposition(|(_, body)| !body.trim().is_empty())?;
+    let start = bodies[..end]
+        .iter()
+        .rposition(|(_, body)| body.trim().is_empty())?
+        + 1;
+    let (first, rest) = bodies[start..=end].split_first()?;
+    (is_footer(&first.1)
+        && rest
+            .iter()
+            .all(|(_, body)| is_footer(body) || body.starts_with(char::is_whitespace)))
+    .then_some(first.0)
+}
+
 pub fn collect(text: &str) -> HashMap<usize, Ranges> {
     let message = crate::git::commit_message_range(text);
-    let mut result = HashMap::new();
-    let mut paragraph_start = false;
-    let mut footer = false;
-    let mut fence = None;
-    for (source, raw) in text
+    let bodies: Vec<_> = text
         .lines()
         .enumerate()
         .skip(message.start)
         .take(message.len())
-    {
-        let plain = crate::ansi::plain(raw);
-        let Some(body) = plain.strip_prefix("    ") else {
-            continue;
-        };
+        .filter_map(|(source, raw)| {
+            let plain = crate::ansi::plain(raw);
+            plain
+                .strip_prefix("    ")
+                .map(|body| (source, body.to_owned()))
+        })
+        .collect();
+    let footer = footer_start(&bodies);
+    let mut result = HashMap::new();
+    let mut paragraph_start = false;
+    let mut fence = None;
+    for (source, body) in &bodies {
+        let (source, body) = (*source, body.as_str());
         if let Some(delimiter) = fence {
             if body.starts_with(delimiter) {
                 fence = None;
@@ -89,18 +121,11 @@ pub fn collect(text: &str) -> HashMap<usize, Ranges> {
         let mut ranges = Vec::new();
         if source == message.start {
             ranges = subject_ranges(body, 4);
-        } else if let Some(marker) =
-            ["BREAKING CHANGE:", "BREAKING-CHANGE:"]
-                .into_iter()
-                .find(|marker| {
-                    body.strip_prefix(marker)
-                        .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
-                })
-        {
+        } else if let Some(marker) = breaking_marker(body) {
             ranges.push((4..4 + marker.len(), breaking_style()));
-            footer |= paragraph_start;
-        } else if let Some(length) = footer_label(body).filter(|_| footer || paragraph_start) {
-            footer = true;
+        } else if let Some(length) =
+            footer_label(body).filter(|_| footer.is_some_and(|start| source >= start))
+        {
             ranges.push((4..4 + length, Style::default().add_modifier(Modifier::BOLD)));
         } else if paragraph_start
             && body.ends_with(':')
@@ -185,6 +210,20 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn footer_labels_only_apply_to_a_final_footer_paragraph() {
+        let bold = |text: &str| -> Vec<usize> {
+            let mut lines: Vec<_> = collect(text).into_keys().collect();
+            lines.sort();
+            lines
+        };
+        // Prose resembling footers stays plain; only the final paragraph is footers.
+        let text = "commit abcdef0\n\n    fix: thing\n    \n    Note: prose begins here\n    Later: still prose\n    \n    See #12 for details.\n    \n    Refs #12\n    Signed-off-by: Bob\n";
+        assert_eq!(bold(text), [2, 9, 10]);
+        let text = "commit abcdef0\n\n    fix: thing\n    \n    Reviewed-by: Alice\n    but this is prose\n";
+        assert_eq!(bold(text), [2]);
     }
 
     #[test]
