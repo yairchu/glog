@@ -806,7 +806,7 @@ pub(crate) mod tests {
             collaborators: crate::git::Collaborators::default(),
             graph: vec!["* ".into()],
             first_parent_only: false,
-            boundary: false,
+            graph_node: '*',
         }
     }
 

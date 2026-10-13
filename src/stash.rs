@@ -133,7 +133,7 @@ fn load_list(args: &[String]) -> Result<Vec<Commit>, String> {
                 decorations: String::new(),
                 graph: vec![String::new()],
                 first_parent_only: false,
-                boundary: false,
+                graph_node: '*',
                 parents: Vec::new(),
             })
         })

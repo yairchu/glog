@@ -46,7 +46,8 @@ pub struct Commit {
     pub parents: Vec<String>,
     /// Graph traversal can follow only the first parent while retaining merge identity.
     pub first_parent_only: bool,
-    pub boundary: bool,
+    /// Git's node marker, including comparison and excluded-boundary markers.
+    pub graph_node: char,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -310,7 +311,7 @@ fn log_command(user_args: &[String]) -> Result<Command, String> {
         "--decorate=short",
         "--color=always",
         "--no-abbrev-commit",
-        "--pretty=format:%x1e%H%x1f%h%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)%x1f%P%x1f%m%x1f%s",
+        "--pretty=format:%x1e%H%x1f%h%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)%x1f%P%x1f%s",
     ]);
     command.args(user_args);
     Ok(command)
@@ -852,8 +853,8 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
     let mut commits = Vec::new();
     for line in output.lines() {
         if let Some(marker) = line.find(RECORD) {
-            let fields: Vec<_> = line[marker + 1..].splitn(10, FIELD).collect();
-            if fields.len() == 10 {
+            let fields: Vec<_> = line[marker + 1..].splitn(9, FIELD).collect();
+            if fields.len() == 9 {
                 pending_graph.push(line[..marker].to_owned());
                 commits.push(Commit {
                     kind: CommitKind::Revision,
@@ -867,10 +868,13 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
                     author_date: fields[5].to_owned(),
                     collaborators: Collaborators::parse(fields[6], fields[4]),
                     parents: fields[7].split_whitespace().map(str::to_owned).collect(),
-                    subject: fields[9].to_owned(),
+                    subject: fields[8].to_owned(),
                     graph: std::mem::take(&mut pending_graph),
                     first_parent_only: false,
-                    boundary: fields[8] == "-",
+                    graph_node: crate::ansi::plain(&line[..marker])
+                        .chars()
+                        .find(|c| matches!(c, '*' | 'o' | '<' | '>' | '=' | '+'))
+                        .unwrap_or('*'),
                 });
             }
         } else if !line.is_empty() {
@@ -914,7 +918,7 @@ fn pseudo_commit(kind: CommitKind, short_hash: &str, subject: &str) -> Commit {
         subject: subject.to_owned(),
         graph: vec!["* ".to_owned()],
         first_parent_only: false,
-        boundary: false,
+        graph_node: '*',
         parents: Vec::new(),
     }
 }
@@ -4976,7 +4980,7 @@ pub(crate) mod tests {
 
     #[test]
     fn parses_full_identity_and_graph_lines() {
-        let input = "|\\\n* \u{1e}abcdef\u{1f}abcdef0\u{1f}HEAD -> main\u{1f}Alice\u{1f}alice@example.com\u{1f}2026-09-14\u{1f}\u{1f}123456\u{1f}>\u{1f}hello\n| * \u{1e}123456\u{1f}1234567\u{1f}\u{1f}Bob\u{1f}bob@example.com\u{1f}2026-09-13\u{1f}\u{1f}\u{1f}>\u{1f}world\n";
+        let input = "|\\\n* \u{1e}abcdef\u{1f}abcdef0\u{1f}HEAD -> main\u{1f}Alice\u{1f}alice@example.com\u{1f}2026-09-14\u{1f}\u{1f}123456\u{1f}hello\n| * \u{1e}123456\u{1f}1234567\u{1f}\u{1f}Bob\u{1f}bob@example.com\u{1f}2026-09-13\u{1f}\u{1f}\u{1f}world\n";
         let commits = parse_log(input).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].hash, "abcdef");

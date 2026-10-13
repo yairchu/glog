@@ -917,7 +917,7 @@ impl Layout {
                 .enumerate()
                 .map(|(i, &(_, colour))| {
                     if i == column {
-                        "* ".to_owned()
+                        format!("{} ", commit.graph_node)
                     } else {
                         format!("{} ", paint('|', colour))
                     }
@@ -930,7 +930,12 @@ impl Layout {
                     .enumerate()
                     .map(|(i, &(_, colour))| {
                         if i == column {
-                            if commit.boundary { "○ " } else { "● " }.to_owned()
+                            let node = match commit.graph_node {
+                                '*' => '●',
+                                'o' => '○',
+                                marker => marker,
+                            };
+                            format!("{node} ")
                         } else {
                             format!("{} ", paint('│', colour))
                         }
