@@ -10,6 +10,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Emphasize breaking-change markers in Log, Reflog, and Show, including
   `!`, `BREAKING CHANGE:`, and `BREAKING-CHANGE:`. Show also emphasizes
   section headings and footer labels while keeping their values plain.
+
 - Recognize Conventional Commit types case-insensitively in highlighting
   and filters, preserving the subject's original spelling. Show titles use
   the same highlighting as Log.
@@ -26,6 +27,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   require a `#` prefix and at least four characters.
   Backspace returns through followed references, preserving the previous
   view's reading position and expanded files.
+
 - Click issue references (`#` plus 1–6 digits) in Show messages to open them
   in the browser. The GitHub repository is inferred from remotes, preferring
   `origin`; numeric references with seven or more digits remain commit candidates.
