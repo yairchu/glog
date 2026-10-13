@@ -547,13 +547,13 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
         .enumerate()
         .take(app.selected)
         .filter(|(i, _)| app.log_folds.graph_visible(*i))
-        .map(|(i, commit)| app.log_folds.graph(i, commit).len())
+        .map(|(i, commit)| app.log_folds.display_graph(i, commit).len())
         .sum::<usize>()
         + usize::from(separator_before.is_some_and(|index| app.selected >= index));
     let selected_subject_row = selected_start_row
         + app
             .log_folds
-            .graph(app.selected, &app.commits[app.selected])
+            .display_graph(app.selected, &app.commits[app.selected])
             .len()
             .saturating_sub(1);
     if !app.log_folds.visible(app.selected) {
@@ -602,7 +602,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             graph_row += 1;
         }
-        let graph_rows = app.log_folds.graph(index, commit);
+        let graph_rows = app.log_folds.display_graph(index, commit);
         for (part, graph) in graph_rows.iter().enumerate() {
             if graph_row < app.log_offset {
                 graph_row += 1;
@@ -617,9 +617,9 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                     if let Some(span) = line
                         .spans
                         .iter_mut()
-                        .find(|span| span.content.contains('*'))
+                        .find(|span| span.content.contains(['*', '●']))
                     {
-                        span.content = span.content.replacen('*', marker, 1).into();
+                        span.content = span.content.replacen(['*', '●'], marker, 1).into();
                     }
                 }
                 line.spans.extend(match commit.blame() {
@@ -1247,7 +1247,7 @@ mod tests {
                     .map(|x| terminal.backend().buffer()[(x, y)].symbol())
                     .collect::<String>()
             };
-            assert!(row(app.log_row_origin).contains('\\'));
+            assert!(row(app.log_row_origin).contains('├'));
             let screen: String = terminal
                 .backend()
                 .buffer()
@@ -1258,7 +1258,7 @@ mod tests {
             assert!(!screen.contains("hidden merge text"));
             assert!((app.log_row_origin..11).all(|y| !row(y).contains('·')));
             assert!(screen.contains("fix: side") && screen.contains("feat: main"));
-            assert!(screen.contains('/') || screen.contains('\\'));
+            assert!(screen.contains('╯') || screen.contains('╮'));
             assert_eq!(app.visible_log_rows[0], None);
             handle(
                 Event::Mouse(MouseEvent {
@@ -1466,6 +1466,7 @@ mod tests {
             let side = commit("side", 1);
             let side_hash = side.hash.clone();
             let mut app = App::new(vec![entry, side]);
+            app.log_folds.ascii_graph = true;
             let mut terminal = Terminal::new(TestBackend::new(100, 8)).unwrap();
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
             let before = terminal.backend().buffer().clone();
@@ -1492,6 +1493,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn unicode_merge_nodes_and_routing_rows_keep_selection_and_folds() {
+        let mut merge = commit("merge", 1);
+        let mut side = commit("side", 1);
+        let mut main = commit("main", 1);
+        let base = commit("base", 1);
+        merge.parents = vec![main.hash.clone(), side.hash.clone()];
+        side.parents = vec![base.hash.clone()];
+        main.parents = vec![base.hash.clone()];
+        let mut app = App::new(vec![merge, side, main, base]);
+        app.log_folds.refresh(&app.commits).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let y = app.log_row_origin;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, y)].symbol(), "▼");
+        assert_eq!(buffer[(0, y + 1)].symbol(), "├");
+        assert_eq!(buffer[(1, y + 1)].symbol(), "─");
+        assert_eq!(buffer[(2, y + 1)].symbol(), "╮");
+        assert_eq!(buffer[(2, y + 2)].symbol(), "●");
+        assert_eq!(app.visible_log_rows[1], Some(1));
+        handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 2,
+                row: y + 1,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut app,
+        );
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.mode, Mode::Log);
+        app.selected = 0;
+        app.apply_log_action(LogAction::Fold);
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(terminal.backend().buffer()[(0, y)].symbol(), "▶");
+        assert!(!app.log_folds.visible(1));
+        app.apply_log_action(LogAction::Fold);
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(terminal.backend().buffer()[(2, y + 2)].symbol(), "●");
+        terminal.resize(Rect::new(0, 0, 20, 4)).unwrap();
+        app.bottom();
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert!(app.visible_log_rows.contains(&Some(3)));
     }
 
     fn commit(subject: &str, graph_rows: usize) -> Commit {

@@ -130,6 +130,7 @@ fn initialize_log_filters(app: &mut App, options: log_format::LogOptions) {
     if app.history != app::History::Log {
         return;
     }
+    app.log_folds.ascii_graph = options.ascii_graph;
     app.log_folds.start_collapsed = options.fold_merges;
     app.log_folds.hidden_types = options.hidden_types;
     app.log_folds.hide_merges = options.hide_merges;
@@ -198,6 +199,7 @@ Options:
                 using Git (e.g. short, relative, iso)
   -L LINE       Open Blame at a line
   --oneline     Use the compact hash, refs, and subject layout
+  --ascii-graph Use Git-style ASCII paths instead of Unicode lines
   --fold-merges Start Log with merge histories collapsed; z expands a merge
   --hide-merges Hide merge commits; M toggles this filter
   --hide-types=TYPES
@@ -211,6 +213,7 @@ Options:
 Status opens the Working tree detail view in a watch session.
 Watch mode includes one Working tree item; commits open Show.
 Log shows committed history, loaded once unless --watch is used.
+Graphs use ● commits and rounded paths; ╪ crosses paths without joining them.
 Reflog shows local ref updates with their update times; Enter opens the commit.
 Stash lists saved work; Enter opens its changes, including saved untracked files.
 Stash show opens a stash by index or reference (the latest by default).

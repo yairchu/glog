@@ -1536,6 +1536,7 @@ impl App {
                 // filters; only a Log's settings carry over to the followed history.
                 if self.history == History::Log {
                     target.log_format = self.log_format.clone();
+                    target.log_folds.ascii_graph = self.log_folds.ascii_graph;
                     target.log_folds.start_collapsed = self.log_folds.start_collapsed;
                     target.log_folds.hidden_types = self.log_folds.hidden_types.clone();
                     target.log_folds.hide_merges = self.log_folds.hide_merges;

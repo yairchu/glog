@@ -7,6 +7,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Draw commit graphs with Unicode lines, rounded corners, and filled commit
+  dots. Crossings remain distinct from joins, including in folded and filtered
+  histories. Use `--ascii-graph` for the original Git-style drawing.
+
 - Emphasize breaking-change markers in Log, Reflog, and Show, including
   `!`, `BREAKING CHANGE:`, and `BREAKING-CHANGE:`. Show also emphasizes
   section headings and footer labels while keeping their values plain.

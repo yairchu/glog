@@ -15,6 +15,7 @@ type AncestrySource = Box<dyn Fn(&[Commit]) -> Result<Ancestry, String>>;
 
 pub struct LogFolds {
     pub start_collapsed: bool,
+    pub ascii_graph: bool,
     load_ancestry: AncestrySource,
     collapsed: HashSet<String>,
     // Merges already offered to --fold-merges.
@@ -24,6 +25,9 @@ pub struct LogFolds {
     revisions: Vec<(String, Vec<String>)>,
     ancestry: Option<Ancestry>,
     graph: Graph,
+    // Complete ancestry for drawing through Git-omitted rows, without changing
+    // which merges the existing folding policy offers.
+    unicode_graph: Option<Graph>,
     layout: Layout,
     // A failed ancestry read keeps fold choices for the next successful
     // refresh, but shows the Log unfolded.
@@ -38,12 +42,14 @@ impl Default for LogFolds {
     fn default() -> Self {
         Self {
             start_collapsed: false,
+            ascii_graph: false,
             load_ancestry: Box::new(git::log_ancestry),
             collapsed: HashSet::new(),
             seen: HashSet::new(),
             revisions: Vec::new(),
             ancestry: None,
             graph: Graph::default(),
+            unicode_graph: None,
             layout: Layout::default(),
             failed: false,
             hidden_types: Default::default(),
@@ -81,7 +87,7 @@ impl LogFolds {
                 layout
                     .graphs
                     .get(&index)
-                    .is_some_and(|rows| !rows.is_empty())
+                    .is_some_and(|rows| !rows.ascii.is_empty() || !rows.unicode.is_empty())
             })
     }
 
@@ -100,6 +106,20 @@ impl LogFolds {
             .unwrap_or(&self.layout)
             .graphs
             .get(&index)
+            .map(|rows| &rows.ascii)
+            .unwrap_or(&commit.graph)
+    }
+
+    pub fn display_graph<'a>(&'a self, index: usize, commit: &'a Commit) -> &'a [String] {
+        if self.ascii_graph {
+            return self.graph(index, commit);
+        }
+        self.filtered
+            .as_ref()
+            .unwrap_or(&self.layout)
+            .graphs
+            .get(&index)
+            .map(|rows| rows.unicode.as_slice())
             .unwrap_or(&commit.graph)
     }
 
@@ -133,6 +153,7 @@ impl LogFolds {
             .collect();
         if revisions != self.revisions {
             self.ancestry = None;
+            self.unicode_graph = None;
             self.revisions = revisions;
         }
         self.graph = Graph::new(commits, self.ancestry.as_ref());
@@ -296,6 +317,26 @@ impl LogFolds {
                 }
             }
         }
+        if !self.ascii_graph && self.graph.unknown_below.is_some() {
+            if self.unicode_graph.is_none() {
+                if let Ok(ancestry) = (self.load_ancestry)(commits) {
+                    let ancestry = leading_to_rows(ancestry, commits);
+                    self.unicode_graph = Some(Graph::new(commits, Some(&ancestry)));
+                }
+            }
+            if let Some(graph) = &self.unicode_graph {
+                let reached = Layout::with_folds(graph, &layout.folded).1;
+                let drawn = layout.draw(graph, commits, &layout.folded, &reached);
+                for (index, rows) in &mut layout.graphs {
+                    rows.unicode = drawn[index].unicode.clone();
+                }
+            } else {
+                // Keep Git's connectivity when its omitted ancestry is unavailable.
+                for rows in layout.graphs.values_mut() {
+                    rows.unicode = rows.ascii.clone();
+                }
+            }
+        }
         self.layout = layout;
         self.apply_filter(commits);
         self.failed = false;
@@ -368,7 +409,8 @@ impl LogFolds {
                 // The final row is the commit node. Keep only the incoming
                 // routing rows; outgoing edges are attached to the next row.
                 if let Some(rows) = layout.graphs.get_mut(&index) {
-                    rows.pop();
+                    rows.ascii.pop();
+                    rows.unicode.pop();
                 }
             }
         }
@@ -652,6 +694,12 @@ impl Reach {
 }
 
 #[derive(Clone, Default)]
+struct GraphRows {
+    ascii: Vec<String>,
+    unicode: Vec<String>,
+}
+
+#[derive(Clone, Default)]
 struct Layout {
     visible: Vec<bool>,
     // The fold containing each hidden row.
@@ -659,7 +707,7 @@ struct Layout {
     folds: Vec<Fold>,
     // The folds drawn, without those that hide nothing.
     folded: Vec<bool>,
-    graphs: HashMap<usize, Vec<String>>,
+    graphs: HashMap<usize, GraphRows>,
 }
 
 impl Layout {
@@ -672,8 +720,12 @@ impl Layout {
         if layout.unfold_idle_merges(&mut folded) {
             reached = Self::with_folds(graph, &folded).1;
         }
-        if layout.visible.contains(&false) {
-            layout.graphs = layout.draw(graph, commits, &folded, &reached);
+        layout.graphs = layout.draw(graph, commits, &folded, &reached);
+        if !layout.visible.contains(&false) {
+            // The ASCII option retains Git's exact original layout.
+            for (index, rows) in &mut layout.graphs {
+                rows.ascii = commits[*index].graph.clone();
+            }
         }
         layout.folded = folded;
         layout
@@ -794,7 +846,7 @@ impl Layout {
         commits: &[Commit],
         folded: &[bool],
         reached: &[bool],
-    ) -> HashMap<usize, Vec<String>> {
+    ) -> HashMap<usize, GraphRows> {
         // Git colours each edge after the commit it leads to, so a lane
         // takes its row's colour. Git draws no edge into the first row or a
         // row directly below its child; those lanes use the palette instead.
@@ -831,13 +883,19 @@ impl Layout {
         }
         let mut graphs = HashMap::new();
         let mut lanes = Vec::<(usize, &str)>::new();
-        let mut pending = Vec::new();
+        let mut pending = GraphRows::default();
         for (index, commit) in commits.iter().enumerate() {
             if !self.visible[index] {
                 continue;
             }
             if commit.kind != CommitKind::Revision {
-                graphs.insert(index, commit.graph.clone());
+                graphs.insert(
+                    index,
+                    GraphRows {
+                        ascii: commit.graph.clone(),
+                        unicode: commit.graph.clone(),
+                    },
+                );
                 continue;
             }
             let column = lanes
@@ -859,7 +917,20 @@ impl Layout {
                     }
                 })
                 .collect();
-            pending.push(node);
+            pending.ascii.push(node);
+            pending.unicode.push(
+                lanes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &(_, colour))| {
+                        if i == column {
+                            "● ".to_owned()
+                        } else {
+                            format!("{} ", paint('│', colour))
+                        }
+                    })
+                    .collect(),
+            );
             graphs.insert(index, std::mem::take(&mut pending));
 
             // A folded merge follows its first parent. Other edges pass
@@ -903,7 +974,11 @@ impl Layout {
                     }
                 }
             }
-            pending = transitions(&edges, lanes.len().max(next.len()));
+            let width = lanes.len().max(next.len());
+            pending = GraphRows {
+                ascii: transitions(&edges, width),
+                unicode: connected_transitions(&edges, width),
+            };
             lanes = next;
         }
         graphs
@@ -1004,6 +1079,118 @@ fn transitions(edges: &[(usize, usize, &str)], width: usize) -> Vec<String> {
                 } else {
                     paint(symbol, colour)
                 }
+            })
+            .collect();
+        rows.push(format!("{row} "));
+    }
+    rows
+}
+
+/// Route one connection per row. Occupied destinations move out of the way
+/// first, so unrelated routes never share a vertical track. A spare track
+/// breaks cycles such as two lanes exchanging places. Horizontal paths pass
+/// over vertical tracks with `╪`; only endpoints are actual junctions.
+fn connected_transitions(edges: &[(usize, usize, &str)], width: usize) -> Vec<String> {
+    use std::collections::BTreeMap;
+    const UP: u8 = 1;
+    const DOWN: u8 = 2;
+    const LEFT: u8 = 4;
+    const RIGHT: u8 = 8;
+    let mut tracks: BTreeMap<usize, Vec<(usize, &str)>> = BTreeMap::new();
+    for &(from, to, colour) in edges {
+        let routes = tracks.entry(from).or_default();
+        if !routes.iter().any(|&(target, _)| target == to) {
+            routes.push((to, colour));
+        }
+    }
+    let mut rows = Vec::new();
+    loop {
+        let moving: Vec<_> = tracks
+            .iter()
+            .flat_map(|(&from, routes)| {
+                routes
+                    .iter()
+                    .filter_map(move |&(to, colour)| (from != to).then_some((from, to, colour)))
+            })
+            .collect();
+        if moving.is_empty() {
+            break;
+        }
+        let (from, target, colour, to) = moving
+            .iter()
+            .find_map(|&(from, to, colour)| {
+                tracks
+                    .get(&to)
+                    .is_none_or(|routes| routes.iter().all(|&(target, _)| target == to))
+                    .then_some((from, to, colour, to))
+            })
+            .unwrap_or_else(|| {
+                let (from, target, colour) = moving[0];
+                let spare = width.max(1) * 2;
+                let spare = spare.max(tracks.last_key_value().map_or(0, |(&column, _)| column + 2));
+                (from, target, colour, spare)
+            });
+        // A fork and a join in the same row would have downward paths at
+        // both endpoints, visually inventing a connection in the reverse
+        // direction. Split off this route before joining an occupied lane.
+        let to = if tracks.contains_key(&to) && tracks[&from].len() > 1 {
+            (width.max(1) * 2).max(tracks.last_key_value().map_or(0, |(&column, _)| column + 2))
+        } else {
+            to
+        };
+        let size = width.max(1) * 2;
+        let size = size
+            .max(to + 2)
+            .max(tracks.last_key_value().map_or(0, |(&column, _)| column + 2));
+        let mut cells = vec![(0, ""); size];
+        for (&column, routes) in &tracks {
+            cells[column] = (UP | DOWN, routes[0].1);
+        }
+        let routes = tracks.get_mut(&from).unwrap();
+        routes.retain(|&(destination, _)| destination != target);
+        let continues = !routes.is_empty();
+        if !continues {
+            tracks.remove(&from);
+        }
+        let occupied = tracks.contains_key(&to);
+        let routes = tracks.entry(to).or_default();
+        if !routes.iter().any(|&(destination, _)| destination == target) {
+            routes.push((target, colour));
+        }
+        let (outgoing, incoming) = if from < to {
+            (RIGHT, LEFT)
+        } else {
+            (LEFT, RIGHT)
+        };
+        cells[from] = (UP | if continues { DOWN } else { 0 } | outgoing, colour);
+        cells[to] = (DOWN | if occupied { UP } else { 0 } | incoming, colour);
+        for cell in &mut cells[from.min(to) + 1..from.max(to)] {
+            cell.0 |= LEFT | RIGHT;
+            if cell.1.is_empty() {
+                cell.1 = colour;
+            }
+        }
+        let used = cells
+            .iter()
+            .rposition(|&(directions, _)| directions != 0)
+            .map_or(0, |i| i + 1);
+        let row: String = cells[..used]
+            .iter()
+            .map(|&(directions, colour)| {
+                let symbol = match directions {
+                    0 => return " ".to_owned(),
+                    3 => '│',
+                    12 => '─',
+                    9 => '╰',
+                    5 => '╯',
+                    10 => '╭',
+                    6 => '╮',
+                    11 => '├',
+                    7 => '┤',
+                    15 => '╪',
+                    _ => unreachable!("invalid graph connection {directions}"),
+                };
+                paint(symbol, colour)
             })
             .collect();
         rows.push(format!("{row} "));
@@ -1773,6 +1960,171 @@ mod tests {
             plain(&transitions(&[(0, 2, "31"), (2, 0, "32")], 2)),
             [" X "]
         );
+    }
+
+    #[test]
+    fn connected_routes_keep_forks_joins_and_crossings_distinct() {
+        assert_eq!(
+            plain(&connected_transitions(&[(0, 0, "31"), (0, 2, "32")], 2)),
+            ["├─╮ "]
+        );
+        assert_eq!(
+            plain(&connected_transitions(&[(0, 0, "31"), (2, 0, "31")], 2)),
+            ["├─╯ "]
+        );
+        assert_eq!(
+            plain(&connected_transitions(&[(0, 4, "31"), (2, 2, "32")], 3)),
+            ["╰─╪─╮ "]
+        );
+        assert_eq!(
+            plain(&connected_transitions(&[(0, 2, "31"), (2, 0, "32")], 2)),
+            ["╰─╪─╮ ", "╭─╯ │ ", "│ ╭─╯ "]
+        );
+        // Both source lanes also continue straight: moving the fork to a
+        // temporary lane must leave the original connection intact.
+        assert_eq!(
+            plain(&connected_transitions(
+                &[(0, 0, "31"), (0, 2, "32"), (2, 2, "32"), (2, 0, "31")],
+                2
+            )),
+            ["├─╪─╮ ", "│ ├─╪─╮ ", "│ ├─╯ │ ", "├─╪───╯ "]
+        );
+    }
+
+    #[test]
+    fn connected_routes_reach_exactly_their_original_destinations() {
+        // Trace the rendered characters rather than the router's bookkeeping.
+        // At a crossing, horizontal and vertical paths remain independent.
+        let mut seed = 19_u32;
+        for case in 0..300 {
+            let width = 2 + case % 6;
+            let mut edges = Vec::new();
+            for from in 0..width {
+                for to in 0..width {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    if (seed >> 16).is_multiple_of(4) {
+                        edges.push((2 * from, 2 * to, "31"));
+                    }
+                }
+            }
+            let rows: Vec<Vec<char>> = plain(&connected_transitions(&edges, width))
+                .iter()
+                .map(|row| row.chars().collect())
+                .collect();
+            for from in 0..width {
+                let expected: HashSet<_> = edges
+                    .iter()
+                    .filter_map(|&(source, to, _)| (source == 2 * from).then_some(to))
+                    .collect();
+                if expected.is_empty() {
+                    continue;
+                }
+                // Entries identify the side through which a path entered a cell.
+                let mut todo = vec![(2 * from, 0, 'u')];
+                let mut seen = HashSet::new();
+                let mut actual = HashSet::new();
+                while let Some((x, y, entry)) = todo.pop() {
+                    if y == rows.len() {
+                        actual.insert(x);
+                        continue;
+                    }
+                    if !seen.insert((x, y, entry)) {
+                        continue;
+                    }
+                    let glyph = rows[y].get(x).copied().unwrap_or(' ');
+                    let (up, down, left, right) = match glyph {
+                        '│' => (true, true, false, false),
+                        '─' => (false, false, true, true),
+                        '╰' => (true, false, false, true),
+                        '╯' => (true, false, true, false),
+                        '╭' => (false, true, false, true),
+                        '╮' => (false, true, true, false),
+                        '├' => (true, true, false, true),
+                        '┤' => (true, true, true, false),
+                        '╪' => (true, true, true, true),
+                        _ => panic!("broken route in case {case}: {edges:?}, {rows:?}"),
+                    };
+                    assert!(match entry {
+                        'u' => up,
+                        'l' => left,
+                        'r' => right,
+                        _ => false,
+                    });
+                    if down && (glyph != '╪' || entry == 'u') {
+                        todo.push((x, y + 1, 'u'));
+                    }
+                    if left && entry != 'l' && (glyph != '╪' || entry == 'r') {
+                        todo.push((x - 1, y, 'r'));
+                    }
+                    if right && entry != 'r' && (glyph != '╪' || entry == 'l') {
+                        todo.push((x + 1, y, 'l'));
+                    }
+                }
+                assert_eq!(actual, expected, "case {case}: {edges:?}, {rows:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_graph_restores_its_paths_after_folding_and_filtering() {
+        let commits = vec![
+            commit("merge", &["main", "side"]),
+            commit("side", &["base"]),
+            commit("main", &["base"]),
+            commit("base", &[]),
+        ];
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        let original: Vec<_> = commits
+            .iter()
+            .enumerate()
+            .map(|(i, commit)| plain(folds.display_graph(i, commit)))
+            .collect();
+        assert_eq!(
+            original,
+            [
+                vec!["● "],
+                vec!["├─╮ ", "│ ● "],
+                vec!["● │ "],
+                vec!["├─╯ ", "● "]
+            ]
+        );
+        folds.toggle(0, &commits).unwrap();
+        assert!(!folds.visible(1));
+        assert_eq!(plain(folds.display_graph(2, &commits[2])), ["● "]);
+        folds.toggle(0, &commits).unwrap();
+        folds.toggle_merges(&commits).unwrap();
+        assert_eq!(plain(folds.display_graph(1, &commits[1])), original[1]);
+        folds.toggle_merges(&commits).unwrap();
+        for (i, commit) in commits.iter().enumerate() {
+            assert_eq!(plain(folds.display_graph(i, commit)), original[i]);
+        }
+        folds.ascii_graph = true;
+        for (i, commit) in commits.iter().enumerate() {
+            assert_eq!(folds.display_graph(i, commit), commit.graph);
+        }
+    }
+
+    #[test]
+    fn unicode_graph_connects_history_omitted_by_git_filters() {
+        let commits = vec![
+            commit("merge", &["main", "omitted"]),
+            commit("side", &["base"]),
+            commit("main", &["base"]),
+            commit("base", &[]),
+        ];
+        let mut folds = folds_with(Some(Ancestry::from([(
+            "omitted".into(),
+            vec!["side".into()],
+        )])));
+        folds.ascii_graph = false;
+        folds.refresh(&commits).unwrap();
+        assert_eq!(plain(folds.display_graph(1, &commits[1])), ["├─╮ ", "│ ● "]);
+        assert_eq!(folds.marker(0), None);
+        folds.toggle(0, &commits).unwrap();
+        assert!(!folds.visible(1));
+        folds.toggle(0, &commits).unwrap();
+        assert_eq!(plain(folds.display_graph(1, &commits[1])), ["├─╮ ", "│ ● "]);
     }
 
     /// A deterministic history of `size` commits, each with parents older

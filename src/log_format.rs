@@ -389,6 +389,7 @@ impl Reference {
 pub struct LogOptions {
     pub exit_on_esc: bool,
     pub fold_merges: bool,
+    pub ascii_graph: bool,
     pub hide_merges: bool,
     pub hidden_types: std::collections::BTreeSet<String>,
 }
@@ -456,6 +457,8 @@ pub fn parse_args(args: &[String]) -> Result<(LogFormat, LogOptions, Vec<String>
             };
         } else if arg == "--exit-on-esc" {
             options.exit_on_esc = true;
+        } else if arg == "--ascii-graph" {
+            options.ascii_graph = true;
         } else if arg == "--fold-merges" {
             options.fold_merges = true;
         } else if arg == "--hide-merges" {
@@ -701,11 +704,12 @@ pub(crate) mod tests {
             "feature,test,custom",
             "--hide-merges",
             "--fold-merges",
+            "--ascii-graph",
             "--all",
         ]
         .map(str::to_owned);
         let (_, options, git) = parse_args(&args).unwrap();
-        assert!(options.hide_merges && options.fold_merges);
+        assert!(options.hide_merges && options.fold_merges && options.ascii_graph);
         assert_eq!(
             options.hidden_types,
             ["test", "docs", "feat", "custom"].map(str::to_owned).into()
