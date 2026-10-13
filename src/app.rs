@@ -1555,6 +1555,23 @@ impl App {
 
     pub fn reference_back(&mut self) {
         if let Some(mut origin) = self.reference_back.take() {
+            // Saved views discard their cache. Restore the displayed commit's
+            // entry on return so switching tabs keeps its folds and viewport.
+            if let Some(commit) = origin
+                .commits
+                .get(origin.selected)
+                .filter(|commit| commit.kind == CommitKind::Revision)
+            {
+                let key = commit.show_cache_key();
+                origin.cache_order.push_back(key.clone());
+                origin.cache.insert(
+                    key,
+                    CachedShow {
+                        text: origin.show_text.clone(),
+                        links: Some(origin.show_links.clone()),
+                    },
+                );
+            }
             self.hand_over(&mut origin);
             *self = *origin;
             self.redraw = true;

@@ -486,6 +486,43 @@ fi
     }
 
     #[test]
+    fn returning_from_a_reference_keeps_show_state_across_tab_switches() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let first = commit("first");
+        std::fs::write("Cargo.lock", "first\nsecond\n").unwrap();
+        let second = commit(&format!("second\n\nSee {first}\n\nMore context"));
+        let mut app = git::load_show_app(&[second]).unwrap();
+        app.show_cursor = app.show_rows.iter().position(|row| row.folded).unwrap();
+        app.toggle_show_file();
+        let mut terminal = Terminal::new(TestBackend::new(30, 9)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let cursor = app.show_cursor;
+        let offset = app.show_offset;
+        let rows: Vec<_> = app.show_rows.iter().map(|row| row.text.clone()).collect();
+        assert!(offset > 0);
+        app.follow_reference(&first);
+        app.reference_back();
+        app.switch_mode();
+        app.switch_mode();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        assert_eq!(app.show_cursor, cursor);
+        assert_eq!(app.show_offset, offset);
+        assert_eq!(
+            app.show_rows
+                .iter()
+                .map(|row| row.text.clone())
+                .collect::<Vec<_>>(),
+            rows
+        );
+    }
+
+    #[test]
     fn wrapped_clicks_follow_nested_references_and_back_restores_the_original_view() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
