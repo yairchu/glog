@@ -194,6 +194,61 @@ mod tests {
     }
 
     #[test]
+    fn configured_pretty_formats_keep_show_links_and_message_styles() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/owner/repo.git",
+        ]);
+        let target = commit("target");
+        commit(&format!(
+            "feat!: follow {}\n\nMigration:\nUse the updated API.\n\nBREAKING CHANGE: old API removed\nRefs #123",
+            &target[..7]
+        ));
+
+        for pretty in ["oneline", "short", "format:%s"] {
+            git(&["config", "format.pretty", pretty]);
+            let app = git::load_show_app(&[]).unwrap();
+            let targets: Vec<_> = app
+                .show_links
+                .values()
+                .flatten()
+                .map(|link| link.target.clone())
+                .collect();
+            assert!(
+                targets.contains(&Target::Commit(target.clone())),
+                "commit link missing with format.pretty={pretty}"
+            );
+            assert!(
+                targets.contains(&Target::Issue(
+                    "https://github.com/owner/repo/issues/123".into()
+                )),
+                "issue link missing with format.pretty={pretty}"
+            );
+            let lines: Vec<_> = app.show_text.lines().map(crate::ansi::plain).collect();
+            let emphasized: Vec<_> = app
+                .show_message_styles
+                .iter()
+                .flat_map(|(source, ranges)| {
+                    ranges
+                        .iter()
+                        .map(|(range, _)| &lines[*source][range.clone()])
+                })
+                .collect();
+            for marker in ["feat", "!", "Migration:", "BREAKING CHANGE:", "Refs"] {
+                assert!(
+                    emphasized.contains(&marker),
+                    "{marker:?} style missing with format.pretty={pretty}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn only_resolved_commit_hashes_in_messages_become_links() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
