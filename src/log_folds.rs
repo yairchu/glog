@@ -25,9 +25,15 @@ pub struct LogFolds {
     revisions: Vec<(String, Vec<String>, bool)>,
     ancestry: Option<Ancestry>,
     graph: Graph,
+    // History omitted by Git, read at most once per set of revisions and
+    // shared by folding and the Unicode graph.
+    omitted: Option<Ancestry>,
     // Complete ancestry for drawing through Git-omitted rows, without changing
     // which merges the existing folding policy offers.
     unicode_graph: Option<Graph>,
+    // Drawing falls back to Git's graph without retrying a failed read.
+    // Folding still retries, as each fold is an explicit request.
+    unicode_failed: bool,
     layout: Layout,
     // A failed ancestry read keeps fold choices for the next successful
     // refresh, but shows the Log unfolded.
@@ -49,7 +55,9 @@ impl Default for LogFolds {
             revisions: Vec::new(),
             ancestry: None,
             graph: Graph::default(),
+            omitted: None,
             unicode_graph: None,
+            unicode_failed: false,
             layout: Layout::default(),
             failed: false,
             hidden_types: Default::default(),
@@ -153,7 +161,9 @@ impl LogFolds {
             .collect();
         if revisions != self.revisions {
             self.ancestry = None;
+            self.omitted = None;
             self.unicode_graph = None;
+            self.unicode_failed = false;
             self.revisions = revisions;
         }
         self.graph = Graph::new(commits, self.ancestry.as_ref());
@@ -291,6 +301,15 @@ impl LogFolds {
         }
     }
 
+    fn read_omitted(&mut self, commits: &[Commit]) -> Result<Ancestry, String> {
+        if let Some(ancestry) = &self.omitted {
+            return Ok(ancestry.clone());
+        }
+        let ancestry = leading_to_rows((self.load_ancestry)(commits)?, commits);
+        self.omitted = Some(ancestry.clone());
+        Ok(ancestry)
+    }
+
     /// Lay out the folds. Without the ancestry of commits a filter omitted,
     /// a fold could hide commits that other history reaches through them, so
     /// read it before hiding anything, or when `exact` asks for it anyway.
@@ -302,9 +321,8 @@ impl LogFolds {
                 || !self.hidden_types.is_empty()
                 || self.hide_merges)
         {
-            match (self.load_ancestry)(commits) {
+            match self.read_omitted(commits) {
                 Ok(ancestry) => {
-                    let ancestry = leading_to_rows(ancestry, commits);
                     self.graph = Graph::new(commits, Some(&ancestry));
                     self.ancestry = Some(ancestry);
                     layout = Layout::new(&self.graph, commits, &self.collapsed);
@@ -318,10 +336,10 @@ impl LogFolds {
             }
         }
         if !self.ascii_graph && self.graph.unknown_below.is_some() {
-            if self.unicode_graph.is_none() {
-                if let Ok(ancestry) = (self.load_ancestry)(commits) {
-                    let ancestry = leading_to_rows(ancestry, commits);
-                    self.unicode_graph = Some(Graph::new(commits, Some(&ancestry)));
+            if self.unicode_graph.is_none() && !self.unicode_failed {
+                match self.read_omitted(commits) {
+                    Ok(ancestry) => self.unicode_graph = Some(Graph::new(commits, Some(&ancestry))),
+                    Err(_) => self.unicode_failed = true,
                 }
             }
             if let Some(graph) = &self.unicode_graph {
