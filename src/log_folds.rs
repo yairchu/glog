@@ -631,6 +631,20 @@ fn leading_to_rows(mut ancestry: Ancestry, commits: &[Commit]) -> Ancestry {
     ancestry
 }
 
+/// Whether Git's graph has lanes besides the node on the last row's line.
+/// Those lead to parents Git would show but did not load, as under a count
+/// limit: once every shown commit is loaded, every lane has ended.
+fn lanes_open_below(commits: &[Commit]) -> bool {
+    let Some(last) = commits.iter().rfind(|c| c.kind == CommitKind::Revision) else {
+        return false;
+    };
+    last.graph.last().is_some_and(|line| {
+        cells(line)
+            .iter()
+            .any(|&(symbol, _)| matches!(symbol, '|' | '/' | '\\'))
+    })
+}
+
 fn merges(commits: &[Commit]) -> impl Iterator<Item = &str> {
     commits
         .iter()
@@ -654,6 +668,9 @@ struct Graph {
     // The first row with a parent that is neither loaded nor known to be
     // irrelevant. Omitted commits may connect it to any row below it.
     unknown_below: Option<usize>,
+    // Nodes from here on are parents Git left unloaded below a count limit.
+    // Their lanes continue past the last row, as in Git's graph.
+    open_from: usize,
 }
 
 impl Graph {
@@ -679,19 +696,31 @@ impl Graph {
             .into_iter()
             .flat_map(|c| c.graph_parents())
             .collect();
+        let open_below = lanes_open_below(commits);
+        let open_from = nodes;
+        // Kept apart from `index`, so omitted commits do not link to them.
+        let mut open: HashMap<&str, usize> = HashMap::new();
         let mut unknown_below = None;
         let mut parents = vec![Vec::new(); nodes];
         for (row, commit) in commits.iter().enumerate() {
             for (slot, parent) in commit.graph_parents().iter().enumerate() {
-                match index.get(parent) {
-                    Some(&node) => parents[row].push((node, slot > 0)),
-                    None if ancestry.is_none() && !boundary.contains(parent) => {
-                        unknown_below = unknown_below.or(Some(row));
-                    }
-                    None => {}
+                if let Some(&node) = index.get(parent) {
+                    parents[row].push((node, slot > 0));
+                    continue;
+                }
+                if ancestry.is_none() && !boundary.contains(parent) {
+                    unknown_below = unknown_below.or(Some(row));
+                }
+                if open_below {
+                    let node = *open.entry(parent).or_insert_with(|| {
+                        parents.push(Vec::new());
+                        parents.len() - 1
+                    });
+                    parents[row].push((node, slot > 0));
                 }
             }
         }
+        let nodes = parents.len();
         let first_parent_only = commits.iter().any(|commit| commit.first_parent_only);
         for (hash, links) in ancestry.into_iter().flatten() {
             let node = index[hash];
@@ -740,6 +769,7 @@ impl Graph {
             tips,
             branch_points,
             unknown_below,
+            open_from,
         }
     }
 
@@ -980,7 +1010,7 @@ impl Layout {
         // first parents, matching the existing merge-fold projection.
         let mut leads: Vec<Vec<usize>> = vec![Vec::new(); graph.parents.len()];
         for &node in graph.order.iter().rev() {
-            if node < graph.rows && self.visible[node] {
+            if (node < graph.rows && self.visible[node]) || node >= graph.open_from {
                 leads[node].push(node);
             } else if reached[node] {
                 for &(parent, side) in &graph.parents[node] {
@@ -1231,7 +1261,7 @@ impl Plan {
             } else if existing.is_none() {
                 // Without Git's colour, the first new parent continues
                 // this lane's colour.
-                let colour = match self.git_colours[parent] {
+                let colour = match self.git_colours.get(parent).copied().flatten() {
                     Some(colour) => colour,
                     None if insert == column => colour,
                     None => self.palette(state),
@@ -2658,6 +2688,28 @@ mod tests {
         assert!(!folds.visible(1));
         folds.toggle(0, &commits).unwrap();
         assert_eq!(plain(folds.display_graph(1, &commits[1])), ["├─╮ ", "│ ● "]);
+    }
+
+    #[test]
+    fn unicode_graph_continues_lanes_past_a_count_limit() {
+        // As with `-n 3`, which loads neither the merge's first parent nor
+        // anything below it, but leaves its lane open beside the last row.
+        let mut commits = vec![
+            commit("merge", &["main", "s3"]),
+            commit("s3", &["s2"]),
+            commit("s2", &["s1"]),
+        ];
+        commits[2].graph = vec!["| * ".into()];
+        let mut folds = folds_with(Some(Ancestry::from([
+            ("main".into(), vec!["base".into()]),
+            ("base".into(), vec![]),
+        ])));
+        folds.refresh(&commits).unwrap();
+        folds.settle(&commits);
+        let graphs: Vec<_> = (0..commits.len())
+            .map(|i| plain(folds.display_graph(i, &commits[i])))
+            .collect();
+        assert_eq!(graphs, [vec!["● "], vec!["├─╮ ", "│ ● "], vec!["│ ● "]]);
     }
 
     #[test]
