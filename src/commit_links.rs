@@ -51,11 +51,11 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
                 && token.bytes().all(|b| b.is_ascii_digit())
             {
                 // Short numeric references are issues even if they match a commit.
-                // A qualified owner/repo#number must not point at the local repository.
-                let standalone = plain[..start - 1]
-                    .chars()
-                    .next_back()
-                    .is_none_or(|c| !c.is_alphanumeric() && !matches!(c, '_' | '/' | '.' | '-'));
+                // A qualified owner/repo#number must not point at the local repository,
+                // and &#number; is an HTML character reference.
+                let standalone = plain[..start - 1].chars().next_back().is_none_or(|c| {
+                    !c.is_alphanumeric() && !matches!(c, '_' | '/' | '.' | '-' | '&')
+                });
                 standalone.then_some(Candidate::Issue(token))
             } else if !qualified
                 && (minimum..=64).contains(&token.len())
