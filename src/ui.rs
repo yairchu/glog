@@ -1496,6 +1496,31 @@ mod tests {
     }
 
     #[test]
+    fn comparison_merges_show_fold_markers() {
+        for ascii_graph in [false, true] {
+            let mut merge = commit("merge", 1);
+            let mut side = commit("side", 1);
+            let mut main = commit("main", 1);
+            let base = commit("base", 1);
+            merge.parents = vec![main.hash.clone(), side.hash.clone()];
+            side.parents = vec![base.hash.clone()];
+            main.parents = vec![base.hash.clone()];
+            merge.graph_node = '<';
+            merge.graph = vec!["<   ".into()];
+            let mut app = App::new(vec![merge, side, main, base]);
+            app.log_folds.ascii_graph = ascii_graph;
+            app.log_folds.refresh(&app.commits).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            let y = app.log_row_origin;
+            assert_eq!(terminal.backend().buffer()[(0, y)].symbol(), "▼");
+            app.apply_log_action(LogAction::Fold);
+            terminal.draw(|f| draw(f, &mut app)).unwrap();
+            assert_eq!(terminal.backend().buffer()[(0, y)].symbol(), "▶");
+        }
+    }
+
+    #[test]
     fn unicode_merge_nodes_and_routing_rows_keep_selection_and_folds() {
         let mut merge = commit("merge", 1);
         let mut side = commit("side", 1);
