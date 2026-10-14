@@ -9,8 +9,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Draw commit graphs with Unicode lines, rounded corners, and filled commit
   dots. Crossings remain distinct from joins, including in folded and filtered
-  histories, including connections through merges omitted by Git filters,
-  respecting first-parent traversal and marking excluded boundary
+  histories, respecting first-parent traversal and marking excluded boundary
   commits with hollow circles. Preserve left/right and patch-equivalence
   markers in comparison histories. Use `--ascii-graph` for the original Git-style
   drawing.

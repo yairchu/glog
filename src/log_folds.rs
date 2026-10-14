@@ -867,30 +867,6 @@ impl Layout {
         folded: &[bool],
         reached: &[bool],
     ) -> HashMap<usize, GraphRows> {
-        let mut rows = self.draw_projection(graph, commits, folded, reached, false);
-        if graph.parents[graph.rows..]
-            .iter()
-            .any(|parents| parents.len() > 1)
-        {
-            // Preserve the historical ASCII projection. Unicode paths include
-            // every parent of omitted merges; first-parent traversal has already
-            // restricted these links when constructing Graph.
-            let complete = self.draw_projection(graph, commits, folded, reached, true);
-            for (index, rows) in &mut rows {
-                rows.unicode = complete[index].unicode.clone();
-            }
-        }
-        rows
-    }
-
-    fn draw_projection(
-        &self,
-        graph: &Graph,
-        commits: &[Commit],
-        folded: &[bool],
-        reached: &[bool],
-        all_omitted_parents: bool,
-    ) -> HashMap<usize, GraphRows> {
         // Git colours each edge after the commit it leads to, so a lane
         // takes its row's colour. Git draws no edge into the first row or a
         // row directly below its child; those lanes use the palette instead.
@@ -899,8 +875,8 @@ impl Layout {
             .collect();
         let mut palette = (0..).map(|i| PALETTE[i % PALETTE.len()]);
         // Compute destinations parents first. Type-hidden loaded commits
-        // preserve every unfolded parent. ASCII projects omitted ancestry
-        // through first parents; Unicode preserves all of its connections.
+        // preserve every unfolded parent; ancestry omitted by Git follows
+        // first parents, matching the existing merge-fold projection.
         let mut leads: Vec<Vec<usize>> = vec![Vec::new(); graph.parents.len()];
         for &node in graph.order.iter().rev() {
             if node < graph.rows && self.visible[node] {
@@ -910,7 +886,7 @@ impl Layout {
                     // Omitted nodes carry reachability links, whose `side`
                     // flags are all false. Use their parent order instead.
                     if node >= graph.rows {
-                        if !all_omitted_parents && slot > 0 {
+                        if slot > 0 {
                             break;
                         }
                     } else if folded[node] && side {

@@ -2551,7 +2551,7 @@ pub(crate) mod tests {
         use super::*;
 
         #[test]
-        fn unicode_graph_connects_both_parents_of_a_grep_omitted_merge() {
+        fn unicode_graph_follows_first_parents_of_a_grep_omitted_merge() {
             let history = History::new();
             let tree = git(&["mktree"]);
             let tip = git(&["commit-tree", &tree, "-p", &history.merge, "-m", "tip"]);
@@ -2574,11 +2574,12 @@ pub(crate) mod tests {
                     })
                     .collect::<Vec<_>>()
             };
-            // Whichever parent Git visits first, both paths must originate
-            // at tip and join at base; neither parent is an independent root.
+            // As Git does for filtered history, follow the omitted merge's
+            // first parent only. Following every parent of omitted merges
+            // made filtered logs of long histories hundreds of lanes wide.
             let expected = vec![
                 vec!["● ".to_owned()],
-                vec!["├─╮ ".to_owned(), "│ ● ".to_owned()],
+                vec!["│ ● ".to_owned()],
                 vec!["● │ ".to_owned()],
                 vec!["├─╯ ".to_owned(), "● ".to_owned()],
             ];
