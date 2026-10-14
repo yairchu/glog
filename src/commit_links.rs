@@ -570,6 +570,34 @@ fi
     }
 
     #[test]
+    fn search_history_is_shared_with_followed_references() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let first = commit("first");
+        let second = commit(&format!("second\n\nSee {first}"));
+        let mut app = git::load_show_app(&[second]).unwrap();
+        let search = |app: &mut crate::app::App, query: &str| {
+            app.begin_search(false);
+            app.search_input = Some(query.to_owned());
+            input::handle(Event::Key(KeyEvent::from(KeyCode::Enter)), app);
+        };
+        let recall = |app: &mut crate::app::App| {
+            app.begin_search(false);
+            input::handle(Event::Key(KeyEvent::from(KeyCode::Up)), app);
+            let query = app.search_input.clone();
+            input::handle(Event::Key(KeyEvent::from(KeyCode::Esc)), app);
+            query
+        };
+        search(&mut app, "origin");
+        app.follow_reference(&first);
+        assert_eq!(recall(&mut app).as_deref(), Some("origin"));
+        search(&mut app, "followed");
+        app.reference_back();
+        assert_eq!(recall(&mut app).as_deref(), Some("followed"));
+    }
+
+    #[test]
     fn returning_from_a_reference_keeps_show_state_across_tab_switches() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
