@@ -11,7 +11,8 @@ use std::collections::{HashMap, HashSet};
 use crate::git::{self, Commit, CommitKind};
 
 type Ancestry = HashMap<String, Vec<String>>;
-type AncestrySource = Box<dyn Fn(&[Commit]) -> Result<Ancestry, String>>;
+type AncestrySource = Box<dyn Fn(&[Commit]) -> git::AncestryRead>;
+type AncestryResult = std::sync::mpsc::Receiver<Result<Ancestry, String>>;
 
 pub struct LogFolds {
     pub start_collapsed: bool,
@@ -28,6 +29,9 @@ pub struct LogFolds {
     // History omitted by Git, read at most once per set of revisions and
     // shared by folding and the Unicode graph.
     omitted: Option<Ancestry>,
+    // The Unicode graph reads omitted history in the background, so a long
+    // walk does not delay the Log. Folds and filters wait for the same read.
+    reading: Option<AncestryResult>,
     // Complete ancestry for drawing through Git-omitted rows, without changing
     // which merges the existing folding policy offers.
     unicode_graph: Option<Graph>,
@@ -56,6 +60,7 @@ impl Default for LogFolds {
             ancestry: None,
             graph: Graph::default(),
             omitted: None,
+            reading: None,
             unicode_graph: None,
             unicode_failed: false,
             layout: Layout::default(),
@@ -178,6 +183,7 @@ impl LogFolds {
         if revisions != self.revisions {
             self.ancestry = None;
             self.omitted = None;
+            self.reading = None;
             self.unicode_graph = None;
             self.unicode_failed = false;
             self.revisions = revisions;
@@ -321,9 +327,63 @@ impl LogFolds {
         if let Some(ancestry) = &self.omitted {
             return Ok(ancestry.clone());
         }
-        let ancestry = leading_to_rows((self.load_ancestry)(commits)?, commits);
+        let result = match self.reading.take().map(|reading| received(reading.recv())) {
+            Some(Ok(ancestry)) => Ok(ancestry),
+            read => {
+                // A failed read for the graph keeps Git's graph, but each
+                // fold is an explicit request and retries.
+                self.unicode_failed |= read.is_some();
+                (self.load_ancestry)(commits)()
+            }
+        };
+        let ancestry = leading_to_rows(result?, commits);
         self.omitted = Some(ancestry.clone());
         Ok(ancestry)
+    }
+
+    /// Start reading omitted history for the Unicode graph, which `poll`
+    /// draws once the read completes.
+    fn read_omitted_in_background(&mut self, commits: &[Commit]) {
+        if self.reading.is_some() {
+            return;
+        }
+        let read = (self.load_ancestry)(commits);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || sender.send(read()));
+        self.reading = Some(receiver);
+    }
+
+    /// Draw the Unicode graph once its background read completes.
+    pub fn poll(&mut self, commits: &[Commit]) {
+        use std::sync::mpsc::{RecvError, TryRecvError};
+        let result = match self.reading.as_ref().map(|reading| reading.try_recv()) {
+            None | Some(Err(TryRecvError::Empty)) => return,
+            Some(Ok(result)) => Ok(result),
+            Some(Err(TryRecvError::Disconnected)) => Err(RecvError),
+        };
+        self.reading = None;
+        self.receive(commits, received(result));
+    }
+
+    /// Wait for a background read, as if `poll` ran once it completed.
+    #[cfg(test)]
+    pub fn settle(&mut self, commits: &[Commit]) {
+        if let Some(reading) = self.reading.take() {
+            self.receive(commits, received(reading.recv()));
+        }
+    }
+
+    fn receive(&mut self, commits: &[Commit], result: Result<Ancestry, String>) {
+        match result {
+            Ok(ancestry) => {
+                let ancestry = leading_to_rows(ancestry, commits);
+                self.unicode_graph = Some(Graph::new(commits, Some(&ancestry)));
+                self.omitted = Some(ancestry);
+            }
+            Err(_) => self.unicode_failed = true,
+        }
+        let layout = std::mem::take(&mut self.layout);
+        self.show(layout, commits);
     }
 
     /// Lay out the folds. Without the ancestry of commits a filter omitted,
@@ -355,9 +415,9 @@ impl LogFolds {
             && self.unicode_graph.is_none()
             && !self.unicode_failed
         {
-            match self.read_omitted(commits) {
-                Ok(ancestry) => self.unicode_graph = Some(Graph::new(commits, Some(&ancestry))),
-                Err(_) => self.unicode_failed = true,
+            match &self.omitted {
+                Some(ancestry) => self.unicode_graph = Some(Graph::new(commits, Some(ancestry))),
+                None => self.read_omitted_in_background(commits),
             }
         }
         self.show(layout, commits);
@@ -544,6 +604,12 @@ pub fn subject_breaking_marker(subject: &str) -> Option<usize> {
 /// The omitted commits that lead to a row. The rest, such as the history
 /// of a branch that diverged before the oldest row, connect no rows, and
 /// would otherwise enlarge every layout.
+fn received(
+    result: Result<Result<Ancestry, String>, std::sync::mpsc::RecvError>,
+) -> Result<Ancestry, String> {
+    result.unwrap_or_else(|_| Err("could not read ancestry for merge folding".into()))
+}
+
 fn leading_to_rows(mut ancestry: Ancestry, commits: &[Commit]) -> Ancestry {
     let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
     for (hash, parents) in &ancestry {
@@ -1584,7 +1650,10 @@ mod tests {
     /// Folds whose omitted history comes from `ancestry`, failing when unset.
     fn folds_with(ancestry: Option<Ancestry>) -> LogFolds {
         LogFolds {
-            load_ancestry: Box::new(move |_| ancestry.clone().ok_or_else(|| "no Git".to_owned())),
+            load_ancestry: Box::new(move |_| {
+                let ancestry = ancestry.clone();
+                Box::new(move || ancestry.ok_or_else(|| "no Git".to_owned()))
+            }),
             ..LogFolds::default()
         }
     }
@@ -2579,6 +2648,7 @@ mod tests {
         )])));
         folds.ascii_graph = false;
         folds.refresh(&commits).unwrap();
+        folds.settle(&commits);
         assert_eq!(plain(folds.display_graph(1, &commits[1])), ["├─╮ ", "│ ● "]);
         assert_eq!(folds.marker(0), None);
         folds.toggle(0, &commits).unwrap();
@@ -2600,6 +2670,7 @@ mod tests {
             vec!["unloaded".into(), "side".into()],
         )])));
         folds.refresh(&commits).unwrap();
+        folds.settle(&commits);
         assert_eq!(plain(folds.display_graph(1, &commits[1])), ["● "]);
     }
 
@@ -2617,9 +2688,11 @@ mod tests {
             let mut folds = LogFolds {
                 load_ancestry: Box::new(move |_| {
                     counter.set(counter.get() + 1);
-                    available
-                        .then(|| Ancestry::from([("omitted".into(), vec!["side".into()])]))
-                        .ok_or_else(|| "no Git".to_owned())
+                    Box::new(move || {
+                        available
+                            .then(|| Ancestry::from([("omitted".into(), vec!["side".into()])]))
+                            .ok_or_else(|| "no Git".to_owned())
+                    })
                 }),
                 ..LogFolds::default()
             };

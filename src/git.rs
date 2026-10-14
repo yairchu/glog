@@ -352,12 +352,14 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
     Ok(commits)
 }
 
+pub type AncestryRead =
+    Box<dyn FnOnce() -> Result<std::collections::HashMap<String, Vec<String>>, String> + Send>;
+
 /// Parent links through commits omitted by log filters, for merge folding.
 /// Stop below the oldest displayed commit: its ancestors cannot be displayed
 /// earlier in Git's topological graph order, and may be a very large history.
-pub fn log_ancestry(
-    commits: &[Commit],
-) -> Result<std::collections::HashMap<String, Vec<String>>, String> {
+/// The returned read runs Git, so it can run off the UI thread.
+pub fn log_ancestry(commits: &[Commit]) -> AncestryRead {
     let revisions: Vec<_> = commits
         .iter()
         .filter(|c| c.kind == CommitKind::Revision)
@@ -374,25 +376,28 @@ pub fn log_ancestry(
         input.push_str(parent);
         input.push('\n');
     }
-    let mut command = Command::new("git");
-    command
-        .args(["rev-list", "--parents", "--stdin"])
-        .env("GIT_NO_LAZY_FETCH", "1");
-    if revisions.iter().any(|commit| commit.first_parent_only) {
-        command.arg("--first-parent");
-    }
-    let output = pipe_through(&mut command, input.as_bytes())
-        .ok_or("could not read ancestry for merge folding")?;
-    Ok(output
-        .lines()
-        .filter_map(|line| {
-            let mut fields = line.split_whitespace();
-            Some((
-                fields.next()?.to_owned(),
-                fields.map(str::to_owned).collect(),
-            ))
-        })
-        .collect())
+    let first_parent = revisions.iter().any(|commit| commit.first_parent_only);
+    Box::new(move || {
+        let mut command = Command::new("git");
+        command
+            .args(["rev-list", "--parents", "--stdin"])
+            .env("GIT_NO_LAZY_FETCH", "1");
+        if first_parent {
+            command.arg("--first-parent");
+        }
+        let output = pipe_through(&mut command, input.as_bytes())
+            .ok_or("could not read ancestry for merge folding")?;
+        Ok(output
+            .lines()
+            .filter_map(|line| {
+                let mut fields = line.split_whitespace();
+                Some((
+                    fields.next()?.to_owned(),
+                    fields.map(str::to_owned).collect(),
+                ))
+            })
+            .collect())
+    })
 }
 
 /// Watch mode includes one stable working-tree item ahead of committed history.
@@ -2561,6 +2566,7 @@ pub(crate) mod tests {
 
             let mut folds = crate::log_folds::LogFolds::default();
             folds.refresh(&commits).unwrap();
+            folds.settle(&commits);
             let drawing = |folds: &crate::log_folds::LogFolds| {
                 commits
                     .iter()

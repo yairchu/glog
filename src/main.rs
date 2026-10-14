@@ -273,6 +273,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
         }
         app.images.poll();
         app.poll_browser();
+        app.log_folds.poll(&app.commits);
         terminal.draw(|frame| ui::draw(frame, app))?;
         app.images.flush(&mut io::stdout())?;
         if event::poll(Duration::from_millis(250))? {
