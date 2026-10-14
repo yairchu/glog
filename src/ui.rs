@@ -547,14 +547,13 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
         .enumerate()
         .take(app.selected)
         .filter(|(i, _)| app.log_folds.graph_visible(*i))
-        .map(|(i, commit)| app.log_folds.display_graph(i, commit).len())
+        .map(|(i, commit)| app.log_folds.display_height(i, commit))
         .sum::<usize>()
         + usize::from(separator_before.is_some_and(|index| app.selected >= index));
     let selected_subject_row = selected_start_row
         + app
             .log_folds
-            .display_graph(app.selected, &app.commits[app.selected])
-            .len()
+            .display_height(app.selected, &app.commits[app.selected])
             .saturating_sub(1);
     if !app.log_folds.visible(app.selected) {
         app.log_offset = 0;
@@ -601,6 +600,12 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 app.visible_log_rows.push(None);
             }
             graph_row += 1;
+        }
+        // Rows above the screen are counted without drawing them.
+        let rows = app.log_folds.display_height(index, commit);
+        if graph_row + rows <= app.log_offset {
+            graph_row += rows;
+            continue;
         }
         let graph_rows = app.log_folds.display_graph(index, commit);
         for (part, graph) in graph_rows.iter().enumerate() {

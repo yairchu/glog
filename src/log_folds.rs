@@ -94,8 +94,8 @@ impl LogFolds {
             || self.filtered.as_ref().is_some_and(|layout| {
                 layout
                     .graphs
-                    .get(&index)
-                    .is_some_and(|rows| !rows.ascii.is_empty() || !rows.unicode.is_empty())
+                    .height(index)
+                    .is_some_and(|(ascii, unicode)| ascii > 0 || unicode > 0)
             })
     }
 
@@ -109,27 +109,48 @@ impl LogFolds {
     }
 
     pub fn graph<'a>(&'a self, index: usize, commit: &'a Commit) -> &'a [String] {
-        self.filtered
-            .as_ref()
-            .unwrap_or(&self.layout)
-            .graphs
-            .get(&index)
+        self.drawn(false, index)
             .map(|rows| &rows.ascii)
             .unwrap_or(&commit.graph)
     }
 
     pub fn display_graph<'a>(&'a self, index: usize, commit: &'a Commit) -> &'a [String] {
-        // Keep Git's connectivity when its omitted ancestry is unavailable.
-        if self.ascii_graph || self.graph.unknown_below.is_some() && self.unicode_graph.is_none() {
+        if !self.unicode_shown() {
             return self.graph(index, commit);
         }
-        self.filtered
-            .as_ref()
-            .unwrap_or(&self.layout)
-            .graphs
-            .get(&index)
-            .map(|rows| rows.unicode.as_slice())
+        self.drawn(true, index)
+            .map(|rows| &rows.unicode)
             .unwrap_or(&commit.graph)
+    }
+
+    /// The number of rows `display_graph` returns, without drawing them.
+    pub fn display_height(&self, index: usize, commit: &Commit) -> usize {
+        let unicode = self.unicode_shown();
+        self.drawing(unicode)
+            .and_then(|drawing| drawing.height(index))
+            .map_or(
+                commit.graph.len(),
+                |(ascii, rows)| if unicode { rows } else { ascii },
+            )
+    }
+
+    fn unicode_shown(&self) -> bool {
+        // Keep Git's connectivity when its omitted ancestry is unavailable.
+        !(self.ascii_graph || self.graph.unknown_below.is_some() && self.unicode_graph.is_none())
+    }
+
+    /// The redrawn graph, or `None` where Git's graph is shown unchanged.
+    fn drawing(&self, unicode: bool) -> Option<&Drawing> {
+        let layout = self.filtered.as_ref().unwrap_or(&self.layout);
+        if unicode {
+            Some(layout.unicode.as_ref().unwrap_or(&layout.graphs))
+        } else {
+            (!layout.git_ascii).then_some(&layout.graphs)
+        }
+    }
+
+    fn drawn(&self, unicode: bool, index: usize) -> Option<&GraphRows> {
+        self.drawing(unicode)?.rows(index)
     }
 
     fn fold(&self, index: usize) -> Fold {
@@ -345,10 +366,7 @@ impl LogFolds {
             }
             if let Some(graph) = &self.unicode_graph {
                 let reached = Layout::with_folds(graph, &layout.folded).1;
-                let drawn = layout.draw(graph, commits, &layout.folded, &reached);
-                for (index, rows) in &mut layout.graphs {
-                    rows.unicode = drawn[index].unicode.clone();
-                }
+                layout.unicode = Some(layout.draw(graph, commits, &layout.folded, &reached, &[]));
             }
         }
         self.layout = layout;
@@ -406,27 +424,27 @@ impl LogFolds {
             return;
         }
         let mut layout = self.layout.clone();
+        let hidden: Vec<_> = commits
+            .iter()
+            .enumerate()
+            .map(|(index, commit)| self.filter_hidden(index, commit))
+            .collect();
         for (index, commit) in commits.iter().enumerate() {
-            let hidden = self.filter_hidden(index, commit);
-            self.hidden_count += usize::from(hidden);
+            self.hidden_count += usize::from(hidden[index]);
             // Keep merge junctions in the drawing even when their text is
             // filtered out. Merge folds still control branch visibility.
-            layout.visible[index] &= !hidden || commit.parents.len() > 1;
+            layout.visible[index] &= !hidden[index] || commit.parents.len() > 1;
         }
         // Draw the folds the layout shows, which after a failed ancestry
-        // read are none of the saved ones.
+        // read are none of the saved ones. A filtered junction keeps only
+        // its incoming routing rows; outgoing edges are attached to the
+        // next row.
         let reached = Layout::with_folds(&self.graph, &layout.folded).1;
-        layout.graphs = layout.draw(&self.graph, commits, &layout.folded, &reached);
-        for (index, commit) in commits.iter().enumerate() {
-            if self.filter_hidden(index, commit) {
-                layout.visible[index] = false;
-                // The final row is the commit node. Keep only the incoming
-                // routing rows; outgoing edges are attached to the next row.
-                if let Some(rows) = layout.graphs.get_mut(&index) {
-                    rows.ascii.pop();
-                    rows.unicode.pop();
-                }
-            }
+        layout.graphs = layout.draw(&self.graph, commits, &layout.folded, &reached, &hidden);
+        layout.git_ascii = false;
+        layout.unicode = None;
+        for (visible, hidden) in layout.visible.iter_mut().zip(hidden) {
+            *visible &= !hidden;
         }
         self.filtered = Some(layout);
     }
@@ -727,7 +745,11 @@ struct Layout {
     folds: Vec<Fold>,
     // The folds drawn, without those that hide nothing.
     folded: Vec<bool>,
-    graphs: HashMap<usize, GraphRows>,
+    graphs: Drawing,
+    // Git's own graph is exact while every row is shown.
+    git_ascii: bool,
+    // Unicode rows drawn through history Git omitted.
+    unicode: Option<Drawing>,
 }
 
 impl Layout {
@@ -740,13 +762,9 @@ impl Layout {
         if layout.unfold_idle_merges(&mut folded) {
             reached = Self::with_folds(graph, &folded).1;
         }
-        layout.graphs = layout.draw(graph, commits, &folded, &reached);
-        if !layout.visible.contains(&false) {
-            // The ASCII option retains Git's exact original layout.
-            for (index, rows) in &mut layout.graphs {
-                rows.ascii = commits[*index].graph.clone();
-            }
-        }
+        layout.graphs = layout.draw(graph, commits, &folded, &reached, &[]);
+        // The ASCII option retains Git's exact original layout.
+        layout.git_ascii = !layout.visible.contains(&false);
         layout.folded = folded;
         layout
     }
@@ -854,26 +872,23 @@ impl Layout {
             owners,
             folds,
             folded: folded.to_vec(),
-            graphs: HashMap::new(),
+            graphs: Drawing::default(),
+            git_ascii: false,
+            unicode: None,
         };
         (layout, reached)
     }
 
     /// Redraw the graph over the shown rows, keeping Git's lane colours.
+    /// `trimmed` rows keep their routing rows but not their node.
     fn draw(
         &self,
         graph: &Graph,
         commits: &[Commit],
         folded: &[bool],
         reached: &[bool],
-    ) -> HashMap<usize, GraphRows> {
-        // Git colours each edge after the commit it leads to, so a lane
-        // takes its row's colour. Git draws no edge into the first row or a
-        // row directly below its child; those lanes use the palette instead.
-        let git_colours: Vec<_> = (0..commits.len())
-            .map(|row| incoming_colour(commits, row))
-            .collect();
-        let mut palette = (0..).map(|i| PALETTE[i % PALETTE.len()]);
+        trimmed: &[bool],
+    ) -> Drawing {
         // Compute destinations parents first. Type-hidden loaded commits
         // preserve every unfolded parent; ancestry omitted by Git follows
         // first parents, matching the existing merge-fold projection.
@@ -901,117 +916,268 @@ impl Layout {
                 }
             }
         }
-        let mut graphs = HashMap::new();
-        let mut lanes = Vec::<(usize, &str)>::new();
-        let mut pending = GraphRows::default();
-        for (index, commit) in commits.iter().enumerate() {
-            if !self.visible[index] {
-                continue;
-            }
-            if commit.kind != CommitKind::Revision {
-                graphs.insert(
-                    index,
-                    GraphRows {
-                        ascii: commit.graph.clone(),
-                        unicode: commit
-                            .graph
-                            .iter()
-                            .map(|row| {
-                                row.replacen(
-                                    commit.graph_node,
-                                    &unicode_node(commit.graph_node).to_string(),
-                                    1,
-                                )
-                            })
-                            .collect(),
-                    },
-                );
-                continue;
-            }
-            let column = lanes
-                .iter()
-                .position(|&(row, _)| row == index)
-                .unwrap_or_else(|| {
-                    let colour = git_colours[index].or_else(|| palette.next()).unwrap();
-                    lanes.push((index, colour));
-                    lanes.len() - 1
-                });
-            let node: String = lanes
-                .iter()
-                .enumerate()
-                .map(|(i, &(_, colour))| {
-                    if i == column {
-                        format!("{} ", commit.graph_node)
-                    } else {
-                        format!("{} ", paint('|', colour))
+        // A folded merge follows its first parent. Other edges pass
+        // through omitted commits to the shown row they lead to.
+        let projected = (0..commits.len())
+            .map(|index| {
+                let mut projected = Vec::new();
+                for &(parent, side) in &graph.parents[index] {
+                    if folded[index] && side {
+                        continue;
                     }
-                })
-                .collect();
-            pending.ascii.push(node);
-            pending.unicode.push(
-                lanes
-                    .iter()
-                    .enumerate()
-                    .map(|(i, &(_, colour))| {
-                        if i == column {
-                            format!("{} ", unicode_node(commit.graph_node))
-                        } else {
-                            format!("{} ", paint('│', colour))
+                    for &row in &leads[parent] {
+                        if !projected.contains(&row) {
+                            projected.push(row);
                         }
+                    }
+                }
+                projected
+            })
+            .collect();
+        // Git colours each edge after the commit it leads to, so a lane
+        // takes its row's colour. Git draws no edge into the first row or a
+        // row directly below its child; those lanes use the palette instead.
+        let mut colours: Vec<String> = PALETTE.iter().map(|&c| c.to_owned()).collect();
+        let git_colours = (0..commits.len())
+            .map(|row| {
+                let colour = incoming_colour(commits, row)?;
+                Some(colours.iter().position(|c| c == colour).unwrap_or_else(|| {
+                    colours.push(colour.to_owned());
+                    colours.len() - 1
+                }))
+            })
+            .collect();
+        let fixed = commits
+            .iter()
+            .enumerate()
+            .filter(|&(index, commit)| self.visible[index] && commit.kind != CommitKind::Revision)
+            .map(|(index, commit)| {
+                let unicode = commit
+                    .graph
+                    .iter()
+                    .map(|row| {
+                        row.replacen(
+                            commit.graph_node,
+                            &unicode_node(commit.graph_node).to_string(),
+                            1,
+                        )
                     })
-                    .collect(),
-            );
-            graphs.insert(index, std::mem::take(&mut pending));
-
-            // A folded merge follows its first parent. Other edges pass
-            // through omitted commits to the shown row they lead to.
-            let mut projected = Vec::new();
-            for &(parent, side) in &graph.parents[index] {
-                if folded[index] && side {
-                    continue;
-                }
-                for &row in &leads[parent] {
-                    if !projected.contains(&row) {
-                        projected.push(row);
-                    }
-                }
-            }
-            let mut next = lanes.clone();
-            let (_, colour) = next.remove(column);
-            let mut insert = column;
-            for &parent in &projected {
-                if !next.iter().any(|&(row, _)| row == parent) {
-                    // Without Git's colour, the first new parent continues
-                    // this lane's colour.
-                    let colour = git_colours[parent]
-                        .or_else(|| (insert == column).then_some(colour))
-                        .or_else(|| palette.next())
-                        .unwrap();
-                    next.insert(insert, (parent, colour));
-                    insert += 1;
-                }
-            }
-            let mut edges = Vec::new();
-            for (from, &(row, _)) in lanes.iter().enumerate() {
-                let targets = if from == column {
-                    &projected[..]
-                } else {
-                    std::slice::from_ref(&row)
+                    .collect();
+                let rows = GraphRows {
+                    ascii: commit.graph.clone(),
+                    unicode,
                 };
-                for &target in targets {
-                    if let Some(to) = next.iter().position(|&(r, _)| r == target) {
-                        edges.push((2 * from, 2 * to, next[to].1));
-                    }
+                (index, rows)
+            })
+            .collect();
+        let mut plan = Plan {
+            visible: self.visible.clone(),
+            trimmed: trimmed.to_vec(),
+            nodes: commits.iter().map(|c| c.graph_node).collect(),
+            projected,
+            colours,
+            git_colours,
+            fixed,
+            heights: Vec::with_capacity(commits.len()),
+            checkpoints: Vec::new(),
+            blocks: Vec::new(),
+        };
+        let mut state = State::default();
+        for index in 0..commits.len() {
+            if index % BLOCK == 0 {
+                plan.checkpoints.push(state.clone());
+                plan.blocks.push(std::cell::OnceCell::new());
+            }
+            let height = if let Some(rows) = plan.fixed.get(&index) {
+                (rows.ascii.len(), rows.unicode.len())
+            } else if let Some(row) = plan.step(&mut state, index) {
+                let edges = plan.edges(&row.above);
+                let trim = usize::from(plan.trimmed.get(index) == Some(&true));
+                (
+                    transition_count(&edges) + 1 - trim,
+                    route(&edges, row.above_width).len() + 1 - trim,
+                )
+            } else {
+                (0, 0)
+            };
+            plan.heights.push(height);
+        }
+        Drawing(std::rc::Rc::new(plan))
+    }
+}
+
+/// Rows per checkpoint of the lane assignment.
+const BLOCK: usize = 64;
+
+/// The graph redrawn over the shown rows. Building the text of every row
+/// took seconds in long histories, so only the lane assignment runs ahead,
+/// recording each row's height and a checkpoint per block of rows. A block's
+/// text is built when one of its rows is first displayed.
+#[derive(Clone, Default)]
+struct Drawing(std::rc::Rc<Plan>);
+
+impl Drawing {
+    /// The rows drawn for a shown row.
+    fn rows(&self, index: usize) -> Option<&GraphRows> {
+        let plan = &self.0;
+        let block = plan.blocks.get(index / BLOCK)?;
+        block.get_or_init(|| plan.draw_block(index / BLOCK))[index % BLOCK].as_ref()
+    }
+
+    /// The number of ASCII and Unicode rows drawn for a shown row.
+    fn height(&self, index: usize) -> Option<(usize, usize)> {
+        self.0
+            .visible
+            .get(index)
+            .filter(|&&visible| visible)
+            .map(|_| self.0.heights[index])
+    }
+}
+
+#[derive(Default)]
+struct Plan {
+    visible: Vec<bool>,
+    trimmed: Vec<bool>,
+    nodes: Vec<char>,
+    // Each row's parent rows, past the commits it does not show.
+    projected: Vec<Vec<usize>>,
+    // Lanes refer to colours by their index.
+    colours: Vec<String>,
+    git_colours: Vec<Option<usize>>,
+    // Rows Git drew without commits, such as the working tree.
+    fixed: HashMap<usize, GraphRows>,
+    heights: Vec<(usize, usize)>,
+    checkpoints: Vec<State>,
+    blocks: Vec<std::cell::OnceCell<Vec<Option<GraphRows>>>>,
+}
+
+/// The lane assignment before a row.
+#[derive(Clone, Default, PartialEq)]
+struct State {
+    // The row each lane leads to, and its colour.
+    lanes: Vec<(usize, usize)>,
+    palette: usize,
+    // The edges out of the previous shown commit, drawn above the next.
+    edges: Vec<(usize, usize, usize)>,
+    width: usize,
+}
+
+/// A shown commit's place in the lanes.
+struct Row {
+    column: usize,
+    lanes: Vec<(usize, usize)>,
+    above: Vec<(usize, usize, usize)>,
+    above_width: usize,
+}
+
+impl Plan {
+    fn palette(&self, state: &mut State) -> usize {
+        state.palette += 1;
+        (state.palette - 1) % PALETTE.len()
+    }
+
+    /// Assign a shown commit its lane and route its parents' lanes.
+    fn step(&self, state: &mut State, index: usize) -> Option<Row> {
+        if !self.visible[index] || self.fixed.contains_key(&index) {
+            return None;
+        }
+        let column = match state.lanes.iter().position(|&(row, _)| row == index) {
+            Some(column) => column,
+            None => {
+                let colour = match self.git_colours[index] {
+                    Some(colour) => colour,
+                    None => self.palette(state),
+                };
+                state.lanes.push((index, colour));
+                state.lanes.len() - 1
+            }
+        };
+        let projected = &self.projected[index];
+        let mut next = state.lanes.clone();
+        let (_, colour) = next.remove(column);
+        let mut insert = column;
+        for &parent in projected {
+            if !next.iter().any(|&(row, _)| row == parent) {
+                // Without Git's colour, the first new parent continues
+                // this lane's colour.
+                let colour = match self.git_colours[parent] {
+                    Some(colour) => colour,
+                    None if insert == column => colour,
+                    None => self.palette(state),
+                };
+                next.insert(insert, (parent, colour));
+                insert += 1;
+            }
+        }
+        // The lanes as they were above this row.
+        let lanes = std::mem::take(&mut state.lanes);
+        let mut edges = Vec::new();
+        for (from, &(row, _)) in lanes.iter().enumerate() {
+            let targets = if from == column {
+                &projected[..]
+            } else {
+                std::slice::from_ref(&row)
+            };
+            for &target in targets {
+                if let Some(to) = next.iter().position(|&(r, _)| r == target) {
+                    edges.push((2 * from, 2 * to, next[to].1));
                 }
             }
-            let width = lanes.len().max(next.len());
-            pending = GraphRows {
-                ascii: transitions(&edges, width),
-                unicode: connected_transitions(&edges, width),
-            };
-            lanes = next;
         }
-        graphs
+        let width = lanes.len().max(next.len());
+        state.lanes = next;
+        let above = std::mem::replace(&mut state.edges, edges);
+        let above_width = std::mem::replace(&mut state.width, width);
+        Some(Row {
+            column,
+            lanes,
+            above,
+            above_width,
+        })
+    }
+
+    fn edges(&self, edges: &[(usize, usize, usize)]) -> Vec<(usize, usize, &str)> {
+        edges
+            .iter()
+            .map(|&(from, to, colour)| (from, to, self.colours[colour].as_str()))
+            .collect()
+    }
+
+    fn draw_block(&self, block: usize) -> Vec<Option<GraphRows>> {
+        let mut state = self.checkpoints[block].clone();
+        let start = block * BLOCK;
+        (start..self.visible.len().min(start + BLOCK))
+            .map(|index| {
+                if let Some(rows) = self.fixed.get(&index) {
+                    return Some(rows.clone());
+                }
+                let row = self.step(&mut state, index)?;
+                let edges = self.edges(&row.above);
+                let mut rows = GraphRows {
+                    ascii: transitions(&edges, row.above_width),
+                    unicode: connected_transitions(&edges, row.above_width),
+                };
+                if self.trimmed.get(index) != Some(&true) {
+                    let node = |node: char, line: char| -> String {
+                        row.lanes
+                            .iter()
+                            .enumerate()
+                            .map(|(i, &(_, colour))| {
+                                if i == row.column {
+                                    format!("{node} ")
+                                } else {
+                                    format!("{} ", paint(line, &self.colours[colour]))
+                                }
+                            })
+                            .collect()
+                    };
+                    let graph_node = self.nodes[index];
+                    rows.ascii.push(node(graph_node, '|'));
+                    rows.unicode.push(node(unicode_node(graph_node), '│'));
+                }
+                Some(rows)
+            })
+            .collect()
     }
 }
 
@@ -1071,13 +1237,8 @@ fn cells(line: &str) -> Vec<(char, Option<&str>)> {
 // the same target, 'X' crosses routes to different targets.
 fn transitions(edges: &[(usize, usize, &str)], width: usize) -> Vec<String> {
     let lanes = |from: usize, to: usize| from.abs_diff(to) / 2;
-    let distance = edges
-        .iter()
-        .map(|&(from, to, _)| lanes(from, to))
-        .max()
-        .unwrap_or(0);
     let mut rows = Vec::new();
-    for step in 1..=distance {
+    for step in 1..=transition_count(edges) {
         let mut cells = vec![(' ', ""); width * 2];
         let mut targets = vec![None; width * 2];
         for &(from, to, colour) in edges {
@@ -1116,6 +1277,15 @@ fn transitions(edges: &[(usize, usize, &str)], width: usize) -> Vec<String> {
     rows
 }
 
+/// The number of rows `transitions` draws: one per lane of the longest move.
+fn transition_count<C>(edges: &[(usize, usize, C)]) -> usize {
+    edges
+        .iter()
+        .map(|&(from, to, _)| from.abs_diff(to) / 2)
+        .max()
+        .unwrap_or(0)
+}
+
 /// The Unicode symbol for one of Git's node markers.
 pub fn unicode_node(node: char) -> char {
     match node {
@@ -1130,6 +1300,36 @@ pub fn unicode_node(node: char) -> char {
 /// breaks cycles such as two lanes exchanging places. Horizontal paths pass
 /// over vertical tracks with `╪`; only endpoints are actual junctions.
 fn connected_transitions(edges: &[(usize, usize, &str)], width: usize) -> Vec<String> {
+    route(edges, width)
+        .into_iter()
+        .map(|cells| {
+            let row: String = cells
+                .iter()
+                .map(|&(directions, colour)| {
+                    let symbol = match directions {
+                        0 => return " ".to_owned(),
+                        3 => '│',
+                        12 => '─',
+                        9 => '╰',
+                        5 => '╯',
+                        10 => '╭',
+                        6 => '╮',
+                        11 => '├',
+                        7 => '┤',
+                        15 => '╪',
+                        _ => unreachable!("invalid graph connection {directions}"),
+                    };
+                    paint(symbol, colour)
+                })
+                .collect();
+            format!("{row} ")
+        })
+        .collect()
+}
+
+/// The rows of `connected_transitions`, each cell the directions it
+/// connects and its colour.
+fn route<'a>(edges: &[(usize, usize, &'a str)], width: usize) -> Vec<Vec<(u8, &'a str)>> {
     use std::collections::BTreeMap;
     const UP: u8 = 1;
     const DOWN: u8 = 2;
@@ -1213,26 +1413,8 @@ fn connected_transitions(edges: &[(usize, usize, &str)], width: usize) -> Vec<St
             .iter()
             .rposition(|&(directions, _)| directions != 0)
             .map_or(0, |i| i + 1);
-        let row: String = cells[..used]
-            .iter()
-            .map(|&(directions, colour)| {
-                let symbol = match directions {
-                    0 => return " ".to_owned(),
-                    3 => '│',
-                    12 => '─',
-                    9 => '╰',
-                    5 => '╯',
-                    10 => '╭',
-                    6 => '╮',
-                    11 => '├',
-                    7 => '┤',
-                    15 => '╪',
-                    _ => unreachable!("invalid graph connection {directions}"),
-                };
-                paint(symbol, colour)
-            })
-            .collect();
-        rows.push(format!("{row} "));
+        cells.truncate(used);
+        rows.push(cells);
     }
     rows
 }
@@ -2101,6 +2283,42 @@ mod tests {
                 }
                 assert_eq!(actual, expected, "case {case}: {edges:?}, {rows:?}");
             }
+        }
+    }
+
+    #[test]
+    fn lazily_drawn_graph_blocks_continue_the_lane_assignment() {
+        // Merges spanning several blocks of lazily drawn rows.
+        let count = 3 * BLOCK + 10;
+        let hash = |i: usize| format!("c{i}");
+        let commits: Vec<_> = (0..count)
+            .map(|i| {
+                let parents: Vec<_> = [i + 1, i + 7]
+                    .into_iter()
+                    .take(if i % 5 == 0 { 2 } else { 1 })
+                    .filter(|&parent| parent < count)
+                    .map(hash)
+                    .collect();
+                commit(
+                    &hash(i),
+                    &parents.iter().map(String::as_str).collect::<Vec<_>>(),
+                )
+            })
+            .collect();
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        let plan = &folds.layout.graphs.0;
+        assert_eq!(plan.checkpoints.len(), 4);
+        for (block, checkpoint) in plan.checkpoints.iter().enumerate().skip(1) {
+            let mut state = plan.checkpoints[block - 1].clone();
+            for index in (block - 1) * BLOCK..block * BLOCK {
+                plan.step(&mut state, index);
+            }
+            assert!(state == *checkpoint, "checkpoint {block}");
+        }
+        for (i, commit) in commits.iter().enumerate() {
+            let rows = folds.display_graph(i, commit).len();
+            assert_eq!(rows, folds.display_height(i, commit));
         }
     }
 
