@@ -46,6 +46,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Folded and filtered graphs keep Git's lane colours into `<`, `>`, `=`, and
   `o` commits of comparison and boundary histories.
 
+- Folded and filtered graphs no longer connect rows through the side branch
+  of a merge omitted by Git's filters.
+
 ## 0.5.2 - 2026-10-08
 
 ### Changed

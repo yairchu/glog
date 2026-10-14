@@ -570,7 +570,7 @@ fn merges(commits: &[Commit]) -> impl Iterator<Item = &str> {
 struct Graph {
     rows: usize,
     index: HashMap<String, usize>,
-    // Each parent, and whether it is a row's side parent.
+    // Each parent, and whether it is a side parent.
     parents: Vec<Vec<(usize, bool)>>,
     // Children before parents.
     order: Vec<usize>,
@@ -627,10 +627,12 @@ impl Graph {
                 } else {
                     links.as_slice()
                 };
+                // Mark side parents before dropping those that lead to no
+                // row, which may include the first parent.
                 parents[node] = links
                     .iter()
-                    .filter_map(|parent| index.get(parent))
-                    .map(|&parent| (parent, false))
+                    .enumerate()
+                    .filter_map(|(slot, parent)| Some((*index.get(parent)?, slot > 0)))
                     .collect();
             }
         }
@@ -897,14 +899,8 @@ impl Layout {
             if node < graph.rows && self.visible[node] {
                 leads[node].push(node);
             } else if reached[node] {
-                for (slot, &(parent, side)) in graph.parents[node].iter().enumerate() {
-                    // Omitted nodes carry reachability links, whose `side`
-                    // flags are all false. Use their parent order instead.
-                    if node >= graph.rows {
-                        if slot > 0 {
-                            break;
-                        }
-                    } else if folded[node] && side {
+                for &(parent, side) in &graph.parents[node] {
+                    if side && (node >= graph.rows || folded[node]) {
                         continue;
                     }
                     let parents = leads[parent].clone();
