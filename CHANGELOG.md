@@ -41,6 +41,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   one, from the only GitHub remote; numeric references with seven or more
   digits remain commit candidates.
 
+### Fixed
+
+- Folded and filtered graphs keep Git's lane colours into `<`, `>`, `=`, and
+  `o` commits of comparison and boundary histories.
+
 ## 0.5.2 - 2026-10-08
 
 ### Changed

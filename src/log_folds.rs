@@ -1199,7 +1199,10 @@ fn incoming_colour(commits: &[Commit], row: usize) -> Option<&str> {
         0 | 1 => commits.get(row.checked_sub(1)?)?.graph.last()?,
         len => &graph[len - 2],
     };
-    let column = cells(node).iter().position(|&(symbol, _)| symbol == '*')?;
+    let marker = commits[row].graph_node;
+    let column = cells(node)
+        .iter()
+        .position(|&(symbol, _)| symbol == marker)?;
     let above = cells(above);
     let edge = |at: Option<usize>, expected| {
         at.and_then(|at| above.get(at))
