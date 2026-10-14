@@ -991,7 +991,7 @@ impl Layout {
                 let trim = usize::from(plan.trimmed.get(index) == Some(&true));
                 (
                     transition_count(&edges) + 1 - trim,
-                    route(&edges, row.above_width).len() + 1 - trim,
+                    route_count(&edges, row.above_width) + 1 - trim,
                 )
             } else {
                 (0, 0)
@@ -1329,71 +1329,26 @@ fn connected_transitions(edges: &[(usize, usize, &str)], width: usize) -> Vec<St
 /// The rows of `connected_transitions`, each cell the directions it
 /// connects and its colour.
 fn route<'a>(edges: &[(usize, usize, &'a str)], width: usize) -> Vec<Vec<(u8, &'a str)>> {
-    use std::collections::BTreeMap;
     const UP: u8 = 1;
     const DOWN: u8 = 2;
     const LEFT: u8 = 4;
     const RIGHT: u8 = 8;
-    let mut tracks: BTreeMap<usize, Vec<(usize, &str)>> = BTreeMap::new();
-    for &(from, to, colour) in edges {
-        let routes = tracks.entry(from).or_default();
-        if !routes.iter().any(|&(target, _)| target == to) {
-            routes.push((to, colour));
-        }
-    }
     let mut rows = Vec::new();
-    loop {
-        let moving: Vec<_> = tracks
-            .iter()
-            .flat_map(|(&from, routes)| {
-                routes
-                    .iter()
-                    .filter_map(move |&(to, colour)| (from != to).then_some((from, to, colour)))
-            })
-            .collect();
-        if moving.is_empty() {
-            break;
-        }
-        let (from, target, colour, to) = moving
-            .iter()
-            .find_map(|&(from, to, colour)| {
-                tracks
-                    .get(&to)
-                    .is_none_or(|routes| routes.iter().all(|&(target, _)| target == to))
-                    .then_some((from, to, colour, to))
-            })
-            .unwrap_or_else(|| {
-                let (from, target, colour) = moving[0];
-                let spare = width.max(1) * 2;
-                let spare = spare.max(tracks.last_key_value().map_or(0, |(&column, _)| column + 2));
-                (from, target, colour, spare)
-            });
-        // A fork and a join in the same row would have downward paths at
-        // both endpoints, visually inventing a connection in the reverse
-        // direction. Split off this route before joining an occupied lane.
-        let to = if tracks.contains_key(&to) && tracks[&from].len() > 1 {
-            (width.max(1) * 2).max(tracks.last_key_value().map_or(0, |(&column, _)| column + 2))
-        } else {
-            to
-        };
+    route_moves(edges, width, |tracks, step| {
+        let Move {
+            from,
+            to,
+            colour,
+            continues,
+            occupied,
+        } = step;
         let size = width.max(1) * 2;
         let size = size
             .max(to + 2)
             .max(tracks.last_key_value().map_or(0, |(&column, _)| column + 2));
         let mut cells = vec![(0, ""); size];
-        for (&column, routes) in &tracks {
+        for (&column, routes) in tracks {
             cells[column] = (UP | DOWN, routes[0].1);
-        }
-        let routes = tracks.get_mut(&from).unwrap();
-        routes.retain(|&(destination, _)| destination != target);
-        let continues = !routes.is_empty();
-        if !continues {
-            tracks.remove(&from);
-        }
-        let occupied = tracks.contains_key(&to);
-        let routes = tracks.entry(to).or_default();
-        if !routes.iter().any(|&(destination, _)| destination == target) {
-            routes.push((target, colour));
         }
         let (outgoing, incoming) = if from < to {
             (RIGHT, LEFT)
@@ -1414,8 +1369,103 @@ fn route<'a>(edges: &[(usize, usize, &'a str)], width: usize) -> Vec<Vec<(u8, &'
             .map_or(0, |i| i + 1);
         cells.truncate(used);
         rows.push(cells);
-    }
+    });
     rows
+}
+
+/// The number of rows `route` draws, without drawing them.
+fn route_count(edges: &[(usize, usize, &str)], width: usize) -> usize {
+    let mut rows = 0;
+    route_moves(edges, width, |_, _| rows += 1);
+    rows
+}
+
+/// Each track's routes: their target column and colour.
+type Tracks<'a> = std::collections::BTreeMap<usize, Vec<(usize, &'a str)>>;
+
+/// A connection `route` moves in one row.
+struct Move<'a> {
+    from: usize,
+    to: usize,
+    colour: &'a str,
+    // Other routes continue down from `from`.
+    continues: bool,
+    // Other routes already pass through `to`.
+    occupied: bool,
+}
+
+/// Visit the moves `route` draws, one per row, each with the tracks before it.
+fn route_moves<'a>(
+    edges: &[(usize, usize, &'a str)],
+    width: usize,
+    mut visit: impl FnMut(&Tracks<'a>, Move<'a>),
+) {
+    if edges.iter().all(|&(from, to, _)| from == to) {
+        return;
+    }
+    let mut tracks = Tracks::new();
+    for &(from, to, colour) in edges {
+        let routes = tracks.entry(from).or_default();
+        if !routes.iter().any(|&(target, _)| target == to) {
+            routes.push((to, colour));
+        }
+    }
+    loop {
+        let moving = || {
+            tracks.iter().flat_map(|(&from, routes)| {
+                routes
+                    .iter()
+                    .filter_map(move |&(to, colour)| (from != to).then_some((from, to, colour)))
+            })
+        };
+        let Some(first) = moving().next() else {
+            break;
+        };
+        let (from, target, colour, to) = moving()
+            .find_map(|(from, to, colour)| {
+                tracks
+                    .get(&to)
+                    .is_none_or(|routes| routes.iter().all(|&(target, _)| target == to))
+                    .then_some((from, to, colour, to))
+            })
+            .unwrap_or_else(|| {
+                let (from, target, colour) = first;
+                let spare = width.max(1) * 2;
+                let spare = spare.max(tracks.last_key_value().map_or(0, |(&column, _)| column + 2));
+                (from, target, colour, spare)
+            });
+        // A fork and a join in the same row would have downward paths at
+        // both endpoints, visually inventing a connection in the reverse
+        // direction. Split off this route before joining an occupied lane.
+        let to = if tracks.contains_key(&to) && tracks[&from].len() > 1 {
+            (width.max(1) * 2).max(tracks.last_key_value().map_or(0, |(&column, _)| column + 2))
+        } else {
+            to
+        };
+        // Each track holds one route per target.
+        let continues = tracks[&from].len() > 1;
+        let occupied = tracks.contains_key(&to);
+        visit(
+            &tracks,
+            Move {
+                from,
+                to,
+                colour,
+                continues,
+                occupied,
+            },
+        );
+        if continues {
+            let routes = tracks.get_mut(&from).unwrap();
+            routes.retain(|&(destination, _)| destination != target);
+        } else {
+            tracks.remove(&from);
+        }
+        let routes = tracks.entry(to).or_default();
+        if !routes.iter().any(|&(destination, _)| destination == target) {
+            routes.push((target, colour));
+        }
+    }
 }
 
 #[cfg(test)]
