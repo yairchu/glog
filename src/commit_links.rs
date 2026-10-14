@@ -168,7 +168,7 @@ mod tests {
         app::Mode,
         git::{
             self,
-            tests::{CurrentDirGuard, TestDirectory},
+            tests::{git, CurrentDirGuard, TestDirectory},
         },
         input,
     };
@@ -176,23 +176,6 @@ mod tests {
         Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
     };
     use ratatui::{backend::TestBackend, Terminal};
-
-    fn git(args: &[&str]) -> String {
-        let output = std::process::Command::new("git")
-            .args([
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "-c",
-                "commit.gpgsign=false",
-            ])
-            .args(args)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
-        String::from_utf8(output.stdout).unwrap().trim().to_owned()
-    }
 
     fn commit(message: &str) -> String {
         git(&["add", "."]);

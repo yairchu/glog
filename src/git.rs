@@ -2662,24 +2662,6 @@ pub(crate) mod tests {
             assert_comparison_markers("--cherry-mark", &[(left, '='), (right, '='), (tip, '*')]);
         }
 
-        fn git(args: &[&str]) -> String {
-            let output = Command::new("git")
-                .args([
-                    "-c",
-                    "user.name=Test",
-                    "-c",
-                    "user.email=test@example.com",
-                    "-c",
-                    "commit.gpgsign=false",
-                ])
-                .args(args)
-                .stdin(Stdio::null())
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{output:?}");
-            String::from_utf8(output.stdout).unwrap().trim().to_owned()
-        }
-
         struct History {
             // Restore the working directory before deleting the fixture.
             _cwd: CurrentDirGuard,
@@ -2789,6 +2771,25 @@ pub(crate) mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// Run Git in the current directory with a test identity, returning its output.
+    pub(crate) fn git(args: &[&str]) -> String {
+        let output = Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "-c",
+                "commit.gpgsign=false",
+            ])
+            .args(args)
+            .stdin(Stdio::null())
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
 
     pub(crate) struct CurrentDirGuard {
