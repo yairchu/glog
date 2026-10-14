@@ -120,6 +120,8 @@ pub fn handle(event: Event, app: &mut App) {
             KeyCode::Char('[') if app.mode == Mode::Show => app.jump_show_file(-1),
             KeyCode::Char(']') if app.mode == Mode::Show => app.jump_show_file(1),
             KeyCode::Esc if app.mode == Mode::Show => app.switch_mode(),
+            // Leave a followed reference before exiting to the calling tool.
+            KeyCode::Esc if app.exit_on_esc && app.has_reference_back() => app.reference_back(),
             KeyCode::Esc if app.exit_on_esc => app.quit = true,
             KeyCode::Up | KeyCode::Char('k') => app.move_by(-1, 1),
             KeyCode::Down | KeyCode::Char('j') => app.move_by(1, 1),
