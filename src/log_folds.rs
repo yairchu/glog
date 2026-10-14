@@ -2166,6 +2166,37 @@ mod tests {
         assert_eq!(plain(folds.display_graph(1, &commits[1])), ["├─╮ ", "│ ● "]);
     }
 
+    #[test]
+    fn unicode_graph_reads_omitted_history_once() {
+        let commits = vec![
+            commit("merge", &["main", "omitted"]),
+            commit("side", &["base"]),
+            commit("main", &["base"]),
+            commit("base", &[]),
+        ];
+        for available in [true, false] {
+            let reads = std::rc::Rc::new(std::cell::Cell::new(0));
+            let counter = reads.clone();
+            let mut folds = LogFolds {
+                load_ancestry: Box::new(move |_| {
+                    counter.set(counter.get() + 1);
+                    available
+                        .then(|| Ancestry::from([("omitted".into(), vec!["side".into()])]))
+                        .ok_or_else(|| "no Git".to_owned())
+                }),
+                ..LogFolds::default()
+            };
+            folds.refresh(&commits).unwrap();
+            folds.refresh(&commits).unwrap();
+            if available {
+                // Folding needs the same history the graph already read.
+                folds.toggle(0, &commits).unwrap();
+                assert!(!folds.visible(1));
+            }
+            assert_eq!(reads.get(), 1, "available: {available}");
+        }
+    }
+
     /// A deterministic history of `size` commits, each with parents older
     /// than itself, including octopus merges and several roots.
     fn history(seed: &mut u32, size: usize) -> Vec<Vec<usize>> {
