@@ -470,8 +470,8 @@ impl LogFolds {
 }
 
 /// Conventional Commit prefix, taken only from the subject of a revision.
-/// Custom ASCII types and issue references before the scope are supported;
-/// ordinary prose remains unclassified.
+/// Custom ASCII types and issue references before the scope are supported,
+/// so any one-word prefix, such as `Note:` or `WIP:`, counts as a type.
 pub fn commit_type(commit: &Commit) -> Option<std::borrow::Cow<'_, str>> {
     commit_type_prefix(commit).and_then(normalize_type)
 }
