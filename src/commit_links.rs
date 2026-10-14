@@ -541,6 +541,28 @@ fi
     }
 
     #[test]
+    fn escape_returns_from_a_followed_reference_before_exiting() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let first = commit("first");
+        let second = commit(&format!("second\n\nSee {first}"));
+        let mut app = git::load_show_app(std::slice::from_ref(&second)).unwrap();
+        app.exit_on_esc = true;
+        app.follow_reference(&first);
+        let escape = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
+        input::handle(escape.clone(), &mut app);
+        assert_eq!(app.mode, Mode::Log);
+        input::handle(escape.clone(), &mut app);
+        assert!(!app.quit);
+        assert_eq!(app.commits[app.selected].hash, second);
+        assert!(!app.has_reference_back());
+        input::handle(escape.clone(), &mut app);
+        input::handle(escape, &mut app);
+        assert!(app.quit);
+    }
+
+    #[test]
     fn returning_from_a_reference_keeps_show_state_across_tab_switches() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
