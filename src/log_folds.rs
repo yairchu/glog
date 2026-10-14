@@ -2416,6 +2416,22 @@ mod tests {
     }
 
     #[test]
+    fn unicode_graph_follows_only_first_parents_of_omitted_merges() {
+        let commits = vec![
+            commit("top", &["omitted"]),
+            commit("mid", &["side"]),
+            commit("side", &[]),
+        ];
+        // The omitted merge's first parent leads to no row.
+        let mut folds = folds_with(Some(Ancestry::from([(
+            "omitted".into(),
+            vec!["unloaded".into(), "side".into()],
+        )])));
+        folds.refresh(&commits).unwrap();
+        assert_eq!(plain(folds.display_graph(1, &commits[1])), ["● "]);
+    }
+
+    #[test]
     fn unicode_graph_reads_omitted_history_once() {
         let commits = vec![
             commit("merge", &["main", "omitted"]),
