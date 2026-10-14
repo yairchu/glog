@@ -350,29 +350,43 @@ impl LogFolds {
                     layout = Layout::new(&self.graph, commits, &self.collapsed);
                 }
                 Err(error) => {
-                    self.layout = Layout::new(&self.graph, commits, &HashSet::new());
-                    self.apply_filter(commits);
+                    self.show(Layout::new(&self.graph, commits, &HashSet::new()), commits);
                     self.failed = true;
                     return Err(error);
                 }
             }
         }
-        if !self.ascii_graph && self.graph.unknown_below.is_some() {
-            if self.unicode_graph.is_none() && !self.unicode_failed {
-                match self.read_omitted(commits) {
-                    Ok(ancestry) => self.unicode_graph = Some(Graph::new(commits, Some(&ancestry))),
-                    Err(_) => self.unicode_failed = true,
-                }
-            }
-            if let Some(graph) = &self.unicode_graph {
-                let reached = Layout::with_folds(graph, &layout.folded).1;
-                layout.unicode = Some(layout.draw(graph, commits, &layout.folded, &reached, &[]));
+        if !self.ascii_graph
+            && self.graph.unknown_below.is_some()
+            && self.unicode_graph.is_none()
+            && !self.unicode_failed
+        {
+            match self.read_omitted(commits) {
+                Ok(ancestry) => self.unicode_graph = Some(Graph::new(commits, Some(&ancestry))),
+                Err(_) => self.unicode_failed = true,
             }
         }
-        self.layout = layout;
-        self.apply_filter(commits);
+        self.show(layout, commits);
         self.failed = false;
         Ok(())
+    }
+
+    /// Show `layout`, drawing only the graph the Log displays: filters draw
+    /// their own, and Git's graph is shown unchanged where it is exact.
+    fn show(&mut self, layout: Layout, commits: &[Commit]) {
+        self.layout = layout;
+        self.apply_filter(commits);
+        if self.filtered.is_some() {
+            return;
+        }
+        let unicode = self.unicode_shown();
+        if unicode && self.graph.unknown_below.is_some() {
+            self.layout.unicode =
+                (self.unicode_graph.as_ref()).map(|graph| self.layout.draw_all(graph, commits));
+        }
+        if !self.layout.git_ascii || unicode && self.layout.unicode.is_none() {
+            self.layout.graphs = self.layout.draw_all(&self.graph, commits);
+        }
     }
 
     pub fn filter_hidden(&self, index: usize, commit: &Commit) -> bool {
@@ -760,11 +774,8 @@ impl Layout {
             .iter()
             .map(|c| c.parents.len() > 1 && collapsed.contains(&c.hash))
             .collect();
-        let (mut layout, mut reached) = Self::with_folds(graph, &folded);
-        if layout.unfold_idle_merges(&mut folded) {
-            reached = Self::with_folds(graph, &folded).1;
-        }
-        layout.graphs = layout.draw(graph, commits, &folded, &reached, &[]);
+        let mut layout = Self::with_folds(graph, &folded).0;
+        layout.unfold_idle_merges(&mut folded);
         // The ASCII option retains Git's exact original layout.
         layout.git_ascii = !layout.visible.contains(&false);
         layout.folded = folded;
@@ -772,19 +783,16 @@ impl Layout {
     }
 
     /// Normalize drawing choices without changing the saved merge folds.
-    fn unfold_idle_merges(&self, folded: &mut [bool]) -> bool {
+    fn unfold_idle_merges(&self, folded: &mut [bool]) {
         // A shown fold that hides nothing, such as one inside a fold that
         // was since expanded, stays chosen: folding another merge could
         // make it hide something again. It is drawn as a merge, though.
         // Following its side parents reaches only shown rows.
-        let mut idle = false;
         for (row, folded) in folded.iter_mut().enumerate() {
             if *folded && self.visible[row] && self.folds[row] == Fold::None {
                 *folded = false;
-                idle = true;
             }
         }
-        idle
     }
 
     /// The layout without its redrawn graph, and which nodes shown rows reach.
@@ -879,6 +887,12 @@ impl Layout {
             unicode: None,
         };
         (layout, reached)
+    }
+
+    /// Redraw the graph over every shown row.
+    fn draw_all(&self, graph: &Graph, commits: &[Commit]) -> Drawing {
+        let reached = Self::with_folds(graph, &self.folded).1;
+        self.draw(graph, commits, &self.folded, &reached, &[])
     }
 
     /// Redraw the graph over the shown rows, keeping Git's lane colours.
