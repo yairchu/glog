@@ -348,7 +348,7 @@ mod tests {
         ];
         let line = format!("    Fix {} and #{}.", issue_tokens.join(", "), &hash[..7]);
         let text = format!(
-            "commit {hash}\n\n{line}\n    #12abc_thing #ABCDEF #999999 #{} #1234567z owner/another#42\n",
+            "commit {hash}\n\n{line}\n    #12abc_thing #ABCDEF #999999 #{} #1234567z owner/another#42 &#8212;\n",
             &hash[..6]
         );
         let without_remote = collect(&text, &mut None);
