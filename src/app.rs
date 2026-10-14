@@ -90,7 +90,8 @@ pub struct App {
     reference_back: Option<Box<App>>,
     /// Remotes rarely change during a session, so look up issue links once.
     github_repository: Option<Option<String>>,
-    browser_result: Option<crate::commit_links::BrowserResult>,
+    // Each browser opener still running, which may yet report an error.
+    browser_results: Vec<crate::commit_links::BrowserResult>,
     pub show_stat: bool,
     // Status shares show_stat, so it can change while Show's rows are hidden.
     show_rows_stat: bool,
@@ -167,7 +168,7 @@ impl App {
             visible_show_links: Vec::new(),
             reference_back: None,
             github_repository: None,
-            browser_result: None,
+            browser_results: Vec::new(),
             show_stat: false,
             show_rows_stat: false,
             stat_bookmark: None,
@@ -1489,7 +1490,7 @@ impl App {
             crate::commit_links::Target::Commit(hash) => self.follow_reference(hash),
             crate::commit_links::Target::Issue(url) => match crate::commit_links::open_issue(url) {
                 Ok(result) => {
-                    self.browser_result = Some(result);
+                    self.browser_results.push(result);
                     self.status = None;
                 }
                 Err(error) => self.status = Some(error),
@@ -1498,18 +1499,19 @@ impl App {
     }
 
     pub fn poll_browser(&mut self) {
-        let Some(receiver) = &self.browser_result else {
-            return;
-        };
-        match receiver.try_recv() {
-            Ok(result) => {
-                self.browser_result = None;
-                if let Err(error) = result {
-                    self.status = Some(error);
+        use std::sync::mpsc::TryRecvError;
+        let mut failure = None;
+        self.browser_results
+            .retain(|receiver| match receiver.try_recv() {
+                Ok(Err(error)) => {
+                    failure = Some(error);
+                    false
                 }
-            }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.browser_result = None,
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Ok(Ok(())) | Err(TryRecvError::Disconnected) => false,
+                Err(TryRecvError::Empty) => true,
+            });
+        if failure.is_some() {
+            self.status = failure;
         }
     }
 
@@ -1583,7 +1585,7 @@ impl App {
     /// view replacing this one. Only the active view is drawn and polled.
     fn hand_over(&mut self, view: &mut App) {
         view.images = std::mem::take(&mut self.images);
-        view.browser_result = self.browser_result.take();
+        view.browser_results = std::mem::take(&mut self.browser_results);
         // Followed references stay in the same repository.
         if self.github_repository.is_some() {
             view.github_repository = self.github_repository.clone();
