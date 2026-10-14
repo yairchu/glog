@@ -2221,6 +2221,23 @@ mod tests {
         let mut random = |n: usize| {
             *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
             (*seed >> 8) as usize % n
+    #[test]
+    fn unicode_graph_keeps_git_connectivity_when_filtering_without_omitted_history() {
+        let commits = vec![
+            commit("merge", &["main", "omitted"]),
+            commit("side", &["base"]),
+            commit("main", &["base"]),
+            commit("base", &[]),
+        ];
+        let mut folds = folds_with(None);
+        folds.ascii_graph = false;
+        folds.hidden_types.insert("test".into());
+        assert!(folds.refresh(&commits).is_err());
+        for (i, commit) in commits.iter().enumerate() {
+            assert_eq!(folds.display_graph(i, commit), folds.graph(i, commit));
+        }
+    }
+
         };
         (0..size)
             .map(|i| {
