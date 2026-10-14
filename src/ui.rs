@@ -614,12 +614,17 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             let mut line = ansi::parse_line(graph);
             if !graph_only && part + 1 == graph_rows.len() {
                 if let Some(marker) = app.log_folds.marker(index) {
+                    // Git's graph and the ASCII fallback keep Git's node marker.
+                    let nodes = [
+                        commit.graph_node,
+                        crate::log_folds::unicode_node(commit.graph_node),
+                    ];
                     if let Some(span) = line
                         .spans
                         .iter_mut()
-                        .find(|span| span.content.contains(['*', '●']))
+                        .find(|span| span.content.contains(nodes))
                     {
-                        span.content = span.content.replacen(['*', '●'], marker, 1).into();
+                        span.content = span.content.replacen(nodes, marker, 1).into();
                     }
                 }
                 line.spans.extend(match commit.blame() {

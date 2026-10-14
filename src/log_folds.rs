@@ -954,12 +954,7 @@ impl Layout {
                     .enumerate()
                     .map(|(i, &(_, colour))| {
                         if i == column {
-                            let node = match commit.graph_node {
-                                '*' => '●',
-                                'o' => '○',
-                                marker => marker,
-                            };
-                            format!("{node} ")
+                            format!("{} ", unicode_node(commit.graph_node))
                         } else {
                             format!("{} ", paint('│', colour))
                         }
@@ -1119,6 +1114,15 @@ fn transitions(edges: &[(usize, usize, &str)], width: usize) -> Vec<String> {
         rows.push(format!("{row} "));
     }
     rows
+}
+
+/// The Unicode symbol for one of Git's node markers.
+pub fn unicode_node(node: char) -> char {
+    match node {
+        '*' => '●',
+        'o' => '○',
+        marker => marker,
+    }
 }
 
 /// Route one connection per row. Occupied destinations move out of the way
