@@ -92,10 +92,11 @@ impl LogFolds {
     pub fn graph_visible(&self, index: usize) -> bool {
         self.visible(index)
             || self.filtered.as_ref().is_some_and(|layout| {
+                let unicode = self.unicode_shown();
                 layout
                     .graphs
-                    .height(index)
-                    .is_some_and(|(ascii, unicode)| ascii > 0 || unicode > 0)
+                    .height(unicode, index)
+                    .is_some_and(|rows| rows > 0)
             })
     }
 
@@ -108,18 +109,14 @@ impl LogFolds {
         })
     }
 
+    /// The ASCII graph, whichever style the Log shows.
+    #[cfg(test)]
     pub fn graph<'a>(&'a self, index: usize, commit: &'a Commit) -> &'a [String] {
-        self.drawn(false, index)
-            .map(|rows| &rows.ascii)
-            .unwrap_or(&commit.graph)
+        self.drawn(false, index).unwrap_or(&commit.graph)
     }
 
     pub fn display_graph<'a>(&'a self, index: usize, commit: &'a Commit) -> &'a [String] {
-        if !self.unicode_shown() {
-            return self.graph(index, commit);
-        }
-        self.drawn(true, index)
-            .map(|rows| &rows.unicode)
+        self.drawn(self.unicode_shown(), index)
             .unwrap_or(&commit.graph)
     }
 
@@ -127,11 +124,8 @@ impl LogFolds {
     pub fn display_height(&self, index: usize, commit: &Commit) -> usize {
         let unicode = self.unicode_shown();
         self.drawing(unicode)
-            .and_then(|drawing| drawing.height(index))
-            .map_or(
-                commit.graph.len(),
-                |(ascii, rows)| if unicode { rows } else { ascii },
-            )
+            .and_then(|drawing| drawing.height(unicode, index))
+            .unwrap_or(commit.graph.len())
     }
 
     fn unicode_shown(&self) -> bool {
@@ -149,8 +143,8 @@ impl LogFolds {
         }
     }
 
-    fn drawn(&self, unicode: bool, index: usize) -> Option<&GraphRows> {
-        self.drawing(unicode)?.rows(index)
+    fn drawn(&self, unicode: bool, index: usize) -> Option<&[String]> {
+        self.drawing(unicode)?.rows(unicode, index)
     }
 
     fn fold(&self, index: usize) -> Fold {
@@ -753,6 +747,16 @@ struct GraphRows {
     unicode: Vec<String>,
 }
 
+impl GraphRows {
+    fn get(&self, unicode: bool) -> &Vec<String> {
+        if unicode {
+            &self.unicode
+        } else {
+            &self.ascii
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct Layout {
     visible: Vec<bool>,
@@ -980,7 +984,7 @@ impl Layout {
                 (index, rows)
             })
             .collect();
-        let mut plan = Plan {
+        Drawing(std::rc::Rc::new(Plan {
             visible: self.visible.clone(),
             trimmed: trimmed.to_vec(),
             nodes: commits.iter().map(|c| c.graph_node).collect(),
@@ -988,31 +992,9 @@ impl Layout {
             colours,
             git_colours,
             fixed,
-            heights: Vec::with_capacity(commits.len()),
-            checkpoints: Vec::new(),
-            blocks: Vec::new(),
-        };
-        let mut state = State::default();
-        for index in 0..commits.len() {
-            if index % BLOCK == 0 {
-                plan.checkpoints.push(state.clone());
-                plan.blocks.push(std::cell::OnceCell::new());
-            }
-            let height = if let Some(rows) = plan.fixed.get(&index) {
-                (rows.ascii.len(), rows.unicode.len())
-            } else if let Some(row) = plan.step(&mut state, index) {
-                let edges = plan.edges(&row.above);
-                let trim = usize::from(plan.trimmed.get(index) == Some(&true));
-                (
-                    transition_count(&edges) + 1 - trim,
-                    route_count(&edges, row.above_width) + 1 - trim,
-                )
-            } else {
-                (0, 0)
-            };
-            plan.heights.push(height);
-        }
-        Drawing(std::rc::Rc::new(plan))
+            ascii: std::cell::OnceCell::new(),
+            unicode: std::cell::OnceCell::new(),
+        }))
     }
 }
 
@@ -1028,19 +1010,17 @@ struct Drawing(std::rc::Rc<Plan>);
 
 impl Drawing {
     /// The rows drawn for a shown row.
-    fn rows(&self, index: usize) -> Option<&GraphRows> {
+    fn rows(&self, unicode: bool, index: usize) -> Option<&[String]> {
         let plan = &self.0;
-        let block = plan.blocks.get(index / BLOCK)?;
-        block.get_or_init(|| plan.draw_block(index / BLOCK))[index % BLOCK].as_ref()
+        let lanes = plan.lanes(unicode);
+        let block = lanes.blocks.get(index / BLOCK)?;
+        block.get_or_init(|| plan.draw_block(lanes, index / BLOCK))[index % BLOCK].as_deref()
     }
 
-    /// The number of ASCII and Unicode rows drawn for a shown row.
-    fn height(&self, index: usize) -> Option<(usize, usize)> {
-        self.0
-            .visible
-            .get(index)
-            .filter(|&&visible| visible)
-            .map(|_| self.0.heights[index])
+    /// The number of rows drawn for a shown row.
+    fn height(&self, unicode: bool, index: usize) -> Option<usize> {
+        self.0.visible.get(index).filter(|&&visible| visible)?;
+        Some(self.0.lanes(unicode).heights[index])
     }
 }
 
@@ -1056,16 +1036,27 @@ struct Plan {
     git_colours: Vec<Option<usize>>,
     // Rows Git drew without commits, such as the working tree.
     fixed: HashMap<usize, GraphRows>,
-    heights: Vec<(usize, usize)>,
-    checkpoints: Vec<State>,
-    blocks: Vec<std::cell::OnceCell<Vec<Option<GraphRows>>>>,
+    // Each style's lanes, assigned when the style is first shown.
+    ascii: std::cell::OnceCell<Lanes>,
+    unicode: std::cell::OnceCell<Lanes>,
 }
+
+/// The lane assignment of one graph style.
+#[derive(Default)]
+struct Lanes {
+    unicode: bool,
+    heights: Vec<usize>,
+    checkpoints: Vec<State>,
+    blocks: Vec<std::cell::OnceCell<Vec<Option<Vec<String>>>>>,
+}
+
+/// The row each lane leads to, and its colour, or `None` for a gap.
+type Lane = Option<(usize, usize)>;
 
 /// The lane assignment before a row.
 #[derive(Clone, Default, PartialEq)]
 struct State {
-    // The row each lane leads to, and its colour.
-    lanes: Vec<(usize, usize)>,
+    lanes: Vec<Lane>,
     palette: usize,
     // The edges out of the previous shown commit, drawn above the next.
     edges: Vec<(usize, usize, usize)>,
@@ -1075,39 +1066,100 @@ struct State {
 /// A shown commit's place in the lanes.
 struct Row {
     column: usize,
-    lanes: Vec<(usize, usize)>,
+    lanes: Vec<Lane>,
     above: Vec<(usize, usize, usize)>,
     above_width: usize,
 }
 
+fn lane_to(lanes: &[Lane], row: usize) -> Option<usize> {
+    lanes
+        .iter()
+        .position(|lane| lane.is_some_and(|(target, _)| target == row))
+}
+
 impl Plan {
+    fn lanes(&self, unicode: bool) -> &Lanes {
+        let lanes = if unicode { &self.unicode } else { &self.ascii };
+        lanes.get_or_init(|| self.assign(unicode))
+    }
+
+    fn assign(&self, unicode: bool) -> Lanes {
+        let mut lanes = Lanes {
+            unicode,
+            heights: Vec::with_capacity(self.visible.len()),
+            ..Lanes::default()
+        };
+        let mut state = State::default();
+        for index in 0..self.visible.len() {
+            if index % BLOCK == 0 {
+                lanes.checkpoints.push(state.clone());
+                lanes.blocks.push(std::cell::OnceCell::new());
+            }
+            let height = if let Some(rows) = self.fixed.get(&index) {
+                rows.get(unicode).len()
+            } else if let Some(row) = self.step(&mut state, index, unicode) {
+                let edges = self.edges(&row.above);
+                let trim = usize::from(self.trimmed.get(index) == Some(&true));
+                let transitions = if unicode {
+                    route_count(&edges, row.above_width)
+                } else {
+                    transition_count(&edges)
+                };
+                transitions + 1 - trim
+            } else {
+                0
+            };
+            lanes.heights.push(height);
+        }
+        lanes
+    }
+
     fn palette(&self, state: &mut State) -> usize {
         state.palette += 1;
         (state.palette - 1) % PALETTE.len()
     }
 
     /// Assign a shown commit its lane and route its parents' lanes.
-    fn step(&self, state: &mut State, index: usize) -> Option<Row> {
+    ///
+    /// Like Git, ASCII lanes close up when one ends. That shifts every lane
+    /// to its right, which Unicode routes could draw only one per row, so
+    /// Unicode lanes keep their columns instead: an ended lane leaves a gap
+    /// for a later one, and a commit's first parent moves into its column.
+    fn step(&self, state: &mut State, index: usize, unicode: bool) -> Option<Row> {
         if !self.visible[index] || self.fixed.contains_key(&index) {
             return None;
         }
-        let column = match state.lanes.iter().position(|&(row, _)| row == index) {
+        let column = match lane_to(&state.lanes, index) {
             Some(column) => column,
             None => {
                 let colour = match self.git_colours[index] {
                     Some(colour) => colour,
                     None => self.palette(state),
                 };
-                state.lanes.push((index, colour));
-                state.lanes.len() - 1
+                let gap = state.lanes.iter().position(Option::is_none);
+                let column = gap.unwrap_or(state.lanes.len());
+                if gap.is_none() {
+                    state.lanes.push(None);
+                }
+                state.lanes[column] = Some((index, colour));
+                column
             }
         };
         let projected = &self.projected[index];
         let mut next = state.lanes.clone();
-        let (_, colour) = next.remove(column);
+        let (_, colour) = if unicode {
+            next[column].take()
+        } else {
+            next.remove(column)
+        }
+        .unwrap();
         let mut insert = column;
         for &parent in projected {
-            if !next.iter().any(|&(row, _)| row == parent) {
+            let existing = lane_to(&next, parent);
+            if unicode && insert == column && existing.is_some_and(|lane| lane > column) {
+                next.swap(column, existing.unwrap());
+                insert += 1;
+            } else if existing.is_none() {
                 // Without Git's colour, the first new parent continues
                 // this lane's colour.
                 let colour = match self.git_colours[parent] {
@@ -1115,22 +1167,39 @@ impl Plan {
                     None if insert == column => colour,
                     None => self.palette(state),
                 };
-                next.insert(insert, (parent, colour));
+                if unicode {
+                    // Take the nearest gap, or a new lane.
+                    insert = (insert..next.len())
+                        .find(|&lane| next[lane].is_none())
+                        .unwrap_or(next.len());
+                    if insert == next.len() {
+                        next.push(None);
+                    }
+                    next[insert] = Some((parent, colour));
+                } else {
+                    next.insert(insert, Some((parent, colour)));
+                }
                 insert += 1;
             }
+        }
+        while next.last() == Some(&None) {
+            next.pop();
         }
         // The lanes as they were above this row.
         let lanes = std::mem::take(&mut state.lanes);
         let mut edges = Vec::new();
-        for (from, &(row, _)) in lanes.iter().enumerate() {
+        for (from, lane) in lanes.iter().enumerate() {
+            let Some((row, _)) = lane else {
+                continue;
+            };
             let targets = if from == column {
                 &projected[..]
             } else {
-                std::slice::from_ref(&row)
+                std::slice::from_ref(row)
             };
             for &target in targets {
-                if let Some(to) = next.iter().position(|&(r, _)| r == target) {
-                    edges.push((2 * from, 2 * to, next[to].1));
+                if let Some(to) = lane_to(&next, target) {
+                    edges.push((2 * from, 2 * to, next[to].unwrap().1));
                 }
             }
         }
@@ -1153,37 +1222,41 @@ impl Plan {
             .collect()
     }
 
-    fn draw_block(&self, block: usize) -> Vec<Option<GraphRows>> {
-        let mut state = self.checkpoints[block].clone();
+    fn draw_block(&self, lanes: &Lanes, block: usize) -> Vec<Option<Vec<String>>> {
+        let unicode = lanes.unicode;
+        let mut state = lanes.checkpoints[block].clone();
         let start = block * BLOCK;
         (start..self.visible.len().min(start + BLOCK))
             .map(|index| {
                 if let Some(rows) = self.fixed.get(&index) {
-                    return Some(rows.clone());
+                    return Some(rows.get(unicode).clone());
                 }
-                let row = self.step(&mut state, index)?;
+                let row = self.step(&mut state, index, unicode)?;
                 let edges = self.edges(&row.above);
-                let mut rows = GraphRows {
-                    ascii: transitions(&edges, row.above_width),
-                    unicode: connected_transitions(&edges, row.above_width),
+                let mut rows = if unicode {
+                    connected_transitions(&edges, row.above_width)
+                } else {
+                    transitions(&edges, row.above_width)
                 };
                 if self.trimmed.get(index) != Some(&true) {
-                    let node = |node: char, line: char| -> String {
-                        row.lanes
-                            .iter()
-                            .enumerate()
-                            .map(|(i, &(_, colour))| {
-                                if i == row.column {
-                                    format!("{node} ")
-                                } else {
-                                    format!("{} ", paint(line, &self.colours[colour]))
-                                }
-                            })
-                            .collect()
+                    let (node, line) = if unicode {
+                        (unicode_node(self.nodes[index]), '│')
+                    } else {
+                        (self.nodes[index], '|')
                     };
-                    let graph_node = self.nodes[index];
-                    rows.ascii.push(node(graph_node, '|'));
-                    rows.unicode.push(node(unicode_node(graph_node), '│'));
+                    let row = row
+                        .lanes
+                        .iter()
+                        .enumerate()
+                        .map(|(i, lane)| match lane {
+                            _ if i == row.column => format!("{node} "),
+                            Some((_, colour)) => {
+                                format!("{} ", paint(line, &self.colours[*colour]))
+                            }
+                            None => "  ".to_owned(),
+                        })
+                        .collect();
+                    rows.push(row);
                 }
                 Some(rows)
             })
@@ -2399,17 +2472,24 @@ mod tests {
         let mut folds = LogFolds::default();
         folds.refresh(&commits).unwrap();
         let plan = &folds.layout.graphs.0;
-        assert_eq!(plan.checkpoints.len(), 4);
-        for (block, checkpoint) in plan.checkpoints.iter().enumerate().skip(1) {
-            let mut state = plan.checkpoints[block - 1].clone();
-            for index in (block - 1) * BLOCK..block * BLOCK {
-                plan.step(&mut state, index);
+        for unicode in [false, true] {
+            let lanes = plan.lanes(unicode);
+            assert_eq!(lanes.checkpoints.len(), 4);
+            for (block, checkpoint) in lanes.checkpoints.iter().enumerate().skip(1) {
+                let mut state = lanes.checkpoints[block - 1].clone();
+                for index in (block - 1) * BLOCK..block * BLOCK {
+                    plan.step(&mut state, index, unicode);
+                }
+                assert!(
+                    state == *checkpoint,
+                    "checkpoint {block} (unicode: {unicode})"
+                );
             }
-            assert!(state == *checkpoint, "checkpoint {block}");
-        }
-        for (i, commit) in commits.iter().enumerate() {
-            let rows = folds.display_graph(i, commit).len();
-            assert_eq!(rows, folds.display_height(i, commit));
+            folds.ascii_graph = !unicode;
+            for (i, commit) in commits.iter().enumerate() {
+                let rows = folds.display_graph(i, commit).len();
+                assert_eq!(rows, folds.display_height(i, commit));
+            }
         }
     }
 
@@ -2451,6 +2531,38 @@ mod tests {
         for (i, commit) in commits.iter().enumerate() {
             assert_eq!(folds.display_graph(i, commit), commit.graph);
         }
+    }
+
+    #[test]
+    fn unicode_lanes_keep_their_columns_when_a_lane_ends() {
+        let commits = vec![
+            commit("x", &["base"]),
+            commit("y", &["b"]),
+            commit("z", &["c"]),
+            commit("b", &["base"]),
+            commit("c", &["base"]),
+            commit("base", &[]),
+        ];
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        let graph = |folds: &LogFolds| -> Vec<_> {
+            (0..commits.len())
+                .map(|i| plain(folds.display_graph(i, &commits[i])))
+                .collect()
+        };
+        assert_eq!(
+            graph(&folds)[3..],
+            [
+                vec!["│ ● │ "],
+                vec!["├─╯ │ ", "│   ● "],
+                vec!["├───╯ ", "● "]
+            ]
+        );
+        // ASCII lanes close up like Git's.
+        folds.ascii_graph = true;
+        folds.refresh(&commits).unwrap();
+        folds.toggle_merges(&commits).unwrap();
+        assert_eq!(graph(&folds)[4], ["|/ / ", "| * "]);
     }
 
     #[test]
