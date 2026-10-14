@@ -36,6 +36,12 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
         for word in plain.split_inclusive(|c: char| !c.is_alphanumeric() && c != '_') {
             let token = word.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');
             let prefixed = plain[..start].ends_with('#');
+            // `repo#abcd123` and `repo@abc1234` likely refer to other repositories.
+            let qualified = {
+                let mut before = plain[..start].chars().rev();
+                matches!(before.next(), Some('#' | '@'))
+                    && before.next().is_some_and(char::is_alphanumeric)
+            };
             let minimum = if prefixed { 4 } else { 7 };
             // #rrggbb is far more likely a color than an issue or an abbreviated hash.
             let candidate = if prefixed && token.len() == 6 {
@@ -51,7 +57,8 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
                     .next_back()
                     .is_none_or(|c| !c.is_alphanumeric() && !matches!(c, '_' | '/' | '.' | '-'));
                 standalone.then_some(Candidate::Issue(token))
-            } else if (minimum..=64).contains(&token.len())
+            } else if !qualified
+                && (minimum..=64).contains(&token.len())
                 && token
                     .bytes()
                     .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -257,12 +264,12 @@ mod tests {
         let hash = commit("target");
         let short = &hash[..7];
         let blob = git(&["rev-parse", "HEAD:file"]);
-        let text = format!("commit {hash}\nAuthor: Test\n\n    Fix ({short}), reverting {hash}.\n    {short}_identifier identifier{short} {blob} 0000000\n\nNotes:\n    {hash}\ndiff --git a/file b/file\n    {hash}\n");
+        let text = format!("commit {hash}\nAuthor: Test\n\n    Fix ({short}), reverting {hash}.\n    {short}_identifier identifier{short} repo#{short} repo@{short} {blob} 0000000\n\nNotes:\n    {hash}\ndiff --git a/file b/file\n    {hash}\n");
         let links = collect(&text, &mut None);
         assert_eq!(
             links.len(),
             1,
-            "exclude headers, notes, patches, blobs and identifiers"
+            "exclude headers, notes, patches, blobs, identifiers and other repositories"
         );
         assert_eq!(links[&3].len(), 2);
         for link in &links[&3] {
