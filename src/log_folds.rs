@@ -1569,6 +1569,34 @@ mod tests {
     }
 
     #[test]
+    fn lanes_keep_git_colours_into_marked_nodes() {
+        let commits = coloured_history();
+        // As with --left-right, --cherry-mark and --boundary.
+        for marker in ['<', '>', '=', '+', 'o'] {
+            let marked: Vec<_> = commits
+                .iter()
+                .map(|commit| Commit {
+                    graph_node: marker,
+                    graph: commit
+                        .graph
+                        .iter()
+                        .map(|row| row.replace('*', &marker.to_string()))
+                        .collect(),
+                    ..commit.clone()
+                })
+                .collect();
+            for row in 0..commits.len() {
+                assert_eq!(
+                    incoming_colour(&marked, row),
+                    incoming_colour(&commits, row),
+                    "{marker} {}",
+                    commits[row].hash
+                );
+            }
+        }
+    }
+
+    #[test]
     fn conventional_types_require_a_subject_prefix() {
         for (subject, expected) in [
             ("feat: add something", Some("feat")),
