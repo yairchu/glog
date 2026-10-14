@@ -937,7 +937,17 @@ impl Layout {
                     index,
                     GraphRows {
                         ascii: commit.graph.clone(),
-                        unicode: commit.graph.clone(),
+                        unicode: commit
+                            .graph
+                            .iter()
+                            .map(|row| {
+                                row.replacen(
+                                    commit.graph_node,
+                                    &unicode_node(commit.graph_node).to_string(),
+                                    1,
+                                )
+                            })
+                            .collect(),
                     },
                 );
                 continue;
@@ -2211,12 +2221,6 @@ mod tests {
         }
     }
 
-    /// A deterministic history of `size` commits, each with parents older
-    /// than itself, including octopus merges and several roots.
-    fn history(seed: &mut u32, size: usize) -> Vec<Vec<usize>> {
-        let mut random = |n: usize| {
-            *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
-            (*seed >> 8) as usize % n
     #[test]
     fn unicode_graph_keeps_git_connectivity_when_filtering_without_omitted_history() {
         let commits = vec![
@@ -2234,6 +2238,12 @@ mod tests {
         }
     }
 
+    /// A deterministic history of `size` commits, each with parents older
+    /// than itself, including octopus merges and several roots.
+    fn history(seed: &mut u32, size: usize) -> Vec<Vec<usize>> {
+        let mut random = |n: usize| {
+            *seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            (*seed >> 8) as usize % n
         };
         (0..size)
             .map(|i| {
