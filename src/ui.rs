@@ -239,9 +239,17 @@ const HELP_ROWS: &[HelpRow] = &[
         ],
     ),
     detail("[, ]", "previous / next changed file (Show)"),
-    detail(
+    (
         "Click link",
-        "follow a commit or open a GitHub issue (Show)",
+        [
+            Some("follow a commit or open a GitHub issue (Show)"),
+            Some("follow a commit or open a GitHub issue (Show)"),
+            Some("follow a commit or open a GitHub issue (Show)"),
+            // Show links nothing in stash messages.
+            None,
+            Some("follow a commit or open a GitHub issue (Show)"),
+            None,
+        ],
     ),
     every("g/<, G/>", "top / bottom (also Home/End)"),
     every("", ""),
