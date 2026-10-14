@@ -25,6 +25,9 @@ pub fn subject_ranges(subject: &str, offset: usize) -> Ranges {
     ranges
 }
 
+/// The length of a Git trailer token (`Refs: …`) or a `Fixes #12` style
+/// reference. This is a heuristic: a final paragraph such as
+/// `See #12 for details.` reads the same, so its first word is styled too.
 fn footer_label(text: &str) -> Option<usize> {
     let colon = text.find(": ").map(|start| (start, start + 1));
     let hash = text.find(" #").map(|start| (start, start));
