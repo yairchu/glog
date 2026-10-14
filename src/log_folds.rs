@@ -119,7 +119,8 @@ impl LogFolds {
     }
 
     pub fn display_graph<'a>(&'a self, index: usize, commit: &'a Commit) -> &'a [String] {
-        if self.ascii_graph {
+        // Keep Git's connectivity when its omitted ancestry is unavailable.
+        if self.ascii_graph || self.graph.unknown_below.is_some() && self.unicode_graph.is_none() {
             return self.graph(index, commit);
         }
         self.filtered
@@ -347,11 +348,6 @@ impl LogFolds {
                 let drawn = layout.draw(graph, commits, &layout.folded, &reached);
                 for (index, rows) in &mut layout.graphs {
                     rows.unicode = drawn[index].unicode.clone();
-                }
-            } else {
-                // Keep Git's connectivity when its omitted ancestry is unavailable.
-                for rows in layout.graphs.values_mut() {
-                    rows.unicode = rows.ascii.clone();
                 }
             }
         }
