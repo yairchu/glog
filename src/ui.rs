@@ -359,11 +359,12 @@ const HELP_ROWS: &[HelpRow] = &[
     (
         "Backspace",
         [
+            // A followed reference opens as a Log, whatever it was followed from.
             Some("return after following a commit reference"),
-            Some("return after following a commit reference"),
+            None,
             Some("return to the previous blame"),
-            Some("return after following a commit reference"),
-            Some("return after following a commit reference"),
+            None,
+            None,
             Some("return to the previous blame, if any"),
         ],
     ),
