@@ -1586,6 +1586,7 @@ impl App {
     fn hand_over(&mut self, view: &mut App) {
         view.images = std::mem::take(&mut self.images);
         view.browser_results = std::mem::take(&mut self.browser_results);
+        view.search_history = std::mem::take(&mut self.search_history);
         // Followed references stay in the same repository.
         if self.github_repository.is_some() {
             view.github_repository = self.github_repository.clone();
