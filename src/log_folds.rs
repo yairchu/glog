@@ -1190,7 +1190,10 @@ impl Plan {
     /// Like Git, ASCII lanes close up when one ends. That shifts every lane
     /// to its right, which Unicode routes could draw only one per row, so
     /// Unicode lanes keep their columns instead: an ended lane leaves a gap
-    /// for a later one, and a commit's first parent moves into its column.
+    /// for a later one, and the commit's column passes to the first of its
+    /// parents without a lane to its left. That is usually the first parent,
+    /// keeping the mainline straight, but when the first parent's lane is to
+    /// the left, a side parent takes the column rather than leave a gap.
     fn step(&self, state: &mut State, index: usize, unicode: bool) -> Option<Row> {
         if !self.visible[index] || self.fixed.contains_key(&index) {
             return None;
