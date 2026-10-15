@@ -601,15 +601,15 @@ pub fn subject_breaking_marker(subject: &str) -> Option<usize> {
     prefix.ends_with('!').then(|| prefix.len() - 1)
 }
 
-/// The omitted commits that lead to a row. The rest, such as the history
-/// of a branch that diverged before the oldest row, connect no rows, and
-/// would otherwise enlarge every layout.
 fn received(
     result: Result<Result<Ancestry, String>, std::sync::mpsc::RecvError>,
 ) -> Result<Ancestry, String> {
     result.unwrap_or_else(|_| Err("could not read ancestry for merge folding".into()))
 }
 
+/// The omitted commits that lead to a row. The rest, such as the history
+/// of a branch that diverged before the oldest row, connect no rows, and
+/// would otherwise enlarge every layout.
 fn leading_to_rows(mut ancestry: Ancestry, commits: &[Commit]) -> Ancestry {
     let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
     for (hash, parents) in &ancestry {
