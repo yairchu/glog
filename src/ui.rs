@@ -840,8 +840,14 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             .render(area, &mut mask);
         for y in area.y..area.bottom() {
             let mut previous = None;
-            for x in area.x..area.right() {
-                let id = match mask[(x, y)].fg {
+            let mut x = area.x;
+            while x < area.right() {
+                let cell = &mask[(x, y)];
+                // A wide glyph's trailing cells are reset, so they take the glyph's link.
+                let width = (Span::raw(cell.symbol()).width().max(1) as u16).min(area.right() - x);
+                let start = x;
+                x += width;
+                let id = match cell.fg {
                     Color::Rgb(r, g, b) => {
                         (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b)
                     }
@@ -853,10 +859,10 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
                 };
                 // Adjacent cells of one link form a single hit target.
                 if previous == Some(id) {
-                    app.visible_show_links.last_mut().unwrap().0.width += 1;
+                    app.visible_show_links.last_mut().unwrap().0.width += width;
                 } else {
                     app.visible_show_links
-                        .push((Rect::new(x, y, 1, 1), target.clone()));
+                        .push((Rect::new(start, y, width, 1), target.clone()));
                 }
                 previous = Some(id);
             }

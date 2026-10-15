@@ -46,8 +46,10 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
         // Treat an entire word as one token so identifiers containing hex aren't links.
         for word in plain.split_inclusive(|c: char| !c.is_alphanumeric() && c != '_') {
             // A URL is one link, whatever hashes or numbers its path contains.
-            if let Some(url) = urls.iter().find(|url| url.contains(&start)) {
-                if url.start == start {
+            let end = start + word.len();
+            if let Some(url) = urls.iter().find(|url| url.start < end && start < url.end) {
+                // The first word overlapping a URL adds it, even if it starts mid-word.
+                if url.start >= start {
                     let url_text = &plain[url.clone()];
                     let local = repository
                         .get_or_insert_with(crate::git::github_repository)
@@ -108,13 +110,7 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
                 Candidate::Issue(_) | Candidate::Url(_, None) => Vec::new(),
             },
         ));
-    // Never take a hex-like ref name for the abbreviated hash it resembles.
-    let commit = |hash: &str| {
-        resolved
-            .get(hash)
-            .filter(|full| full.starts_with(hash))
-            .cloned()
-    };
+    let commit = |hash: &str| resolved.get(hash).cloned();
     let mut links = HashMap::new();
     for (source, range, candidate) in candidates {
         let target = match candidate {
@@ -172,12 +168,15 @@ fn urls(line: &str) -> Vec<Range<usize>> {
             .unwrap_or(rest.len());
         let mut url = &rest[..end];
         loop {
-            let trimmed = url.trim_end_matches(['.', ',', ':', ';', '!', '?', '\'']);
-            // Keep parentheses that belong to the URL, as in Wikipedia's.
-            let trimmed = match trimmed.strip_suffix(')') {
-                Some(inner) if inner.matches('(').count() < trimmed.matches(')').count() => inner,
-                _ => trimmed,
-            };
+            let trimmed = url.trim_end_matches(['.', ',', ':', ';', '!', '?', '\'', '*']);
+            // Keep brackets that belong to the URL, as in Wikipedia's parentheses.
+            let trimmed = [('(', ')'), ('[', ']'), ('{', '}')]
+                .into_iter()
+                .find_map(|(open, close)| {
+                    let inner = trimmed.strip_suffix(close)?;
+                    (inner.matches(open).count() < trimmed.matches(close).count()).then_some(inner)
+                })
+                .unwrap_or(trimmed);
             if trimmed.len() == url.len() {
                 break;
             }
@@ -215,7 +214,11 @@ fn local<'a>(url: &'a str, repository: &str) -> Option<Local<'a>> {
         .strip_prefix("compare/")?
         .split_once("...")
         .or_else(|| path.strip_prefix("compare/")?.split_once(".."))?;
-    (!base.is_empty() && !head.is_empty()).then_some(Local::Range(base, head))
+    // Branch names would resolve to local branches, which may differ from GitHub's.
+    [base, head]
+        .iter()
+        .all(|hash| hash.len() >= 4 && is_hash(hash))
+        .then_some(Local::Range(base, head))
 }
 
 pub type BrowserResult = std::sync::mpsc::Receiver<Result<(), String>>;
@@ -455,6 +458,55 @@ mod tests {
     }
 
     #[test]
+    fn hashes_resolve_past_refs_named_like_them() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let target = commit("target");
+        commit("other");
+        git(&["branch", &target[..7]]);
+        git(&["tag", &target[..8]]);
+        let text = format!(
+            "commit {target}\n\n    Fix {} and {}.\n",
+            &target[..7],
+            &target[..8]
+        );
+        let links = collect(&text, &mut None);
+        assert_eq!(links[&2].len(), 2);
+        for link in &links[&2] {
+            assert_eq!(link.target, Target::Commit(target.clone()));
+        }
+    }
+
+    #[test]
+    fn both_cells_of_a_wide_glyph_in_a_link_are_clickable() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        commit("wide\n\nhttps://example.com/日本");
+        let mut app = git::load_show_app(&[]).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(40, 12)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let glyph = buffer
+            .content()
+            .iter()
+            .position(|cell| cell.symbol() == "日")
+            .unwrap();
+        let (x, y) = buffer.pos_of(glyph);
+        for column in [x, x + 1] {
+            assert!(
+                app.visible_show_links
+                    .iter()
+                    .any(|(rect, _)| rect.contains(ratatui::layout::Position::new(column, y))),
+                "column {column} of the wide glyph is not clickable"
+            );
+        }
+    }
+
+    #[test]
     fn short_numeric_references_are_issues_and_six_digits_are_colors() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
@@ -515,17 +567,21 @@ mod tests {
         let repo = "https://github.com/owner/repo";
         let urls = [
             format!("{repo}/commit/{}", &middle[..7]),
-            format!("{repo}/compare/v1...{}", &head[..9]),
+            format!("{repo}/compare/{}...{}", &base[..7], &head[..9]),
             format!("https://www.github.com/OWNER/REPO/commit/{head}#diff-1"),
             format!("{repo}/commit/{}", "0".repeat(40)),
-            format!("{repo}/compare/v1...missing"),
+            // Local branches and tags may differ from GitHub's.
+            format!("{repo}/compare/v1...{}", &head[..7]),
             format!("{repo}/pull/7"),
             "https://example.com/wiki/Git_(software)".to_owned(),
+            "https://example.com/a".to_owned(),
+            "https://example.com/b".to_owned(),
+            "https://example.com/c".to_owned(),
         ];
         let line = format!(
             "    See {}, ({}). <{}> {}; [x]({}) {}, {}!",
             urls[0], urls[1], urls[2], urls[3], urls[4], urls[5], urls[6]
-        );
+        ) + &format!(" see_{} [{}] **{}**", urls[7], urls[8], urls[9]);
         let text = format!("commit {head}\n\n{line}\n");
         let links = collect(&text, &mut None);
         let found: Vec<_> = links[&2]
@@ -540,6 +596,9 @@ mod tests {
             Target::Url(urls[4].clone()),
             Target::Url(urls[5].clone()),
             Target::Url(urls[6].clone()),
+            Target::Url(urls[7].clone()),
+            Target::Url(urls[8].clone()),
+            Target::Url(urls[9].clone()),
         ];
         assert_eq!(
             found,

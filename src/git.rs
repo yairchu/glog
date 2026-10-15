@@ -596,35 +596,62 @@ fn github_repository_url(remote: &str) -> Option<String> {
     Some(format!("https://github.com/{owner}/{repo}"))
 }
 
-/// Map each revision naming a commit to its full hash. One Git process
-/// checks every revision.
+/// Map each abbreviated commit hash to its full hash. One Git process
+/// checks every hash, plus one per hash that a hex-like ref name shadows.
 pub(crate) fn resolve_commits<'a>(
-    revisions: impl IntoIterator<Item = &'a str>,
+    hashes: impl IntoIterator<Item = &'a str>,
 ) -> std::collections::HashMap<String, String> {
-    let mut revisions: Vec<_> = revisions.into_iter().collect();
-    revisions.sort_unstable();
-    revisions.dedup();
-    if revisions.is_empty() {
+    let mut hashes: Vec<_> = hashes.into_iter().collect();
+    hashes.sort_unstable();
+    hashes.dedup();
+    let check = |objects: &[&str]| {
+        let input: String = objects
+            .iter()
+            .map(|object| format!("{object}^{{commit}}\n"))
+            .collect();
+        let output = pipe_through(
+            Command::new("git")
+                .args(["cat-file", "--batch-check=%(objectname)"])
+                .env("GIT_NO_LAZY_FETCH", "1"),
+            input.as_bytes(),
+        )
+        .unwrap_or_default();
+        // Git answers each line in order; failures echo the input and a reason.
+        objects
+            .iter()
+            .zip(output.lines())
+            .filter(|(_, line)| !line.contains(' '))
+            .map(|(object, line)| (object.to_string(), line.to_owned()))
+            .collect::<std::collections::HashMap<_, _>>()
+    };
+    if hashes.is_empty() {
         return std::collections::HashMap::new();
     }
-    let input: String = revisions
-        .iter()
-        .map(|revision| format!("{revision}^{{commit}}\n"))
-        .collect();
-    let output = pipe_through(
-        Command::new("git")
-            .args(["cat-file", "--batch-check=%(objectname)"])
-            .env("GIT_NO_LAZY_FETCH", "1"),
-        input.as_bytes(),
-    )
-    .unwrap_or_default();
-    // Git answers each line in order; failures echo the input and a reason.
-    revisions
-        .into_iter()
-        .zip(output.lines())
-        .filter(|(_, line)| !line.contains(' '))
-        .map(|(revision, line)| (revision.to_owned(), line.to_owned()))
-        .collect()
+    let mut resolved = check(&hashes);
+    // Git prefers a ref named like the hash, so look up such hashes as objects.
+    for hash in hashes {
+        if resolved.get(hash).is_none_or(|full| full.starts_with(hash)) {
+            continue;
+        }
+        let objects = Command::new("git")
+            .args(["rev-parse", &format!("--disambiguate={hash}")])
+            .env("GIT_NO_LAZY_FETCH", "1")
+            .stderr(Stdio::null())
+            .output()
+            .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
+            .unwrap_or_default();
+        let objects: Vec<_> = objects.lines().collect();
+        // Tags and trees may share the prefix; only a unique commit counts.
+        let mut commits = check(&objects)
+            .into_iter()
+            .filter(|(object, full)| object == full)
+            .map(|(_, full)| full);
+        match (commits.next(), commits.next()) {
+            (Some(full), None) => resolved.insert(hash.to_owned(), full),
+            _ => resolved.remove(hash),
+        };
+    }
+    resolved
 }
 
 /// Git's default Show format places the indented message after the header.
