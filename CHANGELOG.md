@@ -31,9 +31,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Click underlined commit hashes in Show messages to browse the referenced
   commit, including commits outside the current history or path filters.
-  Hashes use lowercase hex and need seven or more characters, or four or
-  more with a `#` prefix. Six-character `#` references are left plain, as
-  they are usually colors.
+  Hashes use lowercase hex and need seven or more characters, or with a `#`
+  prefix, four or five including a letter. Six-character `#` references are
+  left plain, as they are usually colors.
   Backspace returns through followed references, preserving the previous
   view's reading position and expanded files.
 
