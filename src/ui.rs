@@ -692,14 +692,10 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             } else {
                 ansi::normalized_line(&row.text)
             };
-            if let Some(ranges) = app
-                .show_message_styles
-                .get(&row.source)
-                .filter(|_| row.file.is_none())
-            {
+            if let Some(ranges) = message_entry(&app.show_message_styles, row) {
                 line = ansi::style_ranges(line, ranges.iter().cloned());
             }
-            if let Some(links) = row_links(app, row) {
+            if let Some(links) = message_entry(&app.show_links, row) {
                 line = crate::commit_links::style_links(line, links, |_| {
                     Style::default()
                         .fg(Color::LightCyan)
@@ -818,7 +814,7 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
     let visible = first..lines.len().min(first + height);
     if app.show_rows[visible.clone()]
         .iter()
-        .any(|row| row_links(app, row).is_some())
+        .any(|row| message_entry(&app.show_links, row).is_some())
     {
         // Render an ID mask with exactly the viewport's wrapping and scroll rules.
         // This keeps hit targets correct for wide characters and wrapped hashes.
@@ -827,7 +823,7 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
         let marker_lines: Vec<_> = visible
             .map(|index| {
                 let marked = Line::raw(lines[index].to_string());
-                let Some(links) = row_links(app, &app.show_rows[index]) else {
+                let Some(links) = message_entry(&app.show_links, &app.show_rows[index]) else {
                     return marked;
                 };
                 crate::commit_links::style_links(marked, links, |link| {
@@ -1016,14 +1012,13 @@ fn brighten_background(color: Color) -> Color {
     }
 }
 
-/// Links are only resolved in the message, never in patch text.
-fn row_links<'a>(
-    app: &'a App,
+/// The entry for a row of the commit message, from a map keyed by Show line.
+/// Links and message styles apply only to the message, never to patch text.
+fn message_entry<'a, T>(
+    entries: &'a std::collections::HashMap<usize, T>,
     row: &crate::app::ShowRow,
-) -> Option<&'a Vec<crate::commit_links::Link>> {
-    app.show_links
-        .get(&row.source)
-        .filter(|_| row.file.is_none())
+) -> Option<&'a T> {
+    entries.get(&row.source).filter(|_| row.file.is_none())
 }
 
 fn highlight_matches(mut line: Line<'static>, query: &str, current: bool) -> Line<'static> {
