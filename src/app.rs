@@ -683,7 +683,13 @@ impl App {
             }
         };
         if commit.kind == CommitKind::Revision {
-            self.insert_cache(commit.show_cache_key(), text.clone());
+            let key = commit.show_cache_key();
+            self.insert_cache(key.clone(), text.clone());
+            if text == self.show_text {
+                // The links shown already belong to this text.
+                self.cache.get_mut(&key).expect("inserted above").links =
+                    Some(self.show_links.clone());
+            }
         }
         if text == self.show_text {
             return;
