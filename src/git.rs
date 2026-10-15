@@ -3,7 +3,8 @@ use std::{
     env, fs,
     hash::Hasher,
     io::{Read, Write},
-    process::{Command, Stdio},
+    process::{Child, Command, Stdio},
+    sync::{Arc, Mutex},
 };
 
 const RECORD: char = '\x1e';
@@ -352,8 +353,41 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
     Ok(commits)
 }
 
-pub type AncestryRead =
-    Box<dyn FnOnce() -> Result<std::collections::HashMap<String, Vec<String>>, String> + Send>;
+pub type AncestryRead = Box<
+    dyn FnOnce(&Cancel) -> Result<std::collections::HashMap<String, Vec<String>>, String> + Send,
+>;
+
+/// Stops the Git process of a read whose result is no longer wanted.
+#[derive(Clone, Default)]
+pub struct Cancel(Arc<Mutex<Cancelled>>);
+
+#[derive(Default)]
+struct Cancelled {
+    cancelled: bool,
+    child: Option<Child>,
+}
+
+impl Cancel {
+    pub fn cancel(&self) {
+        let mut state = self.0.lock().unwrap();
+        state.cancelled = true;
+        if let Some(child) = &mut state.child {
+            let _ = child.kill();
+        }
+    }
+
+    fn register(&self, mut child: Child) {
+        let mut state = self.0.lock().unwrap();
+        if state.cancelled {
+            let _ = child.kill();
+        }
+        state.child = Some(child);
+    }
+
+    fn take(&self) -> Option<Child> {
+        self.0.lock().unwrap().child.take()
+    }
+}
 
 /// Parent links through commits omitted by log filters, for merge folding.
 /// Stop below the oldest displayed commit: its ancestors cannot be displayed
@@ -377,7 +411,7 @@ pub fn log_ancestry(commits: &[Commit]) -> AncestryRead {
         input.push('\n');
     }
     let first_parent = revisions.iter().any(|commit| commit.first_parent_only);
-    Box::new(move || {
+    Box::new(move |cancel| {
         let mut command = Command::new("git");
         command
             .args(["rev-list", "--parents", "--stdin"])
@@ -385,7 +419,8 @@ pub fn log_ancestry(commits: &[Commit]) -> AncestryRead {
         if first_parent {
             command.arg("--first-parent");
         }
-        let output = pipe_through(&mut command, input.as_bytes())
+        let output = pipe_through_cancellable(&mut command, input.as_bytes(), cancel)
+            .map(|output| String::from_utf8_lossy(&output).into_owned())
             .ok_or("could not read ancestry for merge folding")?;
         Ok(output
             .lines()
@@ -1508,6 +1543,14 @@ pub(crate) fn pipe_through(command: &mut Command, input: &[u8]) -> Option<String
 }
 
 pub(crate) fn pipe_through_bytes(command: &mut Command, input: &[u8]) -> Option<Vec<u8>> {
+    pipe_through_cancellable(command, input, &Cancel::default())
+}
+
+fn pipe_through_cancellable(
+    command: &mut Command,
+    input: &[u8],
+    cancel: &Cancel,
+) -> Option<Vec<u8>> {
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -1515,13 +1558,16 @@ pub(crate) fn pipe_through_bytes(command: &mut Command, input: &[u8]) -> Option<
         .spawn()
         .ok()?;
     let mut stdin = child.stdin.take()?;
-    let output = std::thread::scope(|scope| {
+    let mut stdout = child.stdout.take()?;
+    cancel.register(child);
+    std::thread::scope(|scope| {
         let writer = scope.spawn(move || stdin.write_all(input));
-        let output = child.wait_with_output().ok()?;
-        writer.join().ok()?.ok()?;
-        Some(output)
-    })?;
-    output.status.success().then_some(output.stdout)
+        let mut output = Vec::new();
+        let read = stdout.read_to_end(&mut output);
+        let written = writer.join();
+        let status = cancel.take()?.wait().ok()?;
+        (read.is_ok() && matches!(written, Ok(Ok(()))) && status.success()).then_some(output)
+    })
 }
 
 pub(crate) fn stderr_message(prefix: &str, stderr: &[u8]) -> String {
@@ -1536,6 +1582,23 @@ pub(crate) fn stderr_message(prefix: &str, stderr: &[u8]) -> String {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[test]
+    fn cancelling_a_read_stops_its_process() {
+        let cancel = super::Cancel::default();
+        let read = std::thread::spawn({
+            let cancel = cancel.clone();
+            move || {
+                let mut command = std::process::Command::new("sleep");
+                command.arg("30");
+                super::pipe_through_cancellable(&mut command, b"", &cancel)
+            }
+        });
+        let started = std::time::Instant::now();
+        cancel.cancel();
+        assert_eq!(read.join().unwrap(), None);
+        assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    }
+
     #[test]
     fn github_remote_urls_and_repository_selection() {
         for url in [

@@ -12,7 +12,18 @@ use crate::git::{self, Commit, CommitKind};
 
 type Ancestry = HashMap<String, Vec<String>>;
 type AncestrySource = Box<dyn Fn(&[Commit]) -> git::AncestryRead>;
-type AncestryResult = std::sync::mpsc::Receiver<Result<Ancestry, String>>;
+
+/// A background read of omitted history, cancelled once dropped.
+struct Reading {
+    result: std::sync::mpsc::Receiver<Result<Ancestry, String>>,
+    cancel: git::Cancel,
+}
+
+impl Drop for Reading {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+    }
+}
 
 pub struct LogFolds {
     pub start_collapsed: bool,
@@ -31,7 +42,7 @@ pub struct LogFolds {
     omitted: Option<Ancestry>,
     // The Unicode graph reads omitted history in the background, so a long
     // walk does not delay the Log. Folds and filters wait for the same read.
-    reading: Option<AncestryResult>,
+    reading: Option<Reading>,
     // Complete ancestry for drawing through Git-omitted rows, without changing
     // which merges the existing folding policy offers.
     unicode_graph: Option<Graph>,
@@ -327,13 +338,17 @@ impl LogFolds {
         if let Some(ancestry) = &self.omitted {
             return Ok(ancestry.clone());
         }
-        let result = match self.reading.take().map(|reading| received(reading.recv())) {
+        let result = match self
+            .reading
+            .take()
+            .map(|reading| received(reading.result.recv()))
+        {
             Some(Ok(ancestry)) => Ok(ancestry),
             read => {
                 // A failed read for the graph keeps Git's graph, but each
                 // fold is an explicit request and retries.
                 self.unicode_failed |= read.is_some();
-                (self.load_ancestry)(commits)()
+                (self.load_ancestry)(commits)(&git::Cancel::default())
             }
         };
         let ancestry = leading_to_rows(result?, commits);
@@ -348,15 +363,23 @@ impl LogFolds {
             return;
         }
         let read = (self.load_ancestry)(commits);
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || sender.send(read()));
-        self.reading = Some(receiver);
+        let (sender, result) = std::sync::mpsc::channel();
+        let cancel = git::Cancel::default();
+        std::thread::spawn({
+            let cancel = cancel.clone();
+            move || sender.send(read(&cancel))
+        });
+        self.reading = Some(Reading { result, cancel });
     }
 
     /// Draw the Unicode graph once its background read completes.
     pub fn poll(&mut self, commits: &[Commit]) {
         use std::sync::mpsc::{RecvError, TryRecvError};
-        let result = match self.reading.as_ref().map(|reading| reading.try_recv()) {
+        let result = match self
+            .reading
+            .as_ref()
+            .map(|reading| reading.result.try_recv())
+        {
             None | Some(Err(TryRecvError::Empty)) => return,
             Some(Ok(result)) => Ok(result),
             Some(Err(TryRecvError::Disconnected)) => Err(RecvError),
@@ -369,7 +392,7 @@ impl LogFolds {
     #[cfg(test)]
     pub fn settle(&mut self, commits: &[Commit]) {
         if let Some(reading) = self.reading.take() {
-            self.receive(commits, received(reading.recv()));
+            self.receive(commits, received(reading.result.recv()));
         }
     }
 
@@ -1685,7 +1708,7 @@ mod tests {
         LogFolds {
             load_ancestry: Box::new(move |_| {
                 let ancestry = ancestry.clone();
-                Box::new(move || ancestry.ok_or_else(|| "no Git".to_owned()))
+                Box::new(move |_| ancestry.ok_or_else(|| "no Git".to_owned()))
             }),
             ..LogFolds::default()
         }
@@ -2743,7 +2766,7 @@ mod tests {
             let mut folds = LogFolds {
                 load_ancestry: Box::new(move |_| {
                     counter.set(counter.get() + 1);
-                    Box::new(move || {
+                    Box::new(move |_| {
                         available
                             .then(|| Ancestry::from([("omitted".into(), vec!["side".into()])]))
                             .ok_or_else(|| "no Git".to_owned())
