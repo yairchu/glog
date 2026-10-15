@@ -274,6 +274,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
             app.images.clear(&mut io::stdout())?;
             terminal.clear()?;
             app.redraw = false;
+            changed = true;
         }
         changed |= app.images.poll();
         changed |= app.poll_browser();
