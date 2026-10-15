@@ -124,8 +124,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if let Some(input) = &app.search_input {
         let prefix = if app.search_reverse { '?' } else { '/' };
         format!("{prefix}{input}█")
-    } else if let Some(status) = &app.status {
-        status.clone()
+    } else if let Some(message) = app.message() {
+        message.to_owned()
     } else if app.mode == Mode::Log && app.history == History::Reflog {
         "h help  q quit  ↑/k ↓/j  ←/→ entry  Enter show  / ? search".to_owned()
     } else if app.mode == Mode::Log && app.history == History::Stash {
@@ -149,7 +149,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         "h help  q quit  ↑/k ↓/j  ←/→ commit  [/ ] file  Enter/z fold  s summary  L lockfiles  / ? search"
             .to_owned()
     };
-    if app.has_reference_back() && app.search_input.is_none() && app.status.is_none() {
+    if app.has_reference_back() && app.search_input.is_none() && app.message().is_none() {
         help = format!("Backspace back  {help}");
     }
     frame.render_widget(

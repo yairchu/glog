@@ -2012,10 +2012,8 @@ pub(crate) mod tests {
         folds.refresh(&commits).unwrap();
         assert_eq!(folds.marker(0), None);
         // The Log stays responsive while z waits for that history.
-        assert_eq!(
-            folds.toggle(0, &commits),
-            Err(crate::log_folds::FoldError::Reading)
-        );
+        folds.toggle(0, &commits).unwrap();
+        assert!(folds.reading());
         assert!(folds.visible(1));
         folds.settle(&commits).unwrap().unwrap();
         assert!(!folds.visible(1));

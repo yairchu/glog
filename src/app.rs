@@ -544,8 +544,7 @@ impl App {
     }
 
     fn toggle_commit_type(&mut self, kind: Option<&str>) {
-        let result = self.log_folds.toggle_type(kind, &self.commits);
-        self.status = result.err().map(|error| error.to_string());
+        self.status = self.log_folds.toggle_type(kind, &self.commits).err();
         self.ensure_log_selection();
         self.log_offset = 0;
         self.search_match = None;
@@ -567,8 +566,7 @@ impl App {
     }
 
     fn toggle_merges(&mut self) {
-        let result = self.log_folds.toggle_merges(&self.commits);
-        self.status = result.err().map(|error| error.to_string());
+        self.status = self.log_folds.toggle_merges(&self.commits).err();
         self.ensure_log_selection();
         self.log_offset = 0;
         self.search_match = None;
@@ -595,8 +593,7 @@ impl App {
         {
             return;
         }
-        let result = self.log_folds.toggle(self.selected, &self.commits);
-        self.status = result.err().map(|error| error.to_string());
+        self.status = self.log_folds.toggle(self.selected, &self.commits).err();
         // An expanded merge may itself be filtered out.
         self.ensure_log_selection();
         self.search_match = None;
@@ -608,7 +605,7 @@ impl App {
                 self.selected = selected;
                 self.status = None;
             }
-            Err(error) => self.status = Some(error.to_string()),
+            Err(error) => self.status = Some(error),
         }
         self.ensure_log_selection();
         self.search_match = None;
@@ -617,35 +614,33 @@ impl App {
     /// Lay out the Log's folds and filters, reporting only failures.
     pub fn refresh_log_folds(&mut self) {
         if let Err(error) = self.log_folds.refresh(&self.commits) {
-            self.status = Some(error.to_string());
+            self.status = Some(error);
         }
     }
 
     /// Apply omitted history once its background read completes, returning
     /// whether it did.
     pub fn poll_log(&mut self) -> bool {
-        let pending = self.log_folds.pending();
         let Some(result) = self.log_folds.poll(&self.commits) else {
             return false;
         };
-        self.log_read(pending, result);
+        self.log_read(result);
         true
     }
 
     /// Wait for omitted history, as if `poll_log` ran once it was read.
     #[cfg(test)]
     pub fn settle_log(&mut self) {
-        let pending = self.log_folds.pending();
         if let Some(result) = self.log_folds.settle(&self.commits) {
-            self.log_read(pending, result);
+            self.log_read(result);
         }
     }
 
     /// Show the folds and filters that waited for omitted history.
-    fn log_read(&mut self, pending: bool, result: Result<(), crate::log_folds::FoldError>) {
-        // Otherwise only the Unicode graph waited, which falls back silently.
-        if pending {
-            self.status = result.err().map(|error| error.to_string());
+    fn log_read(&mut self, result: Result<(), String>) {
+        // Leave other messages shown meanwhile, as `message` shows the wait.
+        if let Err(error) = result {
+            self.status = Some(error);
         }
         // Show keeps its commit, which the Log selects again on return.
         if self.mode == Mode::Log {
@@ -831,6 +826,14 @@ impl App {
             .unwrap_or(old_cursor.min(self.show_rows.len().saturating_sub(1)));
         self.search_match = None;
         self.show_scroll = Some(ShowScroll::PreserveCursorPosition(screen_position));
+    }
+
+    /// The footer's message, if any.
+    pub fn message(&self) -> Option<&str> {
+        self.status.as_deref().or_else(|| {
+            (self.mode == Mode::Log && self.log_folds.reading())
+                .then_some(crate::log_folds::READING)
+        })
     }
 
     pub fn top(&mut self) {
@@ -2539,11 +2542,13 @@ mod tests {
         let mut app = App::new(commits.clone());
         app.selected = index(&side);
         app.apply_log_action(LogAction::HideSelectedType);
-        assert_eq!(app.status.as_deref(), Some("Reading omitted history…"));
+        assert_eq!(app.message(), Some("Reading omitted history…"));
         assert!(app.log_folds.visible(index(&side)));
         app.mode = Mode::Show;
+        // Messages from meanwhile outlast the read.
+        app.status = Some("Watch refresh failed".into());
         app.settle_log();
-        assert!(app.status.is_none(), "{:?}", app.status);
+        assert_eq!(app.status.as_deref(), Some("Watch refresh failed"));
         assert!(!app.log_folds.visible(index(&side)));
         assert_eq!(app.selected, index(&side));
         app.switch_mode();
@@ -2564,7 +2569,7 @@ mod tests {
         let mut app = App::new(commits.clone());
         app.log_folds.start_collapsed = true;
         app.refresh_log_folds();
-        assert_eq!(app.status.as_deref(), Some("Reading omitted history…"));
+        assert_eq!(app.message(), Some("Reading omitted history…"));
         assert_eq!(app.log_folds.marker(index(&merge)), Some("▶"));
         app.settle_log();
         assert!(app.status.is_none(), "{:?}", app.status);

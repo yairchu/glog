@@ -38,23 +38,9 @@ enum Omitted {
     Failed(String),
 }
 
-/// Why folds and filters are not shown as asked.
-#[derive(Debug, PartialEq, Eq)]
-pub enum FoldError {
-    /// They need history a filter omitted, now read in the background.
-    /// They apply once `poll` reports the read.
-    Reading,
-    Failed(String),
-}
-
-impl std::fmt::Display for FoldError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Reading => f.write_str("Reading omitted history…"),
-            Self::Failed(error) => f.write_str(error),
-        }
-    }
-}
+/// Shown while folds and filters wait for history a filter omitted. They
+/// apply once `poll` reports the read.
+pub const READING: &str = "Reading omitted history…";
 
 pub struct LogFolds {
     pub start_collapsed: bool,
@@ -63,6 +49,11 @@ pub struct LogFolds {
     // The loaded revisions and their parents, which `omitted` stays valid for.
     revisions: Vec<(String, Vec<String>, bool)>,
     omitted: Omitted,
+    // History read for earlier revisions, shown while a refresh rereads
+    // it, so folds and filters stay applied meanwhile.
+    stale: Option<Ancestry>,
+    // A row to keep shown once the history being read is applied.
+    keep_shown: Option<String>,
     // Merges already offered to --fold-merges.
     seen: HashSet<String>,
     // The user's choices, which requests change and nothing undoes.
@@ -84,6 +75,8 @@ impl Default for LogFolds {
             load_ancestry: Box::new(git::log_ancestry),
             revisions: Vec::new(),
             omitted: Omitted::Unread,
+            stale: None,
+            keep_shown: None,
             seen: HashSet::new(),
             collapsed: HashSet::new(),
             tentative: HashSet::new(),
@@ -157,11 +150,6 @@ impl LogFolds {
         self.view.hidden_count
     }
 
-    /// Whether the folds and filters asked for wait for omitted history.
-    pub fn pending(&self) -> bool {
-        self.view.pending
-    }
-
     /// The ASCII graph, whichever style the Log shows.
     #[cfg(test)]
     pub fn graph<'a>(&'a self, index: usize, commit: &'a Commit) -> &'a [String] {
@@ -183,7 +171,7 @@ impl LogFolds {
 
     fn unicode_shown(&self) -> bool {
         // Keep Git's connectivity until its omitted ancestry is read.
-        !(self.ascii_graph || self.view.graph.unknown_below.is_some())
+        !(self.ascii_graph || self.view.graph.unknown_below.is_some() || self.stale.is_some())
     }
 
     /// The redrawn graph, or `None` where Git's graph is shown unchanged.
@@ -225,18 +213,22 @@ impl LogFolds {
 
     /// Lay out new commits. Under --fold-merges, their new merges start
     /// folded.
-    pub fn refresh(&mut self, commits: &[Commit]) -> Result<(), FoldError> {
+    pub fn refresh(&mut self, commits: &[Commit]) -> Result<(), String> {
         self.relayout(commits);
         self.status()
     }
 
-    /// Whether the choices are shown, or why not.
-    fn status(&self) -> Result<(), FoldError> {
-        match (&self.omitted, self.view.pending) {
-            (_, false) => Ok(()),
-            (Omitted::Failed(error), true) => Err(FoldError::Failed(error.clone())),
-            (_, true) => Err(FoldError::Reading),
+    /// Why the choices are not shown, unless they are or wait for `READING`.
+    fn status(&self) -> Result<(), String> {
+        match &self.omitted {
+            Omitted::Failed(error) if self.view.pending => Err(error.clone()),
+            _ => Ok(()),
         }
+    }
+
+    /// Whether the choices wait for omitted history being read.
+    pub fn reading(&self) -> bool {
+        self.view.pending && matches!(self.omitted, Omitted::Reading(_))
     }
 
     /// Prepare a request: lay out commits that are not yet, and retry a
@@ -256,11 +248,13 @@ impl LogFolds {
 
     /// Fold or expand a merge. While omitted history is read, what a fold
     /// hides is unknown, so this flips the choice its marker shows.
-    pub fn toggle(&mut self, index: usize, commits: &[Commit]) -> Result<(), FoldError> {
+    pub fn toggle(&mut self, index: usize, commits: &[Commit]) -> Result<(), String> {
         let Some(commit) = commits.get(index).filter(|c| c.parents.len() > 1) else {
             return Ok(());
         };
         self.prepare_request(commits);
+        // Folding asks to hide rows, which a refresh may have asked to keep.
+        self.keep_shown = None;
         let hash = &commit.hash;
         self.tentative.remove(hash);
         let fold = if self.view.pending {
@@ -280,17 +274,18 @@ impl LogFolds {
         }
         self.collapsed.remove(hash);
         self.relayout(commits);
-        Err(FoldError::Failed(if self.view.graph.merged_rows(index) {
+        Err(if self.view.graph.merged_rows(index) {
             "Nothing to fold: other shown history reaches this merge's commits".into()
         } else {
             "No merged commits in this history; revision and path filters still apply".into()
-        }))
+        })
     }
 
     /// Fold every merge that hides something, or expand all if they already
     /// are. Returns the selection, moved to its fold if that hides it.
-    pub fn toggle_all(&mut self, selected: usize, commits: &[Commit]) -> Result<usize, FoldError> {
+    pub fn toggle_all(&mut self, selected: usize, commits: &[Commit]) -> Result<usize, String> {
         self.prepare_request(commits);
+        self.keep_shown = None;
         let all: HashSet<_> = merges(commits).map(str::to_owned).collect();
         // While waiting, which merges hide something is unknown, so this
         // expands only when every merge's marker shows it folded.
@@ -311,10 +306,10 @@ impl LogFolds {
             self.collapsed = if folded { HashSet::new() } else { previous };
             self.relayout(commits);
             if !folded {
-                return Err(FoldError::Failed(
+                return Err(
                     "No foldable merges in this history; revision and path filters still apply"
                         .to_owned(),
-                ));
+                );
             }
             return self.status().map(|()| selected);
         }
@@ -330,8 +325,12 @@ impl LogFolds {
         }
     }
 
-    /// Expand the folds hiding a row.
+    /// Expand the folds hiding a row, now and once the history being read
+    /// is applied, which may fold it anew.
     pub fn reveal(&mut self, index: usize, commits: &[Commit]) {
+        if matches!(self.omitted, Omitted::Reading(_)) {
+            self.keep_shown = commits.get(index).map(|commit| commit.hash.clone());
+        }
         while let Some(fold) = (self.view.layout.visible.get(index) == Some(&false))
             .then(|| self.containing_fold(index))
             .flatten()
@@ -358,7 +357,7 @@ impl LogFolds {
 
     /// Apply omitted history once a background read completes, returning
     /// whether the folds and filters asked for are now shown, or why not.
-    pub fn poll(&mut self, commits: &[Commit]) -> Option<Result<(), FoldError>> {
+    pub fn poll(&mut self, commits: &[Commit]) -> Option<Result<(), String>> {
         use std::sync::mpsc::{RecvError, TryRecvError};
         let Omitted::Reading(reading) = &self.omitted else {
             return None;
@@ -373,7 +372,7 @@ impl LogFolds {
 
     /// Wait for a background read, as if `poll` ran once it completed.
     #[cfg(test)]
-    pub fn settle(&mut self, commits: &[Commit]) -> Option<Result<(), FoldError>> {
+    pub fn settle(&mut self, commits: &[Commit]) -> Option<Result<(), String>> {
         let Omitted::Reading(reading) = &self.omitted else {
             return None;
         };
@@ -385,12 +384,18 @@ impl LogFolds {
         &mut self,
         commits: &[Commit],
         result: Result<Ancestry, String>,
-    ) -> Result<(), FoldError> {
+    ) -> Result<(), String> {
         self.omitted = match result {
             Ok(ancestry) => Omitted::Read(ancestry),
             Err(error) => Omitted::Failed(error),
         };
+        self.stale = None;
         self.relayout(commits);
+        if let Some(index) = (self.keep_shown.take())
+            .and_then(|hash| commits.iter().position(|commit| commit.hash == hash))
+        {
+            self.reveal(index, commits);
+        }
         self.status()
     }
 
@@ -405,8 +410,15 @@ impl LogFolds {
             .map(|c| (c.hash.clone(), c.parents.clone(), c.first_parent_only))
             .collect();
         if revisions != self.revisions {
-            self.omitted = Omitted::Unread;
             self.revisions = revisions;
+            if let Omitted::Read(ancestry) = std::mem::replace(&mut self.omitted, Omitted::Unread) {
+                self.stale = Some(ancestry);
+            }
+            // Reread history that was read, as the same filter likely omits
+            // some again.
+            if self.stale.is_some() {
+                self.read_omitted_in_background(commits);
+            }
         }
         let hashes: HashSet<_> = commits.iter().map(|c| c.hash.as_str()).collect();
         for chosen in [&mut self.collapsed, &mut self.tentative, &mut self.seen] {
@@ -423,6 +435,7 @@ impl LogFolds {
 
         let graph = match &self.omitted {
             Omitted::Read(ancestry) => Graph::new(commits, Some(ancestry)),
+            Omitted::Reading(_) => Graph::new(commits, self.stale.as_ref()),
             _ => Graph::new(commits, None),
         };
         let mut layout = Layout::new(&graph, commits, &self.collapsed);
@@ -451,8 +464,10 @@ impl LogFolds {
                     }
                 }
             }
-        } else if !self.tentative.is_empty() {
+        } else if self.stale.is_none() && !self.tentative.is_empty() {
             // Merges folded together stay so if hidden inside another fold.
+            // Stale history may not show what new merges hide, so keep
+            // their folds until it is reread.
             let before = self.collapsed.len();
             self.collapsed.retain(|hash| {
                 !self.tentative.contains(hash)
@@ -497,12 +512,9 @@ impl LogFolds {
                     .is_some_and(|kind| self.hidden_types.contains(kind.as_ref())))
     }
 
-    pub fn toggle_type(&mut self, kind: Option<&str>, commits: &[Commit]) -> Result<(), FoldError> {
+    pub fn toggle_type(&mut self, kind: Option<&str>, commits: &[Commit]) -> Result<(), String> {
         let kind = kind
-            .map(|kind| {
-                normalize_type(kind)
-                    .ok_or_else(|| FoldError::Failed(format!("invalid commit type {kind:?}")))
-            })
+            .map(|kind| normalize_type(kind).ok_or_else(|| format!("invalid commit type {kind:?}")))
             .transpose()?;
         self.prepare_request(commits);
         if let Some(kind) = kind {
@@ -517,7 +529,7 @@ impl LogFolds {
         self.status()
     }
 
-    pub fn toggle_merges(&mut self, commits: &[Commit]) -> Result<(), FoldError> {
+    pub fn toggle_merges(&mut self, commits: &[Commit]) -> Result<(), String> {
         self.prepare_request(commits);
         self.hide_merges = !self.hide_merges;
         self.relayout(commits);
@@ -1756,12 +1768,13 @@ mod tests {
     fn settled(
         folds: &mut LogFolds,
         commits: &[Commit],
-        request: impl FnOnce(&mut LogFolds) -> Result<(), FoldError>,
-    ) -> Result<(), FoldError> {
-        match request(folds) {
-            Err(FoldError::Reading) => folds.settle(commits).expect("a read in progress"),
-            result => result,
+        request: impl FnOnce(&mut LogFolds) -> Result<(), String>,
+    ) -> Result<(), String> {
+        let result = request(folds);
+        if folds.reading() || folds.stale.is_some() {
+            return folds.settle(commits).expect("a read in progress");
         }
+        result
     }
 
     /// Read the omitted history up front, so no request waits for it.
@@ -2152,7 +2165,7 @@ mod tests {
         // Folding one merge alone cannot hide what the other still shows.
         assert_eq!(folds.marker(0), None);
         let error = folds.toggle(0, &commits).unwrap_err();
-        assert!(error.to_string().contains("other shown history"), "{error}");
+        assert!(error.contains("other shown history"), "{error}");
         folds.toggle_all(0, &commits).unwrap();
         assert_eq!(shown(&folds, &commits), ["one", "two", "three", "base"]);
         folds.reveal(3, &commits);
@@ -2256,7 +2269,7 @@ mod tests {
         folds.refresh(&commits).unwrap();
         assert!((0..commits.len()).all(|i| folds.marker(i).is_none()));
         let error = folds.toggle_all(0, &commits).unwrap_err();
-        assert!(error.to_string().contains("No foldable merges"), "{error}");
+        assert!(error.contains("No foldable merges"), "{error}");
     }
 
     #[test]
@@ -2304,7 +2317,7 @@ mod tests {
         assert_eq!(folds.marker(0), None);
         assert!(folds.visible(1));
         let error = folds.toggle_all(0, &commits).unwrap_err();
-        assert!(error.to_string().contains("No foldable merges"), "{error}");
+        assert!(error.contains("No foldable merges"), "{error}");
         // The Unicode graph's own read fails without Git.
         folds.settle(&commits);
         folds.load_ancestry = folds_with(Some(ancestry)).load_ancestry;
@@ -2327,21 +2340,42 @@ mod tests {
         folds.ascii_graph = true;
         folds.refresh(&commits).unwrap();
         // Requests keep what they ask for, shown as far as possible.
-        assert_eq!(
-            folds.toggle_type(Some("test"), &commits),
-            Err(FoldError::Reading)
-        );
+        folds.toggle_type(Some("test"), &commits).unwrap();
+        assert!(folds.reading());
         assert!(folds.hidden_types.contains("test"));
-        assert_eq!(folds.toggle(0, &commits), Err(FoldError::Reading));
+        folds.toggle(0, &commits).unwrap();
+        assert!(folds.reading());
         assert_eq!(folds.marker(0), Some("▶"));
         assert!((0..commits.len()).all(|i| folds.visible(i)));
         // New commits restart the read they wait for.
         let mut commits = commits;
         commits.insert(0, commit("new", &["merge"]));
-        assert_eq!(folds.refresh(&commits), Err(FoldError::Reading));
+        folds.refresh(&commits).unwrap();
+        assert!(folds.reading());
         folds.settle(&commits).unwrap().unwrap();
         assert_eq!(shown(&folds, &commits), ["new", "merge", "main", "base"]);
         assert_eq!(folds.label(1), " · 1 merged commit");
+    }
+
+    #[test]
+    fn revealed_rows_stay_shown_once_omitted_history_is_read() {
+        let commits = vec![
+            commit("merge", &["main", "side"]),
+            commit("side", &["omitted"]),
+            commit("main", &["base"]),
+            commit("base", &[]),
+        ];
+        let ancestry = Ancestry::from([("omitted".into(), vec!["base".into()])]);
+        let mut folds = LogFolds {
+            start_collapsed: true,
+            ..folds_with(Some(ancestry))
+        };
+        folds.refresh(&commits).unwrap();
+        assert!(folds.reading());
+        folds.reveal(1, &commits);
+        folds.settle(&commits).unwrap().unwrap();
+        assert!(folds.visible(1));
+        assert_eq!(folds.marker(0), Some("▼"));
     }
 
     #[test]
@@ -2362,8 +2396,11 @@ mod tests {
         assert!(!folds.visible(1));
         let mut refreshed = vec![commit("new", &["merge"])];
         refreshed.extend(commits);
-        // Changed history must be read again.
-        assert!(settled(&mut folds, &refreshed, |f| f.refresh(&refreshed)).is_err());
+        // Changed history must be read again, keeping folds meanwhile.
+        folds.refresh(&refreshed).unwrap();
+        assert!(!folds.reading());
+        assert!(!folds.visible(2));
+        assert!(folds.settle(&refreshed).unwrap().is_err());
         assert!((0..refreshed.len()).all(|i| folds.visible(i)));
     }
 
@@ -2382,7 +2419,7 @@ mod tests {
         folds.refresh(&commits).unwrap();
         assert_eq!(folds.marker(0), None);
         let error = folds.toggle(0, &commits).unwrap_err();
-        assert!(error.to_string().contains("No merged commits"), "{error}");
+        assert!(error.contains("No merged commits"), "{error}");
     }
 
     #[test]
@@ -2427,10 +2464,10 @@ mod tests {
         folds.revisions.clear();
         assert!(settled(&mut folds, &commits, |f| f.refresh(&commits)).is_err());
         // The saved fold must not be drawn while the Log shows its side.
-        assert!(folds.toggle_type(Some("nonexistent"), &commits).is_err());
+        folds.toggle_type(Some("nonexistent"), &commits).unwrap();
         let mut expected = folds_with(None);
         settled(&mut expected, &commits, |f| f.refresh(&commits)).unwrap();
-        assert!(expected.toggle_type(Some("nonexistent"), &commits).is_err());
+        expected.toggle_type(Some("nonexistent"), &commits).unwrap();
         assert_same_layout(&folds, &expected, &commits);
     }
 
