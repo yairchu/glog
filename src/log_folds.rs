@@ -35,7 +35,8 @@ pub struct LogFolds {
     // Ancestry through omitted commits stays valid while the loaded
     // revisions and their parents are unchanged.
     revisions: Vec<(String, Vec<String>, bool)>,
-    ancestry: Option<Ancestry>,
+    // Whether folding lays out `graph` through the omitted history.
+    exact: bool,
     graph: Graph,
     // History omitted by Git, read at most once per set of revisions and
     // shared by folding and the Unicode graph.
@@ -68,7 +69,7 @@ impl Default for LogFolds {
             collapsed: HashSet::new(),
             seen: HashSet::new(),
             revisions: Vec::new(),
-            ancestry: None,
+            exact: false,
             graph: Graph::default(),
             omitted: None,
             reading: None,
@@ -192,14 +193,14 @@ impl LogFolds {
             .map(|c| (c.hash.clone(), c.parents.clone(), c.first_parent_only))
             .collect();
         if revisions != self.revisions {
-            self.ancestry = None;
+            self.exact = false;
             self.omitted = None;
             self.reading = None;
             self.unicode_graph = None;
             self.unicode_failed = false;
             self.revisions = revisions;
         }
-        self.graph = Graph::new(commits, self.ancestry.as_ref());
+        self.graph = Graph::new(commits, self.omitted.as_ref().filter(|_| self.exact));
         let hashes: HashSet<_> = commits.iter().map(|c| c.hash.as_str()).collect();
         self.collapsed.retain(|hash| hashes.contains(hash.as_str()));
         self.seen.retain(|hash| hashes.contains(hash.as_str()));
@@ -334,26 +335,24 @@ impl LogFolds {
         }
     }
 
-    fn read_omitted(&mut self, commits: &[Commit]) -> Result<Ancestry, String> {
-        if let Some(ancestry) = &self.omitted {
-            return Ok(ancestry.clone());
+    fn read_omitted(&mut self, commits: &[Commit]) -> Result<&Ancestry, String> {
+        if self.omitted.is_none() {
+            let result = match self
+                .reading
+                .take()
+                .map(|reading| received(reading.result.recv()))
+            {
+                Some(Ok(ancestry)) => Ok(ancestry),
+                read => {
+                    // A failed read for the graph keeps Git's graph, but each
+                    // fold is an explicit request and retries.
+                    self.unicode_failed |= read.is_some();
+                    (self.load_ancestry)(commits)(&git::Cancel::default())
+                }
+            };
+            self.omitted = Some(leading_to_rows(result?, commits));
         }
-        let result = match self
-            .reading
-            .take()
-            .map(|reading| received(reading.result.recv()))
-        {
-            Some(Ok(ancestry)) => Ok(ancestry),
-            read => {
-                // A failed read for the graph keeps Git's graph, but each
-                // fold is an explicit request and retries.
-                self.unicode_failed |= read.is_some();
-                (self.load_ancestry)(commits)(&git::Cancel::default())
-            }
-        };
-        let ancestry = leading_to_rows(result?, commits);
-        self.omitted = Some(ancestry.clone());
-        Ok(ancestry)
+        Ok(self.omitted.as_ref().expect("read above"))
     }
 
     /// Start reading omitted history for the Unicode graph, which `poll`
@@ -424,8 +423,8 @@ impl LogFolds {
         {
             match self.read_omitted(commits) {
                 Ok(ancestry) => {
-                    self.graph = Graph::new(commits, Some(&ancestry));
-                    self.ancestry = Some(ancestry);
+                    self.graph = Graph::new(commits, Some(ancestry));
+                    self.exact = true;
                     layout = Layout::new(&self.graph, commits, &self.collapsed);
                 }
                 Err(error) => {
