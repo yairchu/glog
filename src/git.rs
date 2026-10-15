@@ -4966,24 +4966,8 @@ pub(crate) mod tests {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         let message = "Gemini assistance\n\nQuoted credit:\nCo-authored-by: Gemini CLI <gemini-cli@google.com>\n\nActual credits:\n\nCo-authored-by: Gemini CLI <gemini-cli@google.com>\nCo-authored-by: Gemini Code Assist <176961590+gemini-code-assist[bot]@users.noreply.github.com>";
-        for args in [
-            vec!["init", "-q"],
-            vec![
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "-c",
-                "commit.gpgsign=false",
-                "commit",
-                "--allow-empty",
-                "-qm",
-                message,
-            ],
-        ] {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(output.status.success(), "{output:?}");
-        }
+        git(&["init", "-q"]);
+        git(&["commit", "--allow-empty", "-qm", message]);
         let commit = load_log(&[]).unwrap().remove(0);
         assert!(commit.collaborators.gemini);
         let text = show(&commit, &[]).unwrap();
