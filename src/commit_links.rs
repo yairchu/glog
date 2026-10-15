@@ -36,10 +36,11 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
         for word in plain.split_inclusive(|c: char| !c.is_alphanumeric() && c != '_') {
             let token = word.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');
             let prefixed = plain[..start].ends_with('#');
-            // `repo#abcd123` and `repo@abc1234` likely refer to other repositories.
+            // `repo#abcd123`, `repo@abc1234` and URL paths such as
+            // `owner/repo/commit/abc1234` likely refer to other repositories.
             let qualified = {
                 let mut before = plain[..start].chars().rev();
-                matches!(before.next(), Some('#' | '@'))
+                matches!(before.next(), Some('#' | '@' | '/'))
                     && before.next().is_some_and(char::is_alphanumeric)
             };
             let minimum = if prefixed { 4 } else { 7 };
@@ -247,7 +248,7 @@ mod tests {
         let hash = commit("target");
         let short = &hash[..7];
         let blob = git(&["rev-parse", "HEAD:file"]);
-        let text = format!("commit {hash}\nAuthor: Test\n\n    Fix ({short}), reverting {hash}.\n    {short}_identifier identifier{short} repo#{short} repo@{short} {blob} 0000000\n\nNotes:\n    {hash}\ndiff --git a/file b/file\n    {hash}\n");
+        let text = format!("commit {hash}\nAuthor: Test\n\n    Fix ({short}), reverting {hash}.\n    {short}_identifier identifier{short} repo#{short} repo@{short} https://github.com/other/repo/commit/{short} {blob} 0000000\n\nNotes:\n    {hash}\ndiff --git a/file b/file\n    {hash}\n");
         let links = collect(&text, &mut None);
         assert_eq!(
             links.len(),
