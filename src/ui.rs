@@ -1021,7 +1021,7 @@ fn message_entry<'a, T>(
     entries.get(&row.source).filter(|_| row.file.is_none())
 }
 
-fn highlight_matches(mut line: Line<'static>, query: &str, current: bool) -> Line<'static> {
+fn highlight_matches(line: Line<'static>, query: &str, current: bool) -> Line<'static> {
     if query.is_empty() {
         return line;
     }
@@ -1058,34 +1058,7 @@ fn highlight_matches(mut line: Line<'static>, query: &str, current: bool) -> Lin
             .fg(Color::LightYellow)
             .add_modifier(Modifier::UNDERLINED)
     };
-    let mut highlighted = Vec::new();
-    let mut span_start = 0;
-    for span in line.spans {
-        let content = span.content.into_owned();
-        let span_end = span_start + content.len();
-        let mut cursor = 0;
-        for range in ranges
-            .iter()
-            .filter(|range| range.start < span_end && range.end > span_start)
-        {
-            let start = range.start.max(span_start) - span_start;
-            let end = range.end.min(span_end) - span_start;
-            if cursor < start {
-                highlighted.push(Span::styled(content[cursor..start].to_owned(), span.style));
-            }
-            highlighted.push(Span::styled(
-                content[start..end].to_owned(),
-                span.style.patch(highlight),
-            ));
-            cursor = end;
-        }
-        if cursor < content.len() {
-            highlighted.push(Span::styled(content[cursor..].to_owned(), span.style));
-        }
-        span_start = span_end;
-    }
-    line.spans = highlighted;
-    line
+    ansi::style_ranges(line, ranges.into_iter().map(|range| (range, highlight)))
 }
 
 #[cfg(test)]
