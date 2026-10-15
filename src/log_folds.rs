@@ -12,7 +12,11 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::git::{self, Commit, CommitKind};
 
 type Ancestry = HashMap<String, Vec<String>>;
-type AncestrySource = Box<dyn Fn(&[Commit]) -> git::AncestryRead>;
+// Reads the history omitted around the revisions but a number of the
+// oldest, whose history is already read.
+type AncestrySource = Box<dyn Fn(&[Commit], usize) -> git::AncestryRead>;
+// A loaded revision, its parents, and whether only its first is followed.
+type Revision = (String, Vec<String>, bool);
 
 /// A background read of omitted history, cancelled once dropped.
 struct Reading {
@@ -26,14 +30,54 @@ impl Drop for Reading {
     }
 }
 
-/// History a filter omitted, for one set of loaded revisions. It is read
-/// in the background, so a long walk does not delay the Log or block input,
-/// at most once, and shared by folds, filters and the Unicode graph.
-enum Omitted {
-    Unread,
-    Reading(Reading),
-    // Only the commits that lead to a row.
-    Read(Ancestry),
+/// History a filter omitted, read for the oldest loaded revisions. It is
+/// shared by folds, filters and the Unicode graph. Commits never change
+/// their parents, so it stays exact as long as the revisions read keep
+/// their place below any new ones.
+struct Known {
+    // A tail of the loaded revisions.
+    rows: Vec<Revision>,
+    // Only the omitted commits between rows. Shared with a read of newer
+    // revisions, which extends it.
+    ancestry: std::sync::Arc<Ancestry>,
+}
+
+impl Known {
+    /// What remains exact for `revisions`: the rows read that are still
+    /// the oldest loaded, without those that dropped off below them, as
+    /// under a count limit. New revisions above them are unread.
+    ///
+    /// Since Git's graph order lists descendants first, new rows above
+    /// can be no ancestors of those kept, and rows dropped below no
+    /// descendants. So no omitted commit between rows is gained through
+    /// those kept, or lost but for those leading only to dropped rows.
+    fn within(self, revisions: &[Revision]) -> Option<Self> {
+        let new = revisions
+            .iter()
+            .position(|row| Some(row) == self.rows.first())?;
+        let kept = &revisions[new..];
+        if !self.rows.starts_with(kept) {
+            return None;
+        }
+        let ancestry = if kept.len() == self.rows.len() {
+            self.ancestry
+        } else {
+            let rows: HashSet<_> = kept.iter().map(|row| row.0.as_str()).collect();
+            let ancestry = std::sync::Arc::unwrap_or_clone(self.ancestry);
+            std::sync::Arc::new(leading_to_rows(ancestry, |hash| rows.contains(hash)))
+        };
+        Some(Self {
+            rows: kept.to_vec(),
+            ancestry,
+        })
+    }
+}
+
+/// Reading omitted history runs in the background, so a long walk does not
+/// delay the Log or block input.
+enum Read {
+    Idle,
+    Running(Reading),
     // Drawing falls back to Git's graph without retrying. Requests retry.
     Failed(String),
 }
@@ -46,12 +90,13 @@ pub struct LogFolds {
     pub start_collapsed: bool,
     pub ascii_graph: bool,
     load_ancestry: AncestrySource,
-    // The loaded revisions and their parents, which `omitted` stays valid for.
-    revisions: Vec<(String, Vec<String>, bool)>,
-    omitted: Omitted,
-    // History read for earlier revisions, shown while a refresh rereads
-    // it, so folds and filters stay applied meanwhile.
-    stale: Option<Ancestry>,
+    // The loaded revisions, which the omitted history is read for.
+    revisions: Vec<Revision>,
+    // While it covers only older revisions, as after a refresh, the Log is
+    // laid out through it, keeping folds and filters applied.
+    known: Option<Known>,
+    // Of the loaded revisions that `known` does not cover.
+    read: Read,
     // A row to keep shown once the history being read is applied.
     keep_shown: Option<String>,
     // Merges already offered to --fold-merges.
@@ -74,8 +119,8 @@ impl Default for LogFolds {
             ascii_graph: false,
             load_ancestry: Box::new(git::log_ancestry),
             revisions: Vec::new(),
-            omitted: Omitted::Unread,
-            stale: None,
+            known: None,
+            read: Read::Idle,
             keep_shown: None,
             seen: HashSet::new(),
             collapsed: HashSet::new(),
@@ -171,7 +216,7 @@ impl LogFolds {
 
     fn unicode_shown(&self) -> bool {
         // Keep Git's connectivity until its omitted ancestry is read.
-        !(self.ascii_graph || self.view.graph.unknown_below.is_some() || self.stale.is_some())
+        !(self.ascii_graph || self.view.graph.unknown_below.is_some() || self.partly_read())
     }
 
     /// The redrawn graph, or `None` where Git's graph is shown unchanged.
@@ -220,26 +265,32 @@ impl LogFolds {
 
     /// Why the choices are not shown, unless they are or wait for `READING`.
     fn status(&self) -> Result<(), String> {
-        match &self.omitted {
-            Omitted::Failed(error) if self.view.pending => Err(error.clone()),
+        match &self.read {
+            Read::Failed(error) if self.view.pending => Err(error.clone()),
             _ => Ok(()),
         }
     }
 
     /// Whether the choices wait for omitted history being read.
     pub fn reading(&self) -> bool {
-        self.view.pending && matches!(self.omitted, Omitted::Reading(_))
+        self.view.pending && matches!(self.read, Read::Running(_))
+    }
+
+    /// Whether only the history of older revisions is read, as after a
+    /// refresh until newer ones are.
+    fn partly_read(&self) -> bool {
+        (self.known.as_ref()).is_some_and(|known| known.rows.len() < self.revisions.len())
     }
 
     /// Prepare a request: lay out commits that are not yet, and retry a
     /// failed read, as each request is explicit. A failure shows the Log
     /// unfolded, so folds start from that.
     fn prepare_request(&mut self, commits: &[Commit]) {
-        let failed = matches!(self.omitted, Omitted::Failed(_));
+        let failed = matches!(self.read, Read::Failed(_));
         if failed {
             self.collapsed.clear();
             self.tentative.clear();
-            self.omitted = Omitted::Unread;
+            self.read = Read::Idle;
         }
         if failed || self.view.graph.rows != commits.len() {
             self.relayout(commits);
@@ -328,7 +379,7 @@ impl LogFolds {
     /// Expand the folds hiding a row, now and once the history being read
     /// is applied, which may fold it anew.
     pub fn reveal(&mut self, index: usize, commits: &[Commit]) {
-        if matches!(self.omitted, Omitted::Reading(_)) {
+        if matches!(self.read, Read::Running(_)) {
             self.keep_shown = commits.get(index).map(|commit| commit.hash.clone());
         }
         while let Some(fold) = (self.view.layout.visible.get(index) == Some(&false))
@@ -341,25 +392,35 @@ impl LogFolds {
         }
     }
 
-    /// Start reading omitted history, which `poll` applies once the read
-    /// completes.
+    /// Start reading the omitted history of revisions that `known` does
+    /// not cover, which `poll` applies once the read completes.
     fn read_omitted_in_background(&mut self, commits: &[Commit]) {
-        let read = (self.load_ancestry)(commits);
-        let rows: Vec<_> = commits.iter().map(|c| c.hash.clone()).collect();
+        let read = (self.load_ancestry)(commits, self.known.as_ref().map_or(0, |k| k.rows.len()));
+        let rows: HashSet<_> = commits.iter().map(|c| c.hash.clone()).collect();
+        let known = self.known.as_ref().map(|known| known.ancestry.clone());
         let (sender, result) = std::sync::mpsc::channel();
         let cancel = git::Cancel::default();
         std::thread::spawn({
             let cancel = cancel.clone();
-            move || sender.send(read(&cancel).map(|ancestry| leading_to_rows(ancestry, &rows)))
+            move || {
+                let read = read(&cancel).map(|ancestry| {
+                    leading_to_rows(ancestry, |hash| {
+                        rows.contains(hash) || known.as_ref().is_some_and(|k| k.contains_key(hash))
+                    })
+                });
+                // Leave `receive` the only owner of the history it extends.
+                drop(known);
+                sender.send(read)
+            }
         });
-        self.omitted = Omitted::Reading(Reading { result, cancel });
+        self.read = Read::Running(Reading { result, cancel });
     }
 
     /// Apply omitted history once a background read completes, returning
     /// whether the folds and filters asked for are now shown, or why not.
     pub fn poll(&mut self, commits: &[Commit]) -> Option<Result<(), String>> {
         use std::sync::mpsc::{RecvError, TryRecvError};
-        let Omitted::Reading(reading) = &self.omitted else {
+        let Read::Running(reading) = &self.read else {
             return None;
         };
         let result = match reading.result.try_recv() {
@@ -373,7 +434,7 @@ impl LogFolds {
     /// Wait for a background read, as if `poll` ran once it completed.
     #[cfg(test)]
     pub fn settle(&mut self, commits: &[Commit]) -> Option<Result<(), String>> {
-        let Omitted::Reading(reading) = &self.omitted else {
+        let Read::Running(reading) = &self.read else {
             return None;
         };
         let result = received(reading.result.recv());
@@ -385,11 +446,22 @@ impl LogFolds {
         commits: &[Commit],
         result: Result<Ancestry, String>,
     ) -> Result<(), String> {
-        self.omitted = match result {
-            Ok(ancestry) => Omitted::Read(ancestry),
-            Err(error) => Omitted::Failed(error),
-        };
-        self.stale = None;
+        self.read = Read::Idle;
+        match result {
+            Ok(ancestry) => {
+                let mut known = self.known.take().unwrap_or_else(|| Known {
+                    rows: Vec::new(),
+                    ancestry: Default::default(),
+                });
+                std::sync::Arc::make_mut(&mut known.ancestry).extend(ancestry);
+                known.rows.clone_from(&self.revisions);
+                self.known = Some(known);
+            }
+            Err(error) => {
+                self.known = None;
+                self.read = Read::Failed(error);
+            }
+        }
         self.relayout(commits);
         if let Some(index) = (self.keep_shown.take())
             .and_then(|hash| commits.iter().position(|commit| commit.hash == hash))
@@ -410,13 +482,14 @@ impl LogFolds {
             .map(|c| (c.hash.clone(), c.parents.clone(), c.first_parent_only))
             .collect();
         if revisions != self.revisions {
+            // A read of other revisions is cancelled, and a failed one
+            // retried once needed.
+            self.read = Read::Idle;
+            self.known = self.known.take().and_then(|known| known.within(&revisions));
             self.revisions = revisions;
-            if let Omitted::Read(ancestry) = std::mem::replace(&mut self.omitted, Omitted::Unread) {
-                self.stale = Some(ancestry);
-            }
-            // Reread history that was read, as the same filter likely omits
-            // some again.
-            if self.stale.is_some() {
+            // Extend history that was read, as the same filter likely omits
+            // some around new revisions too.
+            if self.partly_read() {
                 self.read_omitted_in_background(commits);
             }
         }
@@ -433,11 +506,7 @@ impl LogFolds {
             }
         }
 
-        let graph = match &self.omitted {
-            Omitted::Read(ancestry) => Graph::new(commits, Some(ancestry)),
-            Omitted::Reading(_) => Graph::new(commits, self.stale.as_ref()),
-            _ => Graph::new(commits, None),
-        };
+        let graph = Graph::new(commits, self.known.as_ref().map(|known| &*known.ancestry));
         let mut layout = Layout::new(&graph, commits, &self.collapsed);
         // Folds read omitted history, except those of many merges at once
         // whose side parents a filter omitted, as under --first-parent:
@@ -451,23 +520,23 @@ impl LogFolds {
                     .iter()
                     .any(|hash| !self.tentative.contains(hash) || graph.loaded_side(hash)));
         let unicode = graph.unknown_below.is_some() && !self.ascii_graph;
-        if (pending || unicode) && matches!(self.omitted, Omitted::Unread) {
+        if (pending || unicode) && self.known.is_none() && matches!(self.read, Read::Idle) {
             self.read_omitted_in_background(commits);
         }
         if pending {
             layout = Layout::new(&graph, commits, &HashSet::new());
             // A failed read leaves nothing to wait for.
-            if !matches!(self.omitted, Omitted::Failed(_)) {
+            if !matches!(self.read, Read::Failed(_)) {
                 for hash in &self.collapsed {
                     if let Some(&row) = graph.index.get(hash) {
                         layout.folds[row] = Fold::Pending;
                     }
                 }
             }
-        } else if self.stale.is_none() && !self.tentative.is_empty() {
+        } else if !self.partly_read() && !self.tentative.is_empty() {
             // Merges folded together stay so if hidden inside another fold.
-            // Stale history may not show what new merges hide, so keep
-            // their folds until it is reread.
+            // What new merges hide may be unread, so keep their folds until
+            // it is.
             let before = self.collapsed.len();
             self.collapsed.retain(|hash| {
                 !self.tentative.contains(hash)
@@ -654,17 +723,21 @@ fn received(
     result.unwrap_or_else(|_| Err("could not read ancestry for merge folding".into()))
 }
 
-/// The omitted commits that lead to a row. The rest, such as the history
-/// of a branch that diverged before the oldest row, connect no rows, and
-/// would otherwise enlarge every layout.
-fn leading_to_rows(mut ancestry: Ancestry, rows: &[String]) -> Ancestry {
+/// The omitted commits that lead to a row, or to a commit `leads` says
+/// does. The rest, such as the history of a branch that diverged before the
+/// oldest row, connect no rows, and would otherwise enlarge every layout.
+fn leading_to_rows(mut ancestry: Ancestry, leads: impl Fn(&str) -> bool) -> Ancestry {
     let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
     for (hash, parents) in &ancestry {
         for parent in parents {
             children.entry(parent).or_default().push(hash);
         }
     }
-    let mut todo: Vec<_> = rows.iter().map(String::as_str).collect();
+    let mut todo: Vec<_> = children
+        .keys()
+        .copied()
+        .filter(|&hash| leads(hash))
+        .collect();
     let mut leading = HashSet::new();
     while let Some(hash) = todo.pop() {
         for &child in children.get(hash).into_iter().flatten() {
@@ -1755,7 +1828,7 @@ mod tests {
     /// Folds whose omitted history comes from `ancestry`, failing when unset.
     fn folds_with(ancestry: Option<Ancestry>) -> LogFolds {
         LogFolds {
-            load_ancestry: Box::new(move |_| {
+            load_ancestry: Box::new(move |_, _| {
                 let ancestry = ancestry.clone();
                 Box::new(move |_| ancestry.ok_or_else(|| "no Git".to_owned()))
             }),
@@ -1771,7 +1844,7 @@ mod tests {
         request: impl FnOnce(&mut LogFolds) -> Result<(), String>,
     ) -> Result<(), String> {
         let result = request(folds);
-        if folds.reading() || folds.stale.is_some() {
+        if folds.reading() || folds.partly_read() {
             return folds.settle(commits).expect("a read in progress");
         }
         result
@@ -1780,7 +1853,7 @@ mod tests {
     /// Read the omitted history up front, so no request waits for it.
     fn read_omitted(folds: &mut LogFolds, commits: &[Commit]) {
         folds.relayout(commits);
-        if let Omitted::Unread = folds.omitted {
+        if folds.known.is_none() && matches!(folds.read, Read::Idle) {
             folds.read_omitted_in_background(commits);
         }
         folds.settle(commits);
@@ -2358,6 +2431,107 @@ mod tests {
     }
 
     #[test]
+    fn refreshes_read_only_the_history_of_new_revisions() {
+        use crate::git::tests::{git, CurrentDirGuard, TestDirectory};
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let tree = git(&["mktree"]);
+        let commit = |name: &str, parents: &[&String]| {
+            let mut args = vec!["commit-tree", &tree, "-m", name];
+            for parent in parents {
+                args.extend(["-p", parent]);
+            }
+            git(&args)
+        };
+        // Omitted commits lack "keep", which the filter matches.
+        let base = commit("keep base", &[]);
+        let o1 = commit("o1", &[&base]);
+        let s1 = commit("keep s1", &[&o1]);
+        let m1 = commit("keep m1", &[&base]);
+        let merge1 = commit("keep merge1", &[&m1, &s1]);
+        git(&["update-ref", "refs/heads/main", &merge1]);
+        git(&["symbolic-ref", "HEAD", "refs/heads/main"]);
+        // New history joins the old through omitted commits, old and new.
+        let o2 = commit("o2", &[&merge1]);
+        let s2 = commit("keep s2", &[&o2]);
+        let o3 = commit("o3", &[&o1]);
+        let s3 = commit("keep s3", &[&o3]);
+        let m2 = commit("keep m2", &[&merge1]);
+        let merge2 = commit("keep merge2", &[&m2, &s2, &s3]);
+
+        for limit in [None, Some("-n6")] {
+            let args: Vec<String> = ["--grep=keep"]
+                .into_iter()
+                .chain(limit)
+                .map(Into::into)
+                .collect();
+            git(&["update-ref", "refs/heads/main", &merge1]);
+            let old = git::load_log(&args).unwrap();
+            let reads = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let mut folds = LogFolds {
+                start_collapsed: true,
+                load_ancestry: Box::new({
+                    let reads = reads.clone();
+                    move |commits, known| {
+                        reads.borrow_mut().push(known);
+                        git::log_ancestry(commits, known)
+                    }
+                }),
+                ..LogFolds::default()
+            };
+            settled(&mut folds, &old, |f| f.refresh(&old)).unwrap();
+            assert!(!folds.visible(1), "{limit:?}: merge1 folds s1");
+
+            git(&["update-ref", "refs/heads/main", &merge2]);
+            let new = git::load_log(&args).unwrap();
+            folds.refresh(&new).unwrap();
+            // Old folds stay applied while new history is read.
+            assert!(folds.partly_read(), "{limit:?}");
+            let row = |hash: &str| new.iter().position(|c| c.hash == hash);
+            assert!(folds.visible(row(&merge1).unwrap()), "{limit:?}");
+            if let Some(s1) = row(&s1) {
+                assert!(!folds.visible(s1), "{limit:?}");
+            }
+            folds.settle(&new).unwrap().unwrap();
+
+            let mut fresh = LogFolds {
+                start_collapsed: true,
+                ..LogFolds::default()
+            };
+            settled(&mut fresh, &new, |f| f.refresh(&new)).unwrap();
+            let kept = (new.iter())
+                .filter(|c| old.iter().any(|o| o.hash == c.hash))
+                .count();
+            // Old rows stay, some dropping off below under the limit.
+            assert!(kept > 0 && kept < new.len());
+            assert_eq!(kept < old.len(), limit.is_some());
+            assert_eq!(*reads.borrow(), [0, kept], "{limit:?}");
+            assert_eq!(
+                folds.known.as_ref().unwrap().ancestry,
+                fresh.known.as_ref().unwrap().ancestry,
+                "{limit:?}"
+            );
+            assert_same_layout(&folds, &fresh, &new);
+
+            // Rows dropping off below need no read.
+            if limit.is_some() {
+                let mut fewer = new.clone();
+                fewer.pop();
+                folds.refresh(&fewer).unwrap();
+                assert!(!folds.partly_read());
+                fresh.known = None;
+                settled(&mut fresh, &fewer, |f| f.refresh(&fewer)).unwrap();
+                assert_eq!(
+                    folds.known.as_ref().unwrap().ancestry,
+                    fresh.known.as_ref().unwrap().ancestry
+                );
+                assert_eq!(reads.borrow().len(), 2);
+            }
+        }
+    }
+
+    #[test]
     fn revealed_rows_stay_shown_once_omitted_history_is_read() {
         let commits = vec![
             commit("merge", &["main", "side"]),
@@ -2436,7 +2610,7 @@ mod tests {
         settled(&mut folds, &commits, |f| f.refresh(&commits)).unwrap();
         settled(&mut folds, &commits, |f| f.toggle(0, &commits)).unwrap();
         folds.load_ancestry = folds_with(None).load_ancestry;
-        folds.revisions.clear();
+        folds.known = None;
         assert!(settled(&mut folds, &commits, |f| f.refresh(&commits)).is_err());
         // The failure leaves the Log unfolded, so z must fold what is shown.
         assert!(folds.visible(1));
@@ -2461,7 +2635,7 @@ mod tests {
         settled(&mut folds, &commits, |f| f.refresh(&commits)).unwrap();
         settled(&mut folds, &commits, |f| f.toggle(0, &commits)).unwrap();
         folds.load_ancestry = folds_with(None).load_ancestry;
-        folds.revisions.clear();
+        folds.known = None;
         assert!(settled(&mut folds, &commits, |f| f.refresh(&commits)).is_err());
         // The saved fold must not be drawn while the Log shows its side.
         folds.toggle_type(Some("nonexistent"), &commits).unwrap();
@@ -2952,7 +3126,7 @@ mod tests {
             let reads = std::rc::Rc::new(std::cell::Cell::new(0));
             let counter = reads.clone();
             let mut folds = LogFolds {
-                load_ancestry: Box::new(move |_| {
+                load_ancestry: Box::new(move |_, _| {
                     counter.set(counter.get() + 1);
                     Box::new(move |_| {
                         available

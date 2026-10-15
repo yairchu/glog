@@ -389,17 +389,25 @@ impl Cancel {
     }
 }
 
-/// Parent links through commits omitted by log filters, for merge folding.
-/// Stop below the oldest displayed commit: its ancestors cannot be displayed
+/// Parent links through commits omitted by log filters, for merge folding,
+/// around all but the `known` oldest revisions, whose links were read. Stop
+/// below the oldest displayed commit: its ancestors cannot be displayed
 /// earlier in Git's topological graph order, and may be a very large history.
 /// The returned read runs Git, so it can run off the UI thread.
-pub fn log_ancestry(commits: &[Commit]) -> AncestryRead {
+pub fn log_ancestry(commits: &[Commit], known: usize) -> AncestryRead {
     let revisions: Vec<_> = commits
         .iter()
         .filter(|c| c.kind == CommitKind::Revision)
         .collect();
+    let (new, read) = revisions.split_at(revisions.len().saturating_sub(known));
     let mut input = String::new();
-    for commit in &revisions {
+    for commit in new {
+        input.push_str(&commit.hash);
+        input.push('\n');
+    }
+    // Exclude history already read, through the oldest known revisions.
+    for commit in read {
+        input.push('^');
         input.push_str(&commit.hash);
         input.push('\n');
     }
