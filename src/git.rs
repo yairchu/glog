@@ -1933,6 +1933,9 @@ pub(crate) mod tests {
         for mode in ["single", "all", "startup"] {
             let mut folds = crate::log_folds::LogFolds::default();
             folds.start_collapsed = mode == "startup";
+            // Startup folding waits for the omitted history, then repeats.
+            let _ = folds.refresh(&commits);
+            folds.settle(&commits).unwrap().unwrap();
             folds.refresh(&commits).unwrap();
             match mode {
                 "single" => folds.toggle(index(&merge), &commits).unwrap(),
@@ -2009,6 +2012,13 @@ pub(crate) mod tests {
         // so no fold is offered, but z still finds the loaded side commit.
         folds.refresh(&commits).unwrap();
         assert_eq!(folds.marker(0), None);
+        // The Log stays responsive while z waits for that history.
+        assert_eq!(
+            folds.toggle(0, &commits),
+            Err(crate::log_folds::FoldError::Reading)
+        );
+        assert!(folds.visible(1));
+        folds.settle(&commits).unwrap().unwrap();
         folds.toggle(0, &commits).unwrap();
         assert!(!folds.visible(1));
         assert_eq!(folds.label(0), " · 1 merged commit");
@@ -2387,6 +2397,7 @@ pub(crate) mod tests {
             let mut app = App::new(filtered.clone());
             app.selected = filtered.iter().position(|c| c.hash == merge).unwrap();
             app.apply_log_action(LogAction::Fold);
+            app.settle_log();
             for (i, c) in app.commits.iter().enumerate() {
                 assert_eq!(
                     app.log_folds.visible(i),
@@ -2413,6 +2424,7 @@ pub(crate) mod tests {
         app.selected = app.commits.iter().position(|c| c.hash == merge).unwrap();
         assert!(!app.commits.iter().any(|c| c.hash == main));
         app.apply_log_action(LogAction::Fold);
+        app.settle_log();
         assert!(app.status.is_none(), "{:?}", app.status);
         let base_index = app.commits.iter().position(|c| c.hash == base).unwrap();
         // The merge's lane runs through omitted main into base, which the

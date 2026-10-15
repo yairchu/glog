@@ -135,9 +135,7 @@ fn initialize_log_filters(app: &mut App, options: log_format::LogOptions) {
     app.log_folds.hidden_types = options.hidden_types;
     app.log_folds.hide_merges = options.hide_merges;
     // As on watch refreshes, a failure leaves the Log unfolded and says why.
-    if let Err(error) = app.log_folds.refresh(&app.commits) {
-        app.status = Some(error);
-    }
+    app.refresh_log_folds();
     app.log_folds.reveal(app.selected, &app.commits);
     if app.mode == app::Mode::Log {
         app.top();
@@ -279,7 +277,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
         }
         changed |= app.images.poll();
         changed |= app.poll_browser();
-        changed |= app.log_folds.poll(&app.commits);
+        changed |= app.poll_log();
         if changed {
             terminal.draw(|frame| ui::draw(frame, app))?;
             app.images.flush(&mut io::stdout())?;

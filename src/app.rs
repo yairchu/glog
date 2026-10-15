@@ -60,6 +60,14 @@ pub enum LogAction {
     FoldAll,
 }
 
+/// A Log request that waits for omitted history, repeated once it is read.
+enum PendingLog {
+    Refresh,
+    Action(LogAction),
+    // A merge, by hash, as the selection can move during the read.
+    Fold(String),
+}
+
 /// Links are resolved on first display, so revisiting a commit runs no Git process.
 struct CachedShow {
     text: String,
@@ -76,6 +84,7 @@ pub struct App {
     // Scroll the Log so the selection is centered on the next draw.
     pub center_selection: bool,
     pub log_folds: crate::log_folds::LogFolds,
+    pending_log: Vec<PendingLog>,
     pub log_format: crate::log_format::LogFormat,
     pub selected: usize,
     pub mode: Mode,
@@ -156,6 +165,7 @@ impl App {
             blame_stack: Vec::new(),
             center_selection: false,
             log_folds: crate::log_folds::LogFolds::default(),
+            pending_log: Vec::new(),
             log_format: crate::log_format::LogFormat::default(),
             selected: 0,
             mode: Mode::Log,
@@ -541,7 +551,9 @@ impl App {
     }
 
     fn toggle_commit_type(&mut self, kind: Option<&str>) {
-        self.status = self.log_folds.toggle_type(kind, &self.commits).err();
+        let result = self.log_folds.toggle_type(kind, &self.commits);
+        let action = kind.map_or(LogAction::Reset, |kind| LogAction::Type(kind.into()));
+        self.status = self.log_result(result, PendingLog::Action(action)).err();
         self.ensure_log_selection();
         self.log_offset = 0;
         self.search_match = None;
@@ -559,7 +571,10 @@ impl App {
             LogAction::Fold => self.toggle_log_merge(),
             LogAction::FoldAll => self.toggle_all_log_merges(),
             LogAction::Merges => {
-                self.status = self.log_folds.toggle_merges(&self.commits).err();
+                let result = self.log_folds.toggle_merges(&self.commits);
+                self.status = self
+                    .log_result(result, PendingLog::Action(LogAction::Merges))
+                    .err();
                 self.ensure_log_selection();
                 self.log_offset = 0;
                 self.search_match = None;
@@ -587,14 +602,28 @@ impl App {
         {
             return;
         }
-        self.status = self.log_folds.toggle(self.selected, &self.commits).err();
+        let hash = self.commits[self.selected].hash.clone();
+        self.fold_log_merge(hash);
+    }
+
+    fn fold_log_merge(&mut self, hash: String) {
+        let Some(index) = self
+            .commits
+            .iter()
+            .position(|commit| commit.hash == hash && commit.parents.len() > 1)
+        else {
+            return;
+        };
+        let result = self.log_folds.toggle(index, &self.commits);
+        self.status = self.log_result(result, PendingLog::Fold(hash)).err();
         // An expanded merge may itself be filtered out.
         self.ensure_log_selection();
         self.search_match = None;
     }
 
     fn toggle_all_log_merges(&mut self) {
-        match self.log_folds.toggle_all(self.selected, &self.commits) {
+        let result = self.log_folds.toggle_all(self.selected, &self.commits);
+        match self.log_result(result, PendingLog::Action(LogAction::FoldAll)) {
             Ok(selected) => {
                 self.selected = selected;
                 self.status = None;
@@ -603,6 +632,70 @@ impl App {
         }
         self.ensure_log_selection();
         self.search_match = None;
+    }
+
+    /// Lay out the Log's folds and filters, reporting only failures.
+    pub fn refresh_log_folds(&mut self) {
+        let result = self.log_folds.refresh(&self.commits);
+        if let Err(error) = self.log_result(result, PendingLog::Refresh) {
+            self.status = Some(error);
+        }
+    }
+
+    /// The outcome of a Log request, queued to be repeated if it waits for
+    /// omitted history.
+    fn log_result<T>(
+        &mut self,
+        result: Result<T, crate::log_folds::FoldError>,
+        request: PendingLog,
+    ) -> Result<T, String> {
+        result.map_err(|error| {
+            if error == crate::log_folds::FoldError::Reading {
+                self.pending_log.push(request);
+            }
+            error.to_string()
+        })
+    }
+
+    /// Apply omitted history once its background read completes, returning
+    /// whether it did.
+    pub fn poll_log(&mut self) -> bool {
+        let Some(result) = self.log_folds.poll(&self.commits) else {
+            return false;
+        };
+        self.log_read(result);
+        true
+    }
+
+    /// Wait for omitted history, as if `poll_log` ran once it was read.
+    #[cfg(test)]
+    pub fn settle_log(&mut self) {
+        if let Some(result) = self.log_folds.settle(&self.commits) {
+            self.log_read(result);
+        }
+    }
+
+    /// Repeat the requests that waited for omitted history, in order.
+    fn log_read(&mut self, result: Result<(), String>) {
+        let pending = std::mem::take(&mut self.pending_log);
+        if pending.is_empty() {
+            // Only the Unicode graph waited, which falls back silently.
+            return;
+        }
+        self.status = result.err();
+        if self.status.is_none() {
+            for request in pending {
+                match request {
+                    PendingLog::Refresh => {
+                        self.refresh_log_folds();
+                        self.log_folds.reveal(self.selected, &self.commits);
+                    }
+                    PendingLog::Action(action) => self.apply_log_action(action),
+                    PendingLog::Fold(hash) => self.fold_log_merge(hash),
+                }
+            }
+        }
+        self.ensure_log_selection();
     }
 
     pub fn replace_commits(&mut self, commits: Vec<Commit>) {
@@ -631,9 +724,7 @@ impl App {
         });
         self.selected =
             preserved.unwrap_or_else(|| self.selected.min(self.commits.len().saturating_sub(1)));
-        if let Err(error) = self.log_folds.refresh(&self.commits) {
-            self.status = Some(error);
-        }
+        self.refresh_log_folds();
         if preserved.is_some() {
             // Keep the selected commit visible even if a newly arrived merge
             // would fold it under --fold-merges.
@@ -1559,9 +1650,7 @@ impl App {
             let mut target = App::new(commits);
             self.prepare_followed(&mut target);
             target.context = format!("log {label}");
-            if let Err(error) = target.log_folds.refresh(&target.commits) {
-                target.status = Some(error);
-            }
+            target.refresh_log_folds();
             Ok(target)
         });
         self.enter_followed(loaded);

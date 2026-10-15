@@ -55,6 +55,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Folded and filtered graphs keep lanes to parents below a count limit such
   as `-n`, as Git draws them, rather than dropping them.
 
+- Folding merges or filtering by type in path- or grep-filtered histories no
+  longer freezes the Log while Git reads the history those filters omitted.
+  The request applies once the read completes, and `q` quits in the meantime.
+
 - A click right after fast trackpad scrolling selects what's under the
   pointer, rather than what was there before the scroll.
 
