@@ -1312,18 +1312,28 @@ impl Plan {
         let lanes = std::mem::take(&mut state.lanes);
         let mut edges = Vec::new();
         for (from, lane) in lanes.iter().enumerate() {
-            let Some((row, _)) = lane else {
+            let Some((row, own)) = *lane else {
                 continue;
             };
             let targets = if from == column {
                 &projected[..]
             } else {
-                std::slice::from_ref(row)
+                std::slice::from_ref(&row)
             };
-            for &target in targets {
-                if let Some(to) = lane_to(&next, target) {
-                    edges.push((2 * from, 2 * to, next[to].unwrap().1));
-                }
+            let ends: Vec<_> = targets
+                .iter()
+                .filter_map(|&target| lane_to(&next, target))
+                .collect();
+            for &to in &ends {
+                // Like Git, an edge takes the colour of the lane it leads to.
+                // A Unicode lane that joins another instead keeps its own
+                // colour up to the junction, as a forked lane's starts there.
+                let colour = if unicode && ends.len() == 1 && to != from {
+                    own
+                } else {
+                    next[to].unwrap().1
+                };
+                edges.push((2 * from, 2 * to, colour));
             }
         }
         let width = lanes.len().max(next.len());
@@ -1549,8 +1559,8 @@ fn route<'a>(edges: &[(usize, usize, &'a str)], width: usize) -> Vec<Vec<(u8, &'
             from,
             to,
             colour,
-            continues,
-            occupied,
+            continuing,
+            occupant,
         } = step;
         let size = width.max(1) * 2;
         let size = size
@@ -1565,8 +1575,16 @@ fn route<'a>(edges: &[(usize, usize, &'a str)], width: usize) -> Vec<Vec<(u8, &'
         } else {
             (LEFT, RIGHT)
         };
-        cells[from] = (UP | if continues { DOWN } else { 0 } | outgoing, colour);
-        cells[to] = (DOWN | if occupied { UP } else { 0 } | incoming, colour);
+        // A lane passing through a junction keeps its colour there, as it
+        // does where paths cross it, so vertical lines stay unbroken.
+        cells[from] = match continuing {
+            Some(lane) => (UP | DOWN | outgoing, lane),
+            None => (UP | outgoing, colour),
+        };
+        cells[to] = match occupant {
+            Some(lane) => (UP | DOWN | incoming, lane),
+            None => (DOWN | incoming, colour),
+        };
         for cell in &mut cells[from.min(to) + 1..from.max(to)] {
             cell.0 |= LEFT | RIGHT;
             if cell.1.is_empty() {
@@ -1598,10 +1616,10 @@ struct Move<'a> {
     from: usize,
     to: usize,
     colour: &'a str,
-    // Other routes continue down from `from`.
-    continues: bool,
-    // Other routes already pass through `to`.
-    occupied: bool,
+    // The colour of another route continuing down from `from`.
+    continuing: Option<&'a str>,
+    // The colour of a route already passing through `to`.
+    occupant: Option<&'a str>,
 }
 
 /// Visit the moves `route` draws, one per row, each with the tracks before it.
@@ -1653,19 +1671,22 @@ fn route_moves<'a>(
             to
         };
         // Each track holds one route per target.
-        let continues = tracks[&from].len() > 1;
-        let occupied = tracks.contains_key(&to);
+        let continuing = tracks[&from]
+            .iter()
+            .find(|&&(destination, _)| destination != target)
+            .map(|&(_, colour)| colour);
+        let occupant = tracks.get(&to).map(|routes| routes[0].1);
         visit(
             &tracks,
             Move {
                 from,
                 to,
                 colour,
-                continues,
-                occupied,
+                continuing,
+                occupant,
             },
         );
-        if continues {
+        if continuing.is_some() {
             let routes = tracks.get_mut(&from).unwrap();
             routes.retain(|&(destination, _)| destination != target);
         } else {
@@ -1828,6 +1849,42 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn unicode_joins_keep_the_joining_lane_colour() {
+        let r = |c: char| format!("\x1b[31m{c}\x1b[m");
+        let g = |c: char| format!("\x1b[32m{c}\x1b[m");
+        let rows = [
+            ("merge", &["m1", "t1"][..], vec!["*   ".to_owned()]),
+            (
+                "m1",
+                &["base"],
+                vec![format!("{}{}  ", r('|'), g('\\')), format!("* {} ", g('|'))],
+            ),
+            ("t1", &["base"], vec![format!("{} * ", r('|'))]),
+            (
+                "base",
+                &[],
+                vec![format!("{}{}  ", r('|'), r('/')), "* ".to_owned()],
+            ),
+        ];
+        let commits: Vec<_> = rows
+            .into_iter()
+            .map(|(hash, parents, graph)| {
+                let mut commit = commit(hash, parents);
+                commit.graph = graph;
+                commit
+            })
+            .collect();
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        // Git draws t1's edge into base in base's red; the Unicode graph
+        // keeps t1's green up to the junction with base's lane.
+        assert_eq!(
+            folds.display_graph(3, &commits[3]),
+            [format!("{}{}{} ", r('├'), g('─'), g('╯')), "● ".to_owned()]
+        );
     }
 
     #[test]
@@ -2499,6 +2556,22 @@ mod tests {
                 2
             )),
             ["├─╪─╮ ", "│ ├─╪─╮ ", "│ ├─╯ │ ", "├─╪───╯ "]
+        );
+    }
+
+    #[test]
+    fn connected_junctions_keep_the_colour_of_their_lane() {
+        let painted = |cells: &[(char, &str)]| {
+            let row: String = cells.iter().map(|&(c, colour)| paint(c, colour)).collect();
+            vec![format!("{row} ")]
+        };
+        assert_eq!(
+            connected_transitions(&[(0, 0, "31"), (0, 2, "32")], 2),
+            painted(&[('├', "31"), ('─', "32"), ('╮', "32")])
+        );
+        assert_eq!(
+            connected_transitions(&[(0, 0, "31"), (2, 0, "32")], 2),
+            painted(&[('├', "31"), ('─', "32"), ('╯', "32")])
         );
     }
 
