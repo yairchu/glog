@@ -61,11 +61,16 @@ pub enum LogAction {
 }
 
 /// A Log request that waits for omitted history, repeated once it is read.
+/// Toggles wait as the state they ask for, which an earlier request or a
+/// key pressed again may reach first.
 enum PendingLog {
     Refresh,
-    Action(LogAction),
+    Reset,
+    Type { kind: String, hide: bool },
+    Merges { hide: bool },
     // A merge, by hash, as the selection can move during the read.
-    Fold(String),
+    Fold { hash: String, fold: bool },
+    FoldAll { fold: bool },
 }
 
 /// Links are resolved on first display, so revisiting a commit runs no Git process.
@@ -551,9 +556,12 @@ impl App {
     }
 
     fn toggle_commit_type(&mut self, kind: Option<&str>) {
+        let request = kind.map_or(PendingLog::Reset, |kind| PendingLog::Type {
+            kind: kind.into(),
+            hide: !self.log_folds.type_hidden(kind),
+        });
         let result = self.log_folds.toggle_type(kind, &self.commits);
-        let action = kind.map_or(LogAction::Reset, |kind| LogAction::Type(kind.into()));
-        self.status = self.log_result(result, PendingLog::Action(action)).err();
+        self.status = self.log_result(result, request).err();
         self.ensure_log_selection();
         self.log_offset = 0;
         self.search_match = None;
@@ -570,16 +578,19 @@ impl App {
             LogAction::HideSelectedType => self.hide_selected_type(),
             LogAction::Fold => self.toggle_log_merge(),
             LogAction::FoldAll => self.toggle_all_log_merges(),
-            LogAction::Merges => {
-                let result = self.log_folds.toggle_merges(&self.commits);
-                self.status = self
-                    .log_result(result, PendingLog::Action(LogAction::Merges))
-                    .err();
-                self.ensure_log_selection();
-                self.log_offset = 0;
-                self.search_match = None;
-            }
+            LogAction::Merges => self.toggle_merges(),
         }
+    }
+
+    fn toggle_merges(&mut self) {
+        let request = PendingLog::Merges {
+            hide: !self.log_folds.hide_merges,
+        };
+        let result = self.log_folds.toggle_merges(&self.commits);
+        self.status = self.log_result(result, request).err();
+        self.ensure_log_selection();
+        self.log_offset = 0;
+        self.search_match = None;
     }
 
     fn ensure_log_selection(&mut self) {
@@ -606,24 +617,32 @@ impl App {
         self.fold_log_merge(hash);
     }
 
-    fn fold_log_merge(&mut self, hash: String) {
-        let Some(index) = self
-            .commits
+    fn merge_index(&self, hash: &str) -> Option<usize> {
+        self.commits
             .iter()
             .position(|commit| commit.hash == hash && commit.parents.len() > 1)
-        else {
+    }
+
+    fn fold_log_merge(&mut self, hash: String) {
+        let Some(index) = self.merge_index(&hash) else {
             return;
         };
+        let fold = !self.log_folds.folded(index);
         let result = self.log_folds.toggle(index, &self.commits);
-        self.status = self.log_result(result, PendingLog::Fold(hash)).err();
+        self.status = self
+            .log_result(result, PendingLog::Fold { hash, fold })
+            .err();
         // An expanded merge may itself be filtered out.
         self.ensure_log_selection();
         self.search_match = None;
     }
 
     fn toggle_all_log_merges(&mut self) {
+        let request = PendingLog::FoldAll {
+            fold: !self.log_folds.all_folded(),
+        };
         let result = self.log_folds.toggle_all(self.selected, &self.commits);
-        match self.log_result(result, PendingLog::Action(LogAction::FoldAll)) {
+        match self.log_result(result, request) {
             Ok(selected) => {
                 self.selected = selected;
                 self.status = None;
@@ -690,8 +709,30 @@ impl App {
                         self.refresh_log_folds();
                         self.log_folds.reveal(self.selected, &self.commits);
                     }
-                    PendingLog::Action(action) => self.apply_log_action(action),
-                    PendingLog::Fold(hash) => self.fold_log_merge(hash),
+                    PendingLog::Reset => self.toggle_commit_type(None),
+                    PendingLog::Type { kind, hide } => {
+                        if self.log_folds.type_hidden(&kind) != hide {
+                            self.toggle_commit_type(Some(&kind));
+                        }
+                    }
+                    PendingLog::Merges { hide } => {
+                        if self.log_folds.hide_merges != hide {
+                            self.toggle_merges();
+                        }
+                    }
+                    PendingLog::Fold { hash, fold } => {
+                        if self
+                            .merge_index(&hash)
+                            .is_some_and(|index| self.log_folds.folded(index) != fold)
+                        {
+                            self.fold_log_merge(hash);
+                        }
+                    }
+                    PendingLog::FoldAll { fold } => {
+                        if self.log_folds.all_folded() != fold {
+                            self.toggle_all_log_merges();
+                        }
+                    }
                 }
             }
         }
@@ -2551,5 +2592,58 @@ mod tests {
 
         assert_eq!(app.show_rows[app.show_cursor].text, "+hidden-needle");
         assert_eq!(app.search_match, Some((Mode::Show, app.show_cursor)));
+    }
+
+    #[test]
+    fn requests_waiting_for_omitted_history_keep_what_was_asked() {
+        use crate::git::{
+            load_log,
+            tests::{git, CurrentDirGuard, TestDirectory},
+        };
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let commit = |subject: &str| {
+            git(&["commit", "-q", "--allow-empty", "-m", subject]);
+            git(&["rev-parse", "HEAD"])
+        };
+        commit("chore: keep base");
+        git(&["checkout", "-q", "-b", "side"]);
+        let side = commit("test: keep side");
+        git(&["checkout", "-q", "-"]);
+        commit("chore: drop main");
+        git(&["merge", "-q", "--no-ff", "-m", "keep merge", "side"]);
+        let merge = git(&["rev-parse", "HEAD"]);
+        // Type filters leave decorated commits shown.
+        git(&["branch", "-q", "-d", "side"]);
+        // The filter omits main, so folds and filters wait for its ancestry.
+        let commits = load_log(&["--grep=keep".into()]).unwrap();
+        let index = |hash: &str| commits.iter().position(|c| c.hash == hash).unwrap();
+
+        // A key pressed again while nothing seems to happen repeats the
+        // request rather than undoing it.
+        let mut app = App::new(commits.clone());
+        app.selected = index(&side);
+        app.apply_log_action(LogAction::HideSelectedType);
+        assert_eq!(app.status.as_deref(), Some("Reading omitted history…"));
+        app.apply_log_action(LogAction::HideSelectedType);
+        app.settle_log();
+        assert!(app.status.is_none(), "{:?}", app.status);
+        assert!(app.log_folds.hidden_types.contains("test"));
+        assert!(!app.log_folds.visible(index(&side)));
+
+        // Merges folded by --fold-merges once the read completes stay folded
+        // when folding was asked for meanwhile.
+        for action in [LogAction::Fold, LogAction::FoldAll] {
+            let mut app = App::new(commits.clone());
+            app.log_folds.start_collapsed = true;
+            app.refresh_log_folds();
+            assert_eq!(app.status.as_deref(), Some("Reading omitted history…"));
+            app.selected = index(&merge);
+            app.apply_log_action(action.clone());
+            app.settle_log();
+            assert!(app.status.is_none(), "{action:?}: {:?}", app.status);
+            assert_eq!(app.log_folds.marker(index(&merge)), Some("▶"), "{action:?}");
+        }
     }
 }

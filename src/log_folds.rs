@@ -190,6 +190,20 @@ impl LogFolds {
         self.layout.folds.get(index).copied().unwrap_or(Fold::None)
     }
 
+    pub fn folded(&self, index: usize) -> bool {
+        matches!(self.fold(index), Fold::Folded(_))
+    }
+
+    /// Whether the shown merges are folded and none could fold further.
+    pub fn all_folded(&self) -> bool {
+        let shown = || (0..self.layout.folds.len()).filter(|&i| self.visible(i));
+        shown().any(|i| self.folded(i)) && !shown().any(|i| self.fold(i) == Fold::Foldable)
+    }
+
+    pub fn type_hidden(&self, kind: &str) -> bool {
+        normalize_type(kind).is_some_and(|kind| self.hidden_types.contains(kind.as_ref()))
+    }
+
     pub fn marker(&self, index: usize) -> Option<&'static str> {
         match self.fold(index) {
             Fold::None => None,
