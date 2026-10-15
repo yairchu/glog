@@ -789,6 +789,22 @@ fi
     }
 
     #[test]
+    fn followed_ranges_select_a_commit_their_filters_show() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let base = commit("base");
+        let shown = commit("feat: shown");
+        let hidden = commit("chore: hidden");
+        commit("tip");
+        let mut app = crate::app::App::new(git::load_watch_log().unwrap());
+        app.log_folds.hidden_types.insert("chore".into());
+        app.refresh_log_folds();
+        app.follow_link(&Target::Range(format!("{base}..{hidden}")));
+        assert_eq!(app.commits[app.selected].hash, shown);
+    }
+
+    #[test]
     fn following_a_side_branch_suspends_watch_until_returning() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());

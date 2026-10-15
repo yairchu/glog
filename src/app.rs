@@ -1609,6 +1609,8 @@ impl App {
             self.prepare_followed(&mut target);
             target.context = format!("log {label}");
             target.refresh_log_folds();
+            // Filters carried over may hide the newest commit.
+            target.top();
             Ok(target)
         });
         self.enter_followed(loaded);
