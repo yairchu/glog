@@ -224,6 +224,20 @@ fn local<'a>(url: &'a str, repository: &str) -> Option<Local<'a>> {
 
 pub type BrowserResult = std::sync::mpsc::Receiver<Result<(), String>>;
 
+// A browser that xdg-open launches inherits its stderr, so a pipe there
+// would stay open for the browser's lifetime and break once glog exits.
+const XDG_OPEN: bool = cfg!(not(any(target_os = "macos", target_os = "windows")));
+
+/// Why an opener failed, when it gave no reason of its own.
+fn exit_reason(status: std::process::ExitStatus) -> String {
+    match status.code() {
+        // As xdg-open documents its exit codes.
+        Some(3) if XDG_OPEN => "no tool found to open URLs".into(),
+        Some(4) if XDG_OPEN => "the browser failed to open the URL".into(),
+        _ => status.to_string(),
+    }
+}
+
 /// Hand the URL to the OS without a shell or blocking the TUI on the browser.
 pub fn open_url(url: &str) -> Result<BrowserResult, String> {
     use std::process::{Command, Stdio};
@@ -241,7 +255,11 @@ pub fn open_url(url: &str) -> Result<BrowserResult, String> {
         .arg(url)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(if XDG_OPEN {
+            Stdio::null()
+        } else {
+            Stdio::piped()
+        })
         .spawn()
         .map_err(|error| format!("Could not open browser: {error}"))?;
     let (sender, receiver) = std::sync::mpsc::channel();
@@ -259,7 +277,7 @@ pub fn open_url(url: &str) -> Result<BrowserResult, String> {
                     Err(format!(
                         "Could not open browser: {}",
                         if error.is_empty() {
-                            output.status.to_string()
+                            exit_reason(output.status)
                         } else {
                             error.to_owned()
                         }
@@ -702,7 +720,12 @@ mod tests {
                 assert!(!app.has_reference_back());
             }
             if scenario != "success" {
-                assert!(app.status.unwrap().contains("test browser failure"));
+                let reason = if super::XDG_OPEN {
+                    "the browser failed to open the URL"
+                } else {
+                    "test browser failure"
+                };
+                assert!(app.status.unwrap().contains(reason));
             } else {
                 assert!(app.status.is_none());
             }
@@ -732,7 +755,7 @@ printf '%s\n' "$1" > "$GLOG_TEST_ISSUE_BROWSER_CAPTURE"
 if [ "$GLOG_TEST_ISSUE_BROWSER_CHILD" != success ]; then
     sleep 0.1
     echo 'test browser failure' >&2
-    exit 1
+    exit 4
 fi
 "##,
         )
