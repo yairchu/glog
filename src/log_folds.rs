@@ -20,6 +20,8 @@ type Revision = (String, Vec<String>, bool);
 
 /// A background read of omitted history, cancelled once dropped.
 struct Reading {
+    // The revisions it reads for, of which `known` covered the oldest.
+    rows: Vec<Revision>,
     result: std::sync::mpsc::Receiver<Result<Ancestry, String>>,
     cancel: git::Cancel,
 }
@@ -52,13 +54,7 @@ impl Known {
     /// descendants. So no omitted commit between rows is gained through
     /// those kept, or lost but for those leading only to dropped rows.
     fn within(self, revisions: &[Revision]) -> Option<Self> {
-        let new = revisions
-            .iter()
-            .position(|row| Some(row) == self.rows.first())?;
-        let kept = &revisions[new..];
-        if !self.rows.starts_with(kept) {
-            return None;
-        }
+        let kept = kept_rows(&self.rows, revisions)?;
         let ancestry = if kept.len() == self.rows.len() {
             self.ancestry
         } else {
@@ -71,6 +67,13 @@ impl Known {
             ancestry,
         })
     }
+}
+
+/// The rows read that are still the oldest of `revisions`, if any.
+fn kept_rows<'a>(rows: &[Revision], revisions: &'a [Revision]) -> Option<&'a [Revision]> {
+    let new = revisions.iter().position(|row| Some(row) == rows.first())?;
+    let kept = &revisions[new..];
+    rows.starts_with(kept).then_some(kept)
 }
 
 /// Reading omitted history runs in the background, so a long walk does not
@@ -413,14 +416,18 @@ impl LogFolds {
                 sender.send(read)
             }
         });
-        self.read = Read::Running(Reading { result, cancel });
+        self.read = Read::Running(Reading {
+            rows: self.revisions.clone(),
+            result,
+            cancel,
+        });
     }
 
     /// Apply omitted history once a background read completes, returning
     /// whether the folds and filters asked for are now shown, or why not.
     pub fn poll(&mut self, commits: &[Commit]) -> Option<Result<(), String>> {
         use std::sync::mpsc::{RecvError, TryRecvError};
-        let Read::Running(reading) = &self.read else {
+        let Read::Running(reading) = &mut self.read else {
             return None;
         };
         let result = match reading.result.try_recv() {
@@ -428,22 +435,25 @@ impl LogFolds {
             Ok(result) => Ok(result),
             Err(TryRecvError::Disconnected) => Err(RecvError),
         };
-        Some(self.receive(commits, received(result)))
+        let rows = std::mem::take(&mut reading.rows);
+        Some(self.receive(commits, rows, received(result)))
     }
 
     /// Wait for a background read, as if `poll` ran once it completed.
     #[cfg(test)]
     pub fn settle(&mut self, commits: &[Commit]) -> Option<Result<(), String>> {
-        let Read::Running(reading) = &self.read else {
+        let Read::Running(reading) = &mut self.read else {
             return None;
         };
         let result = received(reading.result.recv());
-        Some(self.receive(commits, result))
+        let rows = std::mem::take(&mut reading.rows);
+        Some(self.receive(commits, rows, result))
     }
 
     fn receive(
         &mut self,
         commits: &[Commit],
+        rows: Vec<Revision>,
         result: Result<Ancestry, String>,
     ) -> Result<(), String> {
         self.read = Read::Idle;
@@ -454,8 +464,9 @@ impl LogFolds {
                     ancestry: Default::default(),
                 });
                 std::sync::Arc::make_mut(&mut known.ancestry).extend(ancestry);
-                known.rows.clone_from(&self.revisions);
-                self.known = Some(known);
+                known.rows = rows;
+                // Revisions may have changed while it was read.
+                self.known = known.within(&self.revisions);
             }
             Err(error) => {
                 self.known = None;
@@ -482,16 +493,22 @@ impl LogFolds {
             .map(|c| (c.hash.clone(), c.parents.clone(), c.first_parent_only))
             .collect();
         if revisions != self.revisions {
-            // A read of other revisions is cancelled, and a failed one
+            // A read whose revisions are still the oldest is extended once
+            // it completes, so frequent refreshes cannot keep restarting
+            // it. A read of other revisions is cancelled, and a failed one
             // retried once needed.
-            self.read = Read::Idle;
+            if !matches!(&self.read, Read::Running(reading)
+                if kept_rows(&reading.rows, &revisions).is_some())
+            {
+                self.read = Read::Idle;
+            }
             self.known = self.known.take().and_then(|known| known.within(&revisions));
             self.revisions = revisions;
-            // Extend history that was read, as the same filter likely omits
-            // some around new revisions too.
-            if self.partly_read() {
-                self.read_omitted_in_background(commits);
-            }
+        }
+        // Extend history that was read, as the same filter likely omits
+        // some around new revisions too.
+        if self.partly_read() && matches!(self.read, Read::Idle) {
+            self.read_omitted_in_background(commits);
         }
         let hashes: HashSet<_> = commits.iter().map(|c| c.hash.as_str()).collect();
         for chosen in [&mut self.collapsed, &mut self.tentative, &mut self.seen] {
@@ -2432,6 +2449,23 @@ mod tests {
 
     #[test]
     fn refreshes_read_only_the_history_of_new_revisions() {
+        /// Folds that record how many of the oldest revisions each read
+        /// of omitted history skips.
+        fn recording() -> (LogFolds, std::rc::Rc<std::cell::RefCell<Vec<usize>>>) {
+            let reads = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let folds = LogFolds {
+                start_collapsed: true,
+                load_ancestry: Box::new({
+                    let reads = reads.clone();
+                    move |commits, known| {
+                        reads.borrow_mut().push(known);
+                        git::log_ancestry(commits, known)
+                    }
+                }),
+                ..LogFolds::default()
+            };
+            (folds, reads)
+        }
         use crate::git::tests::{git, CurrentDirGuard, TestDirectory};
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
@@ -2468,18 +2502,7 @@ mod tests {
                 .collect();
             git(&["update-ref", "refs/heads/main", &merge1]);
             let old = git::load_log(&args).unwrap();
-            let reads = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-            let mut folds = LogFolds {
-                start_collapsed: true,
-                load_ancestry: Box::new({
-                    let reads = reads.clone();
-                    move |commits, known| {
-                        reads.borrow_mut().push(known);
-                        git::log_ancestry(commits, known)
-                    }
-                }),
-                ..LogFolds::default()
-            };
+            let (mut folds, reads) = recording();
             settled(&mut folds, &old, |f| f.refresh(&old)).unwrap();
             assert!(!folds.visible(1), "{limit:?}: merge1 folds s1");
 
@@ -2513,6 +2536,23 @@ mod tests {
                 "{limit:?}"
             );
             assert_same_layout(&folds, &fresh, &new);
+
+            // A refresh during the first read extends it once it completes,
+            // rather than restarting it.
+            let (mut racing, racing_reads) = recording();
+            racing.refresh(&old).unwrap();
+            racing.refresh(&new).unwrap();
+            assert!(racing.reading(), "{limit:?}");
+            racing.settle(&new).unwrap().unwrap();
+            assert!(racing.partly_read(), "{limit:?}");
+            racing.settle(&new).unwrap().unwrap();
+            assert_eq!(*racing_reads.borrow(), [0, kept], "{limit:?}");
+            assert_eq!(
+                racing.known.as_ref().unwrap().ancestry,
+                fresh.known.as_ref().unwrap().ancestry,
+                "{limit:?}"
+            );
+            assert_same_layout(&racing, &fresh, &new);
 
             // Rows dropping off below need no read.
             if limit.is_some() {
