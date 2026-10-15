@@ -2,8 +2,6 @@
 //! Show, before any patch or notes.
 use std::{collections::HashMap, ops::Range};
 
-use ratatui::{style::Style, text::Line};
-
 #[derive(Clone, Debug)]
 pub struct Link {
     pub range: Range<usize>,
@@ -270,18 +268,6 @@ pub fn open_url(url: &str) -> Result<BrowserResult, String> {
     Ok(receiver)
 }
 
-/// Preserve existing ANSI styling while decorating the byte ranges of links.
-pub fn style_links(
-    line: Line<'static>,
-    links: &[Link],
-    mut style: impl FnMut(&Link) -> Style,
-) -> Line<'static> {
-    crate::ansi::style_ranges(
-        line,
-        links.iter().map(|link| (link.range.clone(), style(link))),
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,13 +377,12 @@ mod tests {
         }
         // Decorations may split a hash into spans; all parts keep the link style.
         let line = crate::ansi::parse_line(&format!("{short}\x1b[31m{}", &hash[7..]));
-        let styled = style_links(
+        let styled = crate::ansi::style_ranges(
             line,
-            &[Link {
-                range: 0..hash.len(),
-                target: Target::Commit(hash.clone()),
-            }],
-            |_| Style::default().add_modifier(ratatui::style::Modifier::UNDERLINED),
+            [(
+                0..hash.len(),
+                ratatui::style::Style::default().add_modifier(ratatui::style::Modifier::UNDERLINED),
+            )],
         );
         assert_eq!(styled.to_string(), hash);
         assert!(styled.spans.iter().all(|span| span

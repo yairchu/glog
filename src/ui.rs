@@ -696,11 +696,11 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
                 line = ansi::style_ranges(line, ranges.iter().cloned());
             }
             if let Some(links) = message_entry(&app.show_links, row) {
-                line = crate::commit_links::style_links(line, links, |_| {
-                    Style::default()
-                        .fg(Color::LightCyan)
-                        .add_modifier(Modifier::UNDERLINED)
-                });
+                let style = Style::default()
+                    .fg(Color::LightCyan)
+                    .add_modifier(Modifier::UNDERLINED);
+                line =
+                    ansi::style_ranges(line, links.iter().map(|link| (link.range.clone(), style)));
             }
             if row.file.is_none() {
                 let text = line.to_string();
@@ -826,11 +826,19 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
                 let Some(links) = message_entry(&app.show_links, &app.show_rows[index]) else {
                     return marked;
                 };
-                crate::commit_links::style_links(marked, links, |link| {
-                    targets.push(link.target.clone());
-                    let id = targets.len() as u32;
-                    Style::default().fg(Color::Rgb((id >> 16) as u8, (id >> 8) as u8, id as u8))
-                })
+                ansi::style_ranges(
+                    marked,
+                    links.iter().map(|link| {
+                        targets.push(link.target.clone());
+                        let id = targets.len() as u32;
+                        let style = Style::default().fg(Color::Rgb(
+                            (id >> 16) as u8,
+                            (id >> 8) as u8,
+                            id as u8,
+                        ));
+                        (link.range.clone(), style)
+                    }),
+                )
             })
             .collect();
         let mut mask = Buffer::empty(area);
