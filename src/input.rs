@@ -1,11 +1,25 @@
 use crate::app::{App, History, LogAction, Mode};
 use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEventKind};
 
-pub fn handle(event: Event, app: &mut App) {
+/// Apply the event, returning whether it may have changed what's drawn.
+pub fn handle(event: Event, app: &mut App) -> bool {
+    // Key releases and mouse motion are ignored, so they need no new frame.
+    let ignored = match &event {
+        Event::Key(key) => key.kind != KeyEventKind::Press,
+        Event::Mouse(mouse) => matches!(
+            mouse.kind,
+            MouseEventKind::Moved | MouseEventKind::Drag(_) | MouseEventKind::Up(_)
+        ),
+        _ => false,
+    };
+    if !ignored {
+        apply(event, app);
+    }
+    !ignored
+}
+
+fn apply(event: Event, app: &mut App) {
     if let Event::Key(key) = event {
-        if key.kind != KeyEventKind::Press {
-            return;
-        }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             app.quit = true;
             return;

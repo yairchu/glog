@@ -372,20 +372,22 @@ impl LogFolds {
         self.reading = Some(Reading { result, cancel });
     }
 
-    /// Draw the Unicode graph once its background read completes.
-    pub fn poll(&mut self, commits: &[Commit]) {
+    /// Draw the Unicode graph once its background read completes, returning
+    /// whether it did.
+    pub fn poll(&mut self, commits: &[Commit]) -> bool {
         use std::sync::mpsc::{RecvError, TryRecvError};
         let result = match self
             .reading
             .as_ref()
             .map(|reading| reading.result.try_recv())
         {
-            None | Some(Err(TryRecvError::Empty)) => return,
+            None | Some(Err(TryRecvError::Empty)) => return false,
             Some(Ok(result)) => Ok(result),
             Some(Err(TryRecvError::Disconnected)) => Err(RecvError),
         };
         self.reading = None;
         self.receive(commits, received(result));
+        true
     }
 
     /// Wait for a background read, as if `poll` ran once it completed.

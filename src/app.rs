@@ -1498,7 +1498,8 @@ impl App {
         }
     }
 
-    pub fn poll_browser(&mut self) {
+    /// Report browser failures, returning whether one was reported.
+    pub fn poll_browser(&mut self) -> bool {
         use std::sync::mpsc::TryRecvError;
         let mut failure = None;
         self.browser_results
@@ -1510,9 +1511,11 @@ impl App {
                 Ok(Ok(())) | Err(TryRecvError::Disconnected) => false,
                 Err(TryRecvError::Empty) => true,
             });
-        if failure.is_some() {
+        let failed = failure.is_some();
+        if failed {
             self.status = failure;
         }
+        failed
     }
 
     /// Open references independently of the current history/path filters.

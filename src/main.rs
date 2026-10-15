@@ -266,24 +266,30 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
         .transpose()
         .map_err(io::Error::other)?;
     let mut deferred = None;
+    // App state changes only within this loop, so a frame is drawn only after
+    // input, a completed background task, or a refresh.
+    let mut changed = true;
     while !app.quit {
         if app.redraw {
             app.images.clear(&mut io::stdout())?;
             terminal.clear()?;
             app.redraw = false;
         }
-        app.images.poll();
-        app.poll_browser();
-        app.log_folds.poll(&app.commits);
-        terminal.draw(|frame| ui::draw(frame, app))?;
-        app.images.flush(&mut io::stdout())?;
+        changed |= app.images.poll();
+        changed |= app.poll_browser();
+        changed |= app.log_folds.poll(&app.commits);
+        if changed {
+            terminal.draw(|frame| ui::draw(frame, app))?;
+            app.images.flush(&mut io::stdout())?;
+            changed = false;
+        }
         let first = match deferred.take() {
             Some(click) => Some(click),
             None if event::poll(Duration::from_millis(250))? => Some(event::read()?),
             None => None,
         };
         if let Some(first) = first {
-            deferred = handle_burst(app, first, || {
+            (changed, deferred) = handle_burst(app, first, || {
                 event::poll(Duration::ZERO)?.then(event::read).transpose()
             })?;
         }
@@ -291,6 +297,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
             if let Some(view) = &mut app.status_view {
                 // The view records a failed refresh in its footer.
                 let _ = view.refresh();
+                changed = true;
             }
             last_status = Instant::now();
         }
@@ -301,11 +308,18 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
                         app.status = None;
                         app.replace_commits(commits);
                         fingerprint = Some(current);
+                        changed = true;
                     }
-                    Err(error) => app.status = Some(format!("Watch refresh failed: {error}")),
+                    Err(error) => {
+                        app.status = Some(format!("Watch refresh failed: {error}"));
+                        changed = true;
+                    }
                 },
                 Ok(_) => {}
-                Err(error) => app.status = Some(format!("Watch refresh failed: {error}")),
+                Err(error) => {
+                    app.status = Some(format!("Watch refresh failed: {error}"));
+                    changed = true;
+                }
             }
             last_watch = Instant::now();
         }
@@ -317,12 +331,13 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
 /// events. Apply `first` and the events queued behind it before drawing
 /// another frame. A click ends the burst, since it targets the screen as last
 /// drawn; it's returned to be handled once a frame shows the burst's effect.
+/// Also returns whether the handled events may have changed what's drawn.
 fn handle_burst(
     app: &mut App,
     first: event::Event,
     mut next: impl FnMut() -> io::Result<Option<event::Event>>,
-) -> io::Result<Option<event::Event>> {
-    input::handle(first, app);
+) -> io::Result<(bool, Option<event::Event>)> {
+    let mut changed = input::handle(first, app);
     for _ in 0..1024 {
         if app.quit {
             break;
@@ -331,11 +346,11 @@ fn handle_burst(
             break;
         };
         if input::is_click(&event) {
-            return Ok(Some(event));
+            return Ok((changed, Some(event)));
         }
-        input::handle(event, app);
+        changed |= input::handle(event, app);
     }
-    Ok(None)
+    Ok((changed, None))
 }
 
 fn parse_watch(args: &[String]) -> Result<bool, String> {
@@ -405,7 +420,7 @@ mod tests {
         let click = mouse(MouseEventKind::Down(MouseButton::Left));
         let mut queue = vec![wheel.clone(), click.clone(), wheel.clone()].into_iter();
 
-        let deferred = handle_burst(&mut app, wheel.clone(), || Ok(queue.next())).unwrap();
+        let (_, deferred) = handle_burst(&mut app, wheel.clone(), || Ok(queue.next())).unwrap();
         assert_eq!(deferred, Some(click.clone()));
         assert_eq!(
             app.show_offset, 6,
@@ -421,7 +436,7 @@ mod tests {
         let mut queue = std::iter::empty();
         assert_eq!(
             handle_burst(&mut app, click, || Ok(queue.next())).unwrap(),
-            None
+            (true, None)
         );
     }
 

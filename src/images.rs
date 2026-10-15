@@ -192,15 +192,19 @@ impl Images {
         self.receiver = Some(receiver);
     }
 
-    pub fn poll(&mut self) {
+    /// Store finished images, returning whether any arrived.
+    pub fn poll(&mut self) -> bool {
+        let mut received = false;
         if let Some(receiver) = &self.receiver {
             while let Ok((source, image)) = receiver.try_recv() {
+                received = true;
                 if let Some(entry) = self.entries.get_mut(&source) {
                     entry.image = image;
                     entry.pending = false;
                 }
             }
         }
+        received
     }
 
     fn command(&mut self, command: &str) {
