@@ -265,6 +265,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
         .then(git::watch_fingerprint)
         .transpose()
         .map_err(io::Error::other)?;
+    let mut deferred = None;
     while !app.quit {
         if app.redraw {
             app.images.clear(&mut io::stdout())?;
@@ -276,19 +277,15 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
         app.log_folds.poll(&app.commits);
         terminal.draw(|frame| ui::draw(frame, app))?;
         app.images.flush(&mut io::stdout())?;
-        if event::poll(Duration::from_millis(250))? {
-            input::handle(event::read()?, app);
-            // Terminals report a fast trackpad/wheel gesture as a burst of discrete
-            // events. Apply the whole queued burst before drawing another frame.
-            for _ in 0..1024 {
-                if !event::poll(Duration::ZERO)? {
-                    break;
-                }
-                input::handle(event::read()?, app);
-                if app.quit {
-                    break;
-                }
-            }
+        let first = match deferred.take() {
+            Some(click) => Some(click),
+            None if event::poll(Duration::from_millis(250))? => Some(event::read()?),
+            None => None,
+        };
+        if let Some(first) = first {
+            deferred = handle_burst(app, first, || {
+                event::poll(Duration::ZERO)?.then(event::read).transpose()
+            })?;
         }
         if app.mode == app::Mode::Status && last_status.elapsed() >= Duration::from_secs(1) {
             if let Some(view) = &mut app.status_view {
@@ -314,6 +311,31 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
         }
     }
     Ok(())
+}
+
+/// Terminals report a fast trackpad/wheel gesture as a burst of discrete
+/// events. Apply `first` and the events queued behind it before drawing
+/// another frame. A click ends the burst, since it targets the screen as last
+/// drawn; it's returned to be handled once a frame shows the burst's effect.
+fn handle_burst(
+    app: &mut App,
+    first: event::Event,
+    mut next: impl FnMut() -> io::Result<Option<event::Event>>,
+) -> io::Result<Option<event::Event>> {
+    input::handle(first, app);
+    for _ in 0..1024 {
+        if app.quit {
+            break;
+        }
+        let Some(event) = next()? else {
+            break;
+        };
+        if input::is_click(&event) {
+            return Ok(Some(event));
+        }
+        input::handle(event, app);
+    }
+    Ok(None)
 }
 
 fn parse_watch(args: &[String]) -> Result<bool, String> {
@@ -353,6 +375,55 @@ impl Drop for TerminalGuard {
 mod tests {
     use super::*;
     use app::LogAction;
+
+    #[test]
+    fn clicks_after_a_wheel_burst_wait_for_the_scrolled_frame() {
+        use event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let mut app = App::new(Vec::new());
+        app.mode = app::Mode::Show;
+        app.show_rows = (0..30)
+            .map(|source| app::ShowRow {
+                preview: None,
+                text: String::new(),
+                source,
+                file: None,
+                folded: false,
+                fold_separator: false,
+                summary: false,
+            })
+            .collect();
+        app.visible_show_rows = 5;
+        let mouse = |kind| {
+            Event::Mouse(MouseEvent {
+                kind,
+                column: 0,
+                row: 2,
+                modifiers: KeyModifiers::NONE,
+            })
+        };
+        let wheel = mouse(MouseEventKind::ScrollDown);
+        let click = mouse(MouseEventKind::Down(MouseButton::Left));
+        let mut queue = vec![wheel.clone(), click.clone(), wheel.clone()].into_iter();
+
+        let deferred = handle_burst(&mut app, wheel.clone(), || Ok(queue.next())).unwrap();
+        assert_eq!(deferred, Some(click.clone()));
+        assert_eq!(
+            app.show_offset, 6,
+            "the wheel events before the click apply"
+        );
+        assert_eq!(
+            queue.next(),
+            Some(wheel),
+            "events after the click stay queued"
+        );
+
+        // After the frame is drawn, the deferred click is handled first.
+        let mut queue = std::iter::empty();
+        assert_eq!(
+            handle_burst(&mut app, click, || Ok(queue.next())).unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn commands_preserve_log_shorthand_and_escape_reserved_names() {

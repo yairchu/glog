@@ -233,6 +233,12 @@ pub fn handle(event: Event, app: &mut App) {
     }
 }
 
+/// Whether the event targets what's on screen, as clicks do, rather than
+/// acting relative to the current state, as keys and the wheel do.
+pub fn is_click(event: &Event) -> bool {
+    matches!(event, Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(_)))
+}
+
 fn show_adjacent(app: &mut App, delta: isize) {
     if app.move_selection(delta) {
         app.show_offset = 0;

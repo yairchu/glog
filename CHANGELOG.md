@@ -53,6 +53,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Folded and filtered graphs keep lanes to parents below a count limit such
   as `-n`, as Git draws them, rather than dropping them.
 
+- A click right after fast trackpad scrolling selects what's under the
+  pointer, rather than what was there before the scroll.
+
 ## 0.5.2 - 2026-10-08
 
 ### Changed
