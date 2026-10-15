@@ -498,6 +498,43 @@ fi
     }
 
     #[test]
+    fn followed_references_reuse_the_looked_up_repository() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/owner/repo.git",
+        ]);
+        let first = commit("first, for #1");
+        commit(&format!("second, after {first} for #2"));
+        let mut app = git::load_show_app(&[]).unwrap();
+        // A changed remote shows whether the followed view looks it up again.
+        git(&[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/other/repo.git",
+        ]);
+        app.follow_reference(&first);
+        assert_eq!(app.commits[app.selected].hash, first);
+        let targets: Vec<_> = app
+            .show_links
+            .values()
+            .flatten()
+            .map(|link| &link.target)
+            .collect();
+        assert_eq!(
+            targets,
+            [&Target::Issue(
+                "https://github.com/owner/repo/issues/1".into()
+            )]
+        );
+    }
+
+    #[test]
     fn following_a_side_branch_suspends_watch_until_returning() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());

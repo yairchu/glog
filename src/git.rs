@@ -454,6 +454,15 @@ pub fn working_tree_commit(summary: &str) -> Commit {
 
 /// Resolve a single commit before opening the terminal; defer ancestry traversal.
 pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
+    load_show_app_with(args, |_| {})
+}
+
+/// Load `glog show`, letting `prepare` configure a commit's view before its
+/// Show text loads.
+pub fn load_show_app_with(
+    args: &[String],
+    prepare: impl FnOnce(&mut crate::app::App),
+) -> Result<crate::app::App, String> {
     let separator = args
         .iter()
         .position(|arg| arg == "--")
@@ -499,6 +508,7 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
     history.push("--".to_owned());
     history.extend(app.show_paths.iter().cloned());
     app.pending_history = Some(history);
+    prepare(&mut app);
     app.switch_mode();
     Ok(app)
 }

@@ -1525,7 +1525,23 @@ impl App {
         } else {
             vec![hash.to_owned()]
         };
-        match git::load_show_app(&args) {
+        let loaded = git::load_show_app_with(&args, |target| {
+            // Followed references stay in the same repository.
+            target.github_repository = self.github_repository.clone();
+            target.exit_on_esc = self.exit_on_esc;
+            // Followed commits have their own fixed history. Leave watch on
+            // the saved origin so returning resumes default HEAD refreshes.
+            // Reflog, stash, and blame views have their own formats and no type
+            // filters; only a Log's settings carry over to the followed history.
+            if self.history == History::Log {
+                target.log_format = self.log_format.clone();
+                target.log_folds.ascii_graph = self.log_folds.ascii_graph;
+                target.log_folds.start_collapsed = self.log_folds.start_collapsed;
+                target.log_folds.hidden_types = self.log_folds.hidden_types.clone();
+                target.log_folds.hide_merges = self.log_folds.hide_merges;
+            }
+        });
+        match loaded {
             Ok(mut target) => {
                 // Failed loads leave the current view and its return path intact.
                 if let Some(error) = target.status.take() {
@@ -1534,18 +1550,6 @@ impl App {
                 }
                 let short = target.commits[target.selected].short_hash.clone();
                 target.context = format!("show {short}");
-                target.exit_on_esc = self.exit_on_esc;
-                // Followed commits have their own fixed history. Leave watch on
-                // the saved origin so returning resumes default HEAD refreshes.
-                // Reflog, stash, and blame views have their own formats and no type
-                // filters; only a Log's settings carry over to the followed history.
-                if self.history == History::Log {
-                    target.log_format = self.log_format.clone();
-                    target.log_folds.ascii_graph = self.log_folds.ascii_graph;
-                    target.log_folds.start_collapsed = self.log_folds.start_collapsed;
-                    target.log_folds.hidden_types = self.log_folds.hidden_types.clone();
-                    target.log_folds.hide_merges = self.log_folds.hide_merges;
-                }
                 self.hand_over(&mut target);
                 target.rebuild_show_rows();
                 let mut origin = std::mem::replace(self, target);
@@ -1590,7 +1594,7 @@ impl App {
         view.images = std::mem::take(&mut self.images);
         view.browser_results = std::mem::take(&mut self.browser_results);
         view.search_history = std::mem::take(&mut self.search_history);
-        // Followed references stay in the same repository.
+        // A followed view may have looked up the repository its origin hasn't.
         if self.github_repository.is_some() {
             view.github_repository = self.github_repository.clone();
         }
