@@ -161,25 +161,20 @@ fn urls(line: &str) -> Vec<Range<usize>> {
         {
             continue;
         }
+        // A closing bracket ends the URL unless it closes one opened within it,
+        // as in Wikipedia's parentheses, so Markdown links end at their `)`.
+        let mut open = Vec::new();
         let end = rest
-            .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '`'))
+            .find(|c: char| match c {
+                '(' | '[' | '{' => {
+                    open.push(c);
+                    false
+                }
+                ')' | ']' | '}' => open.pop() != Some(matching_open(c)),
+                _ => c.is_whitespace() || matches!(c, '<' | '>' | '"' | '`'),
+            })
             .unwrap_or(rest.len());
-        let mut url = &rest[..end];
-        loop {
-            let trimmed = url.trim_end_matches(['.', ',', ':', ';', '!', '?', '\'', '*']);
-            // Keep brackets that belong to the URL, as in Wikipedia's parentheses.
-            let trimmed = [('(', ')'), ('[', ']'), ('{', '}')]
-                .into_iter()
-                .find_map(|(open, close)| {
-                    let inner = trimmed.strip_suffix(close)?;
-                    (inner.matches(open).count() < trimmed.matches(close).count()).then_some(inner)
-                })
-                .unwrap_or(trimmed);
-            if trimmed.len() == url.len() {
-                break;
-            }
-            url = trimmed;
-        }
+        let url = rest[..end].trim_end_matches(['.', ',', ':', ';', '!', '?', '\'', '*']);
         if url
             .split_once("://")
             .is_some_and(|(_, host)| !host.is_empty())
@@ -188,6 +183,14 @@ fn urls(line: &str) -> Vec<Range<usize>> {
         }
     }
     urls
+}
+
+fn matching_open(close: char) -> char {
+    match close {
+        ')' => '(',
+        ']' => '[',
+        _ => '{',
+    }
 }
 
 /// The commit or comparison a GitHub URL names within `repository`.
@@ -537,6 +540,22 @@ mod tests {
             );
         }
         assert_eq!(links[&2].last().unwrap().target, Target::Commit(hash));
+    }
+
+    #[test]
+    fn urls_end_at_brackets_they_did_not_open() {
+        let line = "[https://a.example](https://a.example/(b)) \
+            [![age](https://img.example/x)](https://docs.example/y)";
+        let found: Vec<_> = urls(line).into_iter().map(|url| &line[url]).collect();
+        assert_eq!(
+            found,
+            [
+                "https://a.example",
+                "https://a.example/(b)",
+                "https://img.example/x",
+                "https://docs.example/y",
+            ]
+        );
     }
 
     #[test]
