@@ -346,11 +346,12 @@ impl LogFolds {
     /// completes.
     fn read_omitted_in_background(&mut self, commits: &[Commit]) {
         let read = (self.load_ancestry)(commits);
+        let rows: Vec<_> = commits.iter().map(|c| c.hash.clone()).collect();
         let (sender, result) = std::sync::mpsc::channel();
         let cancel = git::Cancel::default();
         std::thread::spawn({
             let cancel = cancel.clone();
-            move || sender.send(read(&cancel))
+            move || sender.send(read(&cancel).map(|ancestry| leading_to_rows(ancestry, &rows)))
         });
         self.omitted = Omitted::Reading(Reading { result, cancel });
     }
@@ -386,7 +387,7 @@ impl LogFolds {
         result: Result<Ancestry, String>,
     ) -> Result<(), FoldError> {
         self.omitted = match result {
-            Ok(ancestry) => Omitted::Read(leading_to_rows(ancestry, commits)),
+            Ok(ancestry) => Omitted::Read(ancestry),
             Err(error) => Omitted::Failed(error),
         };
         self.relayout(commits);
@@ -644,14 +645,14 @@ fn received(
 /// The omitted commits that lead to a row. The rest, such as the history
 /// of a branch that diverged before the oldest row, connect no rows, and
 /// would otherwise enlarge every layout.
-fn leading_to_rows(mut ancestry: Ancestry, commits: &[Commit]) -> Ancestry {
+fn leading_to_rows(mut ancestry: Ancestry, rows: &[String]) -> Ancestry {
     let mut children: HashMap<&str, Vec<&str>> = HashMap::new();
     for (hash, parents) in &ancestry {
         for parent in parents {
             children.entry(parent).or_default().push(hash);
         }
     }
-    let mut todo: Vec<_> = commits.iter().map(|c| c.hash.as_str()).collect();
+    let mut todo: Vec<_> = rows.iter().map(String::as_str).collect();
     let mut leading = HashSet::new();
     while let Some(hash) = todo.pop() {
         for &child in children.get(hash).into_iter().flatten() {
