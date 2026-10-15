@@ -524,21 +524,21 @@ mod tests {
         let mut app = App::new(commits);
         initialize_log_filters(&mut app, options);
         assert_eq!(app.selected, 2);
-        assert_eq!(app.log_folds.hidden_count, 2);
+        assert_eq!(app.log_folds.hidden_count(), 2);
         assert!(app.status.is_none());
         app.replace_commits(app.commits.clone());
         assert_eq!(app.selected, 2);
-        assert_eq!(app.log_folds.hidden_count, 2);
+        assert_eq!(app.log_folds.hidden_count(), 2);
         app.apply_log_action(LogAction::Reset);
         assert!((0..3).all(|i| app.log_folds.visible(i)));
         let (_, options, _) =
             log_format::parse_args(&["--hide-merges".into(), "--hide-types=test,feature".into()])
                 .unwrap();
         initialize_log_filters(&mut app, options);
-        assert_eq!(app.log_folds.hidden_count, 3);
+        assert_eq!(app.log_folds.hidden_count(), 3);
         assert_eq!(app.mode, app::Mode::Log);
         app.apply_log_action(LogAction::Reset);
-        assert_eq!(app.log_folds.hidden_count, 0);
+        assert_eq!(app.log_folds.hidden_count(), 0);
     }
 
     #[test]

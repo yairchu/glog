@@ -453,7 +453,7 @@ fn draw_help(frame: &mut Frame, view: HelpView) {
 fn draw_type_controls(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut items = Vec::new();
     if !app.log_folds.hidden_types.is_empty() || app.log_folds.hide_merges {
-        let count = app.log_folds.hidden_count;
+        let count = app.log_folds.hidden_count();
         items.push((
             format!(
                 "Hiding {count} commit{} · ",
@@ -1176,7 +1176,7 @@ mod tests {
             assert!(!app.log_folds.visible(1));
             app.apply_log_action(action);
             assert!(app.log_folds.visible(0));
-            assert_eq!(app.log_folds.hidden_count, 0);
+            assert_eq!(app.log_folds.hidden_count(), 0);
             assert_eq!(app.selected, 0);
             let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
             terminal.draw(|f| draw(f, &mut app)).unwrap();
@@ -1203,7 +1203,7 @@ mod tests {
             app.apply_log_action(LogAction::Fold);
             assert!(!app.log_folds.visible(0));
             assert!(app.log_folds.visible(1));
-            assert_eq!(app.log_folds.hidden_count, 1);
+            assert_eq!(app.log_folds.hidden_count(), 1);
             assert_eq!(app.selected, 1);
         }
     }
@@ -1314,18 +1314,18 @@ mod tests {
         );
         assert!(app.log_folds.hide_merges);
         assert_eq!(app.selected, 2);
-        assert_eq!(app.log_folds.hidden_count, 2);
+        assert_eq!(app.log_folds.hidden_count(), 2);
         assert!(app.log_folds.visible(2) && app.log_folds.visible(3));
         app.search = Some("Merge topic".into());
         app.next_match(false);
         assert_eq!(app.selected, 2);
         app.apply_log_action(LogAction::HideSelectedType);
         // Side is a branch point shared by both merges, so it stays selected.
-        assert_eq!(app.log_folds.hidden_count, 2);
+        assert_eq!(app.log_folds.hidden_count(), 2);
         assert_eq!(app.selected, 2);
         app.replace_commits(app.commits.clone());
         assert!(app.log_folds.hide_merges);
-        assert_eq!(app.log_folds.hidden_count, 2);
+        assert_eq!(app.log_folds.hidden_count(), 2);
         handle(
             Event::Key(KeyEvent::new(KeyCode::Char('M'), KeyModifiers::NONE)),
             &mut app,
@@ -1333,7 +1333,7 @@ mod tests {
         assert!(!app.log_folds.hide_merges);
         assert!(!app.log_folds.visible(0)); // Type filter still applies.
         assert!(app.log_folds.visible(1));
-        assert_eq!(app.log_folds.hidden_count, 1);
+        assert_eq!(app.log_folds.hidden_count(), 1);
         handle(
             Event::Key(KeyEvent::new(KeyCode::Char('M'), KeyModifiers::NONE)),
             &mut app,
@@ -1343,7 +1343,7 @@ mod tests {
             &mut app,
         );
         assert!(!app.log_folds.hide_merges);
-        assert_eq!(app.log_folds.hidden_count, 0);
+        assert_eq!(app.log_folds.hidden_count(), 0);
         assert!((0..4).all(|i| app.log_folds.visible(i)));
     }
 
@@ -1395,7 +1395,7 @@ mod tests {
         app.replace_commits(refreshed);
         assert_eq!(app.selected, 2);
         assert!(!app.log_folds.visible(0));
-        assert_eq!(app.log_folds.hidden_count, 3);
+        assert_eq!(app.log_folds.hidden_count(), 3);
         terminal.draw(|f| draw(f, &mut app)).unwrap();
         let screen: String = terminal
             .backend()
@@ -1416,7 +1416,7 @@ mod tests {
             .0;
         click(&mut app, button);
         assert!(app.log_folds.hidden_types.is_empty());
-        assert_eq!(app.log_folds.hidden_count, 0);
+        assert_eq!(app.log_folds.hidden_count(), 0);
         app.top();
         handle(
             Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE)),

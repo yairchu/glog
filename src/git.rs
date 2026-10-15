@@ -1933,10 +1933,9 @@ pub(crate) mod tests {
         for mode in ["single", "all", "startup"] {
             let mut folds = crate::log_folds::LogFolds::default();
             folds.start_collapsed = mode == "startup";
-            // Startup folding waits for the omitted history, then repeats.
+            // Startup folding waits for the omitted history.
             let _ = folds.refresh(&commits);
             folds.settle(&commits).unwrap().unwrap();
-            folds.refresh(&commits).unwrap();
             match mode {
                 "single" => folds.toggle(index(&merge), &commits).unwrap(),
                 "all" => {
@@ -2019,7 +2018,6 @@ pub(crate) mod tests {
         );
         assert!(folds.visible(1));
         folds.settle(&commits).unwrap().unwrap();
-        folds.toggle(0, &commits).unwrap();
         assert!(!folds.visible(1));
         assert_eq!(folds.label(0), " · 1 merged commit");
         folds.toggle(0, &commits).unwrap();
@@ -2689,7 +2687,7 @@ pub(crate) mod tests {
             assert_eq!(drawing(&folds), expected);
             // View filters redraw the graph after loading omitted ancestry.
             folds.toggle_type(Some("nonexistent"), &commits).unwrap();
-            assert_eq!(folds.hidden_count, 0);
+            assert_eq!(folds.hidden_count(), 0);
             assert_eq!(drawing(&folds), expected);
             folds.toggle_type(None, &commits).unwrap();
             assert_eq!(drawing(&folds), expected);
