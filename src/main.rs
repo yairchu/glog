@@ -223,8 +223,9 @@ the file before it, and Backspace returns.
 Show opens HEAD or the specified commit, with history available via Tab.
 Breaking-change markers, section headings, and footer labels are emphasized.
 Click underlined commit hashes in Show messages to follow them; Backspace returns.
-Hashes use lowercase hex: 7+ characters, or 4, 5, or 7+ with a # prefix.
-On GitHub repositories, # plus 1-5 digits opens an issue in the browser.
+Hashes use lowercase hex: 7+ characters, or with a # prefix, 7+ or 4-5
+including a letter. On GitHub repositories, # plus 1-5 digits opens an issue
+in the browser.
 Paths after -- filter both Show patches and the Log history.
 Show REV:path reads the complete text file; x/d/a show the hash/date/author
 column and turn it into a blame, loading attribution only then.
