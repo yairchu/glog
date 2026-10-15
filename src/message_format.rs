@@ -252,7 +252,7 @@ mod tests {
             source,
             vec![crate::commit_links::Link {
                 range: 9..13,
-                target: crate::commit_links::Target::Issue(
+                target: crate::commit_links::Target::Url(
                     "https://github.com/owner/repo/issues/123".into(),
                 ),
             }],

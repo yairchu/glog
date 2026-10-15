@@ -37,10 +37,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   Backspace returns through followed references, preserving the previous
   view's reading position and expanded files.
 
-- Click issue references (`#` plus 1–5 digits) in Show messages to open them
-  in the browser. The GitHub repository is taken from `origin`, or without
-  one, from the only GitHub remote; numeric references with seven or more
-  digits remain commit candidates.
+- Click URLs and issue references (`#` plus 1–5 digits) in Show messages to
+  open them in the browser. The GitHub repository is taken from `origin`, or
+  without one, from the only GitHub remote; numeric references with seven or
+  more digits remain commit candidates. Links to that repository's commits
+  and comparisons open in glog when the history is available locally.
 
 ### Fixed
 

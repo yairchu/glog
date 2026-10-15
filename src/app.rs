@@ -1486,9 +1486,11 @@ impl App {
     }
 
     pub fn follow_link(&mut self, target: &crate::commit_links::Target) {
+        use crate::commit_links::Target;
         match target {
-            crate::commit_links::Target::Commit(hash) => self.follow_reference(hash),
-            crate::commit_links::Target::Issue(url) => match crate::commit_links::open_issue(url) {
+            Target::Commit(hash) => self.follow_reference(hash),
+            Target::Range(range) => self.follow_range(range),
+            Target::Url(url) => match crate::commit_links::open_url(url) {
                 Ok(result) => {
                     self.browser_results.push(result);
                     self.status = None;
@@ -1525,42 +1527,75 @@ impl App {
         } else {
             vec![hash.to_owned()]
         };
-        let loaded = git::load_show_app_with(&args, |target| {
-            // Followed references stay in the same repository.
-            target.github_repository = self.github_repository.clone();
-            target.exit_on_esc = self.exit_on_esc;
-            // Followed commits have their own fixed history. Leave watch on
-            // the saved origin so returning resumes default HEAD refreshes.
-            // Reflog, stash, and blame views have their own formats and no type
-            // filters; only a Log's settings carry over to the followed history.
-            if self.history == History::Log {
-                target.log_format = self.log_format.clone();
-                target.log_folds.ascii_graph = self.log_folds.ascii_graph;
-                target.log_folds.start_collapsed = self.log_folds.start_collapsed;
-                target.log_folds.hidden_types = self.log_folds.hidden_types.clone();
-                target.log_folds.hide_merges = self.log_folds.hide_merges;
-            }
-        });
-        match loaded {
-            Ok(mut target) => {
-                // Failed loads leave the current view and its return path intact.
-                if let Some(error) = target.status.take() {
-                    self.status = Some(error);
-                    return;
+        let loaded = git::load_show_app_with(&args, |target| self.prepare_followed(target))
+            .and_then(|mut target| match target.status.take() {
+                Some(error) => Err(error),
+                None => {
+                    let short = &target.commits[target.selected].short_hash;
+                    target.context = format!("show {short}");
+                    Ok(target)
                 }
-                let short = target.commits[target.selected].short_hash.clone();
-                target.context = format!("show {short}");
-                self.hand_over(&mut target);
-                target.rebuild_show_rows();
-                let mut origin = std::mem::replace(self, target);
-                // Keep the views behind a chain of references small. Returning
-                // restores the displayed text; only other commits reload.
-                origin.cache.clear();
-                origin.cache_order.clear();
-                self.reference_back = Some(Box::new(origin));
+            });
+        self.enter_followed(loaded);
+    }
+
+    /// Browse the commits of a `base..head` range of full hashes as a Log.
+    fn follow_range(&mut self, range: &str) {
+        let label = range
+            .split("..")
+            .map(|hash| &hash[..hash.len().min(7)])
+            .collect::<Vec<_>>()
+            .join("..");
+        let loaded = git::load_log(&[range.to_owned(), "--".to_owned()]).and_then(|commits| {
+            if commits.is_empty() {
+                return Err(format!("no commits in {label}"));
             }
-            Err(error) => self.status = Some(error),
+            let mut target = App::new(commits);
+            self.prepare_followed(&mut target);
+            target.context = format!("log {label}");
+            if let Err(error) = target.log_folds.refresh(&target.commits) {
+                target.status = Some(error);
+            }
+            Ok(target)
+        });
+        self.enter_followed(loaded);
+    }
+
+    fn prepare_followed(&self, target: &mut App) {
+        // Followed references stay in the same repository.
+        target.github_repository = self.github_repository.clone();
+        target.exit_on_esc = self.exit_on_esc;
+        // Followed commits have their own fixed history. Leave watch on
+        // the saved origin so returning resumes default HEAD refreshes.
+        // Reflog, stash, and blame views have their own formats and no type
+        // filters; only a Log's settings carry over to the followed history.
+        if self.history == History::Log {
+            target.log_format = self.log_format.clone();
+            target.log_folds.ascii_graph = self.log_folds.ascii_graph;
+            target.log_folds.start_collapsed = self.log_folds.start_collapsed;
+            target.log_folds.hidden_types = self.log_folds.hidden_types.clone();
+            target.log_folds.hide_merges = self.log_folds.hide_merges;
         }
+    }
+
+    /// Replace this view with a followed one, keeping it to return to.
+    /// Failed loads leave the current view and its return path intact.
+    fn enter_followed(&mut self, loaded: Result<App, String>) {
+        let mut target = match loaded {
+            Ok(target) => target,
+            Err(error) => {
+                self.status = Some(error);
+                return;
+            }
+        };
+        self.hand_over(&mut target);
+        target.rebuild_show_rows();
+        let mut origin = std::mem::replace(self, target);
+        // Keep the views behind a chain of references small. Returning
+        // restores the displayed text; only other commits reload.
+        origin.cache.clear();
+        origin.cache_order.clear();
+        self.reference_back = Some(Box::new(origin));
     }
 
     pub fn reference_back(&mut self) {

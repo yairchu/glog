@@ -1,4 +1,5 @@
-//! Commit and issue references in the message portion of Show, before any patch or notes.
+//! Commit references, issue references and URLs in the message portion of
+//! Show, before any patch or notes.
 use std::{collections::HashMap, ops::Range};
 
 use ratatui::{style::Style, text::Line};
@@ -12,15 +13,24 @@ pub struct Link {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
     Commit(String),
-    Issue(String),
+    /// A `base..head` range of full hashes, browsed as a Log.
+    Range(String),
+    Url(String),
+}
+
+/// What a URL to this repository names in the local history.
+enum Local<'a> {
+    Commit(&'a str),
+    Range(&'a str, &'a str),
 }
 
 /// `repository` caches the GitHub repository across calls; it's looked up
-/// only once an issue reference appears.
+/// only once an issue reference or URL appears.
 pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<usize, Vec<Link>> {
     enum Candidate<'a> {
         Commit(&'a str),
         Issue(&'a str),
+        Url(&'a str, Option<Local<'a>>),
     }
     let mut candidates = Vec::new();
     let message = crate::git::commit_message_range(text);
@@ -31,12 +41,30 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
         .map(crate::ansi::plain)
         .collect();
     for (index, plain) in lines.iter().enumerate() {
+        let urls = urls(plain);
         let mut start = 0;
         // Treat an entire word as one token so identifiers containing hex aren't links.
         for word in plain.split_inclusive(|c: char| !c.is_alphanumeric() && c != '_') {
+            // A URL is one link, whatever hashes or numbers its path contains.
+            if let Some(url) = urls.iter().find(|url| url.contains(&start)) {
+                if url.start == start {
+                    let url_text = &plain[url.clone()];
+                    let local = repository
+                        .get_or_insert_with(crate::git::github_repository)
+                        .as_deref()
+                        .and_then(|repository| local(url_text, repository));
+                    candidates.push((
+                        message.start + index,
+                        url.clone(),
+                        Candidate::Url(url_text, local),
+                    ));
+                }
+                start += word.len();
+                continue;
+            }
             let token = word.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '_');
             let prefixed = plain[..start].ends_with('#');
-            // `repo#abcd123`, `repo@abc1234` and URL paths such as
+            // `repo#abcd123`, `repo@abc1234` and paths such as
             // `owner/repo/commit/abc1234` likely refer to other repositories.
             let qualified = {
                 let mut before = plain[..start].chars().rev();
@@ -58,12 +86,7 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
                     !c.is_alphanumeric() && !matches!(c, '_' | '/' | '.' | '-' | '&')
                 });
                 standalone.then_some(Candidate::Issue(token))
-            } else if !qualified
-                && (minimum..=64).contains(&token.len())
-                && token
-                    .bytes()
-                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-            {
+            } else if !qualified && (minimum..=64).contains(&token.len()) && is_hash(token) {
                 Some(Candidate::Commit(token))
             } else {
                 None
@@ -75,21 +98,43 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
             start += word.len();
         }
     }
-    let commits =
-        crate::git::resolve_commit_references(candidates.iter().filter_map(|(_, _, candidate)| {
-            match candidate {
-                Candidate::Commit(token) => Some(*token),
-                Candidate::Issue(_) => None,
-            }
-        }));
+    let resolved =
+        crate::git::resolve_commits(candidates.iter().flat_map(
+            |(_, _, candidate)| match candidate {
+                Candidate::Commit(hash) | Candidate::Url(_, Some(Local::Commit(hash))) => {
+                    vec![*hash]
+                }
+                Candidate::Url(_, Some(Local::Range(base, head))) => vec![*base, *head],
+                Candidate::Issue(_) | Candidate::Url(_, None) => Vec::new(),
+            },
+        ));
+    // Never take a hex-like ref name for the abbreviated hash it resembles.
+    let commit = |hash: &str| {
+        resolved
+            .get(hash)
+            .filter(|full| full.starts_with(hash))
+            .cloned()
+    };
     let mut links = HashMap::new();
     for (source, range, candidate) in candidates {
         let target = match candidate {
-            Candidate::Commit(token) => commits.get(token).cloned().map(Target::Commit),
-            Candidate::Issue(token) => repository
+            Candidate::Commit(hash) => commit(hash).map(Target::Commit),
+            Candidate::Issue(number) => repository
                 .get_or_insert_with(crate::git::github_repository)
                 .as_ref()
-                .map(|repo| Target::Issue(format!("{repo}/issues/{token}"))),
+                .map(|repo| Target::Url(format!("{repo}/issues/{number}"))),
+            Candidate::Url(url, local) => Some(
+                match local {
+                    Some(Local::Commit(hash)) => commit(hash).map(Target::Commit),
+                    Some(Local::Range(base, head)) => resolved
+                        .get(base)
+                        .zip(resolved.get(head))
+                        .map(|(base, head)| Target::Range(format!("{base}..{head}"))),
+                    None => None,
+                }
+                // Revisions missing locally can still be seen on GitHub.
+                .unwrap_or_else(|| Target::Url(url.to_owned())),
+            ),
         };
         if let Some(target) = target {
             links
@@ -101,10 +146,82 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
     links
 }
 
+fn is_hash(token: &str) -> bool {
+    token
+        .bytes()
+        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The byte ranges of `http` and `https` URLs, leaving out punctuation that
+/// more likely ends the surrounding sentence.
+fn urls(line: &str) -> Vec<Range<usize>> {
+    let mut urls: Vec<Range<usize>> = Vec::new();
+    for (start, _) in line.match_indices("http") {
+        let rest = &line[start..];
+        if urls.last().is_some_and(|url| url.end > start)
+            || line[..start]
+                .chars()
+                .next_back()
+                .is_some_and(char::is_alphanumeric)
+            || !(rest.starts_with("https://") || rest.starts_with("http://"))
+        {
+            continue;
+        }
+        let end = rest
+            .find(|c: char| c.is_whitespace() || matches!(c, '<' | '>' | '"' | '`'))
+            .unwrap_or(rest.len());
+        let mut url = &rest[..end];
+        loop {
+            let trimmed = url.trim_end_matches(['.', ',', ':', ';', '!', '?', '\'']);
+            // Keep parentheses that belong to the URL, as in Wikipedia's.
+            let trimmed = match trimmed.strip_suffix(')') {
+                Some(inner) if inner.matches('(').count() < trimmed.matches(')').count() => inner,
+                _ => trimmed,
+            };
+            if trimmed.len() == url.len() {
+                break;
+            }
+            url = trimmed;
+        }
+        if url
+            .split_once("://")
+            .is_some_and(|(_, host)| !host.is_empty())
+        {
+            urls.push(start..start + url.len());
+        }
+    }
+    urls
+}
+
+/// The commit or comparison a GitHub URL names within `repository`.
+fn local<'a>(url: &'a str, repository: &str) -> Option<Local<'a>> {
+    fn without_scheme(url: &str) -> Option<&str> {
+        url.strip_prefix("https://")
+            .or_else(|| url.strip_prefix("http://"))
+    }
+    let path = without_scheme(url)?;
+    let path = path.strip_prefix("www.").unwrap_or(path);
+    let repository = without_scheme(repository)?;
+    // GitHub owners and repositories are case-insensitive.
+    let path = path
+        .get(..repository.len())
+        .filter(|prefix| prefix.eq_ignore_ascii_case(repository))
+        .and_then(|_| path[repository.len()..].strip_prefix('/'))?;
+    let path = path.split(['?', '#']).next()?.trim_end_matches('/');
+    if let Some(hash) = path.strip_prefix("commit/") {
+        return (hash.len() >= 4 && is_hash(hash)).then_some(Local::Commit(hash));
+    }
+    let (base, head) = path
+        .strip_prefix("compare/")?
+        .split_once("...")
+        .or_else(|| path.strip_prefix("compare/")?.split_once(".."))?;
+    (!base.is_empty() && !head.is_empty()).then_some(Local::Range(base, head))
+}
+
 pub type BrowserResult = std::sync::mpsc::Receiver<Result<(), String>>;
 
 /// Hand the URL to the OS without a shell or blocking the TUI on the browser.
-pub fn open_issue(url: &str) -> Result<BrowserResult, String> {
+pub fn open_url(url: &str) -> Result<BrowserResult, String> {
     use std::process::{Command, Stdio};
     #[cfg(target_os = "macos")]
     let mut command = Command::new("open");
@@ -215,7 +332,7 @@ mod tests {
                 "commit link missing with format.pretty={pretty}"
             );
             assert!(
-                targets.contains(&Target::Issue(
+                targets.contains(&Target::Url(
                     "https://github.com/owner/repo/issues/123".into()
                 )),
                 "issue link missing with format.pretty={pretty}"
@@ -252,8 +369,17 @@ mod tests {
         let links = collect(&text, &mut None);
         assert_eq!(
             links.len(),
-            1,
+            2,
             "exclude headers, notes, patches, blobs, identifiers and other repositories"
+        );
+        let url = format!("https://github.com/other/repo/commit/{short}");
+        assert_eq!(
+            links[&4]
+                .iter()
+                .map(|link| &link.target)
+                .collect::<Vec<_>>(),
+            [&Target::Url(url)],
+            "a hash in another repository's URL is part of that URL's link"
         );
         assert_eq!(links[&3].len(), 2);
         for link in &links[&3] {
@@ -367,13 +493,78 @@ mod tests {
             assert_eq!(&line[link.range.clone()], token);
             assert_eq!(
                 link.target,
-                Target::Issue(format!(
+                Target::Url(format!(
                     "https://github.com/owner/repo/issues/{}",
                     &token[1..]
                 ))
             );
         }
         assert_eq!(links[&2].last().unwrap().target, Target::Commit(hash));
+    }
+
+    #[test]
+    fn urls_to_this_repository_open_in_glog_and_others_in_the_browser() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        git(&["remote", "add", "origin", "git@github.com:Owner/Repo.git"]);
+        let base = commit("base");
+        git(&["tag", "v1"]);
+        let middle = commit("middle");
+        let head = commit("head");
+        let repo = "https://github.com/owner/repo";
+        let urls = [
+            format!("{repo}/commit/{}", &middle[..7]),
+            format!("{repo}/compare/v1...{}", &head[..9]),
+            format!("https://www.github.com/OWNER/REPO/commit/{head}#diff-1"),
+            format!("{repo}/commit/{}", "0".repeat(40)),
+            format!("{repo}/compare/v1...missing"),
+            format!("{repo}/pull/7"),
+            "https://example.com/wiki/Git_(software)".to_owned(),
+        ];
+        let line = format!(
+            "    See {}, ({}). <{}> {}; [x]({}) {}, {}!",
+            urls[0], urls[1], urls[2], urls[3], urls[4], urls[5], urls[6]
+        );
+        let text = format!("commit {head}\n\n{line}\n");
+        let links = collect(&text, &mut None);
+        let found: Vec<_> = links[&2]
+            .iter()
+            .map(|link| (&line[link.range.clone()], link.target.clone()))
+            .collect();
+        let expected = [
+            Target::Commit(middle),
+            Target::Range(format!("{base}..{head}")),
+            Target::Commit(head.clone()),
+            Target::Url(urls[3].clone()),
+            Target::Url(urls[4].clone()),
+            Target::Url(urls[5].clone()),
+            Target::Url(urls[6].clone()),
+        ];
+        assert_eq!(
+            found,
+            urls.iter()
+                .map(String::as_str)
+                .zip(expected)
+                .collect::<Vec<_>>()
+        );
+
+        let mut app = git::load_show_app(&[head]).unwrap();
+        app.follow_link(&found[1].1);
+        assert_eq!(app.mode, Mode::Log);
+        assert_eq!(
+            app.commits
+                .iter()
+                .map(|commit| commit.subject.as_str())
+                .collect::<Vec<_>>(),
+            ["head", "middle"]
+        );
+        assert!(app.has_reference_back());
+        app.follow_link(&Target::Range(format!("{base}..{base}")));
+        assert_eq!(
+            app.status.as_deref(),
+            Some(&*format!("no commits in {}..{}", &base[..7], &base[..7]))
+        );
     }
 
     #[cfg(unix)]
@@ -407,7 +598,7 @@ mod tests {
             let (rect, _) = app
                 .visible_show_links
                 .iter()
-                .find(|(_, target)| target == &Target::Issue(expected.into()))
+                .find(|(_, target)| target == &Target::Url(expected.into()))
                 .unwrap()
                 .clone();
             let before = (app.show_text.clone(), app.show_cursor, app.show_offset);
@@ -528,7 +719,7 @@ fi
             .collect();
         assert_eq!(
             targets,
-            [&Target::Issue(
+            [&Target::Url(
                 "https://github.com/owner/repo/issues/1".into()
             )]
         );

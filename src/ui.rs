@@ -242,12 +242,12 @@ const HELP_ROWS: &[HelpRow] = &[
     (
         "Click link",
         [
-            Some("follow a commit or open a GitHub issue (Show)"),
-            Some("follow a commit or open a GitHub issue (Show)"),
-            Some("follow a commit or open a GitHub issue (Show)"),
+            Some("follow a commit or open a link (Show)"),
+            Some("follow a commit or open a link (Show)"),
+            Some("follow a commit or open a link (Show)"),
             // Show links nothing in stash messages.
             None,
-            Some("follow a commit or open a GitHub issue (Show)"),
+            Some("follow a commit or open a link (Show)"),
             None,
         ],
     ),
@@ -368,7 +368,7 @@ const HELP_ROWS: &[HelpRow] = &[
         "Backspace",
         [
             // A followed reference opens as a Log, whatever it was followed from.
-            Some("return after following a commit reference"),
+            Some("return after following a link"),
             None,
             Some("return to the previous blame"),
             None,
