@@ -125,6 +125,7 @@ pub struct App {
     pub pending_history: Option<Vec<String>>,
     pub show_paths: Vec<String>,
     pub redraw: bool,
+    pub pending_editor: Option<std::process::Command>,
     search_history: Vec<String>,
     search_history_index: usize,
     search_draft: String,
@@ -199,6 +200,7 @@ impl App {
             pending_history: None,
             show_paths: Vec::new(),
             redraw: false,
+            pending_editor: None,
             search_history: Vec::new(),
             search_history_index: 0,
             search_draft: String::new(),
@@ -965,6 +967,73 @@ impl App {
         self.stat_bookmark = None;
         self.stat_submodule_bookmark = None;
         self.rebuild_show_rows();
+    }
+
+    pub fn request_editor(&mut self) {
+        let target = if self.mode == Mode::Status {
+            self.status_view
+                .as_ref()
+                .ok_or_else(|| "No file selected".to_owned())
+                .and_then(|view| view.editor_target())
+        } else {
+            self.show_editor_target(self.show_cursor)
+        };
+        match target.and_then(crate::editor::Target::command) {
+            Ok(command) => {
+                self.set_editor_error(None);
+                self.pending_editor = Some(command);
+            }
+            Err(error) => self.set_editor_error(Some(error)),
+        }
+    }
+
+    pub fn set_editor_error(&mut self, error: Option<String>) {
+        if self.mode == Mode::Status {
+            if let Some(view) = &mut self.status_view {
+                view.error = error;
+            }
+        } else {
+            self.status = error;
+        }
+    }
+
+    fn show_editor_target(&self, cursor: usize) -> Result<crate::editor::Target, String> {
+        if let Some((key, row)) = self.submodule_rows.get(&cursor) {
+            return self.submodules[key].show_editor_target(*row);
+        }
+        let row = self.show_rows.get(cursor).ok_or("No file selected")?;
+        let file = row
+            .file
+            .map(|index| &self.show_files[index])
+            .ok_or("No file selected")?;
+        if file.submodule.is_some() {
+            return Err("Expand the submodule and select a file".to_owned());
+        }
+        let root = self
+            .submodule_root
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(git::repository_root)?;
+        let patch = self
+            .show_text
+            .lines()
+            .skip(file.start)
+            .take(file.end - file.start)
+            .collect::<Vec<_>>()
+            .join("\n");
+        let worktree = self.commits.get(self.selected).is_some_and(|commit| {
+            matches!(
+                commit.kind,
+                CommitKind::Unstaged | CommitKind::Comparison { worktree: true }
+            )
+        });
+        Ok(crate::editor::Target::from_patch(
+            root,
+            git::raw_path(&file.path_bytes),
+            &patch,
+            row.source - file.start,
+            worktree,
+        ))
     }
 
     pub fn enable_images(&mut self) {

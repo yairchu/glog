@@ -3,6 +3,7 @@ mod app;
 mod blame;
 mod commit_links;
 mod diff;
+mod editor;
 mod git;
 mod images;
 mod input;
@@ -269,6 +270,31 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
     // input, a completed background task, or a refresh.
     let mut changed = true;
     while !app.quit {
+        if let Some(mut command) = app.pending_editor.take() {
+            app.images.clear(&mut io::stdout())?;
+            disable_raw_mode()?;
+            execute!(
+                io::stdout(),
+                DisableMouseCapture,
+                LeaveAlternateScreen,
+                crossterm::cursor::Show
+            )?;
+            let result = command.status();
+            // Restore the UI even when the editor is missing or exits with an error.
+            enable_raw_mode()?;
+            execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+            terminal.hide_cursor()?;
+            terminal.clear()?;
+            match result {
+                Ok(status) if status.success() => app.set_editor_error(None),
+                Ok(status) => app.set_editor_error(Some(format!("Editor exited with {status}"))),
+                Err(error) => app.set_editor_error(Some(format!("Could not open editor: {error}"))),
+            }
+            if let Some(view) = &mut app.status_view {
+                let _ = view.refresh();
+            }
+            changed = true;
+        }
         if app.redraw {
             app.images.clear(&mut io::stdout())?;
             terminal.clear()?;

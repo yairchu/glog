@@ -7,6 +7,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Press `e` in Status, Diff, or Show to open the working file in `$VISUAL`
+  or `$EDITOR` at the selected line. Adjust positions for staged and historical
+  changes, and handle VS Code and Xcode line-navigation flags automatically.
+
 - Draw commit graphs with Unicode lines, rounded corners, and filled commit
   dots. Crossings remain distinct from joins, including in folded and filtered
   histories, respecting first-parent traversal and marking excluded boundary

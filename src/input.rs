@@ -53,6 +53,10 @@ fn apply(event: Event, app: &mut App) {
             app.reference_back();
             return;
         }
+        if key.code == KeyCode::Char('e') && matches!(app.mode, Mode::Show | Mode::Status) {
+            app.request_editor();
+            return;
+        }
         if app.mode == Mode::Status {
             match key.code {
                 KeyCode::Tab | KeyCode::Esc => app.switch_mode(),

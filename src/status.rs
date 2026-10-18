@@ -393,6 +393,32 @@ pub struct StatusView {
     unloaded: bool,
 }
 impl StatusView {
+    pub fn editor_target(&self) -> Result<crate::editor::Target, String> {
+        let row = self.rows.get(self.cursor).ok_or("No file selected")?;
+        self.editor_target_for(&row.key)
+    }
+
+    fn editor_target_for(&self, row: &RowKey) -> Result<crate::editor::Target, String> {
+        if let RowKey::Nested(key, row) = row {
+            return self.submodules[key].editor_target_for(row);
+        }
+        let (key, source) = match row {
+            RowKey::File(key) => (key, 0),
+            RowKey::Patch(key, source) => (key, *source),
+            _ => return Err("No file selected".to_owned()),
+        };
+        Ok(crate::editor::Target::from_patch(
+            self.root.clone(),
+            key.path.clone(),
+            self.patches.get(key).map(String::as_str).unwrap_or(""),
+            source,
+            matches!(
+                key.group,
+                Group::Unstaged | Group::Untracked | Group::Conflicts
+            ),
+        ))
+    }
+
     fn load_submodule(&self, key: &Key) -> Result<Self, String> {
         let root = self.root.join(&key.path);
         if !root.join(".git").exists() {

@@ -120,6 +120,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "editor-command"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "233f7e1e39795915a24f5eac451b7f4e73b090ca60dd5d2bc7a06cc929e021b1"
+dependencies = [
+ "shell-words",
+]
+
+[[package]]
 name = "either"
 version = "1.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -183,6 +192,7 @@ version = "0.5.2"
 dependencies = [
  "base64",
  "crossterm",
+ "editor-command",
  "image",
  "ratatui",
 ]
@@ -485,6 +495,12 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "shell-words"
+version = "1.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dc6fe69c597f9c37bfeeeeeb33da3530379845f10be461a66d16d03eca2ded77"
 
 [[package]]
 name = "signal-hook"

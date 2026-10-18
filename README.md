@@ -472,6 +472,7 @@ so graph edges may span them.
 | `Enter` | open selected commit | expand/fold current folded file |
 | `z` | expand/fold selected merge history | expand/fold current folded file |
 | `L` | — | expand/fold all lockfiles |
+| `e` | — | open working file at the selected line in your editor |
 | `m` | expand/fold all merge histories | — |
 | `M` | hide/show merge commits | — |
 | `t`, `T` | hide selected commit type / clear filters | — |
@@ -495,6 +496,13 @@ The selected Log commit is the one displayed by Show. Show output is loaded lazi
 Show highlights the current patch row. Navigation and search move this cursor,
 and `Enter`/`z` acts on the file beneath it even when the cursor is in the last
 screenful.
+
+Press `e` in Show, Diff, or Status to open the working file in `$VISUAL`
+(falling back to `$EDITOR`). Selecting a patch line opens that position;
+staged and historical positions are adjusted for subsequent edits. Deleted
+lines use the nearest surviving line. Use `EDITOR=code` for VS Code or
+`EDITOR=xed` for Xcode on macOS. Add `--wait` to return to glog after closing
+the file.
 
 Common lockfiles (`*.lock`, `package-lock.json`, and `pnpm-lock.yaml`) start
 folded in Show so source changes remain prominent. The placeholder always shows
