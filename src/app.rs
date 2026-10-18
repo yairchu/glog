@@ -132,6 +132,8 @@ pub struct App {
     cache: HashMap<String, CachedShow>,
     cache_order: VecDeque<String>,
     show_files: Vec<FileSection>,
+    // Raw untracked patches stay raw after their lazy placeholders are replaced.
+    raw_untracked_files: HashSet<Vec<u8>>,
     expanded_folds: HashSet<Vec<u8>>,
     submodules: HashMap<Vec<u8>, Box<App>>,
     submodule_rows: HashMap<usize, (Vec<u8>, usize)>,
@@ -207,6 +209,7 @@ impl App {
             cache: HashMap::new(),
             cache_order: VecDeque::new(),
             show_files: Vec::new(),
+            raw_untracked_files: HashSet::new(),
             expanded_folds: HashSet::new(),
             submodules: HashMap::new(),
             submodule_rows: HashMap::new(),
@@ -962,6 +965,12 @@ impl App {
         }
         self.show_search_location = None;
         self.show_files = diff::file_sections(&self.show_text);
+        self.raw_untracked_files = self
+            .show_files
+            .iter()
+            .filter(|file| file.lazy_untracked_path.is_some())
+            .map(|file| file.key.clone())
+            .collect();
         self.submodules.clear();
         self.expanded_folds.clear();
         self.stat_bookmark = None;
@@ -1033,7 +1042,7 @@ impl App {
             &patch,
             row.source - file.start,
             worktree,
-            if self.submodule_root.is_some() || file.lazy_untracked_path.is_some() {
+            if self.submodule_root.is_some() || self.raw_untracked_files.contains(&file.key) {
                 crate::editor::Textconv::Disabled
             } else {
                 crate::editor::Textconv::Allowed
