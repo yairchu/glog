@@ -1033,6 +1033,11 @@ impl App {
             &patch,
             row.source - file.start,
             worktree,
+            if self.submodule_root.is_some() || file.lazy_untracked_path.is_some() {
+                crate::editor::Textconv::Disabled
+            } else {
+                crate::editor::Textconv::Allowed
+            },
         ))
     }
 

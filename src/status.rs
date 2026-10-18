@@ -416,6 +416,7 @@ impl StatusView {
                 key.group,
                 Group::Unstaged | Group::Untracked | Group::Conflicts
             ),
+            crate::editor::Textconv::Disabled,
         ))
     }
 

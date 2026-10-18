@@ -2,12 +2,19 @@ use std::{path::PathBuf, process::Command};
 
 use crate::{ansi, git};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Textconv {
+    Allowed,
+    Disabled,
+}
+
 pub struct Target {
     root: PathBuf,
     path: PathBuf,
     line: Option<u32>,
     /// The result-side blob, when the displayed file is not the working tree.
     blob: Option<String>,
+    textconv: Textconv,
 }
 
 impl Target {
@@ -17,6 +24,7 @@ impl Target {
         patch: &str,
         row: usize,
         worktree: bool,
+        textconv: Textconv,
     ) -> Self {
         let mut blob = None;
         let mut line = None;
@@ -61,6 +69,7 @@ impl Target {
             path,
             line,
             blob,
+            textconv,
         }
     }
 
@@ -72,11 +81,14 @@ impl Target {
                 path.display()
             ));
         }
+        // Textconv may change the number and meaning of lines. Its displayed
+        // positions cannot be translated through a diff of the raw blobs.
+        if self.line.is_some() && self.textconv == Textconv::Allowed && self.uses_textconv()? {
+            return Ok(None);
+        }
         if let (Some(line), Some(blob)) = (self.line, &self.blob) {
-            let output = git::repository_env(&mut git::patch_command(), &self.root)
-                .arg("--literal-pathspecs")
-                .arg("-C")
-                .arg(&self.root)
+            let output = self
+                .git()
                 .args([
                     "diff",
                     "--no-ext-diff",
@@ -107,6 +119,55 @@ impl Target {
             )));
         }
         Ok(self.line)
+    }
+
+    fn git(&self) -> Command {
+        let mut command = git::patch_command();
+        git::repository_env(&mut command, &self.root)
+            .arg("--literal-pathspecs")
+            .arg("-C")
+            .arg(&self.root);
+        command
+    }
+
+    fn uses_textconv(&self) -> Result<bool, String> {
+        let output = self
+            .git()
+            .args(["check-attr", "-z", "diff", "--"])
+            .arg(&self.path)
+            .output()
+            .map_err(|error| error.to_string())?;
+        if !output.status.success() {
+            return Err(git::stderr_message(
+                "Could not read Git attributes",
+                &output.stderr,
+            ));
+        }
+        let driver = output
+            .stdout
+            .split(|&b| b == 0)
+            .nth(2)
+            .ok_or("Missing Git diff attribute")?;
+        if matches!(driver, b"set" | b"unset" | b"unspecified") {
+            return Ok(false);
+        }
+        let mut key = std::ffi::OsString::from("diff.");
+        key.push(git::raw_path(driver));
+        key.push(".textconv");
+        let output = self
+            .git()
+            .args(["config", "--get"])
+            .arg(key)
+            .output()
+            .map_err(|error| error.to_string())?;
+        match output.status.code() {
+            Some(0) => Ok(true),
+            Some(1) => Ok(false),
+            _ => Err(git::stderr_message(
+                "Could not read textconv configuration",
+                &output.stderr,
+            )),
+        }
     }
 
     pub fn command(self) -> Result<Command, String> {
@@ -291,12 +352,26 @@ mod tests {
             (13, Some(31)),
             (14, Some(31)),
         ] {
-            let target = Target::from_patch(PathBuf::new(), "f".into(), patch, row, false);
+            let target = Target::from_patch(
+                PathBuf::new(),
+                "f".into(),
+                patch,
+                row,
+                false,
+                Textconv::Allowed,
+            );
             assert_eq!(target.line, expected, "row {row}");
         }
         let combined = "diff --cc f\nindex aaaa,bbbb..cccc\n@@@ -3,2 -3,2 +3,3 @@@\n  context\n- old\n +new\n++extra\n";
         for (row, line) in [(2, 3), (3, 3), (4, 4), (5, 4), (6, 5)] {
-            let target = Target::from_patch(PathBuf::new(), "f".into(), combined, row, false);
+            let target = Target::from_patch(
+                PathBuf::new(),
+                "f".into(),
+                combined,
+                row,
+                false,
+                Textconv::Allowed,
+            );
             assert_eq!(target.line, Some(line), "combined row {row}");
             assert_eq!(target.blob.as_deref(), Some("cccc"));
         }
@@ -319,6 +394,75 @@ mod tests {
             assert_eq!(map_line(line, patch), expected, "line {line}");
         }
         assert_eq!(map_line(1, "@@ -1,2 +0,0 @@\n-a\n-b\n"), 1);
+    }
+
+    #[test]
+    fn textconv_patch_positions_do_not_become_working_file_lines() {
+        use crate::git::tests::{git, CurrentDirGuard, TestDirectory};
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        std::fs::create_dir("nested").unwrap();
+        std::fs::write(".gitattributes", "nested/* diff=readable\n").unwrap();
+        git(&["config", "diff.readable.textconv", "sed '1d'"]);
+        std::fs::write("nested/file space", "header\none\nold\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        std::fs::write("nested/file space", "header\none\nnew\n").unwrap();
+        git(&["add", "."]);
+        std::env::set_current_dir("nested").unwrap();
+
+        for (args, worktree) in [
+            (
+                vec!["diff", "--cached", "--textconv", "--full-index"],
+                false,
+            ),
+            (
+                vec!["show", "--format=", "--textconv", "--full-index"],
+                false,
+            ),
+            (vec!["diff", "--textconv", "--full-index"], true),
+        ] {
+            if args[0] == "show" {
+                git(&["commit", "-qm", "change"]);
+            } else if worktree {
+                std::fs::write("file space", "header\none\nnewer\n").unwrap();
+            }
+            let patch = git(&args);
+            let row = patch
+                .lines()
+                .position(|line| line.starts_with("+new"))
+                .unwrap();
+            let target = Target::from_patch(
+                directory.path().into(),
+                "nested/file space".into(),
+                &patch,
+                row,
+                worktree,
+                Textconv::Allowed,
+            );
+            assert_eq!(target.line, Some(2), "the displayed line is transformed");
+            assert_eq!(target.working_line().unwrap(), None, "{args:?}");
+
+            // Status and expanded submodules explicitly disable textconv,
+            // so the same attributes must not suppress their raw positions.
+            let mut raw_args = args.clone();
+            raw_args.push("--no-textconv");
+            let raw = git(&raw_args);
+            let row = raw
+                .lines()
+                .position(|line| line.starts_with("+new"))
+                .unwrap();
+            let target = Target::from_patch(
+                directory.path().into(),
+                "nested/file space".into(),
+                &raw,
+                row,
+                worktree,
+                Textconv::Disabled,
+            );
+            assert_eq!(target.working_line().unwrap(), Some(3), "{raw_args:?}");
+        }
     }
 
     #[test]
@@ -346,6 +490,7 @@ mod tests {
             &patch,
             row,
             false,
+            Textconv::Allowed,
         );
         assert_eq!(target.working_line().unwrap(), Some(3));
         // The same patch remains meaningful after it becomes a commit.
