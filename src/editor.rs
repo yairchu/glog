@@ -502,4 +502,46 @@ mod tests {
             .unwrap_err()
             .contains("not a regular working-tree file"));
     }
+
+    #[test]
+    fn expanded_untracked_files_keep_raw_editor_line_positions() {
+        use crate::git::tests::{git, CurrentDirGuard, TestDirectory};
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        std::fs::write(".gitattributes", "*.txt diff=readable\n").unwrap();
+        git(&["config", "diff.readable.textconv", "sed '1d'"]);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        std::fs::write("new.txt", "header\none\ntwo\n").unwrap();
+        let mut app = crate::git::load_diff_app(&[]).unwrap();
+        app.show_cursor = app.show_rows.iter().position(|row| row.folded).unwrap();
+        app.toggle_show_file();
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| ansi::plain(&row.text) == "+two")
+            .unwrap();
+
+        let previous_visual = std::env::var_os("VISUAL");
+        std::env::set_var("VISUAL", "code");
+        app.request_editor();
+        match previous_visual {
+            Some(value) => std::env::set_var("VISUAL", value),
+            None => std::env::remove_var("VISUAL"),
+        }
+        let command = app.pending_editor.expect("editor command");
+        let mut positioned = directory
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("new.txt")
+            .into_os_string();
+        positioned.push(":3:1");
+        assert_eq!(
+            command.get_args().collect::<Vec<_>>(),
+            [positioned.as_os_str(), "--goto".as_ref()],
+            "the untracked patch shows raw lines despite its textconv attribute"
+        );
+    }
 }
