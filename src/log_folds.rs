@@ -910,6 +910,58 @@ impl Graph {
         }
     }
 
+    /// Colour whole first-parent chains before projecting folds and filters.
+    /// Earlier tips claim shared ancestors first; side histories keep their own
+    /// colour until joining a chain that already owns the ancestor.
+    fn first_parent_colours(&self, commits: &[Commit], git: &[Option<usize>]) -> Vec<usize> {
+        let mut colours = vec![None; self.parents.len()];
+        let mut used = HashSet::new();
+        let mut fallback = 0;
+        let starts = commits
+            .iter()
+            .enumerate()
+            .filter(|(_, commit)| commit.kind == CommitKind::Revision)
+            .map(|(row, _)| row)
+            .chain(self.order.iter().copied());
+        for start in starts {
+            let mut chain = Vec::new();
+            let mut node = start;
+            while colours[node].is_none() {
+                chain.push(node);
+                let Some(&(parent, _)) = self.parents[node].iter().find(|&&(_, side)| !side) else {
+                    break;
+                };
+                node = parent;
+            }
+            if chain.is_empty() {
+                continue;
+            }
+            // Retain Git's colour choices when they do not break continuity
+            // or give two chains the same colour. Cycle once the palette fills.
+            let colour = chain
+                .iter()
+                .filter_map(|&row| git.get(row).copied().flatten())
+                .find(|colour| !used.contains(colour))
+                .unwrap_or_else(|| {
+                    for _ in 0..PALETTE.len() {
+                        let colour = fallback % PALETTE.len();
+                        fallback += 1;
+                        if !used.contains(&colour) {
+                            return colour;
+                        }
+                    }
+                    let colour = fallback % PALETTE.len();
+                    fallback += 1;
+                    colour
+                });
+            used.insert(colour);
+            for row in chain {
+                colours[row] = Some(colour);
+            }
+        }
+        colours.into_iter().map(Option::unwrap).collect()
+    }
+
     /// Count distinct hidden rows reached through a merge's side history,
     /// including rows shared with other folds and inside nested folds.
     fn hidden_side_count(&self, merge: usize, reached: &[bool]) -> usize {
@@ -1136,7 +1188,8 @@ impl Layout {
         self.draw(graph, commits, &self.folded, &reached, &[])
     }
 
-    /// Redraw the graph over the shown rows, keeping Git's lane colours.
+    /// Redraw the graph over the shown rows. ASCII keeps Git's lane colours;
+    /// Unicode keeps first-parent colours through folds and filters.
     /// `trimmed` rows keep their routing rows but not their node.
     fn draw(
         &self,
@@ -1189,7 +1242,7 @@ impl Layout {
         // takes its row's colour. Git draws no edge into the first row or a
         // row directly below its child; those lanes use the palette instead.
         let mut colours: Vec<String> = PALETTE.iter().map(|&c| c.to_owned()).collect();
-        let git_colours = (0..commits.len())
+        let git_colours: Vec<_> = (0..commits.len())
             .map(|row| {
                 let colour = incoming_colour(commits, row)?;
                 Some(colours.iter().position(|c| c == colour).unwrap_or_else(|| {
@@ -1198,6 +1251,7 @@ impl Layout {
                 }))
             })
             .collect();
+        let unicode_colours = graph.first_parent_colours(commits, &git_colours);
         let fixed = commits
             .iter()
             .enumerate()
@@ -1228,6 +1282,7 @@ impl Layout {
             projected,
             colours,
             git_colours,
+            unicode_colours,
             fixed,
             ascii: std::cell::OnceCell::new(),
             unicode: std::cell::OnceCell::new(),
@@ -1271,6 +1326,7 @@ struct Plan {
     // Lanes refer to colours by their index.
     colours: Vec<String>,
     git_colours: Vec<Option<usize>>,
+    unicode_colours: Vec<usize>,
     // Rows Git drew without commits, such as the working tree.
     fixed: HashMap<usize, GraphRows>,
     // Each style's lanes, assigned when the style is first shown.
@@ -1373,6 +1429,7 @@ impl Plan {
             Some(column) => column,
             None => {
                 let colour = match self.git_colours[index] {
+                    _ if unicode => self.unicode_colours[index],
                     Some(colour) => colour,
                     None => self.palette(state),
                 };
@@ -1403,6 +1460,7 @@ impl Plan {
                 // Without Git's colour, the first new parent continues
                 // this lane's colour.
                 let colour = match self.git_colours.get(parent).copied().flatten() {
+                    _ if unicode => self.unicode_colours[parent],
                     Some(colour) => colour,
                     None if insert == column => colour,
                     None => self.palette(state),
@@ -1958,7 +2016,7 @@ mod tests {
     }
 
     #[test]
-    fn redrawn_lanes_keep_git_colours() {
+    fn redrawn_ascii_lanes_keep_git_colours() {
         let commits = coloured_history();
         let git = incoming_colours(&commits.iter().map(|c| &c.graph[..]).collect::<Vec<_>>());
         // merge2 is the first row and m2 leads straight into merge1.
@@ -1989,6 +2047,72 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn unicode_first_parents_keep_their_colour_through_merges() {
+        let mut commits = coloured_history();
+        commits[2].subject = "fix: middle of the trunk".into();
+        for hide_middle in [false, true] {
+            for fold_merge in [false, true] {
+                let mut folds = LogFolds::default();
+                folds.refresh(&commits).unwrap();
+                if hide_middle {
+                    folds.toggle_type(Some("fix"), &commits).unwrap();
+                }
+                if fold_merge {
+                    folds.toggle(0, &commits).unwrap();
+                }
+                let plan = &folds.shown_layout().graphs.0;
+                let mut state = State::default();
+                for (index, expected) in [0, 1, 0, 0, 3, 0, 0].into_iter().enumerate() {
+                    if let Some(row) = plan.step(&mut state, index, true) {
+                        assert_eq!(
+                            row.lanes[row.column].unwrap().1,
+                            expected,
+                            "{} (hidden: {hide_middle}, folded: {fold_merge})",
+                            commits[index].hash
+                        );
+                    }
+                }
+                // Check the rendered trunk as well as the node assignments:
+                // Git's original graph changes it to green and then blue.
+                for (index, commit) in commits.iter().enumerate() {
+                    if !folds.graph_visible(index) {
+                        continue;
+                    }
+                    for line in folds.display_graph(index, commit) {
+                        if let Some(&(glyph, colour)) = cells(line).first() {
+                            if matches!(glyph, '│' | '├') {
+                                assert_eq!(colour, Some("31"), "{}: {line:?}", commit.hash);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_multiple_tips_keep_distinct_chains_and_cycle_the_palette() {
+        // Independent tips share an ancestor; the first tip owns its colour.
+        // After exhausting the palette, continue cycling rather than assigning
+        // the same fallback colour to every remaining tip.
+        let tips = PALETTE.len() + 2;
+        let mut commits: Vec<_> = (0..tips)
+            .map(|tip| commit(&format!("tip{tip}"), &["base"]))
+            .collect();
+        commits.push(commit("base", &[]));
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        let plan = &folds.shown_layout().graphs.0;
+        let mut state = State::default();
+        for tip in 0..tips {
+            let row = plan.step(&mut state, tip, true).unwrap();
+            assert_eq!(row.lanes[row.column].unwrap().1, tip % PALETTE.len());
+        }
+        let base = plan.step(&mut state, tips, true).unwrap();
+        assert_eq!(base.lanes[base.column].unwrap().1, 0);
     }
 
     #[test]

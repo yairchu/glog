@@ -16,8 +16,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   histories, respecting first-parent traversal and marking excluded boundary
   commits with hollow circles. Preserve left/right and patch-equivalence
   markers in comparison histories. Lanes keep their columns as others end, so
-  wide histories stay as compact as Git's. Use `--ascii-graph` for the original
-  Git-style drawing.
+  wide histories stay as compact as Git's. First-parent chains keep their
+  colors through merges, folds, and filters. Use `--ascii-graph` for the original
+  Git-style drawing and coloring.
 
 - Emphasize breaking-change markers in Log, Reflog, and Show, including
   `!`, `BREAKING CHANGE:`, and `BREAKING-CHANGE:`. Show also emphasizes
