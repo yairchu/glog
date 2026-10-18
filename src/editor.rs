@@ -531,9 +531,9 @@ mod tests {
             None => std::env::remove_var("VISUAL"),
         }
         let command = app.pending_editor.expect("editor command");
-        let mut positioned = directory
-            .path()
-            .canonicalize()
+        // Git's repository root can use a different path spelling than
+        // canonicalize() on Windows (C:/... versus \\?\C:\...).
+        let mut positioned = crate::git::repository_root()
             .unwrap()
             .join("new.txt")
             .into_os_string();
