@@ -194,9 +194,12 @@ fn rebasing() -> Result<bool, String> {
     if !output.status.success() {
         return Err(stderr_message("git rev-parse failed", &output.stderr));
     }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .lines()
-        .any(|path| std::path::Path::new(path).exists()))
+    let paths = String::from_utf8_lossy(&output.stdout);
+    let mut paths = paths.lines().map(std::path::Path::new);
+    let (merge, apply) = (paths.next(), paths.next());
+    Ok(merge.is_some_and(|path| path.exists())
+        // `git am` uses rebase-apply too, marking itself with `applying`.
+        || apply.is_some_and(|path| path.exists() && !path.join("applying").exists()))
 }
 
 fn parse_reflog(output: &str, rebasing: bool) -> Result<Vec<Commit>, String> {
