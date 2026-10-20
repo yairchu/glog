@@ -2176,6 +2176,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn reflog_amends_fold_beside_a_rebase_apply_without_a_rebase_marker() {
+        use crate::app::App;
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        git(&["commit", "--allow-empty", "-qm", "original"]);
+        for message in ["amended", "amended again"] {
+            git(&["commit", "--amend", "--allow-empty", "-qm", message]);
+        }
+        // A leftover state directory, as from older `git am` versions,
+        // without the `rebasing` marker that rebases write.
+        fs::create_dir(git(&["rev-parse", "--git-path", "rebase-apply"])).unwrap();
+
+        let app = App::new(load_reflog(&[]).unwrap());
+        assert_eq!(app.log_folds.marker(0), Some("▶"));
+        assert_eq!(app.log_folds.label(0), " · 2 earlier versions");
+    }
+
+    #[test]
     fn reflog_rejects_multiline_dates_and_malformed_records() {
         assert!(parse_reflog(
             "hash\0short\0HEAD@{2020\n01}\0reset\0subject\0Actor\0",
