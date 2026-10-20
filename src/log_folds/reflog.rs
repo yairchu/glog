@@ -464,9 +464,16 @@ mod tests {
             ("HEAD", "revert: Revert \"picked\""),
             ("HEAD", "commit (amend): amended merge"),
             ("HEAD", "merge side: Merge made by the 'ort' strategy."),
+            ("HEAD", "commit (amend): amended pull"),
+            (
+                "HEAD",
+                "pull origin main: Merge made by the 'ort' strategy.",
+            ),
+            ("HEAD", "commit (amend): amended fast-forward pull"),
+            ("HEAD", "pull: Fast-forward"),
         ]);
-        assert_eq!(shown(&app), [0, 2, 4]);
-        for row in [0, 2, 4] {
+        assert_eq!(shown(&app), [0, 2, 4, 6, 8]);
+        for row in [0, 2, 4, 6, 8] {
             assert_eq!(app.log_folds.label(row), " · 1 earlier version");
         }
     }
@@ -547,6 +554,17 @@ mod tests {
             vec!["rebase (pick): ongoing", "rebase (start): checkout main"],
             vec!["commit (amend): ongoing", "rebase (start): checkout main"],
             vec![
+                "commit (amend): newest ongoing edit",
+                "commit (amend): previous ongoing edit",
+                "rebase (start): checkout main",
+            ],
+            // A count limit can omit the start of the ongoing rebase.
+            vec![
+                "commit (amend): newest ongoing edit",
+                "commit (amend): previous ongoing edit",
+            ],
+            vec![
+                "reset: moving to HEAD",
                 "commit (amend): newest ongoing edit",
                 "commit (amend): previous ongoing edit",
                 "rebase (start): checkout main",

@@ -588,6 +588,10 @@ pub(crate) mod tests {
                 vec![("abc1234", Color::Yellow)],
             ),
             (
+                "rebase (abort): returning to refs/heads/topic",
+                vec![("refs/heads/topic", Color::Green)],
+            ),
+            (
                 "pull --rebase (finish): returning to refs/heads/main",
                 vec![("refs/heads/main", Color::Green)],
             ),
