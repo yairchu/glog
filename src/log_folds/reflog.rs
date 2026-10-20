@@ -183,9 +183,14 @@ enum CommitEvent {
 fn commit_event(action: &str) -> Option<CommitEvent> {
     match action.split_once(": ")?.0 {
         "commit (amend)" => Some(CommitEvent::Amend),
-        "commit" | "commit (initial)" | "commit (cherry-pick)" | "commit (merge)" => {
-            Some(CommitEvent::Original)
-        }
+        "commit"
+        | "commit (initial)"
+        | "commit (cherry-pick)"
+        | "commit (merge)"
+        | "cherry-pick"
+        | "revert" => Some(CommitEvent::Original),
+        // "merge <revision>", which can also be a fast-forward.
+        action if action.starts_with("merge ") => Some(CommitEvent::Original),
         _ => None,
     }
 }
