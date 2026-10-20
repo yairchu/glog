@@ -5,6 +5,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+## 0.6.1 - 2026-10-20
+
 ### Added
 
 - Draw empty non-merge commits with a smaller bullet, including empty root
@@ -386,7 +388,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Initial release of the interactive `git log` and `git show` browser.
 
-[Unreleased]: https://github.com/yairchu/glog/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/yairchu/glog/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/yairchu/glog/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/yairchu/glog/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/yairchu/glog/compare/v0.5.1...v0.5.2
 [0.5.1]: https://github.com/yairchu/glog/compare/v0.5.0...v0.5.1
