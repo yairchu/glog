@@ -504,6 +504,7 @@ pub(crate) mod tests {
             c.annotation = Some(crate::git::Annotation::Reflog(crate::git::ReflogEntry {
                 reference: "HEAD".into(),
                 show_reference: false,
+                rebasing: false,
                 updated_at: "2026-10-01 10:00:01".into(),
                 actor: "Alice".into(),
                 action: action.into(),
@@ -586,6 +587,7 @@ pub(crate) mod tests {
             c.annotation = Some(Annotation::Reflog(ReflogEntry {
                 reference: "HEAD".into(),
                 show_reference: false,
+                rebasing: false,
                 updated_at: "2026-10-12 10:00:01".into(),
                 actor: "Alice".into(),
                 action: action.into(),
@@ -630,6 +632,7 @@ pub(crate) mod tests {
         reflog.annotation = Some(Annotation::Reflog(ReflogEntry {
             reference: "HEAD".into(),
             show_reference: false,
+            rebasing: false,
             updated_at: "2026-10-12".into(),
             actor: "Alice".into(),
             action: format!("commit: {}", c.subject),

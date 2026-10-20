@@ -62,24 +62,33 @@ impl Folds {
                 in_rebase[row] = true;
             }
         }
-        // Also leave amendments in an unfinished rebase alone.
-        // Walk chronologically because such an operation has no end fold.
-        let mut active = HashSet::new();
-        for (index, commit) in commits.iter().enumerate().rev() {
+        // Also leave amendments in a rebase Git still has in progress alone.
+        // Only a ref's newest entries can belong to it, back to its start.
+        let mut ongoing: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut settled = HashSet::new();
+        for (index, commit) in commits.iter().enumerate() {
             let Some(Annotation::Reflog(entry)) = &commit.annotation else {
                 continue;
             };
             let reference = entry.reference.as_str();
+            if !entry.rebasing || settled.contains(reference) {
+                continue;
+            }
             match rebase_event(&entry.action) {
-                Some(RebaseEvent::Start) => {
-                    active.insert(reference);
+                Some(RebaseEvent::Step) => {
+                    ongoing.entry(reference).or_default().push(index);
                 }
-                Some(RebaseEvent::Step) => {}
+                Some(RebaseEvent::Start) => {
+                    settled.insert(reference);
+                    let rows = ongoing.remove(reference).unwrap_or_default();
+                    for row in rows.into_iter().chain([index]) {
+                        in_rebase[row] = true;
+                    }
+                }
                 _ => {
-                    active.remove(reference);
+                    settled.insert(reference);
                 }
             }
-            in_rebase[index] |= active.contains(reference);
         }
         let mut pending: HashMap<&str, Vec<usize>> = HashMap::new();
         for (index, commit) in commits.iter().enumerate() {
@@ -233,6 +242,10 @@ mod tests {
     };
 
     fn app(events: &[(&str, &str)]) -> App {
+        app_during_rebase(events, false)
+    }
+
+    fn app_during_rebase(events: &[(&str, &str)], rebasing: bool) -> App {
         App::new(
             events
                 .iter()
@@ -248,6 +261,7 @@ mod tests {
                         actor: "Test".into(),
                         updated_at: "2026-10-20 12:00:00".into(),
                         show_reference: true,
+                        rebasing: rebasing && *reference == "HEAD",
                     }));
                     commit
                 })
@@ -566,7 +580,8 @@ mod tests {
                 "rebase (start): checkout main",
             ],
         ] {
-            let mut app = app(&events.iter().map(|e| ("HEAD", *e)).collect::<Vec<_>>());
+            let events: Vec<_> = events.iter().map(|e| ("HEAD", *e)).collect();
+            let mut app = app_during_rebase(&events, true);
             assert_eq!(shown(&app).len(), events.len(), "{events:?}");
             app.apply_log_action(LogAction::Fold);
             assert_eq!(shown(&app).len(), events.len(), "{events:?}");

@@ -120,6 +120,9 @@ impl Commit {
 pub struct ReflogEntry {
     pub reference: String,
     pub show_reference: bool,
+    /// Whether Git has a rebase of this ref in progress. Without one, a
+    /// rebase start without an end was left by `git rebase --quit`.
+    pub rebasing: bool,
     pub updated_at: String,
     pub actor: String,
     pub action: String,
@@ -178,10 +181,25 @@ pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
         }
         return Err(stderr_message("git reflog failed", &output.stderr));
     }
-    parse_reflog(&String::from_utf8_lossy(&output.stdout))
+    parse_reflog(&String::from_utf8_lossy(&output.stdout), rebasing()?)
 }
 
-fn parse_reflog(output: &str) -> Result<Vec<Commit>, String> {
+/// Whether the current worktree has a rebase in progress.
+fn rebasing() -> Result<bool, String> {
+    let output = read_command()
+        .args(["rev-parse", "--git-path", "rebase-merge"])
+        .args(["--git-path", "rebase-apply"])
+        .output()
+        .map_err(|error| format!("could not run git rev-parse: {error}"))?;
+    if !output.status.success() {
+        return Err(stderr_message("git rev-parse failed", &output.stderr));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|path| std::path::Path::new(path).exists()))
+}
+
+fn parse_reflog(output: &str, rebasing: bool) -> Result<Vec<Commit>, String> {
     if output.is_empty() {
         return Ok(Vec::new());
     }
@@ -216,6 +234,7 @@ fn parse_reflog(output: &str) -> Result<Vec<Commit>, String> {
             commit.annotation = Some(Annotation::Reflog(ReflogEntry {
                 reference: reference.into(),
                 show_reference,
+                rebasing: rebasing && reference == "HEAD",
                 updated_at: date.into(),
                 actor: fields[5].into(),
                 action: fields[3].into(),
@@ -2117,8 +2136,12 @@ pub(crate) mod tests {
 
     #[test]
     fn reflog_rejects_multiline_dates_and_malformed_records() {
-        assert!(parse_reflog("hash\0short\0HEAD@{2020\n01}\0reset\0subject\0Actor\0").is_err());
-        assert!(parse_reflog("hash\0short\0").is_err());
+        assert!(parse_reflog(
+            "hash\0short\0HEAD@{2020\n01}\0reset\0subject\0Actor\0",
+            false
+        )
+        .is_err());
+        assert!(parse_reflog("hash\0short\0", false).is_err());
     }
 
     #[test]
@@ -2127,6 +2150,7 @@ pub(crate) mod tests {
         let entries = parse_reflog(
             "hash\0short\0HEAD@{01@{x}\0reset: moving\0subject\0Actor\0\
              hash\0short\0HEAD@{02@{x}\0reset: moving\0subject\0Actor\0",
+            false,
         )
         .unwrap();
         for (entry, date) in entries.iter().zip(["01@{x", "02@{x"]) {
