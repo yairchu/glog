@@ -2203,6 +2203,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn reflog_folding_an_entry_without_a_fold_keeps_the_status() {
+        use crate::app::{App, LogAction};
+
+        let mut app = App::new(
+            parse_reflog(
+                "hash\0short\0HEAD@{1}\0checkout: moving\0subject\0Actor\0",
+                false,
+            )
+            .unwrap(),
+        );
+        app.status = Some("Not found: missing".into());
+        app.apply_log_action(LogAction::Fold);
+        assert_eq!(app.status.as_deref(), Some("Not found: missing"));
+    }
+
+    #[test]
     fn merge_folds_keep_history_reached_through_filtered_out_parents() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
