@@ -5,13 +5,15 @@ use std::{
     fs,
     io::{self, Cursor, Read, Write},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
+    process::Stdio,
     sync::mpsc::{self, Receiver, SyncSender},
     time::SystemTime,
 };
 
 use base64::{engine::general_purpose::STANDARD, Engine};
 use ratatui::{layout::Rect, style::Color, widgets::Paragraph, Frame};
+#[cfg(test)]
+use std::process::Command;
 
 pub const HEIGHT: u16 = 12;
 const MAX_BYTES: u64 = 16 * 1024 * 1024;
@@ -359,7 +361,7 @@ fn read_source(source: &Source) -> Option<Vec<u8>> {
                 .ok()?;
         }
         Source::Blob(root, oid) => {
-            let mut child = crate::git::repository_env(&mut Command::new("git"), root)
+            let mut child = crate::git::repository_env(&mut crate::git::read_command(), root)
                 .arg("-C")
                 .arg(root)
                 .args(["cat-file", "blob", oid])

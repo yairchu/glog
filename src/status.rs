@@ -197,7 +197,7 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
 }
 
 fn load_snapshot(root: &std::path::Path) -> Result<Snapshot, String> {
-    let output = crate::git::repository_env(&mut Command::new("git"), root)
+    let output = crate::git::repository_env(&mut crate::git::read_command(), root)
         .arg("-C")
         .arg(root)
         .args([
@@ -210,7 +210,6 @@ fn load_snapshot(root: &std::path::Path) -> Result<Snapshot, String> {
             RENAME_DETECTION,
             "-z",
         ])
-        .env("GIT_OPTIONAL_LOCKS", "0")
         .output()
         .map_err(|error| error.to_string())?;
     if !output.status.success() {
@@ -690,7 +689,7 @@ impl StatusView {
             input.push(0);
         }
         let output = crate::git::pipe_through_bytes(
-            crate::git::repository_env(&mut Command::new("git"), &self.root)
+            crate::git::repository_env(&mut crate::git::read_command(), &self.root)
                 .arg("-C")
                 .arg(&self.root)
                 .args(["check-attr", "--all", "-z", "--stdin"]),

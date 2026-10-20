@@ -19,8 +19,19 @@ mod empty_commits;
 // so use the default-prefix flag instead of borrowed src/dst-prefix values.
 pub(crate) const DIFF_PREFIX_ARGS: [&str; 2] = ["--no-relative", "--default-prefix"];
 
-pub(crate) fn patch_command() -> Command {
+/// Background readers must not lock or rewrite the index's stat cache.
+pub(crate) fn read_command() -> Command {
     let mut command = Command::new("git");
+    command
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        // Some Git versions refresh the index from `diff` even when
+        // optional locking is disabled.
+        .args(["-c", "diff.autoRefreshIndex=false"]);
+    command
+}
+
+pub(crate) fn patch_command() -> Command {
+    let mut command = read_command();
     // Patches pass through UTF-8 text (and optionally delta) before parsing.
     // Quote non-ASCII path bytes so this conversion cannot lose file identities.
     command.args(["-c", "core.quotePath=true"]);
@@ -139,7 +150,7 @@ pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
             _ => return Err(format!("unsupported reflog argument {arg:?}; use glog reflog [ref] [--all] [-n COUNT] [--date=STYLE]")),
         }
     }
-    let output = Command::new("git")
+    let output = read_command()
         .args(["--no-pager", "reflog", "show"])
         // Reflog selectors need an explicit --date to show times, not indices.
         .arg(format!(
@@ -279,7 +290,7 @@ pub enum CommitKind {
 }
 
 pub(crate) fn configured_log_date(fallback: &str) -> Result<String, String> {
-    let configured_date = Command::new("git")
+    let configured_date = read_command()
         .args(["config", "--get", "log.date"])
         .output()
         .map_err(|error| format!("could not read Git date configuration: {error}"))?;
@@ -297,7 +308,7 @@ pub(crate) fn configured_log_date(fallback: &str) -> Result<String, String> {
 }
 
 fn log_command(user_args: &[String]) -> Result<Command, String> {
-    let mut command = Command::new("git");
+    let mut command = read_command();
     command.env("LC_ALL", "C");
     // Use configuration so --date and --relative-date retain their precedence.
     command.args([
@@ -423,7 +434,7 @@ pub fn log_ancestry(commits: &[Commit], known: usize) -> AncestryRead {
     }
     let first_parent = revisions.iter().any(|commit| commit.first_parent_only);
     Box::new(move |cancel| {
-        let mut command = Command::new("git");
+        let mut command = read_command();
         command
             .args(["rev-list", "--parents", "--stdin"])
             .env("GIT_NO_LAZY_FETCH", "1");
@@ -530,7 +541,7 @@ pub fn load_show_app_with(
 /// Use origin if it exists; otherwise the sole GitHub repository among the remotes.
 /// Preserve a stored GitHub URL even if transport is rewritten; resolve aliases locally.
 pub(crate) fn github_repository() -> Option<String> {
-    let output = Command::new("git")
+    let output = read_command()
         .args(["config", "--get-regexp", r"^remote\..*\.url$"])
         .output()
         .ok()?;
@@ -550,7 +561,7 @@ pub(crate) fn github_repository() -> Option<String> {
     }
     let repository = |(remote, stored): (&str, &str)| {
         github_repository_url(stored).or_else(|| {
-            let output = Command::new("git")
+            let output = read_command()
                 .args(["remote", "get-url", remote])
                 .output()
                 .ok()?;
@@ -624,7 +635,7 @@ pub(crate) fn resolve_commits<'a>(
             .map(|object| format!("{object}^{{commit}}\n"))
             .collect();
         let output = pipe_through(
-            Command::new("git")
+            read_command()
                 .args(["cat-file", "--batch-check=%(objectname)"])
                 .env("GIT_NO_LAZY_FETCH", "1"),
             input.as_bytes(),
@@ -647,7 +658,7 @@ pub(crate) fn resolve_commits<'a>(
         if resolved.get(hash).is_none_or(|full| full.starts_with(hash)) {
             continue;
         }
-        let objects = Command::new("git")
+        let objects = read_command()
             .args(["rev-parse", &format!("--disambiguate={hash}")])
             .env("GIT_NO_LAZY_FETCH", "1")
             .stderr(Stdio::null())
@@ -688,7 +699,7 @@ fn resolve_show_commit(revision: &str) -> Result<String, String> {
 }
 
 fn resolve_revision(revision: &str) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = read_command()
         .args(["rev-parse", "--verify", "--end-of-options", revision])
         .output()
         .map_err(|error| format!("could not resolve revision: {error}"))?;
@@ -697,7 +708,7 @@ fn resolve_revision(revision: &str) -> Result<String, String> {
     }
     // rev-parse --verify only says it needed a single revision; cat-file
     // names the missing object or path.
-    let stderr = Command::new("git")
+    let stderr = read_command()
         .args(["cat-file", "-t", revision])
         .output()
         .ok()
@@ -709,7 +720,7 @@ fn resolve_revision(revision: &str) -> Result<String, String> {
 /// Peel a resolved object: after REV:, Git treats an appended ^{commit} as
 /// part of the filename instead of a type requirement.
 fn peel_commit(object: &str) -> Result<String, String> {
-    let output = Command::new("git")
+    let output = read_command()
         .args(["rev-parse", "--verify", "--end-of-options"])
         .arg(format!("{object}^{{commit}}"))
         .output()
@@ -790,7 +801,7 @@ fn diff_paths_start(args: &[String]) -> Result<usize, String> {
     if candidates.is_empty() {
         return Ok(args.len());
     }
-    let output = Command::new("git")
+    let output = read_command()
         .args(["rev-parse", "--no-revs"])
         .args(candidates.iter().map(|&index| &args[index]))
         .output()
@@ -825,7 +836,7 @@ fn comparison_uses_worktree(revisions: &[&String]) -> Result<bool, String> {
     // One argument can expand to multiple endpoints (HEAD^!, HEAD^-),
     // while HEAD^@ can expand to just one parent or none for a root commit.
     // Like git diff, use the working tree when there are fewer than two.
-    let output = Command::new("git")
+    let output = read_command()
         .args(["rev-parse", "--revs-only", "--end-of-options"])
         .args(revisions)
         .arg("--")
@@ -897,7 +908,7 @@ fn hash_command(
     args: &[&str],
     allow_failure: bool,
 ) -> Result<(), String> {
-    let output = Command::new("git")
+    let output = read_command()
         .args(args)
         .output()
         .map_err(|error| format!("could not inspect repository: {error}"))?;
@@ -1001,7 +1012,7 @@ fn pseudo_commit(kind: CommitKind, short_hash: &str, subject: &str) -> Commit {
 
 #[cfg(test)]
 fn has_diff(args: &[&str]) -> Result<bool, String> {
-    let status = Command::new("git")
+    let status = read_command()
         .args(args)
         .status()
         .map_err(|error| format!("could not inspect working tree: {error}"))?;
@@ -1371,7 +1382,7 @@ fn file_mode(_metadata: &fs::Metadata) -> u32 {
 fn untracked_paths(paths: &[String]) -> Result<Vec<std::path::PathBuf>, String> {
     // Unlike `git diff`, `ls-files` only covers the current directory by default.
     let whole_repository = [":/".to_owned()];
-    let output = Command::new("git")
+    let output = read_command()
         .args([
             "ls-files",
             "--others",
@@ -1496,7 +1507,7 @@ const REPOSITORY_PATH_ENV: [&str; 8] = [
 
 /// The working tree root, or the Git directory for a bare repository.
 pub(crate) fn repository_directory() -> Result<std::path::PathBuf, String> {
-    let bare = Command::new("git")
+    let bare = read_command()
         .args(["rev-parse", "--is-bare-repository"])
         .output()
         .map_err(|error| format!("could not run git rev-parse: {error}"))?;
@@ -1511,7 +1522,7 @@ pub(crate) fn repository_directory() -> Result<std::path::PathBuf, String> {
     } else {
         "--show-toplevel"
     };
-    let output = Command::new("git")
+    let output = read_command()
         .args(["rev-parse", root])
         .output()
         .map_err(|error| format!("could not run git rev-parse: {error}"))?;
@@ -1527,7 +1538,7 @@ pub(crate) fn repository_directory() -> Result<std::path::PathBuf, String> {
 
 /// Git terminates its raw repository path with exactly one newline.
 pub(crate) fn repository_root() -> Result<std::path::PathBuf, String> {
-    let output = Command::new("git")
+    let output = read_command()
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .map_err(|error| format!("could not locate repository: {error}"))?;
@@ -3127,6 +3138,42 @@ pub(crate) mod tests {
         assert_eq!(paths.len(), 2);
         assert_eq!(paths[0].as_os_str().as_bytes(), b"caf\xe9.txt");
         assert_eq!(paths[1].as_os_str().as_bytes(), b"ordinary.txt");
+    }
+
+    #[test]
+    fn watch_and_status_checks_leave_index_stat_cache_unchanged() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("tracked", "contents\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        let index = git(&["rev-parse", "--git-path", "index"]);
+        let before = fs::read(&index).unwrap();
+        // The file's content is unchanged, but its stat cache needs refreshing.
+        fs::OpenOptions::new()
+            .write(true)
+            .open("tracked")
+            .unwrap()
+            .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(946684800))
+            .unwrap();
+        watch_fingerprint().unwrap();
+        crate::status::StatusView::load().unwrap();
+        assert_eq!(
+            fs::read(&index).unwrap(),
+            before,
+            "glog readers must not write the index"
+        );
+
+        // Verify that this setup really would refresh the index without the
+        // protection, rather than passing because there was nothing to write.
+        let status = Command::new("git")
+            .args(["status", "--porcelain"])
+            .env("GIT_OPTIONAL_LOCKS", "1")
+            .output()
+            .unwrap();
+        assert!(status.status.success(), "{status:?}");
+        assert_ne!(fs::read(&index).unwrap(), before);
     }
 
     #[cfg(unix)]

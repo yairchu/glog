@@ -1,5 +1,5 @@
 //! Detect content-free commits from actual objects, independent of log filters.
-use std::{collections::HashMap, process::Command};
+use std::collections::HashMap;
 
 use super::{pipe_through, pipe_through_bytes, Commit};
 
@@ -19,7 +19,7 @@ pub(super) fn mark(commits: &mut [Commit]) {
         return;
     }
     let Some(objects) = pipe_through_bytes(
-        Command::new("git")
+        crate::git::read_command()
             .args(["cat-file", "--batch"])
             .env("GIT_NO_LAZY_FETCH", "1"),
         input.as_bytes(),
@@ -50,7 +50,7 @@ pub(super) fn mark(commits: &mut [Commit]) {
         .map(|(_, _, object)| format!("{object}\n"))
         .collect();
     let Some(output) = pipe_through(
-        Command::new("git")
+        crate::git::read_command()
             .args(["cat-file", "--batch-check"])
             .env("GIT_NO_LAZY_FETCH", "1"),
         input.as_bytes(),

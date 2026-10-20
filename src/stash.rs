@@ -1,4 +1,5 @@
 //! Read-only browsing of saved stashes and their complete patches.
+#[cfg(test)]
 use std::process::Command;
 
 use ratatui::{
@@ -75,7 +76,7 @@ fn load_list(args: &[String]) -> Result<Vec<Commit>, String> {
             );
         }
     }
-    let output = Command::new("git")
+    let output = crate::git::read_command()
         .args(["--no-pager", "stash", "list"])
         .arg(format!("--date={date}"))
         .args(count.map(|count| format!("--max-count={count}")))
@@ -158,7 +159,7 @@ fn load_show(args: &[String]) -> Result<App, String> {
     } else {
         revision.to_owned()
     };
-    let output = Command::new("git")
+    let output = crate::git::read_command()
         .args(["rev-parse", "--verify", "--end-of-options"])
         .arg(format!("{revision}^{{commit}}"))
         .output()

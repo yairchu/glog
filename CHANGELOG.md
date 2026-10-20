@@ -23,6 +23,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   reveals earlier versions. Chains stay within one ref, stop at intervening
   actions, and remain part of their rebase when inside a rebase fold.
 
+### Fixed
+
+- Prevent background status and diff checks from refreshing and locking the
+  index, which could interrupt concurrent commits and rebases.
+
 ## 0.6.0 - 2026-10-15
 
 ### Added
