@@ -2072,6 +2072,50 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn reflog_amends_fold_after_a_rebase_ends_without_a_reflog_entry() {
+        use crate::app::App;
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        for message in ["base", "edited"] {
+            git(&["commit", "--allow-empty", "-qm", message]);
+        }
+        git(&[
+            "-c",
+            "sequence.editor=sed -i.bak s/^pick/edit/",
+            "rebase",
+            "-qi",
+            "HEAD~1",
+        ]);
+        for message in ["edit during the rebase", "second edit during the rebase"] {
+            git(&["commit", "--amend", "--allow-empty", "-qm", message]);
+        }
+        // Amendments while Git still has the rebase in progress stay expanded.
+        let rebasing = App::new(load_reflog(&[]).unwrap());
+        assert_eq!(rebasing.log_folds.marker(0), None);
+        assert!(rebasing.log_folds.visible(1));
+
+        // --quit ends the rebase without recording anything.
+        git(&["rebase", "--quit"]);
+        git(&["commit", "--allow-empty", "-qm", "after the rebase"]);
+        for message in ["amended", "amended again"] {
+            git(&["commit", "--amend", "--allow-empty", "-qm", message]);
+        }
+        let app = App::new(load_reflog(&[]).unwrap());
+        assert!(app.commits[0]
+            .reflog()
+            .unwrap()
+            .action
+            .ends_with("amended again"));
+        assert_eq!(app.log_folds.marker(0), Some("▶"));
+        assert_eq!(app.log_folds.label(0), " · 2 earlier versions");
+        assert!(!app.log_folds.visible(1));
+        assert!(!app.log_folds.visible(2));
+        assert!(app.log_folds.visible(3));
+    }
+
+    #[test]
     fn reflog_rejects_multiline_dates_and_malformed_records() {
         assert!(parse_reflog("hash\0short\0HEAD@{2020\n01}\0reset\0subject\0Actor\0").is_err());
         assert!(parse_reflog("hash\0short\0").is_err());
