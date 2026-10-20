@@ -181,25 +181,26 @@ pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
         }
         return Err(stderr_message("git reflog failed", &output.stderr));
     }
-    parse_reflog(&String::from_utf8_lossy(&output.stdout), rebasing()?)
+    parse_reflog(&String::from_utf8_lossy(&output.stdout), rebasing())
 }
 
-/// Whether the current worktree has a rebase in progress.
-fn rebasing() -> Result<bool, String> {
-    let output = read_command()
+/// Whether the current worktree has a rebase in progress. Failing to tell
+/// only keeps ongoing amendments folded, so it does not fail the reflog.
+fn rebasing() -> bool {
+    let Ok(output) = read_command()
         .args(["rev-parse", "--git-path", "rebase-merge"])
         .args(["--git-path", "rebase-apply"])
         .output()
-        .map_err(|error| format!("could not run git rev-parse: {error}"))?;
-    if !output.status.success() {
-        return Err(stderr_message("git rev-parse failed", &output.stderr));
-    }
+    else {
+        return false;
+    };
     let paths = String::from_utf8_lossy(&output.stdout);
     let mut paths = paths.lines().map(std::path::Path::new);
     let (merge, apply) = (paths.next(), paths.next());
-    Ok(merge.is_some_and(|path| path.exists())
-        // `git am` uses rebase-apply too, marking itself with `applying`.
-        || apply.is_some_and(|path| path.exists() && !path.join("applying").exists()))
+    output.status.success()
+        && (merge.is_some_and(|path| path.exists())
+            // `git am` uses rebase-apply too; rebases mark it with `rebasing`.
+            || apply.is_some_and(|path| path.join("rebasing").exists()))
 }
 
 fn parse_reflog(output: &str, rebasing: bool) -> Result<Vec<Commit>, String> {
