@@ -2095,6 +2095,34 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn reflog_amends_fold_while_a_rebase_todo_is_being_edited() {
+        use crate::app::App;
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        git(&["commit", "--allow-empty", "-qm", "original"]);
+        git(&["commit", "--amend", "--allow-empty", "-qm", "amended"]);
+        // Capture the state Git leaves while the todo editor is open, before
+        // the rebase logs its start, then make the editor fail to end it.
+        let failed = std::process::Command::new("git")
+            .args([
+                "-c",
+                "sequence.editor=cp -R .git/rebase-merge editing; false",
+            ])
+            .args(["rebase", "-qi", "HEAD~1"])
+            .output()
+            .unwrap();
+        assert!(!failed.status.success());
+        std::fs::rename("editing", ".git/rebase-merge").unwrap();
+
+        let app = App::new(load_reflog(&[]).unwrap());
+        assert!(app.commits[0].reflog().unwrap().action.ends_with("amended"));
+        assert_eq!(app.log_folds.marker(0), Some("▶"));
+    }
+
+    #[test]
     fn reflog_amends_fold_after_a_rebase_ends_without_a_reflog_entry() {
         use crate::app::App;
 
