@@ -368,6 +368,33 @@ mod tests {
     }
 
     #[test]
+    fn pull_rebases_fold_like_rebases() {
+        let app = app(&[
+            (
+                "HEAD",
+                "pull -r origin main -q (finish): returning to refs/heads/main",
+            ),
+            ("HEAD", "pull -r origin main -q (pick): local change"),
+            (
+                "HEAD",
+                "pull -r origin main -q (start): checkout 3d9b31fc2f44",
+            ),
+            (
+                "HEAD",
+                "pull --rebase=interactive (finish): returning to refs/heads/main",
+            ),
+            (
+                "HEAD",
+                "pull --rebase=interactive (start): checkout 3d9b31fc2f44",
+            ),
+            ("HEAD", "commit: before the pulls"),
+        ]);
+        assert_eq!(shown(&app), [0, 3, 5]);
+        assert_eq!(app.log_folds.label(0), " · 2 rebase steps");
+        assert_eq!(app.log_folds.label(3), " · 1 rebase step");
+    }
+
+    #[test]
     fn amend_chains_keep_refs_and_intervening_actions_separate() {
         let mut app = app(&[
             ("HEAD", "commit (amend): newest version"),
