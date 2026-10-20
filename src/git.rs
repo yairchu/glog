@@ -198,7 +198,10 @@ fn rebasing() -> bool {
     let mut paths = paths.lines().map(std::path::Path::new);
     let (merge, apply) = (paths.next(), paths.next());
     output.status.success()
-        && (merge.is_some_and(|path| path.exists())
+        // Git records each todo command in `done` before running it, and
+        // logs the rebase's start first. Without it, e.g. while the todo is
+        // edited, no reflog entry belongs to the rebase yet.
+        && (merge.is_some_and(|path| path.join("done").exists())
             // `git am` uses rebase-apply too; rebases mark it with `rebasing`.
             || apply.is_some_and(|path| path.join("rebasing").exists()))
 }
