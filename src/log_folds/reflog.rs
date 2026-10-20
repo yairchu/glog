@@ -65,6 +65,8 @@ impl Folds {
         // Also leave amendments in a rebase Git still has in progress alone.
         // HEAD's newest entries belong to it, back to its start, whatever
         // their actions, and all of them when a count limit omits the start.
+        // Tools can name the rebase with GIT_REFLOG_ACTION, but Git still
+        // marks its start, e.g. "autofix (start)".
         for (index, commit) in commits.iter().enumerate() {
             let Some(Annotation::Reflog(entry)) = &commit.annotation else {
                 continue;
@@ -72,13 +74,16 @@ impl Folds {
             if !entry.rebasing {
                 continue;
             }
-            match rebase_event(&entry.action) {
-                Some(RebaseEvent::End) => break,
-                Some(RebaseEvent::Start) => {
-                    in_rebase[index] = true;
-                    break;
-                }
-                _ => in_rebase[index] = true,
+            if matches!(rebase_event(&entry.action), Some(RebaseEvent::End)) {
+                break;
+            }
+            in_rebase[index] = true;
+            let started = entry
+                .action
+                .split_once(": ")
+                .is_some_and(|(stage, _)| stage.ends_with(" (start)"));
+            if started {
+                break;
             }
         }
         let mut pending: HashMap<&str, Vec<usize>> = HashMap::new();
