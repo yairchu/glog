@@ -203,12 +203,11 @@ fn rebase_event(action: &str) -> Option<RebaseEvent> {
         return Some(RebaseEvent::Step);
     }
     let (action, _) = action.split_once(": ")?;
-    // Older Git versions include the backend flag; a continued rebase can
-    // have more than one parenthesized stage, e.g. (continue) (finish).
-    if !["rebase (", "rebase -i (", "rebase -m ("]
-        .iter()
-        .any(|prefix| action.starts_with(prefix))
-    {
+    // Stages follow the command line, e.g. "rebase -i (pick)" in older Git
+    // versions, or "pull -r origin main (pick)". A continued rebase can have
+    // more than one parenthesized stage, e.g. (continue) (finish).
+    let (command, _) = action.split_once(" (")?;
+    if !matches!(command.split(' ').next(), Some("rebase" | "pull")) {
         return None;
     }
     match action.rsplit_once(" (")?.1.strip_suffix(')')? {
