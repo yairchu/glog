@@ -2135,6 +2135,44 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn reflog_amends_fold_while_git_am_is_stopped() {
+        use crate::app::App;
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file", "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        fs::write("file", "patched\n").unwrap();
+        git(&["commit", "-qam", "patch"]);
+        let patch = git(&["format-patch", "-1", "--stdout"]) + "\n";
+        git(&["reset", "-q", "--hard", "HEAD~1"]);
+        fs::write("file", "conflicting\n").unwrap();
+        git(&["commit", "-qam", "original"]);
+        for message in ["amended", "amended again"] {
+            git(&["commit", "--amend", "-qm", message]);
+        }
+        // `git am` keeps its state in rebase-apply, like some rebases.
+        fs::write("patch.mbox", patch).unwrap();
+        let stopped = Command::new("git")
+            .args(["am", "patch.mbox"])
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .unwrap();
+        assert!(!stopped.status.success(), "{stopped:?}");
+        assert!(Path::new(&git(&["rev-parse", "--git-path", "rebase-apply"])).exists());
+
+        let app = App::new(load_reflog(&[]).unwrap());
+        assert_eq!(app.log_folds.marker(0), Some("▶"));
+        assert_eq!(app.log_folds.label(0), " · 2 earlier versions");
+        assert!(!app.log_folds.visible(1));
+        assert!(!app.log_folds.visible(2));
+        assert!(app.log_folds.visible(3));
+    }
+
+    #[test]
     fn reflog_rejects_multiline_dates_and_malformed_records() {
         assert!(parse_reflog(
             "hash\0short\0HEAD@{2020\n01}\0reset\0subject\0Actor\0",
