@@ -11,6 +11,8 @@ const RECORD: char = '\x1e';
 const FIELD: char = '\x1f';
 const COAUTHOR: char = '\x1d';
 
+mod empty_commits;
+
 // Patch paths are parsed relative to the repository, independent of user
 // preferences such as diff.relative, diff.noprefix and diff.mnemonicPrefix.
 // Git 2.55 stash frees parsed string arguments before rendering its patch,
@@ -350,6 +352,7 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
     for commit in &mut commits {
         commit.first_parent_only = first_parent_only;
     }
+    empty_commits::mark(&mut commits);
     Ok(commits)
 }
 
@@ -452,12 +455,15 @@ pub fn load_watch_log() -> Result<Vec<Commit>, String> {
     Ok(entries)
 }
 
-pub fn working_tree_commit(summary: &str) -> Commit {
-    pseudo_commit(
+pub fn working_tree_commit(summary: &crate::status::WorkingTreeSummary) -> Commit {
+    let mut commit = pseudo_commit(
         CommitKind::WorkingTree,
         "worktree",
         &format!("Working tree · {summary}"),
-    )
+    );
+    commit.graph_node = if summary.is_clean() { '.' } else { '*' };
+    commit.graph = vec![format!("{} ", commit.graph_node)];
+    commit
 }
 
 /// Resolve a single commit before opening the terminal; defer ancestry traversal.
@@ -2577,9 +2583,9 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>(),
             [&octopus, &merge, &main, &base]
         );
-        assert!(visible
-            .iter()
-            .all(|(i, c)| app.log_folds.graph(*i, c) == ["* "]));
+        assert!(visible.iter().all(
+            |(i, c)| matches!(app.log_folds.graph(*i, c), [row] if row == "* " || row == ". ")
+        ));
 
         // Limited history may omit the first parent. What is folded still
         // comes from Git's complete ancestry, and never loads rows outside
@@ -2636,7 +2642,7 @@ pub(crate) mod tests {
                     .collect()
             })
             .collect();
-        assert_eq!(graph, ["|/ ", "* "]);
+        assert_eq!(graph, ["|/ ", ". "]);
 
         // Actual watch updates introduce folded merges without moving selection
         // away from the Working tree or overriding an explicitly expanded merge.
@@ -2968,8 +2974,12 @@ pub(crate) mod tests {
                 let directory = TestDirectory::new();
                 let cwd = CurrentDirGuard::enter(directory.path());
                 git(&["init", "-q"]);
-                let tree = git(&["mktree"]);
                 let commit = |name: &str, parents: &[&str]| {
+                    // These tests distinguish boundary markers from ordinary
+                    // commits, so each ordinary commit must change its tree.
+                    fs::write("node", name).unwrap();
+                    git(&["add", "node"]);
+                    let tree = git(&["write-tree"]);
                     let mut args = vec!["commit-tree", &tree, "-m", name];
                     for parent in parents {
                         args.extend(["-p", parent]);
@@ -3940,7 +3950,7 @@ pub(crate) mod tests {
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
         let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
-        let mut unborn = App::new(vec![working_tree_commit("Clean")]);
+        let mut unborn = App::new(vec![working_tree_commit(&Default::default())]);
         unborn.watch = true;
         unborn.pending_history = Some(Vec::new());
         unborn.open_status();
@@ -3954,7 +3964,7 @@ pub(crate) mod tests {
         }
         for lazy in [true, false] {
             let mut app = App::new(if lazy {
-                vec![working_tree_commit("Clean")]
+                vec![working_tree_commit(&Default::default())]
             } else {
                 load_watch_log().unwrap()
             });
@@ -4150,10 +4160,10 @@ pub(crate) mod tests {
             fs::write("new.txt", "contents\n").unwrap();
             let mut view = crate::status::StatusView::load()
                 .expect("Status must preserve the repository's exact path");
-            assert_eq!(view.summary(), "1 untracked file");
+            assert_eq!(view.summary().to_string(), "1 untracked file");
             fs::write("other.txt", "more contents\n").unwrap();
             view.refresh().unwrap();
-            assert_eq!(view.summary(), "2 untracked files");
+            assert_eq!(view.summary().to_string(), "2 untracked files");
         }
     }
 

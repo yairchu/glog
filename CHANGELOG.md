@@ -7,6 +7,12 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Draw empty non-merge commits with a smaller bullet, including empty root
+  commits. Merge commits retain their filled marker.
+
+- Show a smaller bullet for a clean working tree, keeping the larger marker
+  when there are changes.
+
 - Fold finished or aborted rebases in Reflog at their final entry; `z` expands
   or folds the steps, including amendments, cherry-picks, and fast-forwards.
   Search reveals matching steps, and the entry before each rebase stays

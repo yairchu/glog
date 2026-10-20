@@ -1720,6 +1720,7 @@ fn transition_count<C>(edges: &[(usize, usize, C)]) -> usize {
 pub fn unicode_node(node: char) -> char {
     match node {
         '*' => '●',
+        '.' => '•',
         'o' => '○',
         marker => marker,
     }

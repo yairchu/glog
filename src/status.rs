@@ -219,7 +219,7 @@ fn load_snapshot(root: &std::path::Path) -> Result<Snapshot, String> {
     parse(&output.stdout)
 }
 
-pub fn working_tree_summary() -> Result<String, String> {
+pub fn working_tree_summary() -> Result<WorkingTreeSummary, String> {
     Ok(load_snapshot(&crate::git::repository_root()?)?.summary())
 }
 
@@ -229,8 +229,9 @@ pub fn load_app(args: &[String]) -> Result<crate::app::App, String> {
         return Err("usage: glog status".to_owned());
     }
     let view = StatusView::load()?;
-    let clean = view.snapshot.entries.is_empty();
-    let mut commits = vec![crate::git::working_tree_commit(&view.summary())];
+    let summary = view.summary();
+    let clean = summary.is_clean();
+    let mut commits = vec![crate::git::working_tree_commit(&summary)];
     if clean {
         commits.extend(crate::git::load_log(&[])?);
     }
@@ -244,7 +245,7 @@ pub fn load_app(args: &[String]) -> Result<crate::app::App, String> {
 }
 
 impl Snapshot {
-    fn summary(&self) -> String {
+    fn summary(&self) -> WorkingTreeSummary {
         let changed = self
             .entries
             .iter()
@@ -257,17 +258,35 @@ impl Snapshot {
             .iter()
             .filter(|entry| entry.key.group == Group::Untracked)
             .count();
+        WorkingTreeSummary { changed, untracked }
+    }
+}
+
+#[derive(Default)]
+pub struct WorkingTreeSummary {
+    changed: usize,
+    untracked: usize,
+}
+
+impl WorkingTreeSummary {
+    pub fn is_clean(&self) -> bool {
+        self.changed == 0 && self.untracked == 0
+    }
+}
+
+impl std::fmt::Display for WorkingTreeSummary {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let mut parts = Vec::new();
-        for (count, kind) in [(changed, "changed"), (untracked, "untracked")] {
+        for (count, kind) in [(self.changed, "changed"), (self.untracked, "untracked")] {
             if count > 0 {
                 let suffix = if count == 1 { "" } else { "s" };
                 parts.push(format!("{count} {kind} file{suffix}"));
             }
         }
         if parts.is_empty() {
-            "Clean".to_owned()
+            f.write_str("Clean")
         } else {
-            parts.join(" · ")
+            f.write_str(&parts.join(" · "))
         }
     }
 }
@@ -438,7 +457,7 @@ impl StatusView {
         child.refresh()?;
         Ok(child)
     }
-    pub fn summary(&self) -> String {
+    pub fn summary(&self) -> WorkingTreeSummary {
         self.snapshot.summary()
     }
 
@@ -1366,7 +1385,7 @@ mod tests {
         };
         view.refresh()
             .expect("an unreadable file must not prevent Status loading");
-        assert_eq!(view.summary(), "1 untracked file");
+        assert_eq!(view.summary().to_string(), "1 untracked file");
         let key = Key {
             group: Group::Untracked,
             path: "unreadable.txt".into(),
@@ -1386,7 +1405,7 @@ mod tests {
         std::fs::write(root.join("other.txt"), "another change\n").unwrap();
         view.refresh()
             .expect("an expanded unreadable file must not block other changes");
-        assert_eq!(view.summary(), "2 untracked files");
+        assert_eq!(view.summary().to_string(), "2 untracked files");
         assert!(
             !crate::ansi::plain(&view.patches[&key]).contains("+contents"),
             "do not display a stale patch"
@@ -1702,7 +1721,7 @@ mod tests {
         std::fs::remove_file(module.join("new.txt")).unwrap();
         view.refresh().unwrap();
         assert!(view.submodules.is_empty());
-        assert_eq!(view.summary(), "Clean");
+        assert_eq!(view.summary().to_string(), "Clean");
 
         // A new dirty state is expandable again after the old entry disappears.
         std::fs::write(module.join("new.txt"), "new contents\n").unwrap();
@@ -1724,7 +1743,7 @@ mod tests {
         std::fs::remove_file(module.join("new.txt")).unwrap();
         view.refresh().unwrap();
         assert!(view.submodules.is_empty());
-        assert_ne!(view.summary(), "Clean");
+        assert_ne!(view.summary().to_string(), "Clean");
         std::fs::write(module.join("new.txt"), "dirty again\n").unwrap();
         view.refresh().unwrap();
         assert!(view.submodules.contains_key(&key));

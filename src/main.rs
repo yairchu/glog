@@ -212,7 +212,8 @@ Options:
 Status opens the Working tree detail view in a watch session.
 Watch mode includes one Working tree item; commits open Show.
 Log shows committed history, loaded once unless --watch is used.
-Graphs use ● commits, ○ boundary commits, and rounded paths.
+Graphs use rounded paths, ● for commits, • for empty non-merge commits or a
+clean working tree, and ○ for boundary commits. Merge commits stay filled.
 ╪ crosses paths without joining them.
 Reflog shows local ref updates with their update times; Enter opens the commit.
 Finished or aborted rebases and amend chains start folded in Reflog;
