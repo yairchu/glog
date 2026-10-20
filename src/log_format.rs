@@ -334,13 +334,13 @@ fn reflog_spans(commit: &Commit, entry: &ReflogEntry) -> Vec<Span<'static>> {
 /// Parse Git's structured action messages without depending on surviving refs.
 fn reflog_reference_spans(action: &str, message: &str) -> Option<Vec<Span<'static>>> {
     use Reference::*;
-    let (prefix, from, to) = match action {
-        "checkout" => ("moving from ", Some(Current), Argument),
-        "Branch" => ("renamed ", Some(Current), Current),
-        "branch" => ("Created from ", None, Argument),
-        "reset" => ("moving to ", None, Argument),
-        "rebase (start)" => ("checkout ", None, Argument),
-        "rebase (finish)" => ("returning to ", None, Current),
+    let (prefix, from, to) = match (action, crate::log_folds::rebase_stage(action)) {
+        ("checkout", _) => ("moving from ", Some(Current), Argument),
+        ("Branch", _) => ("renamed ", Some(Current), Current),
+        ("branch", _) => ("Created from ", None, Argument),
+        ("reset", _) => ("moving to ", None, Argument),
+        (_, Some("start")) => ("checkout ", None, Argument),
+        (_, Some("finish")) => ("returning to ", None, Current),
         _ => return None,
     };
     let references = message.strip_prefix(prefix)?;

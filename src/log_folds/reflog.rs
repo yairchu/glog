@@ -216,7 +216,17 @@ fn rebase_event(action: &str) -> Option<RebaseEvent> {
     if commit_event(action).is_some() || action == "rebase: fast-forward" {
         return Some(RebaseEvent::Step);
     }
-    let (action, _) = action.split_once(": ")?;
+    match rebase_stage(action.split_once(": ")?.0)? {
+        "start" => Some(RebaseEvent::Start),
+        "finish" | "abort" => Some(RebaseEvent::End),
+        "pick" | "reword" | "edit" | "squash" | "fixup" | "continue" | "reset" | "merge"
+        | "skip" | "fast-forward" => Some(RebaseEvent::Step),
+        _ => None,
+    }
+}
+
+/// The stage of a rebase action, the part before ": ", e.g. "pick".
+pub fn rebase_stage(action: &str) -> Option<&str> {
     // Stages follow the command line, e.g. "rebase -i (pick)" in older Git
     // versions, or "pull -r origin main (pick)". A continued rebase can have
     // more than one parenthesized stage, e.g. (continue) (finish).
@@ -224,13 +234,7 @@ fn rebase_event(action: &str) -> Option<RebaseEvent> {
     if !matches!(command.split(' ').next(), Some("rebase" | "pull")) {
         return None;
     }
-    match action.rsplit_once(" (")?.1.strip_suffix(')')? {
-        "start" => Some(RebaseEvent::Start),
-        "finish" | "abort" => Some(RebaseEvent::End),
-        "pick" | "reword" | "edit" | "squash" | "fixup" | "continue" | "reset" | "merge"
-        | "skip" | "fast-forward" => Some(RebaseEvent::Step),
-        _ => None,
-    }
+    action.rsplit_once(" (")?.1.strip_suffix(')')
 }
 
 #[cfg(test)]

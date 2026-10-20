@@ -28,6 +28,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Prevent background status and diff checks from refreshing and locking the
   index, which could interrupt concurrent commits and rebases.
 
+- Highlight the refs in Reflog's rebase start and finish entries also for
+  `git pull --rebase`, `git rebase -i` in older Git versions, and continued
+  rebases.
+
 ## 0.6.0 - 2026-10-15
 
 ### Added

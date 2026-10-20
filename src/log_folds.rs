@@ -13,6 +13,8 @@ use crate::git::{self, Commit, CommitKind};
 
 mod reflog;
 
+pub use reflog::rebase_stage;
+
 type Ancestry = HashMap<String, Vec<String>>;
 // Reads the history omitted around the revisions but a number of the
 // oldest, whose history is already read.
