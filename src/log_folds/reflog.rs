@@ -1,5 +1,5 @@
 //! Reflog folds describe operations, independently of commit ancestry.
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap};
 
 use crate::git::{Annotation, Commit};
 
@@ -63,31 +63,22 @@ impl Folds {
             }
         }
         // Also leave amendments in a rebase Git still has in progress alone.
-        // Only a ref's newest entries can belong to it, back to its start.
-        let mut ongoing: HashMap<&str, Vec<usize>> = HashMap::new();
-        let mut settled = HashSet::new();
+        // HEAD's newest entries belong to it, back to its start, whatever
+        // their actions, and all of them when a count limit omits the start.
         for (index, commit) in commits.iter().enumerate() {
             let Some(Annotation::Reflog(entry)) = &commit.annotation else {
                 continue;
             };
-            let reference = entry.reference.as_str();
-            if !entry.rebasing || settled.contains(reference) {
+            if !entry.rebasing {
                 continue;
             }
             match rebase_event(&entry.action) {
-                Some(RebaseEvent::Step) => {
-                    ongoing.entry(reference).or_default().push(index);
-                }
+                Some(RebaseEvent::End) => break,
                 Some(RebaseEvent::Start) => {
-                    settled.insert(reference);
-                    let rows = ongoing.remove(reference).unwrap_or_default();
-                    for row in rows.into_iter().chain([index]) {
-                        in_rebase[row] = true;
-                    }
+                    in_rebase[index] = true;
+                    break;
                 }
-                _ => {
-                    settled.insert(reference);
-                }
+                _ => in_rebase[index] = true,
             }
         }
         let mut pending: HashMap<&str, Vec<usize>> = HashMap::new();
@@ -198,8 +189,15 @@ fn commit_event(action: &str) -> Option<CommitEvent> {
         | "commit (merge)"
         | "cherry-pick"
         | "revert" => Some(CommitEvent::Original),
-        // "merge <revision>", which can also be a fast-forward.
+        // "merge <revision>" or "pull [<options>]", either of which can also
+        // be a fast-forward. Rebasing pulls have stages, e.g. "pull (pick)".
         action if action.starts_with("merge ") => Some(CommitEvent::Original),
+        action
+            if matches!(action.split(' ').next(), Some("pull"))
+                && rebase_stage(action).is_none() =>
+        {
+            Some(CommitEvent::Original)
+        }
         _ => None,
     }
 }
