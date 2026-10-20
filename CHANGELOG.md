@@ -14,9 +14,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   when there are changes.
 
 - Fold finished or aborted rebases in Reflog at their final entry; `z` expands
-  or folds the steps, including amendments, cherry-picks, and fast-forwards.
-  Search reveals matching steps, and the entry before each rebase stays
-  visible. Incomplete or ambiguous sequences stay expanded.
+  or folds the steps, including amendments, cherry-picks, resets, and
+  fast-forwards. Search reveals matching steps, and the entry before each
+  rebase stays visible. Incomplete or ambiguous sequences stay expanded.
 
 - Fold consecutive amendments in Reflog under the newest version, including
   the adjacent original commit when available. `z` toggles the fold and search

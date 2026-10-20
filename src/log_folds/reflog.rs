@@ -213,9 +213,13 @@ enum RebaseEvent {
 }
 
 fn rebase_event(action: &str) -> Option<RebaseEvent> {
-    // Replaying or editing commits can produce ordinary commit actions.
-    // These count as steps only inside a matched start/end sequence.
-    if commit_event(action).is_some() || action == "rebase: fast-forward" {
+    // Replaying or editing commits can produce ordinary commit and reset
+    // actions, e.g. when splitting a commit. These count as steps only
+    // inside a matched start/end sequence.
+    if commit_event(action).is_some()
+        || action == "rebase: fast-forward"
+        || action.starts_with("reset: ")
+    {
         return Some(RebaseEvent::Step);
     }
     match rebase_stage(action.split_once(": ")?.0)? {
