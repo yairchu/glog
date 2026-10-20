@@ -392,6 +392,21 @@ mod tests {
     }
 
     #[test]
+    fn rebases_include_resets_that_split_commits() {
+        let app = app(&[
+            ("HEAD", "rebase (finish): returning to refs/heads/main"),
+            ("HEAD", "commit: second half"),
+            ("HEAD", "commit: first half"),
+            ("HEAD", "reset: moving to HEAD^"),
+            ("HEAD", "rebase: fast-forward"),
+            ("HEAD", "rebase (start): checkout HEAD~2"),
+            ("HEAD", "commit: before the rebase"),
+        ]);
+        assert_eq!(shown(&app), [0, 6]);
+        assert_eq!(app.log_folds.label(0), " · 5 rebase steps");
+    }
+
+    #[test]
     fn pull_rebases_fold_like_rebases() {
         let app = app(&[
             (
