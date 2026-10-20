@@ -575,6 +575,23 @@ pub(crate) mod tests {
                 "rebase (finish): returning to refs/heads/topic",
                 vec![("refs/heads/topic", Color::Green)],
             ),
+            (
+                "rebase -i (start): checkout main",
+                vec![("main", Color::Green)],
+            ),
+            (
+                "rebase (continue) (finish): returning to refs/heads/topic",
+                vec![("refs/heads/topic", Color::Green)],
+            ),
+            (
+                "pull -r origin main -q (start): checkout abc1234",
+                vec![("abc1234", Color::Yellow)],
+            ),
+            (
+                "pull --rebase (finish): returning to refs/heads/main",
+                vec![("refs/heads/main", Color::Green)],
+            ),
+            ("rebase (pick): checkout main", vec![]),
             ("commit: moving from main to topic", vec![]),
             ("checkout: moving from main to topic extra text", vec![]),
             ("checkout: moving from main to ", vec![]),
