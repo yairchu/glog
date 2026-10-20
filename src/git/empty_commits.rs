@@ -1,5 +1,5 @@
 //! Detect content-free commits from actual objects, independent of log filters.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::{pipe_through, pipe_through_bytes, Commit};
 
@@ -10,73 +10,130 @@ struct Header {
 
 pub(super) fn mark(commits: &mut [Commit]) {
     // Preserve Git's boundary, comparison, and patch-equivalence markers.
-    let input: String = commits
+    let candidates = || commits.iter().filter(|commit| commit.graph_node == '*');
+    let mut headers = listed_headers(candidates().map(|commit| commit.hash.as_str()));
+    // Git reports a shallow commit as parentless. Its raw object keeps the
+    // parent, so that a missing parent cannot make it look like a root.
+    let apparent_roots: Vec<_> = headers
         .iter()
-        .filter(|commit| commit.graph_node == '*')
-        .map(|commit| format!("{}\n", commit.hash))
+        .filter(|(_, header)| header.parents.is_empty())
+        .map(|(hash, _)| hash.clone())
         .collect();
-    if input.is_empty() {
-        return;
-    }
-    let Some(objects) = pipe_through_bytes(
-        crate::git::read_command()
-            .args(["cat-file", "--batch"])
-            .env("GIT_NO_LAZY_FETCH", "1"),
-        input.as_bytes(),
-    ) else {
-        return;
-    };
-    let headers = headers(&objects);
-    let requests: Vec<_> = commits
-        .iter()
-        .enumerate()
-        .filter(|(_, commit)| commit.graph_node == '*')
-        .filter_map(|(index, commit)| {
+    headers.extend(read_headers(apparent_roots.iter().map(String::as_str)));
+    // Parents are usually listed too. Look up only the others, by plain object
+    // name: peeling each `parent^{tree}` makes Git resolve it as a revision,
+    // which is orders of magnitude slower over a long history.
+    let missing: Vec<_> = candidates()
+        .filter_map(
+            |commit| match headers.get(&commit.hash)?.parents.as_slice() {
+                [parent] if !headers.contains_key(parent) => Some(parent.clone()),
+                _ => None,
+            },
+        )
+        .collect();
+    headers.extend(read_headers(missing.iter().map(String::as_str)));
+    // Only a root's tree must be read, to tell whether it is the empty tree.
+    let roots: Vec<_> = candidates()
+        .filter_map(|commit| {
             let header = headers.get(&commit.hash)?;
-            let object = match header.parents.as_slice() {
-                [] => header.tree.clone(),
-                [parent] => format!("{parent}^{{tree}}"),
-                // A merge joins histories even when its tree is unchanged.
-                _ => return None,
-            };
-            Some((index, header, object))
+            header.parents.is_empty().then(|| header.tree.clone())
         })
         .collect();
-    if requests.is_empty() {
-        return;
-    }
-    let input: String = requests
-        .iter()
-        .map(|(_, _, object)| format!("{object}\n"))
-        .collect();
-    let Some(output) = pipe_through(
-        crate::git::read_command()
-            .args(["cat-file", "--batch-check"])
-            .env("GIT_NO_LAZY_FETCH", "1"),
-        input.as_bytes(),
-    ) else {
-        return;
-    };
-    for ((index, header, _), response) in requests.iter().zip(output.lines()) {
-        let fields: Vec<_> = response.split_whitespace().collect();
-        let [tree, "tree", size] = fields.as_slice() else {
-            // Missing parents in shallow or partial clones leave the marker
-            // unchanged; identifying an empty commit must not fetch objects.
+    let empty_roots = empty_trees(&roots);
+    for commit in commits.iter_mut().filter(|commit| commit.graph_node == '*') {
+        let Some(header) = headers.get(&commit.hash) else {
             continue;
         };
-        let empty = if header.parents.is_empty() {
-            *size == "0"
-        } else {
-            *tree == header.tree
+        let empty = match header.parents.as_slice() {
+            [] => empty_roots.contains(&header.tree),
+            // Missing parents in shallow or partial clones leave the marker
+            // unchanged; identifying an empty commit must not fetch objects.
+            [parent] => headers
+                .get(parent)
+                .is_some_and(|parent| parent.tree == header.tree),
+            // A merge joins histories even when its tree is unchanged.
+            _ => false,
         };
         if empty {
-            let commit = &mut commits[*index];
             commit.graph_node = '.';
             if let Some(row) = commit.graph.last_mut() {
                 *row = row.replacen('*', ".", 1);
             }
         }
     }
+}
+
+/// Headers of commits Git just listed, so they exist. Unlike `cat-file`,
+/// `rev-list` reads them from the commit-graph when there is one.
+fn listed_headers<'a>(hashes: impl Iterator<Item = &'a str>) -> HashMap<String, Header> {
+    let input: String = hashes.map(|hash| format!("{hash}\n")).collect();
+    if input.is_empty() {
+        return HashMap::new();
+    }
+    let Some(output) = pipe_through(
+        crate::git::read_command()
+            .args([
+                "rev-list",
+                "--no-walk=unsorted",
+                "--stdin",
+                "--format=%H %T %P",
+            ])
+            .env("GIT_NO_LAZY_FETCH", "1"),
+        input.as_bytes(),
+    ) else {
+        return HashMap::new();
+    };
+    output
+        .lines()
+        .filter(|line| !line.starts_with("commit "))
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let hash = fields.next()?.to_owned();
+            let tree = fields.next()?.to_owned();
+            let parents = fields.map(str::to_owned).collect();
+            Some((hash, Header { tree, parents }))
+        })
+        .collect()
+}
+
+/// Raw headers, without fetching or failing on missing objects.
+fn read_headers<'a>(hashes: impl Iterator<Item = &'a str>) -> HashMap<String, Header> {
+    let input: String = hashes.map(|hash| format!("{hash}\n")).collect();
+    if input.is_empty() {
+        return HashMap::new();
+    }
+    pipe_through_bytes(
+        crate::git::read_command()
+            .args(["cat-file", "--batch"])
+            .env("GIT_NO_LAZY_FETCH", "1"),
+        input.as_bytes(),
+    )
+    .map(|objects| headers(&objects))
+    .unwrap_or_default()
+}
+
+fn empty_trees(trees: &[String]) -> HashSet<String> {
+    if trees.is_empty() {
+        return HashSet::new();
+    }
+    let input: String = trees.iter().map(|tree| format!("{tree}\n")).collect();
+    let Some(output) = pipe_through(
+        crate::git::read_command()
+            .args(["cat-file", "--batch-check"])
+            .env("GIT_NO_LAZY_FETCH", "1"),
+        input.as_bytes(),
+    ) else {
+        return HashSet::new();
+    };
+    output
+        .lines()
+        .filter_map(
+            |response| match response.split_whitespace().collect::<Vec<_>>()[..] {
+                [tree, "tree", "0"] => Some(tree.to_owned()),
+                _ => None,
+            },
+        )
+        .collect()
 }
 
 fn headers(mut output: &[u8]) -> HashMap<String, Header> {
