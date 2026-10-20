@@ -215,6 +215,8 @@ Log shows committed history, loaded once unless --watch is used.
 Graphs use ● commits, ○ boundary commits, and rounded paths.
 ╪ crosses paths without joining them.
 Reflog shows local ref updates with their update times; Enter opens the commit.
+Finished or aborted rebases and amend chains start folded in Reflog;
+z toggles a fold.
 Stash lists saved work; Enter opens its changes, including saved untracked files.
 Stash show opens a stash by index or reference (the latest by default).
 Blame shows which commit last changed each line; Enter opens it, p blames

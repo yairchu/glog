@@ -1864,6 +1864,197 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn reflog_amend_folds_keep_original_versions_available_in_show() {
+        use crate::{app::App, input, ui};
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        std::fs::write("file", "original\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "original version"]);
+        for version in ["middle", "newest"] {
+            std::fs::write("file", format!("{version}\n")).unwrap();
+            git(&["commit", "--amend", "-qam", &format!("{version} version")]);
+        }
+        let mut app = App::new(load_reflog(&[]).unwrap());
+        assert_eq!(app.commits.len(), 4);
+        let key = |code, app: &mut App| {
+            input::handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), app)
+        };
+        let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("newest version"));
+        assert!(screen.contains("2 earlier versions"));
+        assert!(!screen.contains("original version"));
+        assert!(!screen.contains("middle version"));
+        let visible: Vec<_> = app.visible_log_rows.iter().flatten().copied().collect();
+        assert_eq!(visible, [0, 3]);
+        key(KeyCode::Down, &mut app);
+        assert_eq!(app.selected, 3);
+        key(KeyCode::Up, &mut app);
+        key(KeyCode::Char('z'), &mut app);
+        key(KeyCode::Down, &mut app);
+        assert_eq!(app.selected, 1);
+        key(KeyCode::Enter, &mut app);
+        assert_eq!(app.mode, crate::app::Mode::Show);
+        assert!(crate::ansi::plain(&app.show_text).contains("+middle"));
+        key(KeyCode::Tab, &mut app);
+        key(KeyCode::Char('z'), &mut app);
+        assert_eq!(app.selected, 0);
+        app.search = Some("original version".into());
+        app.next_match(false);
+        assert_eq!(app.selected, 2);
+        assert!(app.log_folds.visible(2));
+        key(KeyCode::Enter, &mut app);
+        assert!(crate::ansi::plain(&app.show_text).contains("+original"));
+    }
+
+    #[test]
+    fn reflog_rebase_folds_follow_real_git_events_and_reveal_search_matches() {
+        use crate::{app::App, input, ui};
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        std::fs::write("file", "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        for text in ["first", "second"] {
+            std::fs::write("file", format!("base\n{text}\n")).unwrap();
+            git(&["commit", "-qam", text]);
+        }
+        let old_tip = git(&["rev-parse", "HEAD"]);
+        git(&["rebase", "--force-rebase", "HEAD~2"]);
+        let entries = load_reflog(&[]).unwrap();
+        assert!(entries[0]
+            .reflog()
+            .unwrap()
+            .action
+            .starts_with("rebase (finish):"));
+        let start = entries
+            .iter()
+            .position(|c| c.reflog().unwrap().action.starts_with("rebase (start):"))
+            .unwrap();
+        assert_eq!(start, 3);
+        assert_eq!(entries[start + 1].hash, old_tip);
+        // A count limit can cut off the start marker; that is not a fold.
+        let truncated = App::new(load_reflog(&["-n".into(), "2".into()]).unwrap());
+        assert!(truncated.log_folds.visible(1));
+        assert_eq!(truncated.log_folds.marker(0), None);
+
+        let mut app = App::new(entries);
+        let key = |code, app: &mut App| {
+            input::handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), app)
+        };
+        let mut terminal = Terminal::new(TestBackend::new(140, 12)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("▶"));
+        assert!(screen.contains("3 rebase steps"));
+        assert!(!screen.contains("rebase (pick):"));
+        let visible: Vec<_> = app.visible_log_rows.iter().flatten().copied().collect();
+        assert_eq!(
+            visible,
+            [vec![0], (start + 1..app.commits.len()).collect()].concat()
+        );
+        key(KeyCode::Down, &mut app);
+        assert_eq!(app.selected, start + 1);
+        key(KeyCode::Up, &mut app);
+        key(KeyCode::Char('z'), &mut app);
+        assert!(app.log_folds.visible(1));
+        key(KeyCode::Down, &mut app);
+        assert_eq!(app.selected, 1);
+        // Collapse from inside the operation and keep selection on its finish.
+        key(KeyCode::Char('z'), &mut app);
+        assert_eq!(app.selected, 0);
+        assert!(!app.log_folds.visible(1));
+        app.search = Some("rebase (pick): second".into());
+        app.next_match(false);
+        assert_eq!(app.selected, 1);
+        assert!(app.log_folds.visible(1));
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        assert!(app.visible_log_rows.contains(&Some(1)));
+        key(KeyCode::Enter, &mut app);
+        assert_eq!(app.mode, crate::app::Mode::Show);
+        assert!(crate::ansi::plain(&app.show_text).contains("+second"));
+        key(KeyCode::Tab, &mut app);
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.log_folds.marker(0), Some("▼"));
+
+        let original = git(&["rev-parse", "HEAD"]);
+        // Stop after replaying the first commit, then abandon the operation.
+        let stopped = Command::new("git")
+            .args([
+                "-c",
+                "commit.gpgsign=false",
+                "rebase",
+                "--force-rebase",
+                "--exec",
+                "false",
+                "HEAD~2",
+            ])
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .unwrap();
+        assert!(!stopped.status.success(), "{stopped:?}");
+        assert!(load_reflog(&[]).unwrap()[0]
+            .reflog()
+            .unwrap()
+            .action
+            .starts_with("rebase (pick):"));
+        git(&["rebase", "--abort"]);
+        let mut aborted = App::new(load_reflog(&[]).unwrap());
+        assert_eq!(aborted.commits[0].hash, original);
+        assert!(aborted.commits[0]
+            .reflog()
+            .unwrap()
+            .action
+            .starts_with("rebase (abort):"));
+        assert_eq!(aborted.log_folds.marker(0), Some("▶"));
+        assert!(!aborted.log_folds.visible(1));
+        assert!(!aborted.log_folds.visible(2));
+        assert!(aborted.log_folds.visible(3));
+        assert_eq!(aborted.commits[3].hash, original);
+        terminal
+            .draw(|frame| ui::draw(frame, &mut aborted))
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("rebase (abort):"));
+        aborted.search = Some("rebase (pick): first".into());
+        aborted.next_match(false);
+        assert_eq!(aborted.selected, 1);
+        assert!(aborted.log_folds.visible(1));
+        key(KeyCode::Enter, &mut aborted);
+        assert!(crate::ansi::plain(&aborted.show_text).contains("+first"));
+    }
+
+    #[test]
     fn reflog_rejects_multiline_dates_and_malformed_records() {
         assert!(parse_reflog("hash\0short\0HEAD@{2020\n01}\0reset\0subject\0Actor\0").is_err());
         assert!(parse_reflog("hash\0short\0").is_err());

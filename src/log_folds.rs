@@ -11,6 +11,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::git::{self, Commit, CommitKind};
 
+mod reflog;
+
 type Ancestry = HashMap<String, Vec<String>>;
 // Reads the history omitted around the revisions but a number of the
 // oldest, whose history is already read.
@@ -90,6 +92,7 @@ enum Read {
 pub const READING: &str = "Reading omitted history…";
 
 pub struct LogFolds {
+    reflog: Option<reflog::Folds>,
     pub start_collapsed: bool,
     pub ascii_graph: bool,
     load_ancestry: AncestrySource,
@@ -118,6 +121,7 @@ pub struct LogFolds {
 impl Default for LogFolds {
     fn default() -> Self {
         Self {
+            reflog: None,
             start_collapsed: false,
             ascii_graph: false,
             load_ancestry: Box::new(git::log_ancestry),
@@ -224,6 +228,9 @@ impl LogFolds {
 
     /// The redrawn graph, or `None` where Git's graph is shown unchanged.
     fn drawing(&self, unicode: bool) -> Option<&Drawing> {
+        if self.reflog.is_some() {
+            return None;
+        }
         let layout = self.shown_layout();
         (unicode || !layout.git_ascii).then_some(&layout.graphs)
     }
@@ -250,6 +257,9 @@ impl LogFolds {
     }
 
     pub fn label(&self, index: usize) -> String {
+        if let Some(folds) = &self.reflog {
+            return folds.label(index);
+        }
         match self.fold(index) {
             Fold::Folded(count) => format!(
                 " · {count} merged commit{}",
@@ -262,6 +272,19 @@ impl LogFolds {
     /// Lay out new commits. Under --fold-merges, their new merges start
     /// folded.
     pub fn refresh(&mut self, commits: &[Commit]) -> Result<(), String> {
+        if commits
+            .first()
+            .is_some_and(|c| matches!(c.annotation, Some(git::Annotation::Reflog(_))))
+        {
+            let folds = reflog::Folds::new(commits);
+            self.view = View {
+                layout: folds.layout(commits.len()),
+                ..View::default()
+            };
+            self.reflog = Some(folds);
+            return Ok(());
+        }
+        self.reflog = None;
         self.relayout(commits);
         self.status()
     }
@@ -303,6 +326,11 @@ impl LogFolds {
     /// Fold or expand a merge. While omitted history is read, what a fold
     /// hides is unknown, so this flips the choice its marker shows.
     pub fn toggle(&mut self, index: usize, commits: &[Commit]) -> Result<(), String> {
+        if let Some(folds) = &mut self.reflog {
+            folds.toggle(index);
+            self.view.layout = folds.layout(commits.len());
+            return Ok(());
+        }
         let Some(commit) = commits.get(index).filter(|c| c.parents.len() > 1) else {
             return Ok(());
         };
@@ -382,6 +410,11 @@ impl LogFolds {
     /// Expand the folds hiding a row, now and once the history being read
     /// is applied, which may fold it anew.
     pub fn reveal(&mut self, index: usize, commits: &[Commit]) {
+        if let Some(folds) = &mut self.reflog {
+            folds.reveal(index);
+            self.view.layout = folds.layout(commits.len());
+            return;
+        }
         if matches!(self.read, Read::Running(_)) {
             self.keep_shown = commits.get(index).map(|commit| commit.hash.clone());
         }
@@ -584,6 +617,9 @@ impl LogFolds {
     }
 
     pub fn filter_hidden(&self, index: usize, commit: &Commit) -> bool {
+        if self.reflog.is_some() {
+            return false;
+        }
         // A shown folded merge stands in for its hidden side history and is
         // where `z` expands it, so filters leave it in place.
         if self.view.layout.visible.get(index) == Some(&true)

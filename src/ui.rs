@@ -127,7 +127,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if let Some(message) = app.message() {
         message.to_owned()
     } else if app.mode == Mode::Log && app.history == History::Reflog {
-        "h help  q quit  ↑/k ↓/j  ←/→ entry  Enter show  / ? search".to_owned()
+        "h help  q quit  ↑/k ↓/j  ←/→ entry  Enter show  z fold  / ? search".to_owned()
     } else if app.mode == Mode::Log && app.history == History::Stash {
         "h help  q quit  ↑/k ↓/j  ←/→ stash  Enter show  a author  d date  / ? search".to_owned()
     } else if app.mode == Mode::Log && file_view {
@@ -313,7 +313,7 @@ const HELP_ROWS: &[HelpRow] = &[
         "z",
         [
             Some("fold merge (Log) / file (Show)"),
-            FILE_FOLD,
+            Some("fold rebase or amend chain (Reflog) / file (Show)"),
             FILE_FOLD,
             FILE_FOLD,
             FILE_FOLD,
@@ -628,7 +628,12 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             let mut line = ansi::parse_line(graph);
             if !graph_only && part + 1 == graph_rows.len() {
-                if let Some(marker) = app.log_folds.marker(index) {
+                if app.history == History::Reflog {
+                    line.spans.push(Span::styled(
+                        format!("{} ", app.log_folds.marker(index).unwrap_or(" ")),
+                        Style::default().fg(Color::Yellow),
+                    ));
+                } else if let Some(marker) = app.log_folds.marker(index) {
                     // Git's graph and the ASCII fallback keep Git's node marker.
                     let nodes = [
                         commit.graph_node,

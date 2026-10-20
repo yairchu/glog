@@ -48,8 +48,8 @@ struct BlameFrame {
     context: String,
 }
 
-/// Every action that filters or folds Log rows, so other histories, which
-/// have neither, can refuse them in one place.
+/// Every action that filters or folds history rows, so each history can
+/// accept only the actions it supports in one place.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum LogAction {
     Type(String),
@@ -142,7 +142,7 @@ pub struct App {
 
 impl App {
     pub fn new(commits: Vec<Commit>) -> Self {
-        Self {
+        let mut app = Self {
             images: crate::images::Images::default(),
             status_view: None,
             history: match commits
@@ -214,7 +214,11 @@ impl App {
             submodules: HashMap::new(),
             submodule_rows: HashMap::new(),
             submodule_root: None,
+        };
+        if app.history == History::Reflog {
+            app.refresh_log_folds();
         }
+        app
     }
 
     /// Blame without attribution columns is a plain file view: line history
@@ -556,7 +560,13 @@ impl App {
     }
 
     pub fn apply_log_action(&mut self, action: LogAction) {
-        // Reflog and blame rows are not a commit graph.
+        if self.history == History::Reflog && action == LogAction::Fold {
+            self.status = self.log_folds.toggle(self.selected, &self.commits).err();
+            self.ensure_log_selection();
+            self.search_match = None;
+            return;
+        }
+        // Other histories do not support commit graph actions.
         if self.history != History::Log {
             return;
         }
