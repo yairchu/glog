@@ -561,9 +561,12 @@ impl App {
 
     pub fn apply_log_action(&mut self, action: LogAction) {
         if self.history == History::Reflog && action == LogAction::Fold {
-            self.status = self.log_folds.toggle(self.selected, &self.commits).err();
-            self.ensure_log_selection();
-            self.search_match = None;
+            // Other rows have nothing to fold, so keep whatever the status says.
+            if self.log_folds.in_reflog_fold(self.selected) {
+                self.status = self.log_folds.toggle(self.selected, &self.commits).err();
+                self.ensure_log_selection();
+                self.search_match = None;
+            }
             return;
         }
         // Other histories do not support commit graph actions.

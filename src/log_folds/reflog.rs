@@ -133,6 +133,10 @@ impl Folds {
         layout
     }
 
+    pub(super) fn contains(&self, index: usize) -> bool {
+        self.groups.values().any(|g| g.rows.contains(&index))
+    }
+
     pub(super) fn toggle(&mut self, index: usize) {
         if let Some(group) = self.groups.values_mut().find(|g| g.rows.contains(&index)) {
             group.expanded = !group.expanded;

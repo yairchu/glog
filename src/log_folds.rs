@@ -325,6 +325,13 @@ impl LogFolds {
         }
     }
 
+    /// Whether a reflog row belongs to a fold that `toggle` can flip.
+    pub fn in_reflog_fold(&self, index: usize) -> bool {
+        self.reflog
+            .as_ref()
+            .is_some_and(|folds| folds.contains(index))
+    }
+
     /// Fold or expand a merge. While omitted history is read, what a fold
     /// hides is unknown, so this flips the choice its marker shows.
     pub fn toggle(&mut self, index: usize, commits: &[Commit]) -> Result<(), String> {
