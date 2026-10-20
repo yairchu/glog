@@ -433,6 +433,22 @@ mod tests {
     }
 
     #[test]
+    fn amend_chains_include_cherry_picked_reverted_and_merged_originals() {
+        let app = app(&[
+            ("HEAD", "commit (amend): amended cherry-pick"),
+            ("HEAD", "cherry-pick: picked"),
+            ("HEAD", "commit (amend): amended revert"),
+            ("HEAD", "revert: Revert \"picked\""),
+            ("HEAD", "commit (amend): amended merge"),
+            ("HEAD", "merge side: Merge made by the 'ort' strategy."),
+        ]);
+        assert_eq!(shown(&app), [0, 2, 4]);
+        for row in [0, 2, 4] {
+            assert_eq!(app.log_folds.label(row), " · 1 earlier version");
+        }
+    }
+
+    #[test]
     fn truncated_amend_chains_fold_only_the_available_versions() {
         let mut app = app(&[
             ("HEAD", "commit (amend): newest"),
