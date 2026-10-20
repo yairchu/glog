@@ -340,7 +340,7 @@ fn reflog_reference_spans(action: &str, message: &str) -> Option<Vec<Span<'stati
         ("branch", _) => ("Created from ", None, Argument),
         ("reset", _) => ("moving to ", None, Argument),
         (_, Some("start")) => ("checkout ", None, Argument),
-        (_, Some("finish")) => ("returning to ", None, Current),
+        (_, Some("finish" | "abort")) => ("returning to ", None, Current),
         _ => return None,
     };
     let references = message.strip_prefix(prefix)?;
