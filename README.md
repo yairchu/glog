@@ -252,10 +252,9 @@ event text or commit hash. Repeated visits to the same commit remain separate
 entries. Finished or aborted rebases start folded at their final entry.
 Consecutive amendments start folded at their newest version, including the
 adjacent original commit when available. Press `z` to expand or fold either
-group; search reveals matching entries. The entry before each rebase stays
-visible. Incomplete or ambiguous rebase sequences stay expanded. This view is
-read-only and loaded once; Log's ancestry graph, merge
-folds, type filters, field toggles, and watch mode do not apply.
+group; search reveals matching entries. This view is read-only and loaded
+once; Log's ancestry graph, merge folds, type filters, field toggles, and
+watch mode do not apply.
 
 Reflogs belong to the local repository and may have expired entries. They show
 the retained update history, not a complete record of activity on other clones.
