@@ -637,4 +637,21 @@ mod tests {
         ]);
         assert_eq!(shown(&app), [0, 1]);
     }
+
+    #[test]
+    fn ongoing_rebases_started_by_other_tools_leave_older_amendments_folded() {
+        // Tools can name their rebases with GIT_REFLOG_ACTION.
+        let app = app_during_rebase(
+            &[
+                ("HEAD", "commit (amend): newest ongoing edit"),
+                ("HEAD", "commit (amend): previous ongoing edit"),
+                ("HEAD", "autofix (start): checkout main"),
+                ("HEAD", "commit (amend): before the rebase"),
+                ("HEAD", "commit: original before the rebase"),
+            ],
+            true,
+        );
+        assert_eq!(shown(&app), [0, 1, 2, 3]);
+        assert_eq!(app.log_folds.label(3), " · 1 earlier version");
+    }
 }
