@@ -492,10 +492,18 @@ impl App {
         }
     }
 
-    /// Return to the blame view before the last `blame_parent`.
+    pub fn has_blame_back(&self) -> bool {
+        !self.blame_stack.is_empty() || self.has_reference_back()
+    }
+
+    /// Return to the previous blame view or the review that opened it.
     pub fn blame_back(&mut self) {
         let Some(frame) = self.blame_stack.pop() else {
-            self.status = Some("No earlier blame view to return to".into());
+            if self.has_reference_back() {
+                self.reference_back();
+            } else {
+                self.status = Some("No earlier blame view to return to".into());
+            }
             return;
         };
         self.commits = frame.commits;
@@ -1007,6 +1015,52 @@ impl App {
             }
             Err(error) => self.set_editor_error(Some(error)),
         }
+    }
+
+    pub fn blame_show_line(&mut self) {
+        let loaded = self.show_blame(self.show_cursor).map(|mut target| {
+            target.exit_on_esc = self.exit_on_esc;
+            target.github_repository = self.github_repository.clone();
+            target
+        });
+        self.enter_followed(loaded);
+    }
+
+    fn show_blame(&self, cursor: usize) -> Result<App, String> {
+        if let Some((key, row)) = self.submodule_rows.get(&cursor) {
+            return self.submodules[key].show_blame(*row);
+        }
+        let row = self.show_rows.get(cursor).ok_or("No file selected")?;
+        let file = row
+            .file
+            .map(|index| &self.show_files[index])
+            .ok_or("No file selected")?;
+        if file.submodule.is_some() {
+            return Err("Expand the submodule and select a file".into());
+        }
+        let commit = self
+            .commits
+            .get(self.selected)
+            .ok_or("No commit selected")?;
+        let top = self
+            .submodule_root
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(git::repository_directory)?;
+        let patch = self
+            .show_text
+            .lines()
+            .skip(file.start)
+            .take(file.end - file.start)
+            .collect::<Vec<_>>()
+            .join("\n");
+        crate::blame::load_patch(
+            commit,
+            &patch,
+            row.source - file.start,
+            &file.path_bytes,
+            top,
+        )
     }
 
     pub fn set_editor_error(&mut self, error: Option<String>) {

@@ -35,6 +35,170 @@ impl FileRevision {
     }
 }
 
+/// Open the full file at the selected patch line, using its parent for deletions.
+pub fn load_patch(
+    commit: &Commit,
+    patch: &str,
+    row: usize,
+    path: &[u8],
+    top: PathBuf,
+) -> Result<crate::app::App, String> {
+    if commit.kind != git::CommitKind::Revision
+        || matches!(commit.annotation, Some(Annotation::Stash(_)))
+    {
+        return Err("Select a committed patch to blame".into());
+    }
+    let (parent, number) =
+        patch_position(patch, row).ok_or("Select a code line or hunk to blame")?;
+    let revision = parent.map_or_else(
+        || commit.hash.clone(),
+        |parent| format!("{}^{}", commit.hash, parent + 1),
+    );
+    let path = if parent.is_some() {
+        let headers: Vec<_> = patch
+            .lines()
+            .map(crate::ansi::plain)
+            .take_while(|line| !line.starts_with("@@"))
+            .collect();
+        if headers
+            .first()
+            .is_some_and(|line| line.starts_with("diff --git "))
+        {
+            headers
+                .iter()
+                .find_map(|line| line.strip_prefix("--- "))
+                .and_then(|path| crate::diff::unquote_path(path.trim_end_matches('\t')))
+                .and_then(|(path, _)| path.strip_prefix(b"a/").map(<[u8]>::to_vec))
+                .ok_or("Could not locate the parent file")?
+        } else {
+            // Combined diffs normally show only the result's name, even when
+            // this parent used another name. Ask Git for the rename mapping.
+            parent_path(&revision, &commit.hash, path, &top)?
+        }
+    } else {
+        path.to_vec()
+    };
+    let date = git::configured_log_date("format-local:%Y-%m-%d")?;
+    let rows = blame(Some(&revision), &path, Some(&top), &date)?;
+    if rows.is_empty() {
+        return Err("The file is empty at this revision".into());
+    }
+    let mut app = crate::app::App::new(rows);
+    app.selected = number.saturating_sub(1).min(app.commits.len() - 1);
+    app.center_selection = true;
+    let label = parent.map_or_else(
+        || commit.short_hash.clone(),
+        |parent| format!("{}^{}", commit.short_hash, parent + 1),
+    );
+    app.context = format!("blame {label} -- {}", crate::diff::display_path(&path));
+    Ok(app)
+}
+
+/// The parent column (None for the result) and its one-based line number.
+fn patch_position(patch: &str, row: usize) -> Option<(Option<usize>, usize)> {
+    let mut old = Vec::new();
+    let mut new = 0;
+    for (index, text) in patch.lines().enumerate() {
+        let text = crate::ansi::plain(text);
+        if text.starts_with("@@") {
+            let mut fields = text.split_whitespace().skip(1);
+            old.clear();
+            for field in fields.by_ref() {
+                if let Some(range) = field.strip_prefix('-') {
+                    old.push(range.split(',').next()?.parse::<usize>().ok()?);
+                } else {
+                    let range = field.strip_prefix('+')?;
+                    new = range.split(',').next()?.parse::<usize>().ok()?;
+                    break;
+                }
+            }
+            if index == row {
+                return (!old.is_empty()).then_some((None, new.max(1)));
+            }
+            continue;
+        }
+        if index > row {
+            break;
+        }
+        if old.is_empty() {
+            continue;
+        }
+        let prefix = text.as_bytes().get(..old.len())?;
+        if !prefix.iter().all(|byte| matches!(byte, b' ' | b'+' | b'-')) {
+            if index == row {
+                return None;
+            }
+            continue;
+        }
+        let deleted = prefix.iter().position(|&byte| byte == b'-');
+        if index == row {
+            return Some(match deleted {
+                Some(parent) => (Some(parent), old[parent]),
+                None => (None, new),
+            });
+        }
+        for (column, number) in old.iter_mut().enumerate() {
+            // A deletion belongs only to the parents marked '-'. Result
+            // lines belong to each parent whose column is unchanged.
+            let present = if deleted.is_some() {
+                prefix[column] == b'-'
+            } else {
+                prefix[column] == b' '
+            };
+            if present {
+                *number += 1;
+            }
+        }
+        if deleted.is_none() {
+            new += 1;
+        }
+    }
+    None
+}
+
+fn parent_path(
+    revision: &str,
+    result: &str,
+    path: &[u8],
+    top: &PathBuf,
+) -> Result<Vec<u8>, String> {
+    let output = git::repository_env(&mut git::read_command(), top)
+        .current_dir(top)
+        .args([
+            "diff",
+            "--name-status",
+            "-z",
+            "--find-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-relative",
+            "--no-exit-code",
+            "--no-quiet",
+            revision,
+            result,
+            "--",
+        ])
+        .output()
+        .map_err(|error| format!("Could not locate the parent file: {error}"))?;
+    if !output.status.success() {
+        return Err(git::stderr_message(
+            "Could not locate the parent file",
+            &output.stderr,
+        ));
+    }
+    let mut fields = output.stdout.split(|&byte| byte == 0);
+    while let Some(status) = fields.next() {
+        let Some(old) = fields.next() else { break };
+        if status.starts_with(b"R") || status.starts_with(b"C") {
+            let new = fields.next().ok_or("Missing rename destination")?;
+            if new == path {
+                return Ok(old.to_vec());
+            }
+        }
+    }
+    Ok(path.to_vec())
+}
+
 /// Open `path` as it is in `revision`, a resolved commit hash.
 pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String> {
     if path.is_empty() {
@@ -742,6 +906,240 @@ mod tests {
             .output()
             .unwrap();
         assert!(output.status.success(), "{output:?}");
+    }
+
+    fn press(app: &mut App, key: KeyCode) {
+        input::handle(Event::Key(KeyEvent::new(key, KeyModifiers::NONE)), app);
+    }
+
+    fn review_line(revision: &str, text: &str) -> App {
+        let mut app = crate::git::load_show_app(&[revision.into()]).unwrap();
+        while let Some(cursor) = app.show_rows.iter().position(|row| row.folded) {
+            app.show_cursor = cursor;
+            app.toggle_show_file();
+        }
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| crate::ansi::plain(&row.text) == text)
+            .unwrap_or_else(|| panic!("missing {text:?} in {}", app.show_text));
+        app.show_offset = app.show_cursor.saturating_sub(2);
+        app
+    }
+
+    #[test]
+    fn review_blame_uses_patch_sides_and_returns_through_parent_history() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let original = (1..=25).map(|n| format!("line {n}\n")).collect::<String>();
+        fs::write("old name.txt", &original).unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "original"]);
+        git(&["mv", "old name.txt", "new name.txt"]);
+        let changed = original
+            .replace("line 2\n", "inserted\nreplacement\n")
+            .replace("line 22\n", "last replacement\n");
+        fs::write("new name.txt", &changed).unwrap();
+        git(&["commit", "-qam", "rename and change"]);
+        fs::write("new name.txt", "a later committed version\n").unwrap();
+        git(&["commit", "-qam", "later"]);
+        fs::write("new name.txt", "uncommitted contents\n").unwrap();
+        fs::create_dir("launch").unwrap();
+        std::env::set_current_dir("launch").unwrap();
+
+        for (patch_line, code_line, number, parent) in [
+            ("+inserted", "inserted", 2, false),
+            ("+replacement", "replacement", 3, false),
+            (" line 3", "line 3", 4, false),
+            ("-line 2", "line 2", 2, true),
+            ("+last replacement", "last replacement", 23, false),
+            ("-line 22", "line 22", 22, true),
+        ] {
+            let mut app = review_line("HEAD^", patch_line);
+            app.watch = true;
+            let (cursor, offset, text, hash) = (
+                app.show_cursor,
+                app.show_offset,
+                app.show_text.clone(),
+                app.commits[app.selected].hash.clone(),
+            );
+            press(&mut app, KeyCode::Char('b'));
+            assert_eq!(app.status, None, "{patch_line}");
+            assert_eq!(app.history, History::Blame);
+            assert_eq!(app.mode, Mode::Log);
+            assert!(!app.watch);
+            assert_eq!(app.commits.len(), if parent { 25 } else { 26 });
+            let line = app.commits[app.selected].blame().unwrap();
+            assert_eq!(line.number, number);
+            assert_eq!(code(line), code_line);
+            assert_eq!(
+                line.source_path,
+                if parent {
+                    b"old name.txt".to_vec()
+                } else if patch_line.starts_with('+') {
+                    b"new name.txt".to_vec()
+                } else {
+                    b"old name.txt".to_vec()
+                }
+            );
+
+            if patch_line == "+replacement" {
+                for back in [KeyCode::Backspace, KeyCode::Esc] {
+                    press(&mut app, KeyCode::Char('p'));
+                    assert_eq!(app.status, None);
+                    assert_eq!(app.commits.len(), 25);
+                    press(&mut app, back);
+                    assert_eq!(app.history, History::Blame);
+                    assert_eq!(
+                        code(app.commits[app.selected].blame().unwrap()),
+                        "replacement"
+                    );
+                }
+            }
+            press(&mut app, KeyCode::Backspace);
+            assert_eq!(app.mode, Mode::Show);
+            assert_eq!(app.history, History::Log);
+            assert_eq!(app.show_cursor, cursor);
+            assert_eq!(app.show_offset, offset);
+            assert_eq!(app.show_text, text);
+            assert_eq!(app.commits[app.selected].hash, hash);
+            assert!(app.watch);
+            app.switch_mode();
+            app.switch_mode();
+            assert_eq!(app.show_cursor, cursor);
+            assert_eq!(app.show_offset, offset);
+            // Escape also restores the review, including when glog was
+            // launched with Escape configured to exit to the calling tool.
+            app.exit_on_esc = parent;
+            press(&mut app, KeyCode::Char('b'));
+            press(&mut app, KeyCode::Esc);
+            assert_eq!(app.mode, Mode::Show);
+            assert_eq!(app.show_cursor, cursor);
+            assert_eq!(app.show_offset, offset);
+            assert_eq!(app.show_text, text);
+            assert!(!app.quit);
+        }
+
+        // An unsuccessful jump keeps the review and its return path intact.
+        let mut app = review_line("HEAD^", "+replacement");
+        app.show_cursor = 0;
+        let text = app.show_text.clone();
+        press(&mut app, KeyCode::Char('b'));
+        assert_eq!(app.mode, Mode::Show);
+        assert_eq!(app.show_text, text);
+        assert!(!app.has_reference_back());
+        assert_eq!(app.status.as_deref(), Some("No file selected"));
+    }
+
+    #[test]
+    fn review_blame_opens_added_and_deleted_files_with_quoted_paths() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let path = "quoted \"name\".txt";
+        fs::write(path, "first\n\nlast").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "create"]);
+        for (patch_line, expected, number) in [("+last", "last", 3), ("+", "", 2)] {
+            let mut app = review_line("HEAD", patch_line);
+            press(&mut app, KeyCode::Char('b'));
+            assert_eq!(app.status, None);
+            let line = app.commits[app.selected].blame().unwrap();
+            assert_eq!(code(line), expected);
+            assert_eq!(line.number, number);
+            assert_eq!(line.source_path, path.as_bytes());
+        }
+        git(&["rm", "-q", path]);
+        git(&["commit", "-qm", "delete"]);
+        for (patch_line, expected, number) in [("-last", "last", 3), ("-", "", 2)] {
+            let mut app = review_line("HEAD", patch_line);
+            press(&mut app, KeyCode::Char('b'));
+            assert_eq!(app.status, None);
+            let line = app.commits[app.selected].blame().unwrap();
+            assert_eq!(code(line), expected);
+            assert_eq!(line.number, number);
+            assert_eq!(line.source_path, path.as_bytes());
+        }
+        let mut app = review_line("HEAD", "\\ No newline at end of file");
+        press(&mut app, KeyCode::Char('b'));
+        assert_eq!(app.mode, Mode::Show);
+        assert_eq!(
+            app.status.as_deref(),
+            Some("Select a code line or hunk to blame")
+        );
+    }
+
+    #[test]
+    fn review_blame_maps_combined_diff_lines_to_their_parent() {
+        use crate::git::tests::git as output;
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let tail = (1..=20).map(|n| format!("tail {n}\n")).collect::<String>();
+        fs::write(
+            "file.txt",
+            format!("start\none\ncommon\nthree\nend\n{tail}"),
+        )
+        .unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        let base = output(&["rev-parse", "HEAD"]);
+        fs::write(
+            "file.txt",
+            format!("start\nleft\ncommon\nthree\nend\n{tail}"),
+        )
+        .unwrap();
+        git(&["commit", "-qam", "left"]);
+        let left = output(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "--detach", base.trim()]);
+        fs::write(
+            "file.txt",
+            format!("start\none\ncommon\nright\nend\n{tail}"),
+        )
+        .unwrap();
+        git(&["commit", "-qam", "right"]);
+        let right = output(&["rev-parse", "HEAD"]);
+        fs::rename("file.txt", "moved.txt").unwrap();
+        fs::write(
+            "moved.txt",
+            format!("start\nmerged\ncommon\nmerged tail\nend\n{tail}"),
+        )
+        .unwrap();
+        git(&["add", "-A"]);
+        let tree = output(&["write-tree"]);
+        let merge = output(&[
+            "commit-tree",
+            tree.trim(),
+            "-p",
+            left.trim(),
+            "-p",
+            right.trim(),
+            "-m",
+            "merge",
+        ]);
+        for (patch_line, expected, number) in [
+            ("- left", "left", 2),
+            (" -right", "right", 4),
+            ("++merged", "merged", 2),
+            ("++merged tail", "merged tail", 4),
+        ] {
+            let mut app = review_line(merge.trim(), patch_line);
+            press(&mut app, KeyCode::Char('b'));
+            assert_eq!(app.status, None, "{patch_line}");
+            assert_eq!(app.history, History::Blame);
+            let line = app.commits[app.selected].blame().unwrap();
+            assert_eq!(code(line), expected);
+            assert_eq!(line.number, number);
+            assert_eq!(
+                line.source_path,
+                if patch_line.starts_with("++") {
+                    b"moved.txt".to_vec()
+                } else {
+                    b"file.txt".to_vec()
+                }
+            );
+        }
     }
 
     #[test]

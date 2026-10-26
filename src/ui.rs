@@ -133,20 +133,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.mode == Mode::Log && file_view {
         "h help  q quit  ↑/k ↓/j  a author  d date  x hash  / ? search".to_owned()
     } else if app.mode == Mode::Log && app.history == History::Blame {
-        "h help  q quit  ↑/k ↓/j  ←/→ chunk  Enter show  p blame parent  Backspace back  a author  d date  x hash  / ? search"
+        "h help  q quit  ↑/k ↓/j  ←/→ chunk  Enter show  p blame parent  Esc/Backspace back  a author  d date  x hash  / ? search"
             .to_owned()
     } else if app.mode == Mode::Log {
         // Keep the hint short by omitting the row format toggles (x hash,
         // s subject); the help screen lists every key.
         "h help  q quit  ↑/k ↓/j  ←/→ commit  Enter show  t hide type  z fold merge  m fold all  a author  d date  r refs  / ? search".to_owned()
     } else if !has_log {
-        "h help  q quit  ↑/k ↓/j  [/ ] file  e edit  Enter/z fold  s summary  L lockfiles  / ? search"
+        "h help  q quit  ↑/k ↓/j  [/ ] file  b blame  e edit  Enter/z fold  s summary  L lockfiles  / ? search"
             .to_owned()
     } else if app.history == History::Stash {
         "h help  q quit  ↑/k ↓/j  ←/→ stash  [/ ] file  e edit  Enter/z fold  s summary  Tab Stash  / ? search"
             .to_owned()
     } else {
-        "h help  q quit  ↑/k ↓/j  ←/→ commit  [/ ] file  e edit  Enter/z fold  s summary  L lockfiles  / ? search"
+        "h help  q quit  ↑/k ↓/j  ←/→ commit  [/ ] file  b blame  e edit  Enter/z fold  s summary  L lockfiles  / ? search"
             .to_owned()
     };
     if app.has_reference_back() && app.search_input.is_none() && app.message().is_none() {
@@ -225,7 +225,18 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("previous / next line"),
         ],
     ),
-    every("Page Up/b", "page up"),
+    every("Page Up", "page up"),
+    (
+        "b",
+        [
+            Some("page up (Log) / blame selected line (Show)"),
+            Some("page up (Reflog) / blame selected line (Show)"),
+            Some("page up (Blame) / blame selected line (Show)"),
+            Some("page up"),
+            Some("blame selected line"),
+            Some("page up"),
+        ],
+    ),
     every("Page Down/Space/f", "page down"),
     (
         "←/→",
@@ -368,11 +379,11 @@ const HELP_ROWS: &[HelpRow] = &[
         "Backspace",
         [
             // A followed reference opens as a Log, whatever it was followed from.
-            Some("return after following a link"),
+            Some("return after following a link or opening blame"),
+            Some("return after opening blame"),
+            Some("return to the previous blame or review"),
             None,
-            Some("return to the previous blame"),
-            None,
-            None,
+            Some("return after opening blame"),
             Some("return to the previous blame, if any"),
         ],
     ),
@@ -394,7 +405,7 @@ const HELP_ROWS: &[HelpRow] = &[
         [
             Some("return to Log / cancel"),
             Some("return to Reflog / cancel"),
-            Some("return to Blame / cancel"),
+            Some("return to Blame (Show) / previous blame or review / cancel"),
             Some("return to Stash / cancel"),
             None,
             Some("close help / cancel search"),

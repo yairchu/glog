@@ -50,7 +50,11 @@ fn apply(event: Event, app: &mut App) {
             return;
         }
         if key.code == KeyCode::Backspace && app.has_reference_back() {
-            app.reference_back();
+            if app.mode == Mode::Log && app.history == History::Blame {
+                app.blame_back();
+            } else {
+                app.reference_back();
+            }
             return;
         }
         if key.code == KeyCode::Char('e') && matches!(app.mode, Mode::Show | Mode::Status) {
@@ -135,15 +139,19 @@ fn apply(event: Event, app: &mut App) {
             KeyCode::Enter | KeyCode::Char('z') if app.mode == Mode::Show => app.toggle_show_file(),
             KeyCode::Char('s') if app.mode == Mode::Show => app.toggle_show_stat(),
             KeyCode::Char('L') if app.mode == Mode::Show => app.toggle_all_lockfiles(),
+            KeyCode::Char('b') if app.mode == Mode::Show => app.blame_show_line(),
             KeyCode::Char('[') if app.mode == Mode::Show => app.jump_show_file(-1),
             KeyCode::Char(']') if app.mode == Mode::Show => app.jump_show_file(1),
             KeyCode::Esc if app.mode == Mode::Show => app.switch_mode(),
+            KeyCode::Esc if app.history == History::Blame && app.has_blame_back() => {
+                app.blame_back()
+            }
             // Leave a followed reference before exiting to the calling tool.
             KeyCode::Esc if app.exit_on_esc && app.has_reference_back() => app.reference_back(),
             KeyCode::Esc if app.exit_on_esc => app.quit = true,
             KeyCode::Up | KeyCode::Char('k') => app.move_by(-1, 1),
             KeyCode::Down | KeyCode::Char('j') => app.move_by(1, 1),
-            KeyCode::PageUp | KeyCode::Char('b') if app.mode == Mode::Show => {
+            KeyCode::PageUp if app.mode == Mode::Show => {
                 app.scroll_show(-(app.visible_show_rows.max(1) as isize));
             }
             KeyCode::PageDown | KeyCode::Char(' ') | KeyCode::Char('f')
@@ -546,12 +554,10 @@ mod tests {
             assert_eq!(app.show_offset, 15, "wrong offset for {code:?}");
             assert_eq!(app.show_cursor, 15, "hidden cursor for {code:?}");
         }
-        for code in [KeyCode::Char('b'), KeyCode::PageUp] {
-            let mut app = app();
-            handle(key(code), &mut app);
-            assert_eq!(app.show_offset, 5, "wrong offset for {code:?}");
-            assert_eq!(app.show_cursor, 9, "hidden cursor for {code:?}");
-        }
+        let mut app = app();
+        handle(key(KeyCode::PageUp), &mut app);
+        assert_eq!(app.show_offset, 5);
+        assert_eq!(app.show_cursor, 9);
     }
 
     #[test]

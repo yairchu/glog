@@ -469,7 +469,9 @@ so graph edges may span them.
 | `Tab` | open selected item | return to Log |
 | `Escape` | — | return to Log |
 | `↑` / `k`, `↓` / `j` | select commit | move patch cursor |
-| `Page Up` / `b`, `Page Down` / `Space` / `f` | move by page | scroll by page |
+| `Page Up`, `Page Down` / `Space` / `f` | move by page | scroll by page |
+| `b` | move up by page | blame the selected line; deleted lines use the parent version |
+| `Backspace` | return to the previous view | return to the previous view |
 | `a`, `d`, `r`, `x`, `s` | toggle author/date/refs/hash/subject | — |
 | `←`, `→` | select previous/newer or next/older commit | previous/newer or next/older commit |
 | `[`, `]` | — | previous/next changed file |
@@ -500,6 +502,9 @@ The selected Log commit is the one displayed by Show. Show output is loaded lazi
 Show highlights the current patch row. Navigation and search move this cursor,
 and `Enter`/`z` acts on the file beneath it even when the cursor is in the last
 screenful.
+
+After opening Blame with `b`, press `Escape` or `Backspace` to return to the
+review position. Each key first steps back through any parent blame views.
 
 Press `e` in Show, Diff, or Status to open the working file in `$VISUAL`
 (falling back to `$EDITOR`). Selecting a patch line opens that position;

@@ -5,6 +5,12 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Press `b` on a code line in Show to open the full file in Blame at that
+  line. Deleted lines open the parent version. Escape or Backspace returns to the
+  review position; Page Up continues to scroll Show up a page.
+
 ### Fixed
 
 - Recognize commit types with consecutive parenthesized groups, such as
