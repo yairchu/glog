@@ -10,6 +10,7 @@ mod input;
 mod log_folds;
 mod log_format;
 mod message_format;
+mod patch_options;
 mod stash;
 mod status;
 mod ui;
@@ -35,6 +36,15 @@ fn main() -> ExitCode {
         println!("{information}");
         return ExitCode::SUCCESS;
     }
+    let (color_moved, command_args) = match patch_options::parse_args(command_args) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("glog: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    patch_options::initialize(color_moved);
+    let command_args = command_args.as_slice();
     let (log_format, log_options, log_args) = match if command == Command::Log {
         log_format::parse_args(command_args)
     } else {
@@ -206,6 +216,11 @@ Options:
                 T clears filters
   --watch       Include a Working tree item and refresh the default HEAD view
   --exit-on-esc Exit from the Log list with Escape (glog / glog log)
+  --color-moved[=MODE]
+                Highlight moved code for this session (bare flag: zebra).
+                Modes: no, default, plain, blocks, zebra, dimmed-zebra
+  --no-color-moved
+                Disable moved-code highlighting for this session
   -h, --help    Print help
   -V, --version Print version
 
@@ -224,6 +239,9 @@ Blame shows which commit last changed each line; Enter opens it, p blames
 the file before it, and Backspace returns.
 Show opens HEAD or the specified commit, with history available via Tab.
 Breaking-change markers, section headings, and footer labels are emphasized.
+Patches highlight moved blocks using diff.colorMoved, or zebra if unset.
+Git's diff.colorMovedWS controls whitespace matching. Session color-moved
+flags override diff.colorMoved and apply across views, including watch mode.
 Click underlined commit hashes in Show messages to follow them; Backspace returns.
 Hashes use lowercase hex: 7+ characters, or with a # prefix, 7+ or 4-5
 including a letter. On GitHub repositories, # plus 1-5 digits opens an issue

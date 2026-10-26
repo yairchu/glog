@@ -31,10 +31,19 @@ pub(crate) fn read_command() -> Command {
 }
 
 pub(crate) fn patch_command() -> Command {
+    patch_command_at(None)
+}
+
+/// Apply preferences in the repository being queried, including submodules.
+pub(crate) fn patch_command_at(directory: Option<&std::path::Path>) -> Command {
     let mut command = read_command();
+    if let Some(directory) = directory {
+        repository_env(&mut command, directory).current_dir(directory);
+    }
     // Patches pass through UTF-8 text (and optionally delta) before parsing.
     // Quote non-ASCII path bytes so this conversion cannot lose file identities.
     command.args(["-c", "core.quotePath=true"]);
+    crate::patch_options::apply(&mut command, directory);
     command
 }
 
@@ -1218,8 +1227,7 @@ pub fn show_submodule(
     if !directory.join(".git").exists() {
         return Err(format!("Submodule {path} is not initialized locally"));
     }
-    let output = repository_env(&mut patch_command(), &directory)
-        .current_dir(&directory)
+    let output = patch_command_at(Some(&directory))
         .env("GIT_NO_LAZY_FETCH", "1")
         .args([
             "--no-pager",
@@ -1259,8 +1267,7 @@ pub fn show_untracked_in(root: &std::path::Path, path: &std::path::Path) -> Resu
     }
     let mut output = Vec::new();
     if !untracked_regular_file_diff(&root.join(path), path, &mut output)? {
-        let untracked = repository_env(&mut patch_command(), root)
-            .current_dir(root)
+        let untracked = patch_command_at(Some(root))
             .args([
                 "--no-pager",
                 "diff",

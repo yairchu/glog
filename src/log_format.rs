@@ -394,6 +394,14 @@ pub struct LogOptions {
     pub hidden_types: std::collections::BTreeSet<String>,
 }
 
+/// Git consumes the following argument verbatim as a search pattern.
+pub(crate) fn takes_pattern(arg: &str) -> bool {
+    matches!(
+        arg,
+        "--grep" | "--grep-reflog" | "--author" | "--committer" | "-G" | "-S"
+    )
+}
+
 /// Consume display options before `--`, leaving traversal and pathspecs for Git.
 pub fn parse_args(args: &[String]) -> Result<(LogFormat, LogOptions, Vec<String>), String> {
     let mut format = LogFormat::default();
@@ -403,10 +411,7 @@ pub fn parse_args(args: &[String]) -> Result<(LogFormat, LogOptions, Vec<String>
     while let Some(arg) = args.next() {
         // Git consumes the next argument as a pattern even when it looks like
         // a display flag or the pathspec separator.
-        if matches!(
-            arg.as_str(),
-            "--grep" | "--grep-reflog" | "--author" | "--committer" | "-G" | "-S"
-        ) {
+        if takes_pattern(arg) {
             git_args.push(arg.clone());
             git_args.push(
                 args.next()

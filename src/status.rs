@@ -490,8 +490,8 @@ impl StatusView {
         crate::git::format_output(output.stdout)
     }
     fn diff_command(&self, entry: &Entry) -> Command {
-        let mut command = crate::git::patch_command();
-        crate::git::repository_env(&mut command, &self.root)
+        let mut command = crate::git::patch_command_at(Some(&self.root));
+        command
             .arg("--literal-pathspecs")
             .arg("-C")
             .arg(&self.root)

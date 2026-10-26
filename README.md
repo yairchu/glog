@@ -551,6 +551,9 @@ SVG rendering and pixel-difference overlays are not currently supported.
 
 ## Delta and color
 
+Patches distinguish moved code blocks with zebra colors by default. Your Git
+`diff.colorMoved` and `diff.colorMovedWS` preferences take precedence.
+
 `glog` automatically tries [`delta`](https://github.com/dandavison/delta) when it is on `PATH`. Delta is run with paging disabled; if it is absent or fails, ordinary colored `git show` output is used. Blame also uses delta to syntax-highlight the file, in the same theme as Show, and shows plain text without it. ANSI colors from either program are rendered in the TUI.
 
 Set `GLOG_DELTA=0` to always use plain Git output:
