@@ -686,6 +686,7 @@ pub(crate) mod tests {
             ("FIX(api)!: repair", Some("FIX")),
             ("DoCs: explain", Some("DoCs")),
             ("tests #234(failing): reproduce crash", Some("tests")),
+            ("test(failing)(dsp): reproduce crash", Some("test")),
             ("doc: explain filtering", Some("doc")),
             ("feature: new view", Some("feature")),
             ("custom-type: café", Some("custom-type")),

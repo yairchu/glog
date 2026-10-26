@@ -5,6 +5,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Fixed
+
+- Recognize commit types with consecutive parenthesized groups, such as
+  `test(failing)(dsp):`, for highlighting and filtering.
+
 ## 0.6.1 - 2026-10-20
 
 ### Added

@@ -702,8 +702,8 @@ impl LogFolds {
 }
 
 /// Conventional Commit prefix, taken only from the subject of a revision.
-/// Custom ASCII types and issue references before the scope are supported,
-/// so any one-word prefix, such as `Note:` or `WIP:`, counts as a type.
+/// Custom ASCII types, consecutive scope groups, and preceding issue references
+/// are supported, so any one-word prefix, such as `Note:` or `WIP:`, counts as a type.
 pub fn commit_type(commit: &Commit) -> Option<std::borrow::Cow<'_, str>> {
     commit_type_prefix(commit).and_then(normalize_type)
 }
@@ -723,10 +723,14 @@ pub fn subject_type_prefix(subject: &str) -> Option<&str> {
         return None;
     }
     let prefix = prefix.strip_suffix('!').unwrap_or(prefix);
-    let kind = if let Some((kind, scope)) = prefix.split_once('(') {
-        let scope = scope.strip_suffix(')')?;
-        if scope.is_empty() || scope.contains(['(', ')']) {
-            return None;
+    let kind = if let Some(scope_start) = prefix.find('(') {
+        let (kind, mut scopes) = prefix.split_at(scope_start);
+        while !scopes.is_empty() {
+            let (scope, rest) = scopes.strip_prefix('(')?.split_once(')')?;
+            if scope.is_empty() || scope.contains('(') {
+                return None;
+            }
+            scopes = rest;
         }
         kind
     } else {
@@ -2241,6 +2245,12 @@ mod tests {
             ("testing: custom type", Some("testing")),
             ("features: custom type", Some("features")),
             ("test(failing): reproduce bug", Some("test")),
+            ("test(failing)(dsp): reproduce bug", Some("test")),
+            (
+                "test(failing)(dsp)(resampling): reproduce bug",
+                Some("test"),
+            ),
+            ("TESTS #234(failing)(dsp)!: reproduce bug", Some("test")),
             ("refactor(core)!: new API", Some("refactor")),
             ("feat!: breaking", Some("feat")),
             ("custom-type: thing", Some("custom-type")),
@@ -2256,6 +2266,14 @@ mod tests {
             ("ordinary subject", None),
             ("Fix typo: description", None),
             ("test(): empty scope", None),
+            ("test()(dsp): empty first group", None),
+            ("test(failing)(): empty last group", None),
+            ("test(failing)()(dsp): empty middle group", None),
+            ("test((failing))(dsp): nested groups", None),
+            ("test(failing)(dsp: unclosed group", None),
+            ("test(failing)dsp): missing opening parenthesis", None),
+            ("test(failing))dsp): extra closing parenthesis", None),
+            ("test(failing) (dsp): separated groups", None),
             ("feat: ", None),
             ("feat(scope: malformed", None),
             ("subject\n\nrefactor: body", None),
