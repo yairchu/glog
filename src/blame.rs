@@ -1038,11 +1038,26 @@ mod tests {
         let _cwd = CurrentDirGuard::enter(directory.path());
         git(&["init", "-q"]);
         let path = "quoted \"name\".txt";
-        fs::write(path, "first\n\nlast").unwrap();
-        git(&["add", "."]);
-        git(&["commit", "-qm", "create"]);
+        // Keep the quoted path in Git's history: Windows cannot create it
+        // on disk, but historical blame must still handle it there.
+        let history = concat!(
+            "commit refs/heads/review\n",
+            "committer Alice <alice@example.com> 1000000000 +0000\n",
+            "data 6\ncreate\n",
+            "M 100644 inline \"quoted \\\"name\\\".txt\"\n",
+            "data 11\nfirst\n\nlast\n\n",
+            "commit refs/heads/review\n",
+            "committer Alice <alice@example.com> 1000000001 +0000\n",
+            "data 6\ndelete\n",
+            "D \"quoted \\\"name\\\".txt\"\n\ndone\n",
+        );
+        assert!(crate::git::pipe_through_bytes(
+            Command::new("git").args(["fast-import", "--quiet"]),
+            history.as_bytes(),
+        )
+        .is_some());
         for (patch_line, expected, number) in [("+last", "last", 3), ("+", "", 2)] {
-            let mut app = review_line("HEAD", patch_line);
+            let mut app = review_line("review^", patch_line);
             press(&mut app, KeyCode::Char('b'));
             assert_eq!(app.status, None);
             let line = app.commits[app.selected].blame().unwrap();
@@ -1050,10 +1065,8 @@ mod tests {
             assert_eq!(line.number, number);
             assert_eq!(line.source_path, path.as_bytes());
         }
-        git(&["rm", "-q", path]);
-        git(&["commit", "-qm", "delete"]);
         for (patch_line, expected, number) in [("-last", "last", 3), ("-", "", 2)] {
-            let mut app = review_line("HEAD", patch_line);
+            let mut app = review_line("review", patch_line);
             press(&mut app, KeyCode::Char('b'));
             assert_eq!(app.status, None);
             let line = app.commits[app.selected].blame().unwrap();
@@ -1061,7 +1074,7 @@ mod tests {
             assert_eq!(line.number, number);
             assert_eq!(line.source_path, path.as_bytes());
         }
-        let mut app = review_line("HEAD", "\\ No newline at end of file");
+        let mut app = review_line("review", "\\ No newline at end of file");
         press(&mut app, KeyCode::Char('b'));
         assert_eq!(app.mode, Mode::Show);
         assert_eq!(
