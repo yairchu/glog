@@ -58,7 +58,10 @@ pub fn load(args: &[String]) -> Result<Launch, String> {
         .args([
             "for-each-ref",
             "--sort=refname",
-            "--format=%(objectname)%00%(refname:strip=2)%00%(HEAD)",
+            // A branch can point to an annotated tag. Name the commit it tags,
+            // as the traversal does.
+            "--format=%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end)\
+              %00%(refname:strip=2)%00%(HEAD)",
             "refs/heads/",
         ])
         .output()
@@ -185,7 +188,11 @@ fn remote_default(symbolic: Option<&str>) -> Option<(String, String)> {
         candidates.insert(0, reference.to_owned());
     }
     let output = git::read_command()
-        .args(["for-each-ref", "--format=%(refname)%00%(objectname)"])
+        .args([
+            "for-each-ref",
+            "--format=%(refname)%00\
+             %(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end)",
+        ])
         .args(&candidates)
         .output()
         .ok()?;
@@ -348,12 +355,19 @@ fn compact(
             has_parents: fields.len() > 1,
         })
         .collect();
+    let tip_indices = tips
+        .keys()
+        .map(|hash| {
+            let index = indices.get(hash.as_str()).ok_or("missing branch tip")?;
+            Ok((hash.clone(), *index))
+        })
+        .collect::<Result<HashMap<_, _>, String>>()?;
     if let Some(primary) = primary {
         let primary_index = tips.iter().find_map(|(hash, branches)| {
             branches
                 .iter()
                 .any(|branch| branch.kind == BranchKind::Local && branch.name == primary)
-                .then(|| indices[hash.as_str()])
+                .then(|| tip_indices[hash])
         });
         if let Some(primary_index) = primary_index {
             let mut integrated = vec![false; nodes.len()];
@@ -366,7 +380,7 @@ fn compact(
                 }
             }
             for (hash, branches) in &mut tips {
-                if integrated[indices[hash.as_str()]] {
+                if integrated[tip_indices[hash]] {
                     for branch in branches
                         .iter_mut()
                         .filter(|branch| branch.kind == BranchKind::Local && branch.name != primary)
@@ -383,8 +397,7 @@ fn compact(
         .filter(|(_, branches)| branches.iter().any(|branch| branch.merged_into.is_none()))
         .enumerate()
     {
-        let index = *indices.get(hash.as_str()).ok_or("missing branch tip")?;
-        owners[index].insert(owner);
+        owners[tip_indices[hash]].insert(owner);
     }
     let mut largest_child = vec![0; nodes.len()];
     let mut keep = vec![false; nodes.len()];
@@ -1184,6 +1197,36 @@ mod tests {
         assert_eq!(app.status, None);
         assert_eq!(app.commits.len(), 3);
         assert!(app.commits.iter().any(|row| row.hash == root));
+    }
+
+    #[test]
+    fn branch_tips_peel_annotated_tags() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        let tree = git(&["write-tree"]);
+        let root = commit(&tree, "root", &[]);
+        let main = commit(&tree, "main", &[&root]);
+        let side = commit(&tree, "side", &[&root]);
+        git(&["update-ref", "refs/heads/main", &main]);
+        git(&["update-ref", "refs/heads/side", &side]);
+        git(&["tag", "-a", "-m", "tag", "tagged", &side]);
+        let tag = git(&["rev-parse", "refs/tags/tagged"]);
+        // Git refuses to point a branch at a tag, but other tools can.
+        std::fs::write(".git/refs/heads/tagged", format!("{tag}\n")).unwrap();
+        git(&["update-ref", "refs/remotes/origin/main", &tag]);
+        let app = interactive();
+        let tip = |name: &str| {
+            app.commits
+                .iter()
+                .find(|row| {
+                    row.branch()
+                        .is_some_and(|node| node.branches.iter().any(|branch| branch.name == name))
+                })
+                .map(|row| row.hash.as_str())
+        };
+        assert_eq!(tip("tagged"), Some(side.as_str()));
+        assert_eq!(tip("origin/main"), Some(side.as_str()));
     }
 
     #[test]
