@@ -76,6 +76,20 @@ struct ShowFile<'a> {
     line: usize,
 }
 
+impl ShowFile<'_> {
+    /// Whether the patch converted the file's text. Submodule and untracked
+    /// patches are raw, as is a patch from a blame that was.
+    fn textconv(&self) -> bool {
+        self.app.submodule_patch.is_none()
+            && !self.app.raw_untracked_files.contains(&self.file.key)
+            && self
+                .app
+                .commits
+                .get(self.app.selected)
+                .is_none_or(Commit::textconv)
+    }
+}
+
 /// Links are resolved on first display, so revisiting a commit runs no Git process.
 struct CachedShow {
     text: String,
@@ -1070,34 +1084,29 @@ impl App {
             .show_repository()
             .map(|root| Ok(root.to_path_buf()))
             .unwrap_or_else(git::repository_directory)?;
-        let (sides, textconv) = match &app.submodule_patch {
-            Some(patch) => (
-                crate::blame::PatchSides::Pair {
-                    old: Some(git::Version::Revision(patch.old.clone())),
-                    new: git::Version::Revision(patch.new.clone()),
-                },
-                false,
-            ),
-            // Untracked patches are raw, and only Git's tracked paths can be blamed.
-            None if app.raw_untracked_files.contains(&selected.file.key) => (
+        let sides = match &app.submodule_patch {
+            Some(patch) => crate::blame::PatchSides::Pair {
+                old: Some(git::Version::Revision(patch.old.clone())),
+                new: git::Version::Revision(patch.new.clone()),
+            },
+            // Only Git's tracked paths can be blamed.
+            None if app.raw_untracked_files.contains(&selected.file.key) => {
                 crate::blame::PatchSides::Pair {
                     old: None,
                     new: git::Version::Untracked,
-                },
-                false,
-            ),
-            None => {
-                let commit = app.commits.get(app.selected).ok_or("No commit selected")?;
-                let sides = match &app.diff_sides {
-                    Some(sides) => sides.clone()?,
-                    None => crate::blame::PatchSides::of(commit, selected.file)?,
-                };
-                (sides, commit.textconv())
+                }
             }
+            None => match &app.diff_sides {
+                Some(sides) => sides.clone()?,
+                None => crate::blame::PatchSides::of(
+                    app.commits.get(app.selected).ok_or("No commit selected")?,
+                    selected.file,
+                )?,
+            },
         };
         crate::blame::load_patch(
             sides,
-            textconv,
+            selected.textconv(),
             &selected.patch,
             selected.line,
             &selected.file.path_bytes,
@@ -1155,6 +1164,8 @@ impl App {
         let selected = self.show_file(cursor)?;
         let app = selected.app;
         let file = selected.file;
+        // Unlike Blame, the editor opens working tree files, which bare
+        // repositories lack.
         let root = app
             .show_repository()
             .map(|root| Ok(root.to_path_buf()))
@@ -1171,16 +1182,10 @@ impl App {
             &selected.patch,
             selected.line,
             worktree,
-            if app.submodule_patch.is_some()
-                || app
-                    .commits
-                    .get(app.selected)
-                    .is_some_and(|commit| !commit.textconv())
-                || app.raw_untracked_files.contains(&file.key)
-            {
-                crate::editor::Textconv::Disabled
-            } else {
+            if selected.textconv() {
                 crate::editor::Textconv::Allowed
+            } else {
+                crate::editor::Textconv::Disabled
             },
         ))
     }
