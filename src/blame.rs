@@ -1191,6 +1191,24 @@ mod tests {
         check(app, "-staged", &format!("{stash}^2"), true);
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn review_blame_reads_an_untracked_symlink_as_its_target_path() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file.txt", "a\nb\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "add"]);
+        std::os::unix::fs::symlink("file.txt", "link").unwrap();
+
+        let mut app = select_line(crate::git::load_diff_app(&[]).unwrap(), "+file.txt");
+        press(&mut app, KeyCode::Char('B'));
+        assert_eq!(app.status, None);
+        assert_eq!(app.context, "blame working tree -- link");
+        assert_eq!(code(app.commits[app.selected].blame().unwrap()), "file.txt");
+    }
+
     #[test]
     fn review_blame_opens_deleted_file_from_its_hunk_header() {
         let directory = TestDirectory::new();
