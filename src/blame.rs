@@ -182,8 +182,14 @@ fn blame_version(
         }
         Version::Untracked => {
             // Git refuses to blame untracked paths, but every line is uncommitted.
-            let contents = std::fs::read(top.join(git::raw_path(path)))
-                .map_err(|error| format!("could not read the untracked file: {error}"))?;
+            let file = top.join(git::raw_path(path));
+            let error = |error| format!("could not read the untracked file: {error}");
+            // Git records a symlink's target path rather than what it points to.
+            let contents = if file.symlink_metadata().map_err(error)?.is_symlink() {
+                git::path_bytes(&std::fs::read_link(&file).map_err(error)?).into_owned()
+            } else {
+                std::fs::read(&file).map_err(error)?
+            };
             let lines = unattributed_lines(&contents, &"0".repeat(40), path);
             Ok(render_lines(
                 lines,
