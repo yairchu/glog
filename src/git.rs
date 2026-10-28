@@ -967,6 +967,8 @@ pub enum Version {
     Revision(String),
     Index,
     Worktree,
+    /// A working tree file that Git does not track.
+    Untracked,
 }
 
 /// The old and new sides of a `glog diff` comparison, as git diff picks

@@ -1083,6 +1083,14 @@ impl App {
                 },
                 false,
             ),
+            // Untracked patches are raw, and only Git's tracked paths can be blamed.
+            None if app.raw_untracked_files.contains(&selected.file.key) => (
+                crate::blame::PatchSides::Pair {
+                    old: None,
+                    new: git::Version::Untracked,
+                },
+                false,
+            ),
             None => {
                 let commit = app.commits.get(app.selected).ok_or("No commit selected")?;
                 (

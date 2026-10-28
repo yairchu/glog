@@ -160,7 +160,7 @@ fn version_label(version: &Version) -> String {
             format!("{}{}", &revision[..hex.min(7)], &revision[hex..])
         }
         Version::Index => "index".into(),
-        Version::Worktree => "working tree".into(),
+        Version::Worktree | Version::Untracked => "working tree".into(),
     }
 }
 
@@ -193,6 +193,33 @@ fn blame_version(
                 ));
             }
             blame_with_textconv(None, path, Some(&top), date, textconv, Some(&output.stdout))
+        }
+        Version::Untracked => {
+            // Git refuses to blame untracked paths, but every line is uncommitted.
+            let contents = std::fs::read(top.join(git::raw_path(path)))
+                .map_err(|error| format!("could not read the untracked file: {error}"))?;
+            let contents = String::from_utf8_lossy(&contents);
+            let lines = contents
+                .split_inclusive('\n')
+                .map(|line| line.strip_suffix('\n').unwrap_or(line))
+                .enumerate()
+                .map(|(index, code)| PorcelainLine {
+                    hash: "0".repeat(40),
+                    number: index + 1,
+                    code: code.to_owned(),
+                    source_path: path.to_vec(),
+                    source_number: index + 1,
+                    previous: None,
+                })
+                .collect();
+            Ok(render_lines(
+                lines,
+                HashMap::new(),
+                top,
+                date,
+                path,
+                textconv,
+            ))
         }
     }
 }
