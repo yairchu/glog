@@ -1207,6 +1207,26 @@ mod tests {
     }
 
     #[test]
+    fn bare_blame_show_does_not_edit_repository_files() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q", "work"]);
+        fs::write("work/config", "line\n").unwrap();
+        git(&["-C", "work", "add", "."]);
+        git(&["-C", "work", "commit", "-qm", "add config"]);
+        git(&["clone", "--bare", "-q", "work", "bare.git"]);
+        std::env::set_current_dir("bare.git").unwrap();
+
+        let mut app = load_app(&["HEAD".into(), "config".into()]).unwrap();
+        press(&mut app, KeyCode::Enter);
+        let mut app = select_line(app, "+line");
+        app.request_editor();
+        // The Git directory's own config is no working tree file.
+        assert!(app.pending_editor.is_none());
+        assert!(app.status.is_some());
+    }
+
+    #[test]
     fn review_blame_opens_uncommitted_patches_before_the_first_commit() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
