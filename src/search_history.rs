@@ -24,11 +24,8 @@ impl SearchHistory {
             .and_then(|path| {
                 let mut file = File::open(path).ok()?;
                 file.lock_shared().ok()?;
-                let mut text = String::new();
-                file.read_to_string(&mut text).ok()?;
-                Some(text)
+                read(&mut file).ok()
             })
-            .map(|text| parse(&text))
             .unwrap_or_default();
         Self { queries, path }
     }
@@ -62,9 +59,7 @@ impl SearchHistory {
         let mut file = options.open(path)?;
         // Merge under the same lock used to write, preserving other sessions' searches.
         file.lock()?;
-        let mut text = String::new();
-        file.read_to_string(&mut text)?;
-        let mut queries = parse(&text);
+        let mut queries = read(&mut file)?;
         push(&mut queries, query);
         let text = queries.join("\n") + "\n";
         file.seek(SeekFrom::Start(0))?;
@@ -82,12 +77,19 @@ fn push(queries: &mut Vec<String>, query: &str) {
     }
 }
 
-fn parse(text: &str) -> Vec<String> {
+/// Read the saved queries, tolerating invalid UTF-8 so that one bad byte
+/// cannot stop all later searches from being saved.
+fn read(file: &mut File) -> io::Result<Vec<String>> {
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
     let mut queries = Vec::new();
-    for query in text.lines().filter(|query| !query.is_empty()) {
+    for query in String::from_utf8_lossy(&bytes)
+        .lines()
+        .filter(|query| !query.is_empty())
+    {
         push(&mut queries, query);
     }
-    queries
+    Ok(queries)
 }
 
 fn history_path() -> Option<PathBuf> {
