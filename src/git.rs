@@ -881,8 +881,10 @@ pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
     }
     // Resolve the sides before loading the patch, so Blame reads the versions
     // it shows even after refs move.
-    let sides = comparison_sides(&options, None)?
-        .ok_or("Cannot blame a combined diff of several revisions");
+    // Only Blame needs the sides, so failing to resolve them reports there.
+    let sides = comparison_sides(&options, None).and_then(|sides| {
+        sides.ok_or_else(|| "Cannot blame a combined diff of several revisions".to_owned())
+    });
     let kind = match (revisions.is_empty(), cached) {
         (true, true) => CommitKind::Staged,
         (true, false) => CommitKind::Unstaged,
@@ -907,11 +909,7 @@ pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
     });
     app.show_stat = stat;
     app.show_paths = paths;
-    app.diff_sides = Some(
-        sides
-            .map(|(old, new)| crate::blame::PatchSides::Pair { old, new })
-            .map_err(str::to_owned),
-    );
+    app.diff_sides = Some(sides.map(|(old, new)| crate::blame::PatchSides::Pair { old, new }));
     if !app.commits.is_empty() {
         app.mode = crate::app::Mode::Show;
         app.show_text = text;
