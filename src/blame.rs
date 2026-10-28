@@ -2022,6 +2022,15 @@ mod tests {
     }
 
     #[test]
+    fn patch_positions_count_empty_context_lines() {
+        // diff.suppressBlankEmpty prints blank context lines without a space.
+        let patch = "@@ -1,3 +1,3 @@\n a\n\n-b\n+c\n";
+        assert_eq!(patch_position(patch, 2), Some((None, 2)));
+        assert_eq!(patch_position(patch, 3), Some((Some(0), 3)));
+        assert_eq!(patch_position(patch, 4), Some((None, 3)));
+    }
+
+    #[test]
     fn blame_follows_renames_to_parents_and_back() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
