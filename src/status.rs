@@ -491,8 +491,6 @@ impl StatusView {
         let mut command = crate::git::patch_command_at(Some(&self.root));
         command
             .arg("--literal-pathspecs")
-            .arg("-C")
-            .arg(&self.root)
             .args(["diff", "--no-ext-diff", "--no-textconv", RENAME_DETECTION])
             .args(crate::git::DIFF_PREFIX_ARGS);
         if entry.key.group == Group::Staged {
