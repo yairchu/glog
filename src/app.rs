@@ -544,6 +544,8 @@ impl App {
             }
             return;
         };
+        // A frame holds a blame, so return to it even from its Show.
+        self.mode = Mode::Log;
         self.commits = frame.commits;
         self.selected = frame.selected;
         self.log_offset = frame.log_offset;

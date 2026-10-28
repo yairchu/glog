@@ -49,12 +49,12 @@ fn apply(event: Event, app: &mut App) {
             }
             return;
         }
+        if key.code == KeyCode::Backspace && app.history == History::Blame && app.has_blame_back() {
+            app.blame_back();
+            return;
+        }
         if key.code == KeyCode::Backspace && app.has_reference_back() {
-            if app.mode == Mode::Log && app.history == History::Blame {
-                app.blame_back();
-            } else {
-                app.reference_back();
-            }
+            app.reference_back();
             return;
         }
         if key.code == KeyCode::Char('e') && matches!(app.mode, Mode::Show | Mode::Status) {
