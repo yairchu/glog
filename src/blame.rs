@@ -59,7 +59,7 @@ pub fn load_patch(
         }
     }
     let textconv = match &source {
-        PatchRevision::Commit(commit) => commit.blame().is_none_or(|line| line.file.textconv),
+        PatchRevision::Commit(commit) => commit.textconv(),
         PatchRevision::Submodule { .. } => false,
     };
     let (parent, number) =

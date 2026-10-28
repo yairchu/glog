@@ -1120,19 +1120,11 @@ impl App {
     }
 
     fn show_repository(&self) -> Option<&std::path::Path> {
-        self.repository
-            .as_deref()
-            .or_else(|| {
-                self.submodule_patch
-                    .as_ref()
-                    .map(|patch| patch.root.as_path())
-            })
-            .or_else(|| {
-                self.commits
-                    .get(self.selected)
-                    .and_then(Commit::blame)
-                    .map(|line| line.file.top.as_path())
-            })
+        self.repository.as_deref().or_else(|| {
+            self.submodule_patch
+                .as_ref()
+                .map(|patch| patch.root.as_path())
+        })
     }
 
     pub fn set_editor_error(&mut self, error: Option<String>) {
@@ -1169,8 +1161,7 @@ impl App {
                 || app
                     .commits
                     .get(app.selected)
-                    .and_then(Commit::blame)
-                    .is_some_and(|line| !line.file.textconv)
+                    .is_some_and(|commit| !commit.textconv())
                 || app.raw_untracked_files.contains(&file.key)
             {
                 crate::editor::Textconv::Disabled

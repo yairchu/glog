@@ -137,6 +137,11 @@ impl Commit {
             _ => None,
         }
     }
+
+    /// Whether patches apply textconv, as the blame that listed this commit did.
+    pub fn textconv(&self) -> bool {
+        self.blame().is_none_or(|line| line.file.textconv)
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1149,10 +1154,9 @@ fn show_revision(
     paths: &[String],
     directory: Option<&std::path::Path>,
 ) -> Result<String, String> {
-    let mut command =
-        patch_command_at(directory.or_else(|| commit.blame().map(|line| line.file.top.as_path())));
+    let mut command = patch_command_at(directory);
     command.args(["--no-pager", "show"]);
-    if commit.blame().is_some_and(|line| !line.file.textconv) {
+    if !commit.textconv() {
         command.arg("--no-textconv");
     }
     let output = command
