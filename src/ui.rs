@@ -564,6 +564,16 @@ fn draw_type_controls(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// The rows a commit takes in the Log: its graph, and below a Branches tip
+/// whose older history is not listed, a row marking that it continues.
+fn log_rows(app: &App, index: usize, commit: &crate::git::Commit) -> usize {
+    app.log_folds.display_height(index, commit) + usize::from(continues(commit))
+}
+
+fn continues(commit: &crate::git::Commit) -> bool {
+    commit.branch().is_some_and(|node| node.continues)
+}
+
 fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     let height = area.height as usize;
     app.log_row_origin = area.y;
@@ -603,24 +613,23 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
         .enumerate()
         .take(app.selected)
         .filter(|(i, _)| app.log_folds.graph_visible(*i))
-        .map(|(i, commit)| {
-            app.log_folds.display_height(i, commit)
-                + usize::from(commit.branch().is_some_and(|node| node.continues))
-        })
+        .map(|(i, commit)| log_rows(app, i, commit))
         .sum::<usize>()
         + usize::from(separator_before.is_some_and(|index| app.selected >= index));
+    let selected = &app.commits[app.selected];
     let selected_subject_row = selected_start_row
         + app
             .log_folds
-            .display_height(app.selected, &app.commits[app.selected])
+            .display_height(app.selected, selected)
             .saturating_sub(1);
-    let selected_end_row = selected_subject_row
-        + usize::from(
-            height > 1
-                && app.commits[app.selected]
-                    .branch()
-                    .is_some_and(|node| node.continues),
-        );
+    // A single row shows the subject rather than the continuation below it.
+    let selected_end_row = if height > 1 {
+        (selected_start_row + log_rows(app, app.selected, selected))
+            .saturating_sub(1)
+            .max(selected_subject_row)
+    } else {
+        selected_subject_row
+    };
     if !app.log_folds.visible(app.selected) {
         app.log_offset = 0;
     } else if std::mem::take(&mut app.center_selection) {
@@ -668,8 +677,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             graph_row += 1;
         }
         // Rows above the screen are counted without drawing them.
-        let continues = commit.branch().is_some_and(|node| node.continues);
-        let rows = app.log_folds.display_height(index, commit) + usize::from(continues);
+        let rows = log_rows(app, index, commit);
         if graph_row + rows <= app.log_offset {
             graph_row += rows;
             continue;
@@ -737,7 +745,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             );
             graph_row += 1;
         }
-        if continues {
+        if continues(commit) {
             if graph_row >= app.log_offset {
                 if lines.len() >= height {
                     break;
