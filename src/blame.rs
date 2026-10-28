@@ -1146,6 +1146,18 @@ mod tests {
         check(diff(&["HEAD^", "HEAD"]), "-b", &base, true);
         check(diff(&["HEAD^...HEAD"]), "+B", &head, true);
 
+        // Git cannot blame a path it does not track.
+        fs::write("new.txt", "x\nuntracked\n").unwrap();
+        let mut app = select_line(diff(&[]), "+untracked");
+        press(&mut app, KeyCode::Char('B'));
+        assert_eq!(app.status, None);
+        assert_eq!(app.context, "blame working tree -- new.txt");
+        assert_eq!(app.selected, 1);
+        let commit = &app.commits[app.selected];
+        assert_eq!(code(commit.blame().unwrap()), "untracked");
+        assert_eq!(commit.kind, CommitKind::WorkingTree);
+        fs::remove_file("new.txt").unwrap();
+
         git(&["stash", "-q"]);
         let stash = short("stash");
         let mut app = crate::stash::load_app(&[]).unwrap();
