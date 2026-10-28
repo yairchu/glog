@@ -1,7 +1,11 @@
 //! `glog blame`: one row per line of a file, each carrying the commit that
 //! last changed it.
 
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{
+    collections::HashMap,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 #[cfg(test)]
 use std::process::Command;
@@ -179,14 +183,8 @@ fn patch_position(patch: &str, row: usize) -> Option<(Option<usize>, usize)> {
     None
 }
 
-fn parent_path(
-    revision: &str,
-    result: &str,
-    path: &[u8],
-    top: &PathBuf,
-) -> Result<Vec<u8>, String> {
-    let output = git::repository_env(&mut git::read_command(), top)
-        .current_dir(top)
+fn parent_path(revision: &str, result: &str, path: &[u8], top: &Path) -> Result<Vec<u8>, String> {
+    let output = git::read_command_at(Some(top))
         .args([
             "diff",
             "--name-status",
@@ -262,8 +260,7 @@ pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String
     let top = git::repository_directory()?;
     // Unlike `cat-file blob`, --textconv also accepts trees. Keep this view
     // restricted to files before asking Git to convert their contents.
-    let output = git::repository_env(&mut crate::git::read_command(), &top)
-        .current_dir(&top)
+    let output = git::read_command_at(Some(&top))
         .args(["cat-file", "-t"])
         .arg(blob_spec(&revision, &path))
         .output()
@@ -277,8 +274,7 @@ pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String
     if output.stdout != b"blob\n" {
         return Err("the path is not a file; this view supports text files".into());
     }
-    let output = git::repository_env(&mut crate::git::read_command(), &top)
-        .current_dir(&top)
+    let output = git::read_command_at(Some(&top))
         // Match blame's text conversion so loading attribution keeps the
         // displayed lines and their positions unchanged.
         .args(["cat-file", "--textconv"])
@@ -417,8 +413,7 @@ fn parse_line(value: &str) -> Result<usize, String> {
 /// commit added it.
 pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<(Vec<Commit>, usize), String> {
     let (parent, path) = line.previous.as_ref().ok_or("nothing earlier to blame")?;
-    let output = git::repository_env(&mut crate::git::read_command(), &line.file.top)
-        .current_dir(&line.file.top)
+    let output = git::read_command_at(Some(&line.file.top))
         .env("LC_ALL", "C")
         .args([
             "diff",
@@ -512,10 +507,7 @@ fn blame_with_textconv(
     date: &str,
     textconv: bool,
 ) -> Result<Vec<Commit>, String> {
-    let mut command = crate::git::read_command();
-    if let Some(top) = top {
-        git::repository_env(&mut command, top).current_dir(top);
-    }
+    let mut command = git::read_command_at(top.map(PathBuf::as_path));
     command.args(["-c", "core.quotepath=true", "blame", "--porcelain"]);
     if !textconv {
         command.arg("--no-textconv");
@@ -727,7 +719,7 @@ struct Details {
 fn commit_details(
     lines: &[PorcelainLine],
     date: &str,
-    top: &PathBuf,
+    top: &Path,
 ) -> Result<HashMap<String, Details>, String> {
     let mut input = String::new();
     let mut seen = std::collections::HashSet::new();
@@ -741,8 +733,7 @@ fn commit_details(
         return Ok(HashMap::new());
     }
     let output = git::pipe_through(
-        git::repository_env(&mut crate::git::read_command(), top)
-            .current_dir(top)
+        git::read_command_at(Some(top))
             .env("LC_ALL", "C")
             .args(["log", "--no-walk=unsorted", "--stdin", "--no-show-signature"])
             .arg(format!("--date={date}"))

@@ -361,9 +361,7 @@ fn read_source(source: &Source) -> Option<Vec<u8>> {
                 .ok()?;
         }
         Source::Blob(root, oid) => {
-            let mut child = crate::git::repository_env(&mut crate::git::read_command(), root)
-                .arg("-C")
-                .arg(root)
+            let mut child = crate::git::read_command_at(Some(root))
                 .args(["cat-file", "blob", oid])
                 // Previews show local objects only, never fetching from remotes.
                 .env("GIT_NO_LAZY_FETCH", "1")

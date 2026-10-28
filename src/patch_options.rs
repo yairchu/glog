@@ -105,11 +105,7 @@ fn apply_mode(
     directory: Option<&std::path::Path>,
 ) {
     let mode = mode.or_else(|| {
-        let mut config = crate::git::read_command();
-        if let Some(directory) = directory {
-            crate::git::repository_env(&mut config, directory).current_dir(directory);
-        }
-        config
+        crate::git::read_command_at(directory)
             .args(["config", "--get", "diff.colorMoved"])
             .output()
             .ok()

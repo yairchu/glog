@@ -197,9 +197,7 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
 }
 
 fn load_snapshot(root: &std::path::Path) -> Result<Snapshot, String> {
-    let output = crate::git::repository_env(&mut crate::git::read_command(), root)
-        .arg("-C")
-        .arg(root)
+    let output = crate::git::read_command_at(Some(root))
         .args([
             "-c",
             STATUS_RENAMES_ONLY,
@@ -689,10 +687,12 @@ impl StatusView {
             input.push(0);
         }
         let output = crate::git::pipe_through_bytes(
-            crate::git::repository_env(&mut crate::git::read_command(), &self.root)
-                .arg("-C")
-                .arg(&self.root)
-                .args(["check-attr", "--all", "-z", "--stdin"]),
+            crate::git::read_command_at(Some(&self.root)).args([
+                "check-attr",
+                "--all",
+                "-z",
+                "--stdin",
+            ]),
             &input,
         )
         .ok_or("could not read Git attributes")?;

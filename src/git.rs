@@ -1554,10 +1554,7 @@ const REPOSITORY_ENV: [&str; 13] = [
 ];
 
 /// Prepares `command` to run in `directory`, which may be a submodule.
-pub(crate) fn repository_env<'a>(
-    command: &'a mut Command,
-    directory: &std::path::Path,
-) -> &'a mut Command {
+fn repository_env<'a>(command: &'a mut Command, directory: &std::path::Path) -> &'a mut Command {
     static MAIN_ROOT: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
     if !REPOSITORY_ENV
         .iter()
