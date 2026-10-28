@@ -557,10 +557,13 @@ mod tests {
             assert_eq!(app.show_offset, 15, "wrong offset for {code:?}");
             assert_eq!(app.show_cursor, 15, "hidden cursor for {code:?}");
         }
-        let mut app = app();
-        handle(key(KeyCode::PageUp), &mut app);
-        assert_eq!(app.show_offset, 5);
-        assert_eq!(app.show_cursor, 9);
+        for code in [KeyCode::PageUp, KeyCode::Char('b')] {
+            let mut app = app();
+            handle(key(code), &mut app);
+            assert_eq!(app.mode, Mode::Show, "left Show for {code:?}");
+            assert_eq!(app.show_offset, 5, "wrong offset for {code:?}");
+            assert_eq!(app.show_cursor, 9, "hidden cursor for {code:?}");
+        }
     }
 
     #[test]
