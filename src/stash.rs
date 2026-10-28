@@ -9,6 +9,7 @@ use ratatui::{
 
 use crate::{
     app::App,
+    diff::StashLayer,
     git::{self, Annotation, Collaborators, Commit, CommitKind},
     log_format::{Field, LogFormat},
 };
@@ -241,18 +242,8 @@ pub fn show(commit: &Commit, entry: &StashEntry) -> Result<String, String> {
         commit.subject,
     )
     .into_bytes();
-    for (section, old, new) in [
-        (
-            "staged",
-            format!("{}^1", commit.hash),
-            format!("{}^2", commit.hash),
-        ),
-        (
-            "unstaged",
-            format!("{}^2", commit.hash),
-            commit.hash.clone(),
-        ),
-    ] {
+    for layer in [StashLayer::Staged, StashLayer::Unstaged] {
+        let (old, new) = layer_revisions(&commit.hash, layer);
         let patch = git::patch_command()
             .args([
                 "diff",
@@ -263,23 +254,37 @@ pub fn show(commit: &Commit, entry: &StashEntry) -> Result<String, String> {
                 "--submodule=short",
             ])
             .args(git::DIFF_PREFIX_ARGS)
-            .args([old, new])
+            .args(old)
+            .arg(new)
             .arg("--")
             .env("LC_ALL", "C")
             .output()
-            .map_err(|error| format!("could not read {section} stash changes: {error}"))?;
+            .map_err(|error| {
+                let label = layer.label().to_lowercase();
+                format!("could not read stash {label}: {error}")
+            })?;
         if !patch.status.success() {
             return Err(git::stderr_message("git diff failed", &patch.stderr));
         }
-        append_section(&mut text, section, &patch.stdout);
+        append_section(&mut text, layer, &patch.stdout);
     }
-    append_section(&mut text, "untracked", &output.stdout);
+    append_section(&mut text, StashLayer::Untracked, &output.stdout);
     git::format_output(text)
 }
 
-fn append_section(text: &mut Vec<u8>, section: &str, patch: &[u8]) {
+/// The revisions a stash layer's patch compares. Untracked files are new.
+pub fn layer_revisions(hash: &str, layer: StashLayer) -> (Option<String>, String) {
+    match layer {
+        StashLayer::Staged => (Some(format!("{hash}^1")), format!("{hash}^2")),
+        StashLayer::Unstaged => (Some(format!("{hash}^2")), hash.to_owned()),
+        StashLayer::Untracked => (None, format!("{hash}^3")),
+    }
+}
+
+fn append_section(text: &mut Vec<u8>, layer: StashLayer, patch: &[u8]) {
     if !patch.is_empty() {
-        text.extend(format!("glog-stash-section:{section}\n").as_bytes());
+        text.extend(layer.marker().as_bytes());
+        text.push(b'\n');
         text.extend(patch);
     }
 }

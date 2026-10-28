@@ -3,7 +3,9 @@
 
 use std::{
     collections::HashMap,
+    io::Write,
     path::{Path, PathBuf},
+    process::Stdio,
     sync::Arc,
 };
 
@@ -16,7 +18,8 @@ use ratatui::{
 };
 
 use crate::{
-    git::{self, Annotation, Collaborators, Commit, CommitKind},
+    diff::FileSection,
+    git::{self, Annotation, Collaborators, Commit, CommitKind, Version},
     log_format::{Field, LogFormat},
 };
 
@@ -38,87 +41,160 @@ impl FileRevision {
     }
 }
 
-pub enum PatchRevision<'a> {
-    Commit(&'a Commit),
-    Submodule { old: &'a str, new: &'a str },
+/// The file versions a patch compares.
+pub enum PatchSides {
+    /// A commit's patch. Its parent column N shows `{hash}^N`.
+    Commit(String),
+    /// A two-way patch. New files have no old side.
+    Pair { old: Option<Version>, new: Version },
+}
+
+impl PatchSides {
+    /// The sides of the patch shown for `commit`, in the section of `file`.
+    pub fn of(commit: &Commit, file: &FileSection, top: &Path) -> Result<Self, String> {
+        let revision = |revision: String| Some(Version::Revision(revision));
+        Ok(match commit.kind {
+            CommitKind::Revision => match (&commit.annotation, file.stash_layer) {
+                (Some(Annotation::Stash(_)), Some(layer)) => {
+                    let (old, new) = crate::stash::layer_revisions(&commit.hash, layer);
+                    Self::Pair {
+                        old: old.and_then(revision),
+                        new: Version::Revision(new),
+                    }
+                }
+                (Some(Annotation::Stash(_)), None) => return Err("Select a stash file".into()),
+                _ => Self::Commit(commit.hash.clone()),
+            },
+            CommitKind::Staged => Self::Pair {
+                old: revision("HEAD".into()),
+                new: Version::Index,
+            },
+            CommitKind::Unstaged => Self::Pair {
+                old: Some(Version::Index),
+                new: Version::Worktree,
+            },
+            CommitKind::Comparison { .. } => {
+                let (old, new) = git::comparison_sides(&commit.diff_args, Some(top))?
+                    .ok_or("Cannot blame a combined diff of several revisions")?;
+                Self::Pair {
+                    old: Some(old),
+                    new,
+                }
+            }
+            CommitKind::WorkingTree => return Err("Select a patch to blame".into()),
+        })
+    }
+
+    /// The version shown by a parent column, or by the result for None.
+    fn side(&self, parent: Option<usize>) -> Result<Version, String> {
+        match (self, parent) {
+            (Self::Commit(hash), None) => Ok(Version::Revision(hash.clone())),
+            (Self::Commit(hash), Some(parent)) => {
+                Ok(Version::Revision(format!("{hash}^{}", parent + 1)))
+            }
+            (Self::Pair { new, .. }, None) => Ok(new.clone()),
+            (Self::Pair { old, .. }, Some(0)) => old
+                .clone()
+                .ok_or_else(|| "The file is new in this patch".into()),
+            (Self::Pair { .. }, Some(_)) => Err("Unexpected combined patch".into()),
+        }
+    }
 }
 
 /// Open the full file at the selected patch line, using its old side for deletions.
 pub fn load_patch(
-    source: PatchRevision<'_>,
+    sides: PatchSides,
+    textconv: bool,
     patch: &str,
     row: usize,
     path: &[u8],
     top: PathBuf,
 ) -> Result<crate::app::App, String> {
-    if let PatchRevision::Commit(commit) = &source {
-        if commit.kind != git::CommitKind::Revision
-            || matches!(commit.annotation, Some(Annotation::Stash(_)))
-        {
-            return Err("Select a committed patch to blame".into());
-        }
-    }
-    let textconv = match &source {
-        PatchRevision::Commit(commit) => commit.textconv(),
-        PatchRevision::Submodule { .. } => false,
-    };
     let (parent, number) =
         patch_position(patch, row).ok_or("Select a code line or hunk to blame")?;
-    let (result, revision, label) = match source {
-        PatchRevision::Commit(commit) => (
-            commit.hash.as_str(),
-            parent.map_or_else(
-                || commit.hash.clone(),
-                |parent| format!("{}^{}", commit.hash, parent + 1),
-            ),
-            parent.map_or_else(
-                || commit.short_hash.clone(),
-                |parent| format!("{}^{}", commit.short_hash, parent + 1),
-            ),
-        ),
-        PatchRevision::Submodule { old, new } => {
-            let revision = if parent.is_some() { old } else { new };
-            (
-                new,
-                revision.to_owned(),
-                revision[..revision.len().min(7)].to_owned(),
-            )
-        }
-    };
-    let path = if parent.is_some() {
-        let headers: Vec<_> = patch
-            .lines()
-            .map(crate::ansi::plain)
-            .take_while(|line| !line.starts_with("@@"))
-            .collect();
-        if headers
-            .first()
-            .is_some_and(|line| line.starts_with("diff --git "))
-        {
-            headers
-                .iter()
-                .find_map(|line| line.strip_prefix("--- "))
-                .and_then(|path| crate::diff::unquote_path(path.trim_end_matches('\t')))
-                .and_then(|(path, _)| path.strip_prefix(b"a/").map(<[u8]>::to_vec))
-                .ok_or("Could not locate the parent file")?
-        } else {
+    let version = sides.side(parent)?;
+    let path = match (&sides, &version) {
+        _ if parent.is_none() => path.to_vec(),
+        (PatchSides::Commit(hash), Version::Revision(revision)) if !is_two_way(patch) => {
             // Combined diffs normally show only the result's name, even when
             // this parent used another name. Ask Git for the rename mapping.
-            parent_path(&revision, result, path, &top)?
+            parent_path(revision, hash, path, &top)?
         }
-    } else {
-        path.to_vec()
+        _ => crate::hunk::file_headers(patch)
+            .find_map(|line| {
+                let path = line.strip_prefix("--- ")?;
+                let (path, _) = crate::diff::unquote_path(path.trim_end_matches('\t'))?;
+                path.strip_prefix(b"a/").map(<[u8]>::to_vec)
+            })
+            .ok_or("Could not locate the parent file")?,
     };
     let date = git::configured_log_date_at("format-local:%Y-%m-%d", Some(&top))?;
-    let rows = blame_with_textconv(Some(&revision), &path, Some(&top), &date, textconv)?;
+    let rows = blame_version(&version, &path, &top, &date, textconv)?;
     if rows.is_empty() {
         return Err("The file is empty at this revision".into());
     }
     let mut app = crate::app::App::new(rows);
     app.selected = number.saturating_sub(1).min(app.commits.len() - 1);
     app.center_selection = true;
-    app.context = format!("blame {label} -- {}", crate::diff::display_path(&path));
+    app.context = format!(
+        "blame {} -- {}",
+        version_label(&version),
+        crate::diff::display_path(&path)
+    );
     Ok(app)
+}
+
+fn is_two_way(patch: &str) -> bool {
+    crate::hunk::file_headers(patch)
+        .next()
+        .is_some_and(|line| line.starts_with("diff --git "))
+}
+
+/// Abbreviate the hash that starts a revision, keeping suffixes like `^2`.
+fn version_label(version: &Version) -> String {
+    match version {
+        Version::Revision(revision) => {
+            let hex = revision
+                .find(|c: char| !c.is_ascii_hexdigit())
+                .unwrap_or(revision.len());
+            format!("{}{}", &revision[..hex.min(7)], &revision[hex..])
+        }
+        Version::Index => "index".into(),
+        Version::Worktree => "working tree".into(),
+    }
+}
+
+fn blame_version(
+    version: &Version,
+    path: &[u8],
+    top: &Path,
+    date: &str,
+    textconv: bool,
+) -> Result<Vec<Commit>, String> {
+    let top = top.to_path_buf();
+    match version {
+        Version::Revision(revision) => {
+            blame_with_textconv(Some(revision), path, Some(&top), date, textconv, None)
+        }
+        Version::Worktree => blame_with_textconv(None, path, Some(&top), date, textconv, None),
+        Version::Index => {
+            // Blame reads --contents as is, so convert them as the patch did.
+            let mut command = git::read_command_at(Some(&top));
+            command.arg("cat-file");
+            command.arg(if textconv { "--textconv" } else { "blob" });
+            let output = command
+                .arg(blob_spec("", path))
+                .output()
+                .map_err(|error| format!("could not read the staged file: {error}"))?;
+            if !output.status.success() {
+                return Err(git::stderr_message(
+                    "could not read the staged file",
+                    &output.stderr,
+                ));
+            }
+            blame_with_textconv(None, path, Some(&top), date, textconv, Some(&output.stdout))
+        }
+    }
 }
 
 /// The parent column (None for the result) and its one-based line number.
@@ -395,6 +471,7 @@ pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<(Vec<Commit>, us
         Some(&line.file.top),
         &line.file.date,
         line.file.textconv,
+        None,
     )?;
     let selected = number.saturating_sub(1).min(rows.len().saturating_sub(1));
     Ok((rows, selected))
@@ -447,7 +524,7 @@ fn blame(
     top: Option<&PathBuf>,
     date: &str,
 ) -> Result<Vec<Commit>, String> {
-    blame_with_textconv(revision, path, top, date, true)
+    blame_with_textconv(revision, path, top, date, true, None)
 }
 
 fn blame_with_textconv(
@@ -456,18 +533,33 @@ fn blame_with_textconv(
     top: Option<&PathBuf>,
     date: &str,
     textconv: bool,
+    // Blame these file contents in place of the working tree's.
+    contents: Option<&[u8]>,
 ) -> Result<Vec<Commit>, String> {
     let mut command = git::read_command_at(top.map(PathBuf::as_path));
     command.args(["-c", "core.quotepath=true", "blame", "--porcelain"]);
     if !textconv {
         command.arg("--no-textconv");
     }
-    let output = command
+    if contents.is_some() {
+        command.args(["--contents", "-"]).stdin(Stdio::piped());
+    }
+    let mut child = command
         .env("LC_ALL", "C")
         .args(revision)
         .arg("--")
         .arg(git::raw_path(path))
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("could not run git blame: {error}"))?;
+    if let (Some(contents), Some(mut stdin)) = (contents, child.stdin.take()) {
+        // Git reads all contents before it writes any output. It closes its
+        // input early only on errors, which its exit status reports.
+        let _ = stdin.write_all(contents);
+    }
+    let output = child
+        .wait_with_output()
         .map_err(|error| format!("could not run git blame: {error}"))?;
     if !output.status.success() {
         return Err(git::stderr_message("git blame failed", &output.stderr));
@@ -876,7 +968,10 @@ mod tests {
     }
 
     fn review_line(revision: &str, text: &str) -> App {
-        let mut app = crate::git::load_show_app(&[revision.into()]).unwrap();
+        select_line(crate::git::load_show_app(&[revision.into()]).unwrap(), text)
+    }
+
+    fn select_line(mut app: App, text: &str) -> App {
         while let Some(cursor) = app.show_rows.iter().position(|row| row.folded) {
             app.show_cursor = cursor;
             app.toggle_show_file();
@@ -1004,6 +1099,59 @@ mod tests {
         assert_eq!(app.show_text, text);
         assert!(!app.has_reference_back());
         assert_eq!(app.status.as_deref(), Some("No file selected"));
+    }
+
+    #[test]
+    fn review_blame_opens_both_sides_of_uncommitted_and_stashed_patches() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file.txt", "a\nb\nc\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        fs::write("file.txt", "a\nB\nc\n").unwrap();
+        git(&["commit", "-qam", "change"]);
+        fs::write("file.txt", "a\nB\nstaged\n").unwrap();
+        git(&["add", "."]);
+        fs::write("file.txt", "a\nB\nworktree\n").unwrap();
+
+        let check = |app: App, text: &str, label: &str, committed: bool| {
+            let mut app = select_line(app, text);
+            press(&mut app, KeyCode::Char('B'));
+            assert_eq!(app.status, None, "{label} {text}");
+            assert_eq!(app.context, format!("blame {label} -- file.txt"), "{text}");
+            let commit = &app.commits[app.selected];
+            assert_eq!(code(commit.blame().unwrap()), &text[1..], "{label}");
+            assert_eq!(commit.kind == CommitKind::Revision, committed, "{text}");
+        };
+        let diff = |args: &[&str]| {
+            let args: Vec<_> = args.iter().map(|arg| arg.to_string()).collect();
+            crate::git::load_diff_app(&args).unwrap()
+        };
+        let short = |revision: &str| {
+            let output = Command::new("git")
+                .args(["rev-parse", "--short=7", revision])
+                .output()
+                .unwrap();
+            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        };
+        let (base, head) = (short("HEAD^"), short("HEAD"));
+        check(diff(&["--cached"]), "-c", "HEAD", true);
+        check(diff(&["--cached"]), "+staged", "index", false);
+        check(diff(&[]), "-staged", "index", false);
+        check(diff(&[]), "+worktree", "working tree", false);
+        check(diff(&["HEAD^"]), "-b", &base, true);
+        check(diff(&["HEAD^"]), "+worktree", "working tree", false);
+        check(diff(&["--cached", "HEAD^"]), "+staged", "index", false);
+        check(diff(&["HEAD^", "HEAD"]), "-b", &base, true);
+        check(diff(&["HEAD^...HEAD"]), "+B", &head, true);
+
+        git(&["stash", "-q"]);
+        let stash = short("stash");
+        let mut app = crate::stash::load_app(&[]).unwrap();
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Show);
+        check(app, "-staged", &format!("{stash}^2"), true);
     }
 
     #[test]

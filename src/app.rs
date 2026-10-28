@@ -1071,21 +1071,29 @@ impl App {
     fn show_blame(&self, cursor: usize) -> Result<App, String> {
         let selected = self.show_file(cursor)?;
         let app = selected.app;
-        let source = match &app.submodule_patch {
-            Some(patch) => crate::blame::PatchRevision::Submodule {
-                old: &patch.old,
-                new: &patch.new,
-            },
-            None => crate::blame::PatchRevision::Commit(
-                app.commits.get(app.selected).ok_or("No commit selected")?,
-            ),
-        };
         let top = app
             .show_repository()
             .map(|root| Ok(root.to_path_buf()))
             .unwrap_or_else(git::repository_directory)?;
+        let (sides, textconv) = match &app.submodule_patch {
+            Some(patch) => (
+                crate::blame::PatchSides::Pair {
+                    old: Some(git::Version::Revision(patch.old.clone())),
+                    new: git::Version::Revision(patch.new.clone()),
+                },
+                false,
+            ),
+            None => {
+                let commit = app.commits.get(app.selected).ok_or("No commit selected")?;
+                (
+                    crate::blame::PatchSides::of(commit, selected.file, &top)?,
+                    commit.textconv(),
+                )
+            }
+        };
         crate::blame::load_patch(
-            source,
+            sides,
+            textconv,
             &selected.patch,
             selected.line,
             &selected.file.path_bytes,
@@ -1496,7 +1504,7 @@ impl App {
                 result.push((
                     Vec::new(),
                     source,
-                    diff::stash_section(line).unwrap_or(line),
+                    diff::stash_section(line).map_or(line, |layer| layer.label()),
                 ));
             }
             if let Some((path, child)) = children.get(&(source + 1)) {

@@ -838,8 +838,7 @@ pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
         .filter(|arg| *arg != "--stat")
         .cloned()
         .collect();
-    let cached = options.iter().any(|arg| arg == "--cached");
-    let revisions: Vec<_> = options.iter().filter(|arg| *arg != "--cached").collect();
+    let (cached, revisions) = comparison_options(&options);
     if revisions.iter().any(|arg| arg.starts_with('-'))
         || revisions.len() > if cached { 1 } else { 2 }
     {
@@ -856,7 +855,10 @@ pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
         }
     } else {
         CommitKind::Comparison {
-            worktree: !cached && comparison_uses_worktree(&revisions)?,
+            worktree: matches!(
+                comparison_sides(&options, None)?,
+                Some((_, Version::Worktree))
+            ),
         }
     };
     let mut entry = match kind {
@@ -924,11 +926,24 @@ fn diff_paths_start(args: &[String]) -> Result<usize, String> {
     Ok(start)
 }
 
-fn comparison_uses_worktree(revisions: &[&String]) -> Result<bool, String> {
+/// Whether `glog diff` options compare against the index, and their revisions.
+fn comparison_options(options: &[String]) -> (bool, Vec<&String>) {
+    let cached = options.iter().any(|arg| arg == "--cached");
+    (
+        cached,
+        options.iter().filter(|arg| *arg != "--cached").collect(),
+    )
+}
+
+/// The endpoints Git resolves diff revisions to, with a `^` marking
+/// excluded ones.
+fn resolve_revisions(
+    revisions: &[&String],
+    directory: Option<&std::path::Path>,
+) -> Result<Vec<String>, String> {
     // One argument can expand to multiple endpoints (HEAD^!, HEAD^-),
     // while HEAD^@ can expand to just one parent or none for a root commit.
-    // Like git diff, use the working tree when there are fewer than two.
-    let output = read_command()
+    let output = read_command_at(directory)
         .args(["rev-parse", "--revs-only", "--end-of-options"])
         .args(revisions)
         .arg("--")
@@ -940,7 +955,47 @@ fn comparison_uses_worktree(revisions: &[&String]) -> Result<bool, String> {
             &output.stderr,
         ));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).lines().count() < 2)
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect())
+}
+
+/// A version of the repository's files that a diff side can show.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Version {
+    Revision(String),
+    Index,
+    Worktree,
+}
+
+/// The old and new sides of a `glog diff` comparison, as git diff picks
+/// them, or None for a combined diff of several revisions.
+pub(crate) fn comparison_sides(
+    diff_args: &[String],
+    directory: Option<&std::path::Path>,
+) -> Result<Option<(Version, Version)>, String> {
+    let (cached, revisions) = comparison_options(diff_args);
+    let resolved = resolve_revisions(&revisions, directory)?;
+    let (excluded, included): (Vec<_>, Vec<_>) = resolved
+        .iter()
+        .partition(|revision| revision.starts_with('^'));
+    let revision = |revision: &str| Version::Revision(revision.to_owned());
+    let current = if cached {
+        Version::Index
+    } else {
+        Version::Worktree
+    };
+    Ok(match (&excluded[..], &included[..]) {
+        // A..B and B^! exclude the old side; A...B excludes the merge base
+        // and lists B first.
+        ([old, ..], [new, ..]) => Some((revision(&old[1..]), revision(new))),
+        ([], []) if cached => Some((revision("HEAD"), Version::Index)),
+        ([], []) => Some((Version::Index, Version::Worktree)),
+        ([], [old]) => Some((revision(old), current)),
+        ([], [old, new]) => Some((revision(old), revision(new))),
+        _ => None,
+    })
 }
 
 pub fn watch_fingerprint() -> Result<u64, String> {

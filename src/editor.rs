@@ -1,6 +1,6 @@
 use std::{path::PathBuf, process::Command};
 
-use crate::{ansi, git};
+use crate::git;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Textconv {
@@ -29,10 +29,7 @@ impl Target {
         let blob = if worktree {
             None
         } else {
-            patch
-                .lines()
-                .map(ansi::plain)
-                .take_while(|text| !text.starts_with("@@"))
+            crate::hunk::file_headers(patch)
                 .filter_map(|text| {
                     let ids = text.strip_prefix("index ")?;
                     let (_, result) = ids.split_whitespace().next()?.split_once("..")?;
@@ -232,6 +229,7 @@ fn map_line(line: u32, patch: &str) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ansi;
     use std::path::Path;
 
     fn editor(command: &str) -> editor_command::Editor {

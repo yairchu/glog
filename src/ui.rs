@@ -146,7 +146,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         "h help  q quit  ↑/k ↓/j  [/ ] file  B blame  e edit  Enter/z fold  s summary  L lockfiles  / ? search"
             .to_owned()
     } else if app.history == History::Stash {
-        "h help  q quit  ↑/k ↓/j  ←/→ stash  [/ ] file  e edit  Enter/z fold  s summary  Tab Stash  / ? search"
+        "h help  q quit  ↑/k ↓/j  ←/→ stash  [/ ] file  B blame  e edit  Enter/z fold  s summary  Tab Stash  / ? search"
             .to_owned()
     } else {
         "h help  q quit  ↑/k ↓/j  ←/→ commit  [/ ] file  B blame  e edit  Enter/z fold  s summary  L lockfiles  / ? search"

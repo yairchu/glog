@@ -9,6 +9,7 @@ pub struct FileSection {
     pub path_bytes: Vec<u8>,
     // Include the stash layer so repeated paths have independent view state.
     pub key: Vec<u8>,
+    pub stash_layer: Option<StashLayer>,
     pub lockfile: bool,
     pub submodule: Option<(String, String)>,
     pub untracked: bool,
@@ -62,7 +63,7 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
             scanned = *start;
             if let Some(section) = section {
                 key.push(0); // Git paths cannot contain NUL.
-                key.extend(section.as_bytes());
+                key.extend(section.label().as_bytes());
             }
             // Only the file header is metadata: hunk content can itself start
             // with `+++` or `---` (for example, an increment or a Markdown rule).
@@ -101,6 +102,7 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                 path,
                 path_bytes,
                 key,
+                stash_layer: section,
                 additions,
                 deletions,
             }
@@ -108,21 +110,49 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
         .collect()
 }
 
-pub(crate) fn stash_section(line: &str) -> Option<&'static str> {
+/// The part of a stash that a section of its patch shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StashLayer {
+    Staged,
+    Unstaged,
+    Untracked,
+}
+
+impl StashLayer {
+    const ALL: [Self; 3] = [Self::Staged, Self::Unstaged, Self::Untracked];
+
+    /// The line that starts this layer's section of a stash patch.
+    pub fn marker(self) -> String {
+        let name = match self {
+            Self::Staged => "staged",
+            Self::Unstaged => "unstaged",
+            Self::Untracked => "untracked",
+        };
+        format!("glog-stash-section:{name}")
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Staged => "Staged changes",
+            Self::Unstaged => "Unstaged changes",
+            Self::Untracked => "Untracked files",
+        }
+    }
+}
+
+pub(crate) fn stash_section(line: &str) -> Option<StashLayer> {
     if !line.contains("glog-stash-section:") {
         return None;
     }
-    match ansi::plain(line).as_str() {
-        "glog-stash-section:staged" => Some("Staged changes"),
-        "glog-stash-section:unstaged" => Some("Unstaged changes"),
-        "glog-stash-section:untracked" => Some("Untracked files"),
-        _ => None,
-    }
+    let line = ansi::plain(line);
+    StashLayer::ALL
+        .into_iter()
+        .find(|layer| line == layer.marker())
 }
 
 pub(crate) fn display_metadata(line: &str) -> String {
     match stash_section(line) {
-        Some(label) => format!("\x1b[1m{label}\x1b[m"),
+        Some(layer) => format!("\x1b[1m{}\x1b[m", layer.label()),
         None => line.to_owned(),
     }
 }

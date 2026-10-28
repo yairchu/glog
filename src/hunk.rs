@@ -2,6 +2,14 @@
 
 use crate::ansi;
 
+/// The plain-text lines of a file's patch before its first hunk.
+pub fn file_headers(patch: &str) -> impl Iterator<Item = String> + '_ {
+    patch
+        .lines()
+        .map(ansi::plain)
+        .take_while(|line| !line.starts_with("@@"))
+}
+
 /// A one-based start line and line count.
 pub type Range = (u32, u32);
 
