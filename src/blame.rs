@@ -1002,6 +1002,24 @@ mod tests {
     }
 
     #[test]
+    fn review_blame_opens_deleted_file_from_its_hunk_header() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file.txt", "a\nb\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "add"]);
+        git(&["rm", "-q", "file.txt"]);
+        git(&["commit", "-qm", "delete"]);
+
+        let mut app = review_line("HEAD", "@@ -1,2 +0,0 @@");
+        press(&mut app, KeyCode::Char('B'));
+        assert_eq!(app.status, None);
+        assert_eq!(app.history, History::Blame);
+        assert_eq!(code(app.commits[app.selected].blame().unwrap()), "a");
+    }
+
+    #[test]
     fn review_blame_uses_recorded_submodule_revisions_and_repository() {
         use crate::git::tests::git as output;
         let directory = TestDirectory::new();
