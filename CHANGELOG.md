@@ -7,6 +7,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Remember the last 100 searches between sessions; press Up or Down in the
+  search prompt to recall them.
+
 - Highlight moved code blocks with zebra colors by default, respecting Git's
   `diff.colorMoved` and `diff.colorMovedWS` settings. Use `--color-moved[=MODE]`
   or `--no-color-moved` to override highlighting for a session.

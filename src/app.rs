@@ -126,7 +126,7 @@ pub struct App {
     pub show_paths: Vec<String>,
     pub redraw: bool,
     pub pending_editor: Option<std::process::Command>,
-    search_history: Vec<String>,
+    search_history: crate::search_history::SearchHistory,
     search_history_index: usize,
     search_draft: String,
     cache: HashMap<String, CachedShow>,
@@ -203,7 +203,7 @@ impl App {
             show_paths: Vec::new(),
             redraw: false,
             pending_editor: None,
-            search_history: Vec::new(),
+            search_history: crate::search_history::SearchHistory::default(),
             search_history_index: 0,
             search_draft: String::new(),
             cache: HashMap::new(),
@@ -1866,9 +1866,13 @@ impl App {
         self.cache.insert(key, CachedShow { text, links: None });
     }
 
+    pub fn load_search_history(&mut self) {
+        self.search_history = crate::search_history::SearchHistory::load();
+    }
+
     pub fn begin_search(&mut self, reverse: bool) {
         self.search_input = Some(String::new());
-        self.search_history_index = self.search_history.len();
+        self.search_history_index = self.search_history.queries.len();
         self.search_draft.clear();
         self.search_reverse = reverse;
     }
@@ -1876,7 +1880,7 @@ impl App {
         let Some(input) = self.search_input.as_ref() else {
             return;
         };
-        let end = self.search_history.len();
+        let end = self.search_history.queries.len();
         let index = if older {
             self.search_history_index.saturating_sub(1)
         } else {
@@ -1892,16 +1896,14 @@ impl App {
         self.search_input = Some(if index == end {
             self.search_draft.clone()
         } else {
-            self.search_history[index].clone()
+            self.search_history.queries[index].clone()
         });
     }
 
     pub fn submit_search(&mut self) {
         if let Some(query) = self.search_input.take() {
             if !query.is_empty() {
-                if self.search_history.last() != Some(&query) {
-                    self.search_history.push(query.clone());
-                }
+                self.search_history.record(&query);
                 self.search = Some(query);
                 self.search_match = None;
                 self.next_match(self.search_reverse);

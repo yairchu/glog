@@ -11,6 +11,7 @@ mod log_folds;
 mod log_format;
 mod message_format;
 mod patch_options;
+mod search_history;
 mod stash;
 mod status;
 mod ui;
@@ -109,6 +110,7 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    app.load_search_history();
     app.exit_on_esc = log_options.exit_on_esc;
     initialize_log_filters(&mut app, log_options);
 
@@ -258,7 +260,11 @@ expandable file summaries; press s in Show to toggle summary / patch.
 Use glog log show (or glog log diff) to browse a branch named after a command.
 Log arguments are passed through to git log. Inside the TUI, press h for
 key help, Tab to switch between Log and its detail view, Ctrl-L to redraw the screen, and q
-or Ctrl-C to quit.";
+or Ctrl-C to quit.
+Search history persists between sessions; use Up/Down at / or ? to recall it.
+GLOG_HISTFILE overrides the history path; set it to - to disable persistence.
+The default is $XDG_STATE_HOME/glog/search_history, or
+$HOME/.local/state/glog/search_history (Windows: %LOCALAPPDATA%/glog/search_history).";
 
 fn start_terminal() -> io::Result<Terminal<ratatui::backend::CrosstermBackend<io::Stdout>>> {
     enable_raw_mode()?;
