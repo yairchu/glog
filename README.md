@@ -82,14 +82,10 @@ glog main -- src/
 
 ### Branches
 
-Run `glog branch` to browse local branches in a compact graph of branch tips
-and shared ancestors. The stored remote default tip, such as `origin/main`,
-appears alongside local branches. Enter or click a node to see its commits
-since the next shared node; Backspace or Escape returns from that Log. Roots
-show full history. Rows display Git's usual refs and the latest branch update
-at each tip, falling back to commit dates. Branches at the same commit share
-a node. Merged branches stay visible with a label and open their full history
-without cutting off other Logs. With only the current branch, glog prints the branch name and exits.
+Run `glog branch` to browse local branches as a graph of branch tips and
+their shared ancestors, alongside the remote default branch such as
+`origin/main`. Enter or click a branch to see its commits since the shared
+ancestor; Backspace or Escape returns to the graph.
 
 ### Folding merge histories
 
