@@ -120,6 +120,7 @@ pub fn load_patch(
         return Err("The file is empty at this revision".into());
     }
     let mut app = crate::app::App::new(rows);
+    app.set_repository(Some(top));
     app.selected = number.saturating_sub(1).min(app.commits.len() - 1);
     app.center_selection = true;
     app.context = format!(
@@ -335,6 +336,7 @@ pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String
     let lines = unattributed_lines(&output.stdout, &revision, &path);
     let rows = render_lines(lines, HashMap::new(), top.clone(), "", &path, true);
     let mut app = crate::app::App::new(rows);
+    app.set_repository(Some(top.clone()));
     app.history = crate::app::History::Blame;
     for field in Field::ATTRIBUTION {
         app.log_format.toggle(field);

@@ -238,14 +238,6 @@ impl App {
             submodule_patch: None,
             diff_sides: None,
         };
-        if let Some(root) = app
-            .commits
-            .first()
-            .and_then(Commit::blame)
-            .map(|line| line.file.top.clone())
-        {
-            app.set_repository(Some(root));
-        }
         if matches!(app.history, History::Reflog | History::Branches) {
             app.refresh_log_folds();
         }
