@@ -1122,6 +1122,140 @@ mod tests {
         }
     }
 
+    fn module_review(textconv: bool) -> (App, String, String) {
+        use crate::git::tests::git as output;
+        git(&["init", "-q"]);
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/example/parent.git",
+        ]);
+        git(&["init", "-q", "module"]);
+        git(&[
+            "-C",
+            "module",
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/example/module.git",
+        ]);
+        if textconv {
+            fs::write("module/.gitattributes", "file.txt diff=readable\n").unwrap();
+            git(&[
+                "-C",
+                "module",
+                "config",
+                "diff.readable.textconv",
+                "sed '1d'",
+            ]);
+        }
+        fs::write("module/file.txt", "header\nfirst\nbefore\nlast\n").unwrap();
+        git(&["-C", "module", "add", "."]);
+        git(&["-C", "module", "commit", "-qm", "original module"]);
+        let old = output(&["-C", "module", "rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
+        fs::write(
+            ".gitmodules",
+            "[submodule \"module\"]\n\tpath = module\n\turl = ./unused\n",
+        )
+        .unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "add module"]);
+        git(&["submodule", "absorbgitdirs"]);
+        fs::write("module/file.txt", "header\nfirst\nafter\nlast\n").unwrap();
+        git(&[
+            "-C",
+            "module",
+            "commit",
+            "-qam",
+            &format!("updated module\n\nSee {old} and #42"),
+        ]);
+        let new = output(&["-C", "module", "rev-parse", "HEAD"])
+            .trim()
+            .to_owned();
+        git(&["add", "module"]);
+        git(&["commit", "-qm", "update module"]);
+        (review_line("HEAD", "  +after"), old, new)
+    }
+
+    #[test]
+    fn submodule_patch_blame_keeps_raw_lines_with_textconv() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        let (mut app, _, _) = module_review(true);
+        for (patch_line, expected) in [
+            ("+after", "after"),
+            ("-before", "before"),
+            (" header", "header"),
+        ] {
+            app.show_cursor = app
+                .show_rows
+                .iter()
+                .position(|row| crate::ansi::plain(&row.text) == format!("  {patch_line}"))
+                .unwrap();
+            press(&mut app, KeyCode::Char('b'));
+            assert_eq!(app.status, None);
+            assert_eq!(app.commits.len(), 4);
+            assert_eq!(code(app.commits[app.selected].blame().unwrap()), expected);
+            if expected == "after" {
+                press(&mut app, KeyCode::Char('p'));
+                assert_eq!(app.status, None);
+                assert_eq!(app.commits.len(), 4);
+                assert_eq!(code(app.commits[app.selected].blame().unwrap()), "before");
+                press(&mut app, KeyCode::Backspace);
+            }
+            press(&mut app, KeyCode::Backspace);
+            assert_eq!(app.mode, Mode::Show);
+        }
+    }
+
+    #[test]
+    fn submodule_blame_links_keep_repository_through_history_and_return() {
+        use crate::commit_links::Target;
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        let (mut app, old, new) = module_review(false);
+        let review = app.show_text.clone();
+        press(&mut app, KeyCode::Char('b'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.status, None);
+        let commit = Target::Commit(old.clone());
+        assert!(app
+            .show_links
+            .values()
+            .flatten()
+            .any(|link| link.target == commit));
+        app.follow_link(&commit);
+        assert_eq!(app.status, None);
+        assert!(app.show_text.contains("original module"));
+        // Loading the followed commit's deferred history also stays in the module.
+        app.switch_mode();
+        assert_eq!(app.status, None);
+        assert_eq!(app.commits.len(), 1);
+        assert_eq!(app.commits[0].hash, old);
+        app.reference_back();
+        assert!(app.show_text.contains("updated module"));
+        assert!(app
+            .show_links
+            .values()
+            .flatten()
+            .any(|link| link.target
+                == Target::Url("https://github.com/example/module/issues/42".into())));
+        app.follow_link(&Target::Range(format!("{old}..{new}")));
+        assert_eq!(app.status, None);
+        assert_eq!(app.commits.len(), 1);
+        assert_eq!(app.commits[0].hash, new);
+        app.switch_mode();
+        assert_eq!(app.status, None);
+        assert!(app.show_text.contains("updated module"));
+        app.reference_back();
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.mode, Mode::Show);
+        assert_eq!(app.show_text, review);
+    }
+
     #[test]
     fn review_blame_opens_added_and_deleted_files_with_quoted_paths() {
         let directory = TestDirectory::new();
