@@ -97,6 +97,8 @@ pub struct App {
     reference_back: Option<Box<App>>,
     /// Remotes rarely change during a session, so look up issue links once.
     github_repository: Option<Option<String>>,
+    // Explicit repository for views reached across a submodule boundary.
+    repository: Option<std::path::PathBuf>,
     // Each browser opener still running, which may yet report an error.
     browser_results: Vec<crate::commit_links::BrowserResult>,
     pub show_stat: bool,
@@ -178,6 +180,7 @@ impl App {
             visible_show_links: Vec::new(),
             reference_back: None,
             github_repository: None,
+            repository: None,
             browser_results: Vec::new(),
             show_stat: false,
             show_rows_stat: false,
@@ -222,6 +225,14 @@ impl App {
             submodule_rows: HashMap::new(),
             submodule_patch: None,
         };
+        if let Some(root) = app
+            .commits
+            .first()
+            .and_then(Commit::blame)
+            .map(|line| line.file.top.clone())
+        {
+            app.set_repository(Some(root));
+        }
         if app.history == History::Reflog {
             app.refresh_log_folds();
         }
@@ -245,6 +256,12 @@ impl App {
             );
         }
         self.file_view()
+    }
+
+    pub(crate) fn set_repository(&mut self, repository: Option<std::path::PathBuf>) {
+        self.log_folds.set_repository(repository.clone());
+        self.github_repository = None;
+        self.repository = repository;
     }
 
     /// Resolve attribution only once a column needs it.
@@ -276,7 +293,7 @@ impl App {
         match if self.watch {
             git::load_watch_log()
         } else {
-            git::load_log(&args)
+            git::load_log_at(&args, self.repository.as_deref())
         } {
             Ok(commits) => {
                 self.pending_history = None;
@@ -929,7 +946,7 @@ impl App {
         }
         self.show_offset = 0;
         self.show_cursor = 0;
-        match git::show(&commit, &self.show_paths) {
+        match git::show_at(&commit, &self.show_paths, self.repository.as_deref()) {
             Ok(text) => {
                 self.show_text = text.clone();
                 if commit.kind == CommitKind::Revision {
@@ -978,8 +995,11 @@ impl App {
                     links: Some(links), ..
                 }) => links.clone(),
                 cached => {
-                    let links =
-                        crate::commit_links::collect(&self.show_text, &mut self.github_repository);
+                    let links = crate::commit_links::collect_at(
+                        &self.show_text,
+                        &mut self.github_repository,
+                        self.repository.as_deref(),
+                    );
                     if let Some(cached) = cached {
                         cached.links = Some(links.clone());
                     }
@@ -1027,7 +1047,6 @@ impl App {
     pub fn blame_show_line(&mut self) {
         let loaded = self.show_blame(self.show_cursor).map(|mut target| {
             target.exit_on_esc = self.exit_on_esc;
-            target.github_repository = self.github_repository.clone();
             target
         });
         self.enter_followed(loaded);
@@ -1077,9 +1096,13 @@ impl App {
     }
 
     fn show_repository(&self) -> Option<&std::path::Path> {
-        self.submodule_patch
-            .as_ref()
-            .map(|patch| patch.root.as_path())
+        self.repository
+            .as_deref()
+            .or_else(|| {
+                self.submodule_patch
+                    .as_ref()
+                    .map(|patch| patch.root.as_path())
+            })
             .or_else(|| {
                 self.commits
                     .get(self.selected)
@@ -1133,7 +1156,14 @@ impl App {
             &patch,
             row.source - file.start,
             worktree,
-            if self.submodule_patch.is_some() || self.raw_untracked_files.contains(&file.key) {
+            if self.submodule_patch.is_some()
+                || self
+                    .commits
+                    .get(self.selected)
+                    .and_then(Commit::blame)
+                    .is_some_and(|line| !line.file.textconv)
+                || self.raw_untracked_files.contains(&file.key)
+            {
                 crate::editor::Textconv::Disabled
             } else {
                 crate::editor::Textconv::Allowed
@@ -1760,15 +1790,17 @@ impl App {
         } else {
             vec![hash.to_owned()]
         };
-        let loaded = git::load_show_app_with(&args, |target| self.prepare_followed(target))
-            .and_then(|mut target| match target.status.take() {
-                Some(error) => Err(error),
-                None => {
-                    let short = &target.commits[target.selected].short_hash;
-                    target.context = format!("show {short}");
-                    Ok(target)
-                }
-            });
+        let loaded = git::load_show_app_with(&args, self.repository.as_deref(), |target| {
+            self.prepare_followed(target)
+        })
+        .and_then(|mut target| match target.status.take() {
+            Some(error) => Err(error),
+            None => {
+                let short = &target.commits[target.selected].short_hash;
+                target.context = format!("show {short}");
+                Ok(target)
+            }
+        });
         self.enter_followed(loaded);
     }
 
@@ -1779,7 +1811,11 @@ impl App {
             .map(|hash| &hash[..hash.len().min(7)])
             .collect::<Vec<_>>()
             .join("..");
-        let loaded = git::load_log(&[range.to_owned(), "--".to_owned()]).and_then(|commits| {
+        let loaded = git::load_log_at(
+            &[range.to_owned(), "--".to_owned()],
+            self.repository.as_deref(),
+        )
+        .and_then(|commits| {
             if commits.is_empty() {
                 return Err(format!("no commits in {label}"));
             }
@@ -1796,6 +1832,7 @@ impl App {
 
     fn prepare_followed(&self, target: &mut App) {
         // Followed references stay in the same repository.
+        target.set_repository(self.repository.clone());
         target.github_repository = self.github_repository.clone();
         target.exit_on_esc = self.exit_on_esc;
         // Followed commits have their own fixed history. Leave watch on
@@ -1863,7 +1900,7 @@ impl App {
         view.browser_results = std::mem::take(&mut self.browser_results);
         view.search_history = std::mem::take(&mut self.search_history);
         // A followed view may have looked up the repository its origin hasn't.
-        if self.github_repository.is_some() {
+        if self.repository == view.repository && self.github_repository.is_some() {
             view.github_repository = self.github_repository.clone();
         }
     }

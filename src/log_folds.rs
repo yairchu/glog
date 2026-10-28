@@ -167,6 +167,15 @@ enum Fold {
 }
 
 impl LogFolds {
+    pub(crate) fn set_repository(&mut self, directory: Option<std::path::PathBuf>) {
+        self.load_ancestry = match directory {
+            Some(directory) => Box::new(move |commits, known| {
+                git::log_ancestry_at(commits, known, Some(&directory))
+            }),
+            None => Box::new(git::log_ancestry),
+        };
+    }
+
     pub fn visible(&self, index: usize) -> bool {
         self.shown_layout()
             .visible

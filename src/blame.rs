@@ -54,6 +54,10 @@ pub fn load_patch(
             return Err("Select a committed patch to blame".into());
         }
     }
+    let textconv = match &source {
+        PatchRevision::Commit(commit) => commit.blame().is_none_or(|line| line.file.textconv),
+        PatchRevision::Submodule { .. } => false,
+    };
     let (parent, number) =
         patch_position(patch, row).ok_or("Select a code line or hunk to blame")?;
     let (result, revision, label) = match source {
@@ -101,8 +105,8 @@ pub fn load_patch(
     } else {
         path.to_vec()
     };
-    let date = git::configured_log_date("format-local:%Y-%m-%d")?;
-    let rows = blame(Some(&revision), &path, Some(&top), &date)?;
+    let date = git::configured_log_date_at("format-local:%Y-%m-%d", Some(&top))?;
+    let rows = blame_with_textconv(Some(&revision), &path, Some(&top), &date, textconv)?;
     if rows.is_empty() {
         return Err("The file is empty at this revision".into());
     }
@@ -300,7 +304,7 @@ pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String
             previous: None,
         })
         .collect();
-    let rows = render_lines(lines, HashMap::new(), top.clone(), "", &path);
+    let rows = render_lines(lines, HashMap::new(), top.clone(), "", &path, true);
     let mut app = crate::app::App::new(rows);
     app.history = crate::app::History::Blame;
     for field in Field::ATTRIBUTION {
@@ -321,6 +325,7 @@ pub struct BlameFile {
     /// In bare repositories, run historical queries from the Git directory.
     pub top: PathBuf,
     date: String,
+    pub textconv: bool,
     hash_width: usize,
     date_width: usize,
     author_width: usize,
@@ -431,7 +436,13 @@ pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<(Vec<Commit>, us
         return Err(git::stderr_message("git diff failed", &output.stderr));
     }
     let number = parent_line(&String::from_utf8_lossy(&output.stdout), line.source_number);
-    let rows = blame(Some(parent), path, Some(&line.file.top), &line.file.date)?;
+    let rows = blame_with_textconv(
+        Some(parent),
+        path,
+        Some(&line.file.top),
+        &line.file.date,
+        line.file.textconv,
+    )?;
     let selected = number.saturating_sub(1).min(rows.len().saturating_sub(1));
     Ok((rows, selected))
 }
@@ -491,13 +502,26 @@ fn blame(
     top: Option<&PathBuf>,
     date: &str,
 ) -> Result<Vec<Commit>, String> {
+    blame_with_textconv(revision, path, top, date, true)
+}
+
+fn blame_with_textconv(
+    revision: Option<&str>,
+    path: &[u8],
+    top: Option<&PathBuf>,
+    date: &str,
+    textconv: bool,
+) -> Result<Vec<Commit>, String> {
     let mut command = crate::git::read_command();
     if let Some(top) = top {
         git::repository_env(&mut command, top).current_dir(top);
     }
+    command.args(["-c", "core.quotepath=true", "blame", "--porcelain"]);
+    if !textconv {
+        command.arg("--no-textconv");
+    }
     let output = command
         .env("LC_ALL", "C")
-        .args(["-c", "core.quotepath=true", "blame", "--porcelain"])
         .args(revision)
         .arg("--")
         .arg(git::raw_path(path))
@@ -512,7 +536,7 @@ fn blame(
         None => git::repository_directory()?,
     };
     let details = commit_details(&lines, date, &top)?;
-    Ok(render_lines(lines, details, top, date, path))
+    Ok(render_lines(lines, details, top, date, path, textconv))
 }
 
 fn render_lines(
@@ -521,12 +545,14 @@ fn render_lines(
     top: PathBuf,
     date: &str,
     path: &[u8],
+    textconv: bool,
 ) -> Vec<Commit> {
     let mut highlighted = highlight(&crate::diff::display_path(path), &lines).map(Vec::into_iter);
     let width = |text: &str| Span::raw(text).width();
     let file = Arc::new(BlameFile {
         top,
         date: date.to_owned(),
+        textconv,
         hash_width: details
             .values()
             .map(|d| d.short_hash.len())

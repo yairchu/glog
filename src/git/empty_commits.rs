@@ -8,10 +8,10 @@ struct Header {
     parents: Vec<String>,
 }
 
-pub(super) fn mark(commits: &mut [Commit]) {
+pub(super) fn mark(commits: &mut [Commit], directory: Option<&std::path::Path>) {
     // Preserve Git's boundary, comparison, and patch-equivalence markers.
     let candidates = || commits.iter().filter(|commit| commit.graph_node == '*');
-    let mut headers = listed_headers(candidates().map(|commit| commit.hash.as_str()));
+    let mut headers = listed_headers(candidates().map(|commit| commit.hash.as_str()), directory);
     // Git reports a shallow commit as parentless. Its raw object keeps the
     // parent, so that a missing parent cannot make it look like a root.
     let apparent_roots: Vec<_> = headers
@@ -19,7 +19,10 @@ pub(super) fn mark(commits: &mut [Commit]) {
         .filter(|(_, header)| header.parents.is_empty())
         .map(|(hash, _)| hash.clone())
         .collect();
-    headers.extend(read_headers(apparent_roots.iter().map(String::as_str)));
+    headers.extend(read_headers(
+        apparent_roots.iter().map(String::as_str),
+        directory,
+    ));
     // Parents are usually listed too. Look up only the others, by plain object
     // name: peeling each `parent^{tree}` makes Git resolve it as a revision,
     // which is orders of magnitude slower over a long history.
@@ -31,7 +34,7 @@ pub(super) fn mark(commits: &mut [Commit]) {
             },
         )
         .collect();
-    headers.extend(read_headers(missing.iter().map(String::as_str)));
+    headers.extend(read_headers(missing.iter().map(String::as_str), directory));
     // Only a root's tree must be read, to tell whether it is the empty tree.
     let roots: Vec<_> = candidates()
         .filter_map(|commit| {
@@ -39,7 +42,7 @@ pub(super) fn mark(commits: &mut [Commit]) {
             header.parents.is_empty().then(|| header.tree.clone())
         })
         .collect();
-    let empty_roots = empty_trees(&roots);
+    let empty_roots = empty_trees(&roots, directory);
     for commit in commits.iter_mut().filter(|commit| commit.graph_node == '*') {
         let Some(header) = headers.get(&commit.hash) else {
             continue;
@@ -65,13 +68,16 @@ pub(super) fn mark(commits: &mut [Commit]) {
 
 /// Headers of commits Git just listed, so they exist. Unlike `cat-file`,
 /// `rev-list` reads them from the commit-graph when there is one.
-fn listed_headers<'a>(hashes: impl Iterator<Item = &'a str>) -> HashMap<String, Header> {
+fn listed_headers<'a>(
+    hashes: impl Iterator<Item = &'a str>,
+    directory: Option<&std::path::Path>,
+) -> HashMap<String, Header> {
     let input: String = hashes.map(|hash| format!("{hash}\n")).collect();
     if input.is_empty() {
         return HashMap::new();
     }
     let Some(output) = pipe_through(
-        crate::git::read_command()
+        crate::git::read_command_at(directory)
             .args([
                 "rev-list",
                 "--no-walk=unsorted",
@@ -97,13 +103,16 @@ fn listed_headers<'a>(hashes: impl Iterator<Item = &'a str>) -> HashMap<String, 
 }
 
 /// Raw headers, without fetching or failing on missing objects.
-fn read_headers<'a>(hashes: impl Iterator<Item = &'a str>) -> HashMap<String, Header> {
+fn read_headers<'a>(
+    hashes: impl Iterator<Item = &'a str>,
+    directory: Option<&std::path::Path>,
+) -> HashMap<String, Header> {
     let input: String = hashes.map(|hash| format!("{hash}\n")).collect();
     if input.is_empty() {
         return HashMap::new();
     }
     pipe_through_bytes(
-        crate::git::read_command()
+        crate::git::read_command_at(directory)
             .args(["cat-file", "--batch"])
             .env("GIT_NO_LAZY_FETCH", "1"),
         input.as_bytes(),
@@ -112,13 +121,13 @@ fn read_headers<'a>(hashes: impl Iterator<Item = &'a str>) -> HashMap<String, He
     .unwrap_or_default()
 }
 
-fn empty_trees(trees: &[String]) -> HashSet<String> {
+fn empty_trees(trees: &[String], directory: Option<&std::path::Path>) -> HashSet<String> {
     if trees.is_empty() {
         return HashSet::new();
     }
     let input: String = trees.iter().map(|tree| format!("{tree}\n")).collect();
     let Some(output) = pipe_through(
-        crate::git::read_command()
+        crate::git::read_command_at(directory)
             .args(["cat-file", "--batch-check"])
             .env("GIT_NO_LAZY_FETCH", "1"),
         input.as_bytes(),

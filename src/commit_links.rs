@@ -22,9 +22,18 @@ enum Local<'a> {
     Range(&'a str, &'a str),
 }
 
-/// `repository` caches the GitHub repository across calls; it's looked up
-/// only once an issue reference or URL appears.
+#[cfg(test)]
 pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<usize, Vec<Link>> {
+    collect_at(text, repository, None)
+}
+
+/// `repository` caches the GitHub repository for `directory`; look it up
+/// only once an issue reference or URL appears.
+pub fn collect_at(
+    text: &str,
+    repository: &mut Option<Option<String>>,
+    directory: Option<&std::path::Path>,
+) -> HashMap<usize, Vec<Link>> {
     enum Candidate<'a> {
         Commit(&'a str),
         Issue(&'a str),
@@ -50,7 +59,7 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
                 if url.start >= start {
                     let url_text = &plain[url.clone()];
                     let local = repository
-                        .get_or_insert_with(crate::git::github_repository)
+                        .get_or_insert_with(|| crate::git::github_repository_at(directory))
                         .as_deref()
                         .and_then(|repository| local(url_text, repository));
                     candidates.push((
@@ -98,23 +107,25 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
             start += word.len();
         }
     }
-    let resolved =
-        crate::git::resolve_commits(candidates.iter().flat_map(
-            |(_, _, candidate)| match candidate {
+    let resolved = crate::git::resolve_commits(
+        candidates
+            .iter()
+            .flat_map(|(_, _, candidate)| match candidate {
                 Candidate::Commit(hash) | Candidate::Url(_, Some(Local::Commit(hash))) => {
                     vec![*hash]
                 }
                 Candidate::Url(_, Some(Local::Range(base, head))) => vec![*base, *head],
                 Candidate::Issue(_) | Candidate::Url(_, None) => Vec::new(),
-            },
-        ));
+            }),
+        directory,
+    );
     let commit = |hash: &str| resolved.get(hash).cloned();
     let mut links = HashMap::new();
     for (source, range, candidate) in candidates {
         let target = match candidate {
             Candidate::Commit(hash) => commit(hash).map(Target::Commit),
             Candidate::Issue(number) => repository
-                .get_or_insert_with(crate::git::github_repository)
+                .get_or_insert_with(|| crate::git::github_repository_at(directory))
                 .as_ref()
                 .map(|repo| Target::Url(format!("{repo}/issues/{number}"))),
             Candidate::Url(url, local) => Some(

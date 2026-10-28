@@ -30,16 +30,22 @@ pub(crate) fn read_command() -> Command {
     command
 }
 
+/// Build a reader for an explicitly selected repository without changing process state.
+pub(crate) fn read_command_at(directory: Option<&std::path::Path>) -> Command {
+    let mut command = read_command();
+    if let Some(directory) = directory {
+        repository_env(&mut command, directory).current_dir(directory);
+    }
+    command
+}
+
 pub(crate) fn patch_command() -> Command {
     patch_command_at(None)
 }
 
 /// Apply preferences in the repository being queried, including submodules.
 pub(crate) fn patch_command_at(directory: Option<&std::path::Path>) -> Command {
-    let mut command = read_command();
-    if let Some(directory) = directory {
-        repository_env(&mut command, directory).current_dir(directory);
-    }
+    let mut command = read_command_at(directory);
     // Patches pass through UTF-8 text (and optionally delta) before parsing.
     // Quote non-ASCII path bytes so this conversion cannot lose file identities.
     command.args(["-c", "core.quotePath=true"]);
@@ -325,7 +331,14 @@ pub enum CommitKind {
 }
 
 pub(crate) fn configured_log_date(fallback: &str) -> Result<String, String> {
-    let configured_date = read_command()
+    configured_log_date_at(fallback, None)
+}
+
+pub(crate) fn configured_log_date_at(
+    fallback: &str,
+    directory: Option<&std::path::Path>,
+) -> Result<String, String> {
+    let configured_date = read_command_at(directory)
         .args(["config", "--get", "log.date"])
         .output()
         .map_err(|error| format!("could not read Git date configuration: {error}"))?;
@@ -342,15 +355,18 @@ pub(crate) fn configured_log_date(fallback: &str) -> Result<String, String> {
     }
 }
 
-fn log_command(user_args: &[String]) -> Result<Command, String> {
-    let mut command = read_command();
+fn log_command(
+    user_args: &[String],
+    directory: Option<&std::path::Path>,
+) -> Result<Command, String> {
+    let mut command = read_command_at(directory);
     command.env("LC_ALL", "C");
     // Use configuration so --date and --relative-date retain their precedence.
     command.args([
         "-c",
         &format!(
             "log.date={}",
-            configured_log_date("format-local:%Y-%m-%d %H:%M")?
+            configured_log_date_at("format-local:%Y-%m-%d %H:%M", directory)?
         ),
     ]);
     command.args(["--no-pager", "log"]);
@@ -367,13 +383,22 @@ fn log_command(user_args: &[String]) -> Result<Command, String> {
 }
 
 pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
-    let output = log_command(user_args)?.output().map_err(|error| {
-        if error.kind() == std::io::ErrorKind::NotFound {
-            "git executable not found".to_owned()
-        } else {
-            format!("could not run git log: {error}")
-        }
-    })?;
+    load_log_at(user_args, None)
+}
+
+pub fn load_log_at(
+    user_args: &[String],
+    directory: Option<&std::path::Path>,
+) -> Result<Vec<Commit>, String> {
+    let output = log_command(user_args, directory)?
+        .output()
+        .map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                "git executable not found".to_owned()
+            } else {
+                format!("could not run git log: {error}")
+            }
+        })?;
     let mut commits = if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("does not have any commits yet")
@@ -398,7 +423,7 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
     for commit in &mut commits {
         commit.first_parent_only = first_parent_only;
     }
-    empty_commits::mark(&mut commits);
+    empty_commits::mark(&mut commits, directory);
     Ok(commits)
 }
 
@@ -444,6 +469,14 @@ impl Cancel {
 /// earlier in Git's topological graph order, and may be a very large history.
 /// The returned read runs Git, so it can run off the UI thread.
 pub fn log_ancestry(commits: &[Commit], known: usize) -> AncestryRead {
+    log_ancestry_at(commits, known, None)
+}
+
+pub fn log_ancestry_at(
+    commits: &[Commit],
+    known: usize,
+    directory: Option<&std::path::Path>,
+) -> AncestryRead {
     let revisions: Vec<_> = commits
         .iter()
         .filter(|c| c.kind == CommitKind::Revision)
@@ -468,8 +501,8 @@ pub fn log_ancestry(commits: &[Commit], known: usize) -> AncestryRead {
         input.push('\n');
     }
     let first_parent = revisions.iter().any(|commit| commit.first_parent_only);
+    let mut command = read_command_at(directory);
     Box::new(move |cancel| {
-        let mut command = read_command();
         command
             .args(["rev-list", "--parents", "--stdin"])
             .env("GIT_NO_LAZY_FETCH", "1");
@@ -514,13 +547,14 @@ pub fn working_tree_commit(summary: &crate::status::WorkingTreeSummary) -> Commi
 
 /// Resolve a single commit before opening the terminal; defer ancestry traversal.
 pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
-    load_show_app_with(args, |_| {})
+    load_show_app_with(args, None, |_| {})
 }
 
 /// Load `glog show`, letting `prepare` configure a commit's view before its
 /// Show text loads.
 pub fn load_show_app_with(
     args: &[String],
+    directory: Option<&std::path::Path>,
     prepare: impl FnOnce(&mut crate::app::App),
 ) -> Result<crate::app::App, String> {
     let separator = args
@@ -539,14 +573,14 @@ pub fn load_show_app_with(
     };
     // An unresolvable revision keeps Git's error, rather than one about a
     // file found by splitting a search pattern such as :/fix: at a colon.
-    let object = resolve_revision(revision)?;
-    let hash = match peel_commit(&object) {
+    let object = resolve_revision(revision, directory)?;
+    let hash = match peel_commit(&object, directory) {
         Ok(hash) => hash,
         Err(error) => {
             // Let Git interpret revision syntax: braces can be literal in ref
             // names and search patterns, and selectors can contain colons.
             for (index, _) in revision.match_indices(':') {
-                if let Ok(hash) = resolve_show_commit(&revision[..index]) {
+                if let Ok(hash) = resolve_show_commit(&revision[..index], directory) {
                     if stat || separator != args.len() {
                         return Err("use glog show REV:path without --stat or path filters".into());
                     }
@@ -556,8 +590,9 @@ pub fn load_show_app_with(
             return Err(error);
         }
     };
-    let commits = load_log(&["-1".to_owned(), hash.clone(), "--".to_owned()])?;
+    let commits = load_log_at(&["-1".to_owned(), hash.clone(), "--".to_owned()], directory)?;
     let mut app = crate::app::App::new(commits);
+    app.set_repository(directory.map(std::path::Path::to_path_buf));
     app.show_stat = stat;
     app.show_paths = args.get(separator + 1..).unwrap_or_default().to_vec();
     let mut history = if revisions.is_empty() {
@@ -573,10 +608,15 @@ pub fn load_show_app_with(
     Ok(app)
 }
 
+#[cfg(test)]
+pub(crate) fn github_repository() -> Option<String> {
+    github_repository_at(None)
+}
+
 /// Use origin if it exists; otherwise the sole GitHub repository among the remotes.
 /// Preserve a stored GitHub URL even if transport is rewritten; resolve aliases locally.
-pub(crate) fn github_repository() -> Option<String> {
-    let output = read_command()
+pub(crate) fn github_repository_at(directory: Option<&std::path::Path>) -> Option<String> {
+    let output = read_command_at(directory)
         .args(["config", "--get-regexp", r"^remote\..*\.url$"])
         .output()
         .ok()?;
@@ -596,7 +636,7 @@ pub(crate) fn github_repository() -> Option<String> {
     }
     let repository = |(remote, stored): (&str, &str)| {
         github_repository_url(stored).or_else(|| {
-            let output = read_command()
+            let output = read_command_at(directory)
                 .args(["remote", "get-url", remote])
                 .output()
                 .ok()?;
@@ -660,6 +700,7 @@ fn github_repository_url(remote: &str) -> Option<String> {
 /// checks every hash, plus one per hash that a hex-like ref name shadows.
 pub(crate) fn resolve_commits<'a>(
     hashes: impl IntoIterator<Item = &'a str>,
+    directory: Option<&std::path::Path>,
 ) -> std::collections::HashMap<String, String> {
     let mut hashes: Vec<_> = hashes.into_iter().collect();
     hashes.sort_unstable();
@@ -670,7 +711,7 @@ pub(crate) fn resolve_commits<'a>(
             .map(|object| format!("{object}^{{commit}}\n"))
             .collect();
         let output = pipe_through(
-            read_command()
+            read_command_at(directory)
                 .args(["cat-file", "--batch-check=%(objectname)"])
                 .env("GIT_NO_LAZY_FETCH", "1"),
             input.as_bytes(),
@@ -693,7 +734,7 @@ pub(crate) fn resolve_commits<'a>(
         if resolved.get(hash).is_none_or(|full| full.starts_with(hash)) {
             continue;
         }
-        let objects = read_command()
+        let objects = read_command_at(directory)
             .args(["rev-parse", &format!("--disambiguate={hash}")])
             .env("GIT_NO_LAZY_FETCH", "1")
             .stderr(Stdio::null())
@@ -729,12 +770,15 @@ pub(crate) fn commit_message_range(text: &str) -> std::ops::Range<usize> {
     start..end
 }
 
-fn resolve_show_commit(revision: &str) -> Result<String, String> {
-    peel_commit(&resolve_revision(revision)?)
+fn resolve_show_commit(
+    revision: &str,
+    directory: Option<&std::path::Path>,
+) -> Result<String, String> {
+    peel_commit(&resolve_revision(revision, directory)?, directory)
 }
 
-fn resolve_revision(revision: &str) -> Result<String, String> {
-    let output = read_command()
+fn resolve_revision(revision: &str, directory: Option<&std::path::Path>) -> Result<String, String> {
+    let output = read_command_at(directory)
         .args(["rev-parse", "--verify", "--end-of-options", revision])
         .output()
         .map_err(|error| format!("could not resolve revision: {error}"))?;
@@ -743,7 +787,7 @@ fn resolve_revision(revision: &str) -> Result<String, String> {
     }
     // rev-parse --verify only says it needed a single revision; cat-file
     // names the missing object or path.
-    let stderr = read_command()
+    let stderr = read_command_at(directory)
         .args(["cat-file", "-t", revision])
         .output()
         .ok()
@@ -754,8 +798,8 @@ fn resolve_revision(revision: &str) -> Result<String, String> {
 
 /// Peel a resolved object: after REV:, Git treats an appended ^{commit} as
 /// part of the filename instead of a type requirement.
-fn peel_commit(object: &str) -> Result<String, String> {
-    let output = read_command()
+fn peel_commit(object: &str, directory: Option<&std::path::Path>) -> Result<String, String> {
+    let output = read_command_at(directory)
         .args(["rev-parse", "--verify", "--end-of-options"])
         .arg(format!("{object}^{{commit}}"))
         .output()
@@ -1059,6 +1103,14 @@ fn has_diff(args: &[&str]) -> Result<bool, String> {
 }
 
 pub fn show(commit: &Commit, paths: &[String]) -> Result<String, String> {
+    show_at(commit, paths, None)
+}
+
+pub fn show_at(
+    commit: &Commit,
+    paths: &[String],
+    directory: Option<&std::path::Path>,
+) -> Result<String, String> {
     if let Some(Annotation::Stash(entry)) = &commit.annotation {
         return crate::stash::show(commit, entry);
     }
@@ -1070,7 +1122,7 @@ pub fn show(commit: &Commit, paths: &[String]) -> Result<String, String> {
             show_diff(&args, paths)
         }
         CommitKind::Revision => {
-            let text = show_revision(commit, paths)?;
+            let text = show_revision(commit, paths, directory)?;
             Ok(mark_agent_coauthors(
                 &text,
                 &commit.collaborators.agent_trailers,
@@ -1084,11 +1136,19 @@ pub fn show(commit: &Commit, paths: &[String]) -> Result<String, String> {
     }
 }
 
-fn show_revision(commit: &Commit, paths: &[String]) -> Result<String, String> {
-    let output = patch_command_at(commit.blame().map(|line| line.file.top.as_path()))
+fn show_revision(
+    commit: &Commit,
+    paths: &[String],
+    directory: Option<&std::path::Path>,
+) -> Result<String, String> {
+    let mut command =
+        patch_command_at(directory.or_else(|| commit.blame().map(|line| line.file.top.as_path())));
+    command.args(["--no-pager", "show"]);
+    if commit.blame().is_some_and(|line| !line.file.textconv) {
+        command.arg("--no-textconv");
+    }
+    let output = command
         .args([
-            "--no-pager",
-            "show",
             // Message links and styles require the full, indented message.
             "--format=medium",
             "--decorate=short",
@@ -5256,7 +5316,7 @@ pub(crate) mod tests {
         // When no setting is inherited, verify the fallback in two timezones
         // without changing the test process's environment.
         let read_date = |args: &[String], timezone: &str| {
-            let output = log_command(args)
+            let output = log_command(args, None)
                 .unwrap()
                 .env("TZ", timezone)
                 .output()
