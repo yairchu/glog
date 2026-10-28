@@ -194,6 +194,8 @@ fn blame_version(
             }
             blame_with_textconv(None, path, Some(&top), date, textconv, Some(&output.stdout))
         }
+        // Before the first commit, convert the file as its patch did.
+        Version::Worktree if textconv => Ok(uncommitted(&converted_worktree(path, &top)?)),
         // Git refuses to blame untracked paths.
         Version::Worktree | Version::Untracked => {
             let file = top.join(git::raw_path(path));
@@ -207,6 +209,51 @@ fn blame_version(
             Ok(uncommitted(&contents))
         }
     }
+}
+
+/// A tracked working tree file as textconv converts it.
+fn converted_worktree(path: &[u8], top: &Path) -> Result<Vec<u8>, String> {
+    let empty_tree = git::read_command_at(Some(top))
+        .args(["hash-object", "-t", "tree", "--stdin"])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|error| format!("could not run git hash-object: {error}"))?;
+    if !empty_tree.status.success() {
+        return Err(git::stderr_message(
+            "git hash-object failed",
+            &empty_tree.stderr,
+        ));
+    }
+    // A diff from the empty tree adds every converted line.
+    let output = git::read_command_at(Some(top))
+        .args([
+            "--literal-pathspecs",
+            "diff",
+            "--textconv",
+            "--no-ext-diff",
+            "--no-color",
+            "--no-relative",
+        ])
+        .arg(String::from_utf8_lossy(empty_tree.stdout.trim_ascii()).as_ref())
+        .arg("--")
+        .arg(git::raw_path(path))
+        .output()
+        .map_err(|error| format!("could not run git diff: {error}"))?;
+    if !output.status.success() {
+        return Err(git::stderr_message("git diff failed", &output.stderr));
+    }
+    let mut contents = Vec::new();
+    for line in output
+        .stdout
+        .split(|&byte| byte == b'\n')
+        .skip_while(|line| !line.starts_with(b"@@"))
+    {
+        if let Some(code) = line.strip_prefix(b"+") {
+            contents.extend_from_slice(code);
+            contents.push(b'\n');
+        }
+    }
+    Ok(contents)
 }
 
 /// The parent column (None for the result) and its one-based line number.
