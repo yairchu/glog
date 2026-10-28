@@ -637,23 +637,24 @@ fn branch_updates(rows: &[Commit], date: &str) -> Vec<Result<Option<String>, Str
         .iter()
         .filter_map(|row| Some((row.branch()?, row.hash.as_str())))
         .collect();
+    read_concurrently(&nodes, |(node, hash)| {
+        latest_update(&node.branches, hash, date)
+    })
+}
+
+/// `read` applied to each item, spread over the available cores.
+fn read_concurrently<T: Sync, R: Send>(items: &[T], read: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let workers = std::thread::available_parallelism().map_or(1, usize::from);
-    let chunk = nodes.len().div_ceil(workers).max(1);
+    let chunk = items.len().div_ceil(workers).max(1);
+    let read = &read;
     std::thread::scope(|scope| {
-        let readers: Vec<_> = nodes
+        let readers: Vec<_> = items
             .chunks(chunk)
-            .map(|chunk| {
-                scope.spawn(move || {
-                    chunk
-                        .iter()
-                        .map(|(node, hash)| latest_update(&node.branches, hash, date))
-                        .collect::<Vec<_>>()
-                })
-            })
+            .map(|chunk| scope.spawn(move || chunk.iter().map(read).collect::<Vec<_>>()))
             .collect();
         readers
             .into_iter()
-            .flat_map(|reader| reader.join().expect("reflog reader panicked"))
+            .flat_map(|reader| reader.join().expect("reader panicked"))
             .collect()
     })
 }
