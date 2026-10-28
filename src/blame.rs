@@ -400,7 +400,12 @@ pub fn load_app(args: &[String]) -> Result<crate::app::App, String> {
     let (rows, selected) = load(args)?;
     let mut app = crate::app::App::new(rows);
     // Blame resolved its repository for the rows.
-    app.set_repository(Some(git::repository_directory()?));
+    app.set_repository(
+        app.commits
+            .first()
+            .and_then(Commit::blame)
+            .map(|line| line.file.top.clone()),
+    );
     app.selected = selected;
     app.center_selection = true;
     Ok(app)
