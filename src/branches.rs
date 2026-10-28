@@ -316,19 +316,37 @@ fn history_cutoffs(hashes: &[String]) -> Vec<String> {
     // anchor instead: below a common ancestor of every tip sharing history
     // with the anchor, the other tips share nothing. A tip can share history
     // with several anchors, so each group considers every tip.
+    // Tips share history exactly when they share a root commit.
+    let roots = read_concurrently(hashes, |hash| root_commits(hash));
     let mut cutoffs = Vec::new();
-    let mut ungrouped: Vec<_> = hashes.iter().collect();
+    let mut ungrouped: Vec<_> = (0..hashes.len()).collect();
     while let Some(&anchor) = ungrouped.first() {
-        let group: Vec<_> = hashes
-            .iter()
-            .filter(|&hash| hash == anchor || merge_base(&[anchor], &[hash]).is_some())
-            .cloned()
+        let group: Vec<_> = (0..hashes.len())
+            .filter(|&tip| tip == anchor || !roots[tip].is_disjoint(&roots[anchor]))
             .collect();
-        ungrouped.retain(|hash| !group.contains(hash));
+        ungrouped.retain(|tip| !group.contains(tip));
+        let group: Vec<_> = group.into_iter().map(|tip| &hashes[tip]).collect();
         // Tips can share history with the anchor through unrelated roots.
         cutoffs.extend(merge_base(&["--octopus"], &group));
     }
     cutoffs
+}
+
+/// The commits without parents in `hash`'s history.
+fn root_commits(hash: &str) -> HashSet<String> {
+    let Some(output) = git::read_command()
+        .args(["rev-list", "--max-parents=0", hash, "--"])
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+    else {
+        return HashSet::new();
+    };
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(str::to_owned)
+        .collect()
 }
 
 /// The merge base Git reports for `args` and `hashes`, if any.
