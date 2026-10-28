@@ -628,6 +628,9 @@ fn blame_with_textconv(
     }
     if contents.is_some() {
         command.args(["--contents", "-"]).stdin(Stdio::piped());
+    } else {
+        // Unlike output(), spawn() would share the terminal's input.
+        command.stdin(Stdio::null());
     }
     let mut child = command
         .env("LC_ALL", "C")
