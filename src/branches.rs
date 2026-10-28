@@ -123,21 +123,7 @@ pub fn load(args: &[String]) -> Result<Launch, String> {
     let mut hashes: Vec<_> = tips.keys().cloned().collect();
     hashes.sort();
     let mut input = hashes.join("\n") + "\n";
-    // Everything below a common ancestor of every tip is shared by all of
-    // them, so no fork can appear there. Stop the walk at that ancestor.
-    let base = git::read_command()
-        .args(["merge-base", "--octopus"])
-        .args(&hashes)
-        .env("GIT_NO_LAZY_FETCH", "1")
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok());
-    if let Some(base) = base
-        .as_deref()
-        .map(str::trim)
-        .filter(|base| !base.is_empty())
-    {
+    for base in history_cutoffs(&hashes) {
         input += &format!("^{base}^@\n");
     }
     let output = git::pipe_through(
@@ -317,6 +303,46 @@ pub fn log_args(node: &Commit, rows: &[Commit]) -> Vec<String> {
     }
     args.push("--".into());
     args
+}
+
+/// Commits below which no tip's history forks, to stop the ancestry walk.
+fn history_cutoffs(hashes: &[String]) -> Vec<String> {
+    // Everything below a common ancestor of every tip is shared by all of
+    // them, so no fork can appear there.
+    if let Some(base) = merge_base(&["--octopus"], hashes) {
+        return vec![base];
+    }
+    // Unrelated histories have no such ancestor. Group the tips around an
+    // anchor instead: below a common ancestor of every tip sharing history
+    // with the anchor, the other tips share nothing. A tip can share history
+    // with several anchors, so each group considers every tip.
+    let mut cutoffs = Vec::new();
+    let mut ungrouped: Vec<_> = hashes.iter().collect();
+    while let Some(&anchor) = ungrouped.first() {
+        let group: Vec<_> = hashes
+            .iter()
+            .filter(|&hash| hash == anchor || merge_base(&[anchor], &[hash]).is_some())
+            .cloned()
+            .collect();
+        ungrouped.retain(|hash| !group.contains(hash));
+        // Tips can share history with the anchor through unrelated roots.
+        cutoffs.extend(merge_base(&["--octopus"], &group));
+    }
+    cutoffs
+}
+
+/// The merge base Git reports for `args` and `hashes`, if any.
+fn merge_base(args: &[&str], hashes: &[impl AsRef<std::ffi::OsStr>]) -> Option<String> {
+    let output = git::read_command()
+        .arg("merge-base")
+        .args(args)
+        .args(hashes)
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())?;
+    let base = String::from_utf8(output.stdout).ok()?;
+    Some(base.trim().to_owned()).filter(|base| !base.is_empty())
 }
 
 struct Node {
@@ -1136,6 +1162,45 @@ mod tests {
         assert_eq!(app.status, None);
         assert_eq!(app.commits.len(), 3);
         assert!(app.commits.iter().any(|row| row.hash == root));
+    }
+
+    #[test]
+    fn unrelated_histories_stop_the_walk_without_hiding_their_forks() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        let tree = git(&["write-tree"]);
+        let old = commit(&tree, "old", &[]);
+        let base = commit(&tree, "base", &[&old]);
+        let main = commit(&tree, "main", &[&base]);
+        let feature = commit(&tree, "feature", &[&base]);
+        let orphan_old = commit(&tree, "orphan old", &[]);
+        let orphan_base = commit(&tree, "orphan base", &[&orphan_old]);
+        let orphan = commit(&tree, "orphan", &[&orphan_base]);
+        // Shares history with both, so its forks with each must stay listed.
+        let bridge = commit(&tree, "bridge", &[&feature, &orphan_base]);
+        let tips = [&main, &feature, &orphan, &bridge];
+        for first in 0..tips.len() {
+            let mut hashes: Vec<String> = tips.iter().map(|hash| (*hash).clone()).collect();
+            hashes.rotate_left(first);
+            let mut args = hashes.clone();
+            args.extend(
+                history_cutoffs(&hashes)
+                    .iter()
+                    .map(|cutoff| format!("^{cutoff}^@")),
+            );
+            let mut command = vec!["rev-list"];
+            command.extend(args.iter().map(String::as_str));
+            let walked = git(&command);
+            let walked: HashSet<_> = walked.lines().collect();
+            assert!(walked.contains(base.as_str()), "{first}");
+            assert!(walked.contains(orphan_base.as_str()), "{first}");
+            // The bridge alone shares history with every tip.
+            if hashes[0] != bridge {
+                assert!(!walked.contains(old.as_str()), "{first}");
+                assert!(!walked.contains(orphan_old.as_str()), "{first}");
+            }
+        }
     }
 
     #[test]
