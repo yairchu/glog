@@ -184,20 +184,7 @@ fn blame_version(
             // Git refuses to blame untracked paths, but every line is uncommitted.
             let contents = std::fs::read(top.join(git::raw_path(path)))
                 .map_err(|error| format!("could not read the untracked file: {error}"))?;
-            let contents = String::from_utf8_lossy(&contents);
-            let lines = contents
-                .split_inclusive('\n')
-                .map(|line| line.strip_suffix('\n').unwrap_or(line))
-                .enumerate()
-                .map(|(index, code)| PorcelainLine {
-                    hash: "0".repeat(40),
-                    number: index + 1,
-                    code: code.to_owned(),
-                    source_path: path.to_vec(),
-                    source_number: index + 1,
-                    previous: None,
-                })
-                .collect();
+            let lines = unattributed_lines(&contents, &"0".repeat(40), path);
             Ok(render_lines(
                 lines,
                 HashMap::new(),
@@ -334,19 +321,7 @@ pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String
     if output.stdout.contains(&0) {
         return Err("the file is binary; this view supports text files".into());
     }
-    let contents = String::from_utf8_lossy(&output.stdout);
-    let lines = contents
-        .split_terminator('\n')
-        .enumerate()
-        .map(|(index, code)| PorcelainLine {
-            hash: revision.clone(),
-            number: index + 1,
-            code: code.to_owned(),
-            source_path: path.clone(),
-            source_number: index + 1,
-            previous: None,
-        })
-        .collect();
+    let lines = unattributed_lines(&output.stdout, &revision, &path);
     let rows = render_lines(lines, HashMap::new(), top.clone(), "", &path, true);
     let mut app = crate::app::App::new(rows);
     app.history = crate::app::History::Blame;
@@ -359,6 +334,22 @@ pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String
         top,
     });
     Ok(app)
+}
+
+/// Rows for file contents without blame, taking every line from `hash`.
+fn unattributed_lines(contents: &[u8], hash: &str, path: &[u8]) -> Vec<PorcelainLine> {
+    String::from_utf8_lossy(contents)
+        .split_terminator('\n')
+        .enumerate()
+        .map(|(index, code)| PorcelainLine {
+            hash: hash.to_owned(),
+            number: index + 1,
+            code: code.to_owned(),
+            source_path: path.to_vec(),
+            source_number: index + 1,
+            previous: None,
+        })
+        .collect()
 }
 
 /// The blamed file version and what its rows share.
