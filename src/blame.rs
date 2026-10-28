@@ -150,7 +150,13 @@ fn patch_position(patch: &str, row: usize) -> Option<(Option<usize>, usize)> {
         if old.is_empty() {
             continue;
         }
-        let prefix = text.as_bytes().get(..old.len())?;
+        // diff.suppressBlankEmpty prints blank context lines without a space.
+        let context = vec![b' '; old.len()];
+        let prefix = if text.is_empty() {
+            &context
+        } else {
+            text.as_bytes().get(..old.len())?
+        };
         if !prefix.iter().all(|byte| matches!(byte, b' ' | b'+' | b'-')) {
             if index == row {
                 return None;
