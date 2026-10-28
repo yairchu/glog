@@ -48,6 +48,13 @@ struct BlameFrame {
     context: String,
 }
 
+/// The repository and recorded endpoints of an expanded submodule patch.
+struct SubmodulePatch {
+    root: std::path::PathBuf,
+    old: String,
+    new: String,
+}
+
 /// Every action that filters or folds history rows, so each history can
 /// accept only the actions it supports in one place.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -137,7 +144,7 @@ pub struct App {
     expanded_folds: HashSet<Vec<u8>>,
     submodules: HashMap<Vec<u8>, Box<App>>,
     submodule_rows: HashMap<usize, (Vec<u8>, usize)>,
-    submodule_root: Option<std::path::PathBuf>,
+    submodule_patch: Option<SubmodulePatch>,
 }
 
 impl App {
@@ -213,7 +220,7 @@ impl App {
             expanded_folds: HashSet::new(),
             submodules: HashMap::new(),
             submodule_rows: HashMap::new(),
-            submodule_root: None,
+            submodule_patch: None,
         };
         if app.history == History::Reflog {
             app.refresh_log_folds();
@@ -1038,14 +1045,20 @@ impl App {
         if file.submodule.is_some() {
             return Err("Expand the submodule and select a file".into());
         }
-        let commit = self
-            .commits
-            .get(self.selected)
-            .ok_or("No commit selected")?;
+        let source = match &self.submodule_patch {
+            Some(patch) => crate::blame::PatchRevision::Submodule {
+                old: &patch.old,
+                new: &patch.new,
+            },
+            None => crate::blame::PatchRevision::Commit(
+                self.commits
+                    .get(self.selected)
+                    .ok_or("No commit selected")?,
+            ),
+        };
         let top = self
-            .submodule_root
-            .clone()
-            .map(Ok)
+            .show_repository()
+            .map(|root| Ok(root.to_path_buf()))
             .unwrap_or_else(git::repository_directory)?;
         let patch = self
             .show_text
@@ -1055,12 +1068,24 @@ impl App {
             .collect::<Vec<_>>()
             .join("\n");
         crate::blame::load_patch(
-            commit,
+            source,
             &patch,
             row.source - file.start,
             &file.path_bytes,
             top,
         )
+    }
+
+    fn show_repository(&self) -> Option<&std::path::Path> {
+        self.submodule_patch
+            .as_ref()
+            .map(|patch| patch.root.as_path())
+            .or_else(|| {
+                self.commits
+                    .get(self.selected)
+                    .and_then(Commit::blame)
+                    .map(|line| line.file.top.as_path())
+            })
     }
 
     pub fn set_editor_error(&mut self, error: Option<String>) {
@@ -1086,9 +1111,8 @@ impl App {
             return Err("Expand the submodule and select a file".to_owned());
         }
         let root = self
-            .submodule_root
-            .clone()
-            .map(Ok)
+            .show_repository()
+            .map(|root| Ok(root.to_path_buf()))
             .unwrap_or_else(git::repository_root)?;
         let patch = self
             .show_text
@@ -1109,7 +1133,7 @@ impl App {
             &patch,
             row.source - file.start,
             worktree,
-            if self.submodule_root.is_some() || self.raw_untracked_files.contains(&file.key) {
+            if self.submodule_patch.is_some() || self.raw_untracked_files.contains(&file.key) {
                 crate::editor::Textconv::Disabled
             } else {
                 crate::editor::Textconv::Allowed
@@ -1540,7 +1564,7 @@ impl App {
         if let Some((old, new)) = &file.submodule {
             if !self.submodules.contains_key(&path) {
                 match git::show_submodule(
-                    self.submodule_root.as_deref(),
+                    self.show_repository(),
                     git::raw_path(&file.path_bytes),
                     old,
                     new,
@@ -1549,7 +1573,11 @@ impl App {
                         let mut child = App::new(Vec::new());
                         child.images.enabled = self.images.enabled;
                         child.images.root = root.clone();
-                        child.submodule_root = Some(root);
+                        child.submodule_patch = Some(SubmodulePatch {
+                            root,
+                            old: old.clone(),
+                            new: new.clone(),
+                        });
                         child.show_stat = true;
                         child.show_text = if text.is_empty() {
                             "No file changes between these commits.\n".to_owned()

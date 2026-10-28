@@ -1070,7 +1070,7 @@ pub fn show(commit: &Commit, paths: &[String]) -> Result<String, String> {
             show_diff(&args, paths)
         }
         CommitKind::Revision => {
-            let text = show_revision(&commit.hash, paths)?;
+            let text = show_revision(commit, paths)?;
             Ok(mark_agent_coauthors(
                 &text,
                 &commit.collaborators.agent_trailers,
@@ -1084,8 +1084,8 @@ pub fn show(commit: &Commit, paths: &[String]) -> Result<String, String> {
     }
 }
 
-fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
-    let output = patch_command()
+fn show_revision(commit: &Commit, paths: &[String]) -> Result<String, String> {
+    let output = patch_command_at(commit.blame().map(|line| line.file.top.as_path()))
         .args([
             "--no-pager",
             "show",
@@ -1098,7 +1098,7 @@ fn show_revision(hash: &str, paths: &[String]) -> Result<String, String> {
             "--submodule=short",
         ])
         .args(DIFF_PREFIX_ARGS)
-        .arg(hash)
+        .arg(&commit.hash)
         .arg("--")
         .args(paths)
         .env("GIT_PAGER", "cat")

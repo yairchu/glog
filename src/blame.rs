@@ -34,25 +34,49 @@ impl FileRevision {
     }
 }
 
-/// Open the full file at the selected patch line, using its parent for deletions.
+pub enum PatchRevision<'a> {
+    Commit(&'a Commit),
+    Submodule { old: &'a str, new: &'a str },
+}
+
+/// Open the full file at the selected patch line, using its old side for deletions.
 pub fn load_patch(
-    commit: &Commit,
+    source: PatchRevision<'_>,
     patch: &str,
     row: usize,
     path: &[u8],
     top: PathBuf,
 ) -> Result<crate::app::App, String> {
-    if commit.kind != git::CommitKind::Revision
-        || matches!(commit.annotation, Some(Annotation::Stash(_)))
-    {
-        return Err("Select a committed patch to blame".into());
+    if let PatchRevision::Commit(commit) = &source {
+        if commit.kind != git::CommitKind::Revision
+            || matches!(commit.annotation, Some(Annotation::Stash(_)))
+        {
+            return Err("Select a committed patch to blame".into());
+        }
     }
     let (parent, number) =
         patch_position(patch, row).ok_or("Select a code line or hunk to blame")?;
-    let revision = parent.map_or_else(
-        || commit.hash.clone(),
-        |parent| format!("{}^{}", commit.hash, parent + 1),
-    );
+    let (result, revision, label) = match source {
+        PatchRevision::Commit(commit) => (
+            commit.hash.as_str(),
+            parent.map_or_else(
+                || commit.hash.clone(),
+                |parent| format!("{}^{}", commit.hash, parent + 1),
+            ),
+            parent.map_or_else(
+                || commit.short_hash.clone(),
+                |parent| format!("{}^{}", commit.short_hash, parent + 1),
+            ),
+        ),
+        PatchRevision::Submodule { old, new } => {
+            let revision = if parent.is_some() { old } else { new };
+            (
+                new,
+                revision.to_owned(),
+                revision[..revision.len().min(7)].to_owned(),
+            )
+        }
+    };
     let path = if parent.is_some() {
         let headers: Vec<_> = patch
             .lines()
@@ -72,7 +96,7 @@ pub fn load_patch(
         } else {
             // Combined diffs normally show only the result's name, even when
             // this parent used another name. Ask Git for the rename mapping.
-            parent_path(&revision, &commit.hash, path, &top)?
+            parent_path(&revision, result, path, &top)?
         }
     } else {
         path.to_vec()
@@ -85,10 +109,6 @@ pub fn load_patch(
     let mut app = crate::app::App::new(rows);
     app.selected = number.saturating_sub(1).min(app.commits.len() - 1);
     app.center_selection = true;
-    let label = parent.map_or_else(
-        || commit.short_hash.clone(),
-        |parent| format!("{}^{}", commit.short_hash, parent + 1),
-    );
     app.context = format!("blame {label} -- {}", crate::diff::display_path(&path));
     Ok(app)
 }
@@ -299,7 +319,7 @@ pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String
 pub struct BlameFile {
     /// Paths in Git's blame output are relative to the repository root.
     /// In bare repositories, run historical queries from the Git directory.
-    top: PathBuf,
+    pub top: PathBuf,
     date: String,
     hash_width: usize,
     date_width: usize,
@@ -491,7 +511,7 @@ fn blame(
         Some(top) => top.clone(),
         None => git::repository_directory()?,
     };
-    let details = commit_details(&lines, date)?;
+    let details = commit_details(&lines, date, &top)?;
     Ok(render_lines(lines, details, top, date, path))
 }
 
@@ -678,7 +698,11 @@ struct Details {
 }
 
 /// Format authors, dates, and coauthors as Log does.
-fn commit_details(lines: &[PorcelainLine], date: &str) -> Result<HashMap<String, Details>, String> {
+fn commit_details(
+    lines: &[PorcelainLine],
+    date: &str,
+    top: &PathBuf,
+) -> Result<HashMap<String, Details>, String> {
     let mut input = String::new();
     let mut seen = std::collections::HashSet::new();
     for line in lines {
@@ -691,7 +715,8 @@ fn commit_details(lines: &[PorcelainLine], date: &str) -> Result<HashMap<String,
         return Ok(HashMap::new());
     }
     let output = git::pipe_through(
-        crate::git::read_command()
+        git::repository_env(&mut crate::git::read_command(), top)
+            .current_dir(top)
             .env("LC_ALL", "C")
             .args(["log", "--no-walk=unsorted", "--stdin", "--no-show-signature"])
             .arg(format!("--date={date}"))
@@ -1066,7 +1091,30 @@ mod tests {
             press(&mut app, KeyCode::Enter);
             assert_eq!(app.status, None);
             assert!(app.show_text.contains(subject), "{}", app.show_text);
+            while let Some(cursor) = app.show_rows.iter().position(|row| row.folded) {
+                app.show_cursor = cursor;
+                app.toggle_show_file();
+            }
+            app.show_cursor = app
+                .show_rows
+                .iter()
+                .position(|row| crate::ansi::plain(&row.text) == format!("+{expected}"))
+                .unwrap_or_else(|| panic!("missing {expected} in {:?}", app.show_rows));
+            press(&mut app, KeyCode::Char('b'));
+            assert_eq!(app.status, None);
+            assert_eq!(code(app.commits[app.selected].blame().unwrap()), expected);
+            press(&mut app, KeyCode::Backspace);
             press(&mut app, KeyCode::Esc);
+            if patch_line == "+after" {
+                press(&mut app, KeyCode::Char('p'));
+                assert_eq!(app.status, None);
+                assert_eq!(
+                    code(app.commits[app.selected].blame().unwrap()),
+                    "intermediate"
+                );
+                press(&mut app, KeyCode::Backspace);
+                assert_eq!(code(app.commits[app.selected].blame().unwrap()), "after");
+            }
             press(&mut app, KeyCode::Backspace);
             assert_eq!(app.mode, Mode::Show);
             assert_eq!(app.show_cursor, cursor);

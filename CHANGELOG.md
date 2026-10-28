@@ -14,9 +14,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   `diff.colorMoved` and `diff.colorMovedWS` settings. Use `--color-moved[=MODE]`
   or `--no-color-moved` to override highlighting for a session.
 
-- Press `b` on a code line in Show to open the full file in Blame at that
-  line. Deleted lines open the parent version. Escape or Backspace returns to the
-  review position; Page Up continues to scroll Show up a page.
+- Press `b` on a code line in Show, including expanded submodule patches, to
+  open the full file in Blame at that line. Deleted lines open the old version.
+  Escape or Backspace returns to the review position; Page Up continues to
+  scroll Show up a page.
 
 ### Fixed
 
