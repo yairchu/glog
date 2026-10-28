@@ -14,9 +14,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   local branches, and remote tips.
   Enter or click opens the commits since the next shared node; Backspace or
   Escape returns from the Log. Merged branches stay visible with a label and
-  open their full history without cutting off other Logs.
-  Dotted continuations mark omitted older history. With only the current
-  branch, print the branch list and exit.
+  open their full history without cutting off other Logs. With only the
+  current branch, print the branch list and exit.
 
 - Remember the last 100 searches between sessions; press Up or Down in the
   search prompt to recall them.

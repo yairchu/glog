@@ -460,7 +460,6 @@ const HELP_ROWS: &[HelpRow] = &[
     ),
     branches("", "  ◆ current branch   ● local branch   ○ remote tip"),
     branches("", "  ● shared ancestor (where histories meet)"),
-    branches("", "  ⋮ continues into omitted older history."),
     branches("", "  Merged branches open their full history."),
     branches("", "  Merged tips alone do not cut off other Logs."),
 ];
@@ -564,16 +563,6 @@ fn draw_type_controls(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
-/// The rows a commit takes in the Log: its graph, and below a Branches tip
-/// whose older history is not listed, a row marking that it continues.
-fn log_rows(app: &App, index: usize, commit: &crate::git::Commit) -> usize {
-    app.log_folds.display_height(index, commit) + usize::from(continues(commit))
-}
-
-fn continues(commit: &crate::git::Commit) -> bool {
-    commit.branch().is_some_and(|node| node.continues)
-}
-
 fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     let height = area.height as usize;
     app.log_row_origin = area.y;
@@ -613,7 +602,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
         .enumerate()
         .take(app.selected)
         .filter(|(i, _)| app.log_folds.graph_visible(*i))
-        .map(|(i, commit)| log_rows(app, i, commit))
+        .map(|(i, commit)| app.log_folds.display_height(i, commit))
         .sum::<usize>()
         + usize::from(separator_before.is_some_and(|index| app.selected >= index));
     let selected = &app.commits[app.selected];
@@ -624,7 +613,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             .saturating_sub(1);
     // A single row shows the subject rather than the continuation below it.
     let selected_end_row = if height > 1 {
-        (selected_start_row + log_rows(app, app.selected, selected))
+        (selected_start_row + app.log_folds.display_height(app.selected, selected))
             .saturating_sub(1)
             .max(selected_subject_row)
     } else {
@@ -677,7 +666,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             graph_row += 1;
         }
         // Rows above the screen are counted without drawing them.
-        let rows = log_rows(app, index, commit);
+        let rows = app.log_folds.display_height(index, commit);
         if graph_row + rows <= app.log_offset {
             graph_row += rows;
             continue;
@@ -743,36 +732,6 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 (routing_selectable || !graph_only && part + 1 == graph_rows.len())
                     .then_some(index),
             );
-            graph_row += 1;
-        }
-        if continues(commit) {
-            if graph_row >= app.log_offset {
-                if lines.len() >= height {
-                    break;
-                }
-                // Follow the terminal node's column and colour, preserving any
-                // other lanes passing through it. This is a visual edge, not a
-                // synthetic commit that selection or Log ranges could include.
-                let mut line = ansi::parse_line(graph_rows.last().unwrap());
-                let unicode_node = crate::log_folds::unicode_node(commit.graph_node);
-                if let Some(span) = line
-                    .spans
-                    .iter_mut()
-                    .find(|span| span.content.contains([commit.graph_node, unicode_node]))
-                {
-                    span.content = span
-                        .content
-                        .replacen(unicode_node, "⋮", 1)
-                        .replacen(commit.graph_node, ":", 1)
-                        .into();
-                }
-                line.spans.push(Span::styled(
-                    "older history",
-                    Style::default().fg(Color::Gray),
-                ));
-                lines.push(line);
-                app.visible_log_rows.push(None);
-            }
             graph_row += 1;
         }
     }

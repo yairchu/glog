@@ -31,8 +31,6 @@ pub struct BranchNode {
     pub branches: Vec<Branch>,
     // A genuine intersection of open histories can coincide with a merged tip.
     shared_ancestor: bool,
-    // A terminal compact node may still have older, omitted ancestors.
-    pub continues: bool,
     updated_at: Option<String>,
     update_width: usize,
 }
@@ -324,9 +322,8 @@ pub fn log_args(node: &Commit, rows: &[Commit]) -> Vec<String> {
 struct Node {
     hash: String,
     /// Parents within the walk. Those below its common-ancestor cutoff
-    /// carry no forks, so they only mark that older history continues.
+    /// carry no forks.
     parents: Vec<usize>,
-    has_parents: bool,
 }
 
 fn compact(
@@ -352,7 +349,6 @@ fn compact(
                 .iter()
                 .filter_map(|hash| indices.get(hash).copied())
                 .collect(),
-            has_parents: fields.len() > 1,
         })
         .collect();
     let tip_indices = tips
@@ -470,7 +466,6 @@ fn compact(
                 annotation: Some(Annotation::Branch(BranchNode {
                     branches,
                     shared_ancestor: shared_ancestor[index],
-                    continues: parents[&index].is_empty() && node.has_parents,
                     updated_at: None,
                     update_width: 0,
                 })),
@@ -898,75 +893,6 @@ mod tests {
                         .expect("shared ancestor hash");
                     assert_eq!(hash_cell.fg, Color::Yellow);
                 }
-            }
-        }
-    }
-
-    #[test]
-    fn older_history_continues_below_branch_tips_and_forks_without_selectable_rows() {
-        let cases = [
-            ("a b\nb r\nr\n", "review-fixes", 1),
-            ("a b\nb\n", "review-fixes", 0),
-            ("a x\nb x\nx r\nr\n", "feature", 1),
-            // The walk stops at a common ancestor, leaving its parent unlisted.
-            ("a x\nb x\nx r\n", "feature", 1),
-            ("a r\nb s\nr\ns\n", "orphan", 2),
-        ];
-        for (ancestry, other, count) in cases {
-            let rows = graph(ancestry, &[("a", &["main"]), ("b", &[other])]);
-            let nodes = rows.len();
-            let mut app = App::new(rows);
-            let mut terminal = Terminal::new(TestBackend::new(90, 10)).unwrap();
-            terminal
-                .draw(|frame| crate::ui::draw(frame, &mut app))
-                .unwrap();
-            let screen = terminal
-                .backend()
-                .buffer()
-                .content
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<String>();
-            assert_eq!(
-                screen.matches("⋮ older history").count(),
-                count,
-                "{ancestry}: {screen}"
-            );
-            assert_eq!(app.commits.len(), nodes);
-            assert_eq!(
-                app.visible_log_rows
-                    .iter()
-                    .filter(|row| row.is_none())
-                    .count(),
-                count
-            );
-            for offset in 0..app.visible_log_rows.len() {
-                if app.visible_log_rows[offset].is_none() {
-                    let selected = app.selected;
-                    let row = app.log_row_origin + offset as u16;
-                    input::handle(
-                        Event::Mouse(MouseEvent {
-                            kind: MouseEventKind::Down(MouseButton::Left),
-                            column: 2,
-                            row,
-                            modifiers: KeyModifiers::NONE,
-                        }),
-                        &mut app,
-                    );
-                    assert_eq!(app.selected, selected);
-                    assert_eq!(app.history, History::Branches);
-                }
-            }
-            // Even in a short viewport the last node and its continuation
-            // remain visible together; the continuation never owns the cursor.
-            if count > 0 {
-                let mut terminal = Terminal::new(TestBackend::new(90, 4)).unwrap();
-                press(&mut app, KeyCode::End);
-                terminal
-                    .draw(|frame| crate::ui::draw(frame, &mut app))
-                    .unwrap();
-                assert_eq!(app.selected, nodes - 1);
-                assert_eq!(app.visible_log_rows, [Some(nodes - 1), None]);
             }
         }
     }
