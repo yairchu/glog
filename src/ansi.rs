@@ -196,6 +196,23 @@ fn basic(index: u16, bright: bool) -> Color {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_carriage_return_ending_the_line_is_hidden() {
+        let text = |spans: Vec<Span<'static>>| -> String {
+            display_spans(spans)
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect()
+        };
+        // Git highlights a CRLF's carriage return as trailing whitespace.
+        assert_eq!(text(parse_line("+a\x1b[41m\r\x1b[m").spans), "+a");
+        // Elsewhere it is shown however the line happens to be split.
+        for split in [vec!["a\rb"], vec!["a\r", "b"], vec!["a", "\rb"]] {
+            let spans = split.into_iter().map(Span::raw).collect();
+            assert_eq!(text(spans), "a\u{fffd}b");
+        }
+    }
     #[test]
     fn strips_and_styles_ansi() {
         let line = parse_line("a\x1b[31mred\x1b[0mz");
