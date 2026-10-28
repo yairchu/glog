@@ -68,7 +68,6 @@ pub enum LogAction {
     FoldAll,
 }
 
-/// Links are resolved on first display, so revisiting a commit runs no Git process.
 /// A file section selected in Show, with the view that owns it.
 struct ShowFile<'a> {
     app: &'a App,
@@ -77,6 +76,7 @@ struct ShowFile<'a> {
     line: usize,
 }
 
+/// Links are resolved on first display, so revisiting a commit runs no Git process.
 struct CachedShow {
     text: String,
     links: Option<HashMap<usize, Vec<crate::commit_links::Link>>>,
