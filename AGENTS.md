@@ -14,6 +14,9 @@
   entry if needed rather than adding a separate fix entry.
 - Leave trivial cosmetic fixes, such as help-text spacing, out of the
   changelog.
+- Preserve familiar pager behavior when adding features. glog should be a
+  reliable replacement for basic Git viewing; extra features must not take
+  over established navigation keys.
 - Keep the website concise and to the point: omit requirements and details
   that go without saying, such as needing Git.
 - Keep the README and website focused on common workflows. Document esoteric

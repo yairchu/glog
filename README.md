@@ -481,7 +481,8 @@ so graph edges may span them.
 | `Escape` | — | return to Log |
 | `↑` / `k`, `↓` / `j` | select commit | move patch cursor |
 | `Page Up`, `Page Down` / `Space` / `f` | move by page | scroll by page |
-| `b` | move up by page | blame the selected line; deleted lines use the parent version |
+| `b` | move up by page | scroll up by page |
+| `B` | — | blame the selected line; deleted lines use the parent version |
 | `Backspace` | return to the previous view | return to the previous view |
 | `a`, `d`, `r`, `x`, `s` | toggle author/date/refs/hash/subject | — |
 | `←`, `→` | select previous/newer or next/older commit | previous/newer or next/older commit |

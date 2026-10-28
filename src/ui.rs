@@ -143,13 +143,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // s subject); the help screen lists every key.
         "h help  q quit  ↑/k ↓/j  ←/→ commit  Enter show  t hide type  z fold merge  m fold all  a author  d date  r refs  / ? search".to_owned()
     } else if !has_log {
-        "h help  q quit  ↑/k ↓/j  [/ ] file  b blame  e edit  Enter/z fold  s summary  L lockfiles  / ? search"
+        "h help  q quit  ↑/k ↓/j  [/ ] file  B blame  e edit  Enter/z fold  s summary  L lockfiles  / ? search"
             .to_owned()
     } else if app.history == History::Stash {
         "h help  q quit  ↑/k ↓/j  ←/→ stash  [/ ] file  e edit  Enter/z fold  s summary  Tab Stash  / ? search"
             .to_owned()
     } else {
-        "h help  q quit  ↑/k ↓/j  ←/→ commit  [/ ] file  b blame  e edit  Enter/z fold  s summary  L lockfiles  / ? search"
+        "h help  q quit  ↑/k ↓/j  ←/→ commit  [/ ] file  B blame  e edit  Enter/z fold  s summary  L lockfiles  / ? search"
             .to_owned()
     };
     if app.has_reference_back() && app.search_input.is_none() && app.message().is_none() {
@@ -230,18 +230,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("previous / next line"),
         ],
     ),
-    every("Page Up", "page up"),
-    (
-        "b",
-        [
-            Some("page up (Log) / blame selected line (Show)"),
-            Some("page up (Reflog) / blame selected line (Show)"),
-            Some("page up (Blame) / blame selected line (Show)"),
-            Some("page up"),
-            Some("blame selected line"),
-            Some("page up"),
-        ],
-    ),
+    every("Page Up/b", "page up"),
     every("Page Down/Space/f", "page down"),
     (
         "←/→",
@@ -314,6 +303,7 @@ const HELP_ROWS: &[HelpRow] = &[
         ],
     ),
     every("", "Views and search"),
+    detail("B", "blame selected line (Show)"),
     (
         "Enter",
         [

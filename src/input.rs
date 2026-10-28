@@ -140,7 +140,7 @@ fn apply(event: Event, app: &mut App) {
             KeyCode::Enter | KeyCode::Char('z') if app.mode == Mode::Show => app.toggle_show_file(),
             KeyCode::Char('s') if app.mode == Mode::Show => app.toggle_show_stat(),
             KeyCode::Char('L') if app.mode == Mode::Show => app.toggle_all_lockfiles(),
-            KeyCode::Char('b') if app.mode == Mode::Show => app.blame_show_line(),
+            KeyCode::Char('B') if app.mode == Mode::Show => app.blame_show_line(),
             KeyCode::Char('[') if app.mode == Mode::Show => app.jump_show_file(-1),
             KeyCode::Char(']') if app.mode == Mode::Show => app.jump_show_file(1),
             KeyCode::Esc if app.mode == Mode::Show => app.switch_mode(),
@@ -153,7 +153,7 @@ fn apply(event: Event, app: &mut App) {
             KeyCode::Esc if app.exit_on_esc => app.quit = true,
             KeyCode::Up | KeyCode::Char('k') => app.move_by(-1, 1),
             KeyCode::Down | KeyCode::Char('j') => app.move_by(1, 1),
-            KeyCode::PageUp if app.mode == Mode::Show => {
+            KeyCode::PageUp | KeyCode::Char('b') if app.mode == Mode::Show => {
                 app.scroll_show(-(app.visible_show_rows.max(1) as isize));
             }
             KeyCode::PageDown | KeyCode::Char(' ') | KeyCode::Char('f')

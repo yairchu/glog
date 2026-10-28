@@ -986,7 +986,7 @@ mod tests {
                 app.show_text.clone(),
                 app.commits[app.selected].hash.clone(),
             );
-            press(&mut app, KeyCode::Char('b'));
+            press(&mut app, KeyCode::Char('B'));
             assert_eq!(app.status, None, "{patch_line}");
             assert_eq!(app.history, History::Blame);
             assert_eq!(app.mode, Mode::Log);
@@ -1034,7 +1034,7 @@ mod tests {
             // Escape also restores the review, including when glog was
             // launched with Escape configured to exit to the calling tool.
             app.exit_on_esc = parent;
-            press(&mut app, KeyCode::Char('b'));
+            press(&mut app, KeyCode::Char('B'));
             press(&mut app, KeyCode::Esc);
             assert_eq!(app.mode, Mode::Show);
             assert_eq!(app.show_cursor, cursor);
@@ -1047,7 +1047,7 @@ mod tests {
         let mut app = review_line("HEAD^", "+replacement");
         app.show_cursor = 0;
         let text = app.show_text.clone();
-        press(&mut app, KeyCode::Char('b'));
+        press(&mut app, KeyCode::Char('B'));
         assert_eq!(app.mode, Mode::Show);
         assert_eq!(app.show_text, text);
         assert!(!app.has_reference_back());
@@ -1105,7 +1105,7 @@ mod tests {
                 .unwrap();
             let cursor = app.show_cursor;
             let text = app.show_text.clone();
-            press(&mut app, KeyCode::Char('b'));
+            press(&mut app, KeyCode::Char('B'));
             assert_eq!(app.status, None, "{patch_line}");
             assert_eq!(app.history, History::Blame);
             let line = app.commits[app.selected].blame().unwrap();
@@ -1126,7 +1126,7 @@ mod tests {
                 .iter()
                 .position(|row| crate::ansi::plain(&row.text) == format!("+{expected}"))
                 .unwrap_or_else(|| panic!("missing {expected} in {:?}", app.show_rows));
-            press(&mut app, KeyCode::Char('b'));
+            press(&mut app, KeyCode::Char('B'));
             assert_eq!(app.status, None);
             assert_eq!(code(app.commits[app.selected].blame().unwrap()), expected);
             press(&mut app, KeyCode::Backspace);
@@ -1221,7 +1221,7 @@ mod tests {
                 .iter()
                 .position(|row| crate::ansi::plain(&row.text) == format!("  {patch_line}"))
                 .unwrap();
-            press(&mut app, KeyCode::Char('b'));
+            press(&mut app, KeyCode::Char('B'));
             assert_eq!(app.status, None);
             assert_eq!(app.commits.len(), 4);
             assert_eq!(code(app.commits[app.selected].blame().unwrap()), expected);
@@ -1244,7 +1244,7 @@ mod tests {
         let _cwd = CurrentDirGuard::enter(directory.path());
         let (mut app, old, new) = module_review(false);
         let review = app.show_text.clone();
-        press(&mut app, KeyCode::Char('b'));
+        press(&mut app, KeyCode::Char('B'));
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.status, None);
         let commit = Target::Commit(old.clone());
@@ -1297,7 +1297,7 @@ mod tests {
         for (patch_line, expected, number) in [("+last", "last", 3), ("+", "", 2)] {
             let mut app = review_line("HEAD", patch_line);
             assert!(app.show_text.contains(r#"quoted caf\303\251.txt""#));
-            press(&mut app, KeyCode::Char('b'));
+            press(&mut app, KeyCode::Char('B'));
             assert_eq!(app.status, None);
             let line = app.commits[app.selected].blame().unwrap();
             assert_eq!(code(line), expected);
@@ -1309,7 +1309,7 @@ mod tests {
         for (patch_line, expected, number) in [("-last", "last", 3), ("-", "", 2)] {
             let mut app = review_line("HEAD", patch_line);
             assert!(app.show_text.contains(r#"quoted caf\303\251.txt""#));
-            press(&mut app, KeyCode::Char('b'));
+            press(&mut app, KeyCode::Char('B'));
             assert_eq!(app.status, None);
             let line = app.commits[app.selected].blame().unwrap();
             assert_eq!(code(line), expected);
@@ -1317,7 +1317,7 @@ mod tests {
             assert_eq!(line.source_path, path.as_bytes());
         }
         let mut app = review_line("HEAD", "\\ No newline at end of file");
-        press(&mut app, KeyCode::Char('b'));
+        press(&mut app, KeyCode::Char('B'));
         assert_eq!(app.mode, Mode::Show);
         assert_eq!(
             app.status.as_deref(),
@@ -1380,7 +1380,7 @@ mod tests {
             ("++merged tail", "merged tail", 4),
         ] {
             let mut app = review_line(merge.trim(), patch_line);
-            press(&mut app, KeyCode::Char('b'));
+            press(&mut app, KeyCode::Char('B'));
             assert_eq!(app.status, None, "{patch_line}");
             assert_eq!(app.history, History::Blame);
             let line = app.commits[app.selected].blame().unwrap();
