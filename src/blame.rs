@@ -125,7 +125,12 @@ pub fn load_patch(
 fn patch_position(patch: &str, row: usize) -> Option<(Option<usize>, usize)> {
     let position = crate::hunk::position(patch, row)?;
     let (parent, number) = match position.row {
-        crate::hunk::Row::Header => (None, position.new.max(1)),
+        // A result range starting at 0 is empty: the file was deleted.
+        crate::hunk::Row::Header if position.new == 0 => {
+            let parent = position.old.iter().position(|&number| number > 0)?;
+            (Some(parent), position.old[parent])
+        }
+        crate::hunk::Row::Header => (None, position.new),
         crate::hunk::Row::Line { result: true, .. } => (None, position.new),
         crate::hunk::Row::Line { parents, .. } => {
             let parent = parents.iter().position(|&present| present)?;
