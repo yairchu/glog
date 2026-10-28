@@ -987,9 +987,10 @@ pub(crate) fn comparison_sides(
         Version::Worktree
     };
     Ok(match (&excluded[..], &included[..]) {
-        // A..B and B^! exclude the old side; A...B excludes the merge base
-        // and lists B first.
-        ([old, ..], [new, ..]) => Some((revision(&old[1..]), revision(new))),
+        // A..B and B^! exclude the old side; A...B excludes the merge bases
+        // and lists B first. A merge's M^! excludes several parents, so Git
+        // shows a combined diff for it.
+        ([old], [new]) | ([old, ..], [new, _]) => Some((revision(&old[1..]), revision(new))),
         ([], []) if cached => Some((revision("HEAD"), Version::Index)),
         ([], []) => Some((Version::Index, Version::Worktree)),
         ([], [old]) => Some((revision(old), current)),
