@@ -188,16 +188,21 @@ enum HelpView {
     Branches,
 }
 
-/// A key and its description in the Log, Reflog, Blame, Stash, Detail, and File
-/// help screens, in that order; `None` omits the row. Rows without a key are shown
-/// verbatim.
-type HelpRow = (&'static str, [Option<&'static str>; 6]);
+/// A key and its description in the Log, Reflog, Blame, Stash, Detail, File,
+/// and Branches help screens, in that order; `None` omits the row. Rows without
+/// a key are shown verbatim.
+type HelpRow = (&'static str, [Option<&'static str>; 7]);
 
 const fn every(key: &'static str, text: &'static str) -> HelpRow {
-    (key, [Some(text); 6])
+    (key, [Some(text); 7])
 }
 
-/// Detail actions are available in every session except the plain file view.
+const fn branches(key: &'static str, text: &'static str) -> HelpRow {
+    (key, [None, None, None, None, None, None, Some(text)])
+}
+
+/// Detail actions are available in every session except the plain file view
+/// and Branches.
 const fn detail(key: &'static str, text: &'static str) -> HelpRow {
     (
         key,
@@ -207,6 +212,7 @@ const fn detail(key: &'static str, text: &'static str) -> HelpRow {
             Some(text),
             Some(text),
             Some(text),
+            None,
             None,
         ],
     )
@@ -228,6 +234,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("previous / next; move Show cursor"),
             Some("previous / next; move Show cursor"),
             Some("previous / next line"),
+            Some("select a branch or shared ancestor"),
         ],
     ),
     every("Page Up/b", "page up"),
@@ -239,6 +246,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("previous / next reflog entry"),
             Some("previous / next commit chunk"),
             Some("previous / next stash"),
+            None,
             None,
             None,
         ],
@@ -254,6 +262,7 @@ const HELP_ROWS: &[HelpRow] = &[
             None,
             Some("follow a commit or open a link (Show)"),
             None,
+            None,
         ],
     ),
     every("g/<, G/>", "top / bottom (also Home/End)"),
@@ -262,6 +271,7 @@ const HELP_ROWS: &[HelpRow] = &[
         "a/d/r/x/s",
         [
             Some("toggle author/date/refs/hash/subject (Log)"),
+            None,
             None,
             None,
             None,
@@ -278,8 +288,10 @@ const HELP_ROWS: &[HelpRow] = &[
             None,
             None,
             Some("show author/date/hash; enable line history"),
+            None,
         ],
     ),
+    branches("d", "show / hide dates"),
     (
         "a/d",
         [
@@ -287,6 +299,7 @@ const HELP_ROWS: &[HelpRow] = &[
             None,
             None,
             Some("toggle author/date (Stash)"),
+            None,
             None,
             None,
         ],
@@ -297,6 +310,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some(AUTHOR_BADGES),
             None,
             Some(AUTHOR_BADGES),
+            None,
             None,
             None,
             None,
@@ -313,6 +327,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("open stash / toggle section or file"),
             Some("toggle section or file"),
             None,
+            Some("open its Log up to the next shared node"),
         ],
     ),
     (
@@ -324,12 +339,14 @@ const HELP_ROWS: &[HelpRow] = &[
             FILE_FOLD,
             FILE_FOLD,
             None,
+            None,
         ],
     ),
     (
         "m",
         [
             Some("expand / fold all merges (Log)"),
+            None,
             None,
             None,
             None,
@@ -346,12 +363,14 @@ const HELP_ROWS: &[HelpRow] = &[
             None,
             None,
             None,
+            None,
         ],
     ),
     (
         "M",
         [
             Some("hide / show merge commits (Log)"),
+            None,
             None,
             None,
             None,
@@ -368,6 +387,7 @@ const HELP_ROWS: &[HelpRow] = &[
             None,
             None,
             None,
+            None,
         ],
     ),
     (
@@ -380,6 +400,7 @@ const HELP_ROWS: &[HelpRow] = &[
             None,
             Some("return after opening blame"),
             Some("return to the previous blame, if any"),
+            Some("return here from a branch Log"),
         ],
     ),
     detail("L", "expand / fold all lockfiles (Show)"),
@@ -393,6 +414,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("toggle file summary / patch (Show)"),
             FILE_SUMMARY,
             None,
+            None,
         ],
     ),
     (
@@ -404,6 +426,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("return to Stash / cancel"),
             None,
             Some("close help / cancel search"),
+            Some("return here from a branch Log / cancel"),
         ],
     ),
     (
@@ -415,6 +438,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("switch Stash / Show"),
             None,
             None,
+            None,
         ],
     ),
     every("/, ?", "search forward / backward"),
@@ -423,33 +447,25 @@ const HELP_ROWS: &[HelpRow] = &[
     every("", ""),
     every("h", "close help"),
     every("q", "quit (or close help)"),
+    branches("", ""),
+    branches("", "  Refs use the same decorations as Log."),
+    branches("", "  Branches at the same commit share a node."),
+    branches(
+        "",
+        "  Dates show the latest ref update, or the commit date.",
+    ),
+    branches(
+        "",
+        "  The remote default tip is labelled, e.g. origin/main.",
+    ),
+    branches("", "  ◆ current branch   ● local branch   ○ remote tip"),
+    branches("", "  ● shared ancestor (where histories meet)"),
+    branches("", "  ⋮ continues into omitted older history."),
+    branches("", "  Merged branches open their full history."),
+    branches("", "  Merged tips alone do not cut off other Logs."),
 ];
 
 fn help_text(view: HelpView) -> String {
-    if matches!(view, HelpView::Branches) {
-        return "  ↑/k, ↓/j          select a branch or shared ancestor
-  Enter / click     open its log up to the next shared node
-  Page Up/Down      page through branches
-  Home/End          first / last node
-  d                 show / hide dates
-  /, ?              search forward / backward
-  n, N              repeat / reverse search
-  Backspace / Esc   return here from a branch Log
-  Ctrl-L            redraw the screen
-  h / Escape        close help
-  q                 quit (or close help)
-
-  Refs use the same decorations as Log.
-  Branches at the same commit share a node.
-  Dates show the latest ref update, or the commit date.
-  The remote default tip is labelled, e.g. origin/main.
-  ◆ current branch   ● local branch   ○ remote tip
-  ● shared ancestor (where histories meet)
-  ⋮ continues into omitted older history.
-  Merged branches open their full history.
-  Merged tips alone do not cut off other Logs."
-            .into();
-    }
     HELP_ROWS
         .iter()
         .filter_map(|(key, texts)| {
