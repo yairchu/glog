@@ -611,22 +611,14 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             .log_folds
             .display_height(app.selected, selected)
             .saturating_sub(1);
-    // A single row shows the subject rather than the continuation below it.
-    let selected_end_row = if height > 1 {
-        (selected_start_row + app.log_folds.display_height(app.selected, selected))
-            .saturating_sub(1)
-            .max(selected_subject_row)
-    } else {
-        selected_subject_row
-    };
     if !app.log_folds.visible(app.selected) {
         app.log_offset = 0;
     } else if std::mem::take(&mut app.center_selection) {
         app.log_offset = selected_subject_row.saturating_sub(height / 2);
     } else if selected_subject_row < app.log_offset {
         app.log_offset = selected_start_row;
-    } else if selected_end_row >= app.log_offset + height.max(1) {
-        app.log_offset = selected_end_row + 1 - height.max(1);
+    } else if selected_subject_row >= app.log_offset + height.max(1) {
+        app.log_offset = selected_subject_row + 1 - height.max(1);
     }
     if app.history == History::Blame {
         // Blame rows are one line each; keep the last line at the bottom.
