@@ -1173,6 +1173,18 @@ mod tests {
         check(diff(&["HEAD^", "HEAD"]), "-b", &base, true);
         check(diff(&["HEAD^...HEAD"]), "+B", &head, true);
 
+        // Blame reads the revisions the patch showed, even after refs move.
+        let staged = select_line(diff(&["--cached"]), "-c");
+        let comparison = select_line(diff(&["HEAD"]), "-c");
+        git(&["commit", "-qm", "move HEAD"]);
+        for (mut app, label) in [(staged, "--cached"), (comparison, "HEAD")] {
+            press(&mut app, KeyCode::Char('B'));
+            assert_eq!(app.status, None, "{label}");
+            assert_eq!(app.context, format!("blame {head} -- file.txt"), "{label}");
+            assert_eq!(code(app.commits[app.selected].blame().unwrap()), "c");
+        }
+        git(&["reset", "-q", "--soft", "HEAD^"]);
+
         // Git cannot blame a path it does not track.
         fs::write("new.txt", "x\nuntracked\n").unwrap();
         let mut app = select_line(diff(&[]), "+untracked");
