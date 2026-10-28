@@ -1193,6 +1193,32 @@ mod tests {
         check(app, "-staged", &format!("{stash}^2"), true);
     }
 
+    #[test]
+    fn review_blame_opens_uncommitted_patches_before_the_first_commit() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file.txt", "a\nstaged\n").unwrap();
+        git(&["add", "."]);
+        fs::write("file.txt", "a\nworktree\n").unwrap();
+
+        for (args, text, label) in [
+            (&["--cached"][..], "+staged", "index"),
+            (&[], "-staged", "index"),
+            (&[], "+worktree", "working tree"),
+        ] {
+            let args: Vec<_> = args.iter().map(|arg| arg.to_string()).collect();
+            let mut app = select_line(crate::git::load_diff_app(&args).unwrap(), text);
+            press(&mut app, KeyCode::Char('B'));
+            assert_eq!(app.status, None, "{label} {text}");
+            assert_eq!(app.context, format!("blame {label} -- file.txt"));
+            assert_eq!(app.selected, 1);
+            let commit = &app.commits[app.selected];
+            assert_eq!(code(commit.blame().unwrap()), &text[1..]);
+            assert_eq!(commit.author, UNCOMMITTED_AUTHOR);
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn review_blame_reads_an_untracked_symlink_as_its_target_path() {
