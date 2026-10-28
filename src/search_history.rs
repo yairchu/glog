@@ -168,6 +168,20 @@ mod tests {
     }
 
     #[test]
+    fn invalid_utf8_keeps_history_loading_and_saving() {
+        let directory = TestDirectory::new();
+        let path = directory.path().join("search_history");
+        fs::write(&path, b"older\n\xff\n").unwrap();
+        let mut history = SearchHistory::from_path(Some(path.clone()));
+        assert_eq!(history.queries, ["older", "\u{fffd}"]);
+        history.record("newer");
+        assert_eq!(
+            SearchHistory::from_path(Some(path)).queries,
+            ["older", "\u{fffd}", "newer"]
+        );
+    }
+
+    #[test]
     fn unavailable_storage_keeps_in_memory_history_working() {
         let directory = TestDirectory::new();
         let mut history = SearchHistory::from_path(Some(directory.path().to_owned()));
