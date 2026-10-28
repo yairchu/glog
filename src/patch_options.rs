@@ -105,12 +105,20 @@ pub fn apply(command: &mut Command, directory: Option<&Path>) {
     // so read each repository's setting once per session.
     static DEFAULTS: Mutex<BTreeMap<Option<PathBuf>, Option<ColorMoved>>> =
         Mutex::new(BTreeMap::new());
-    let mode = SESSION_MODE.get().copied().flatten().or_else(|| {
-        *DEFAULTS
+    let defaults = || {
+        DEFAULTS
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .entry(directory.map(Path::to_path_buf))
-            .or_insert_with(|| default_mode(directory))
+    };
+    let mode = SESSION_MODE.get().copied().flatten().or_else(|| {
+        let key = directory.map(Path::to_path_buf);
+        if let Some(&mode) = defaults().get(&key) {
+            return mode;
+        }
+        // Run Git without the lock so readers of other repositories don't
+        // wait on it. Concurrent first reads may both run it, harmlessly.
+        let mode = default_mode(directory);
+        *defaults().entry(key).or_insert(mode)
     });
     apply_mode(command, mode);
 }
