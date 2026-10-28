@@ -20,7 +20,7 @@ use ratatui::{
 use crate::{
     diff::FileSection,
     git::{self, Annotation, Collaborators, Commit, CommitKind, Version},
-    log_format::{Field, LogFormat},
+    log_format::{pad, Field, LogFormat},
 };
 
 const UNCOMMITTED_AUTHOR: &str = "Not committed yet";
@@ -927,11 +927,6 @@ pub fn spans(
     ));
     spans.extend(line.code.iter().cloned());
     spans
-}
-
-fn pad(text: &str, width: usize) -> String {
-    let padding = width.saturating_sub(Span::raw(text).width());
-    format!("{text}{} ", " ".repeat(padding))
 }
 
 fn truncate(text: &str, width: usize) -> String {

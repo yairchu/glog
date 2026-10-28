@@ -669,15 +669,11 @@ pub fn spans(
     node: &BranchNode,
     format: &crate::log_format::LogFormat,
 ) -> Vec<Span<'static>> {
-    use crate::log_format::{field_span, Field};
+    use crate::log_format::{field_span, pad, Field};
     let mut spans = Vec::new();
     if format.shows(Field::Date) && node.update_width > 0 {
         let date = node.updated_at.as_deref().unwrap_or("");
-        let padding = node.update_width.saturating_sub(Span::raw(date).width());
-        spans.push(field_span(
-            Field::Date,
-            format!("{date}{} ", " ".repeat(padding)),
-        ));
+        spans.push(field_span(Field::Date, pad(date, node.update_width)));
     }
     let refs = if commit.decorations.is_empty() && !node.branches.is_empty() {
         // Keep pinned branch names identifiable if their refs moved during loading.

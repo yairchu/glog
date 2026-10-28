@@ -280,6 +280,12 @@ pub fn coauthor_badge(collaborators: &Collaborators) -> Vec<Span<'static>> {
     ]
 }
 
+/// Pad `text` to a column `width` wide, then separate it from the next one.
+pub(crate) fn pad(text: &str, width: usize) -> String {
+    let padding = width.saturating_sub(Span::raw(text).width());
+    format!("{text}{} ", " ".repeat(padding))
+}
+
 /// Shared styling for fields in Log and the branch graph.
 pub(crate) fn field_span(field: Field, text: String) -> Span<'static> {
     let style = match field {
