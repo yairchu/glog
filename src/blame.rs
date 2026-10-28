@@ -1978,8 +1978,8 @@ mod tests {
         let style = Style::default().fg(Color::Red);
         let spans =
             crate::ansi::display_spans(vec![Span::raw("\tab"), Span::styled("\tc\x07\r", style)]);
-        assert_eq!(spans[0].content, "    ab");
-        assert_eq!(spans[1].content, "  c\u{fffd}");
+        assert_eq!(spans[0].content, "        ab");
+        assert_eq!(spans[1].content, "      c\u{fffd}");
         assert_eq!(spans[1].style, style);
     }
 
@@ -1995,7 +1995,7 @@ mod tests {
             ] {
                 let output = crate::ansi::display_spans(spans);
                 let text: String = output.iter().map(|span| span.content.as_ref()).collect();
-                assert_eq!(text, format!("{prefix}  X"));
+                assert_eq!(text, format!("{prefix}      X"));
             }
         }
     }
@@ -2011,7 +2011,7 @@ mod tests {
         ] {
             let output = crate::ansi::display_spans(spans);
             let text: String = output.iter().map(|span| span.content.as_ref()).collect();
-            assert_eq!(text, "e\u{301}   X");
+            assert_eq!(text, "e\u{301}       X");
         }
     }
 

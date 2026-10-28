@@ -1925,7 +1925,7 @@ mod tests {
 
     #[test]
     fn makefile_tabs_keep_text_and_cursor_rows_aligned() {
-        let mut terminal = Terminal::new(TestBackend::new(32, 10)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(36, 10)).unwrap();
         let mut app = App::new(Vec::new());
         app.mode = Mode::Show;
         app.show_text = concat!(
@@ -1940,15 +1940,15 @@ mod tests {
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
             assert_eq!(app.show_row_starts, vec![0, 1, 2, 3]);
             let row_text = |y| -> String {
-                (0..32)
+                (0..36)
                     .map(|x| terminal.backend().buffer()[(x, y)].symbol())
                     .collect()
             };
-            assert!(row_text(1).starts_with("    bin/chopi.sh"));
-            assert!(row_text(2).starts_with("+   .internal/session-proxy.sh"));
+            assert!(row_text(1).starts_with("        bin/chopi.sh"));
+            assert!(row_text(2).starts_with("+       .internal/session-proxy.sh"));
             for row in 0..3 {
                 assert_eq!(
-                    terminal.backend().buffer()[(31, row + 1)].bg,
+                    terminal.backend().buffer()[(35, row + 1)].bg,
                     if row as usize == cursor {
                         if cursor == 1 {
                             Color::Rgb(32, 72, 32)
@@ -1989,9 +1989,9 @@ mod tests {
         assert_eq!(app.show_row_starts, vec![0, 2, 3]);
         assert_eq!(
             app.visible_show_links,
-            vec![(Rect::new(4, 3, 4, 1), target)]
+            vec![(Rect::new(8, 3, 4, 1), target)]
         );
-        for x in 4..8 {
+        for x in 8..12 {
             let cell = &terminal.backend().buffer()[(x, 3)];
             assert_eq!(cell.bg, Color::Yellow);
             assert!(cell.modifier.contains(Modifier::UNDERLINED));

@@ -39,6 +39,10 @@ pub fn parse_line(input: &str) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Git leaves tabs to the pager, whose default stops `less` and terminals
+/// place every 8 columns.
+const TAB_WIDTH: usize = 8;
+
 /// Expand tabs and replace control characters, keeping each span's style.
 pub fn display_spans(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
     let mut column = 0;
@@ -48,7 +52,7 @@ pub fn display_spans(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
         let mut text = String::with_capacity(content.len());
         for (index, segment) in content.split('\t').enumerate() {
             if index > 0 {
-                let spaces = 4 - column % 4;
+                let spaces = TAB_WIDTH - column % TAB_WIDTH;
                 text.extend(std::iter::repeat_n(' ', spaces));
                 column += spaces;
             }
