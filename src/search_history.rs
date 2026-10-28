@@ -2,7 +2,7 @@ use std::{
     env,
     fs::{self, File, OpenOptions},
     io::{self, Read, Seek, SeekFrom, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 const LIMIT: usize = 100;
@@ -97,7 +97,9 @@ fn history_path() -> Option<PathBuf> {
         return (!path.is_empty() && path != "-" && path != "/dev/null")
             .then(|| PathBuf::from(path));
     }
-    let state = env::var_os("XDG_STATE_HOME").filter(|path| !path.is_empty());
+    // The XDG spec says to ignore relative paths, which would otherwise put
+    // the history inside whichever repository glog was started in.
+    let state = env::var_os("XDG_STATE_HOME").filter(|path| Path::new(path).is_absolute());
     #[cfg(windows)]
     let state = state.or_else(|| env::var_os("LOCALAPPDATA"));
     #[cfg(not(windows))]
