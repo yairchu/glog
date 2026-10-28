@@ -515,7 +515,7 @@ Show highlights the current patch row. Navigation and search move this cursor,
 and `Enter`/`z` acts on the file beneath it even when the cursor is in the last
 screenful.
 
-After opening Blame with `b`, press `Escape` or `Backspace` to return to the
+After opening Blame with `B`, press `Escape` or `Backspace` to return to the
 review position. Each key first steps back through any parent blame views.
 
 Press `e` in Show, Diff, or Status to open the working file in `$VISUAL`
