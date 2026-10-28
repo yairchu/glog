@@ -1,6 +1,11 @@
 //! Patch display preferences shared by every view in a session.
 
-use std::{process::Command, sync::OnceLock};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+    process::Command,
+    sync::{Mutex, OnceLock},
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ColorMoved {
@@ -95,23 +100,31 @@ pub fn initialize(mode: Option<ColorMoved>) {
 
 /// Git keeps its own configured mode and whitespace policy. Only supply our
 /// default when colorMoved is absent, so explicit false/no remains effective.
-pub fn apply(command: &mut Command, directory: Option<&std::path::Path>) {
-    apply_mode(command, SESSION_MODE.get().copied().flatten(), directory);
+pub fn apply(command: &mut Command, directory: Option<&Path>) {
+    // Status and watch mode build a patch command per file on every refresh,
+    // so read each repository's setting once per session.
+    static DEFAULTS: Mutex<BTreeMap<Option<PathBuf>, Option<ColorMoved>>> =
+        Mutex::new(BTreeMap::new());
+    let mode = SESSION_MODE.get().copied().flatten().or_else(|| {
+        *DEFAULTS
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .entry(directory.map(Path::to_path_buf))
+            .or_insert_with(|| default_mode(directory))
+    });
+    apply_mode(command, mode);
 }
 
-fn apply_mode(
-    command: &mut Command,
-    mode: Option<ColorMoved>,
-    directory: Option<&std::path::Path>,
-) {
-    let mode = mode.or_else(|| {
-        crate::git::read_command_at(directory)
-            .args(["config", "--get", "diff.colorMoved"])
-            .output()
-            .ok()
-            .filter(|output| output.status.code() == Some(1))
-            .map(|_| ColorMoved::Zebra)
-    });
+fn default_mode(directory: Option<&Path>) -> Option<ColorMoved> {
+    crate::git::read_command_at(directory)
+        .args(["config", "--get", "diff.colorMoved"])
+        .output()
+        .ok()
+        .filter(|output| output.status.code() == Some(1))
+        .map(|_| ColorMoved::Zebra)
+}
+
+fn apply_mode(command: &mut Command, mode: Option<ColorMoved>) {
     if let Some(mode) = mode {
         command.args(["-c", &format!("diff.colorMoved={}", mode.as_str())]);
     }
@@ -166,12 +179,12 @@ mod tests {
         assert!(crate::parse_watch(&git_args).unwrap());
     }
 
-    fn patch(mode: Option<ColorMoved>, directory: Option<&std::path::Path>) -> String {
+    fn patch(mode: Option<ColorMoved>, directory: Option<&Path>) -> String {
         let mut command = crate::git::read_command();
         if let Some(directory) = directory {
             command.current_dir(directory);
         }
-        apply_mode(&mut command, mode, directory);
+        apply_mode(&mut command, mode.or_else(|| default_mode(directory)));
         let output = command
             .args(["diff", "--color=always", "--no-ext-diff", "--no-textconv"])
             .output()
