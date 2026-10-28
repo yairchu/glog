@@ -1207,6 +1207,72 @@ mod tests {
     }
 
     #[test]
+    fn submodule_blame_show_previews_images_in_their_own_repository() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        module_review(false);
+        fs::write("module/file.txt", "header\nfirst\nnewer\nlast\n").unwrap();
+        let image = image::RgbaImage::from_pixel(1, 1, image::Rgba([255, 0, 0, 255]));
+        image.save("module/picture.png").unwrap();
+        git(&["-C", "module", "add", "."]);
+        git(&["-C", "module", "commit", "-qm", "change text and add image"]);
+        image::RgbaImage::from_pixel(1, 1, image::Rgba([0, 0, 255, 255]))
+            .save("parent.png")
+            .unwrap();
+        git(&["add", "module", "parent.png"]);
+        git(&["commit", "-qm", "update module and add parent image"]);
+
+        let mut app = review_line("HEAD", "  +newer");
+        // Enable previews without depending on the terminal running the test.
+        app.images.enabled = true;
+        app.images.root = directory.path().to_owned();
+        app.toggle_show_stat();
+        app.toggle_show_stat();
+        press(&mut app, KeyCode::Char('B'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.status, None);
+        while let Some(cursor) = app.show_rows.iter().position(|row| row.folded) {
+            app.show_cursor = cursor;
+            app.toggle_show_file();
+        }
+        let preview = app
+            .show_rows
+            .iter()
+            .find_map(|row| row.preview.as_ref())
+            .expect("submodule image preview");
+        let crate::images::Source::Blob(root, oid) = &preview.source else {
+            panic!("historical preview must use a recorded blob");
+        };
+        assert_eq!(
+            root.canonicalize().unwrap(),
+            directory.path().join("module").canonicalize().unwrap()
+        );
+        let output = crate::git::read_command_at(Some(root))
+            .args(["cat-file", "blob", oid])
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        assert_eq!(output.stdout, fs::read("module/picture.png").unwrap());
+
+        // Returning to the superproject must also restore its image lookup.
+        press(&mut app, KeyCode::Esc);
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.mode, Mode::Show);
+        while let Some(cursor) = app.show_rows.iter().position(|row| row.folded) {
+            app.show_cursor = cursor;
+            app.toggle_show_file();
+        }
+        let parent = app
+            .show_rows
+            .iter()
+            .filter_map(|row| row.preview.as_ref())
+            .find(|preview| {
+                matches!(&preview.source, crate::images::Source::Blob(root, _) if root.canonicalize().unwrap() == directory.path().canonicalize().unwrap())
+            });
+        assert!(parent.is_some(), "parent image preview after returning");
+    }
+
+    #[test]
     fn submodule_patch_blame_keeps_raw_lines_with_textconv() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
