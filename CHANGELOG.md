@@ -5,6 +5,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+## 0.7.0 - 2026-10-28
+
 ### Added
 
 - Browse local branches with `glog branch` in a compact graph of branch tips
@@ -427,7 +429,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Initial release of the interactive `git log` and `git show` browser.
 
-[Unreleased]: https://github.com/yairchu/glog/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/yairchu/glog/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/yairchu/glog/compare/v0.6.1...v0.7.0
 [0.6.1]: https://github.com/yairchu/glog/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/yairchu/glog/compare/v0.5.2...v0.6.0
 [0.5.2]: https://github.com/yairchu/glog/compare/v0.5.1...v0.5.2
