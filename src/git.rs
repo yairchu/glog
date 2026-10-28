@@ -1719,7 +1719,14 @@ pub(crate) fn repository_directory() -> Result<std::path::PathBuf, String> {
 
 /// Git terminates its raw repository path with exactly one newline.
 pub(crate) fn repository_root() -> Result<std::path::PathBuf, String> {
-    let output = read_command()
+    repository_root_at(None)
+}
+
+/// The working tree root of `directory`'s repository, failing in bare ones.
+pub(crate) fn repository_root_at(
+    directory: Option<&std::path::Path>,
+) -> Result<std::path::PathBuf, String> {
+    let output = read_command_at(directory)
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .map_err(|error| format!("could not locate repository: {error}"))?;

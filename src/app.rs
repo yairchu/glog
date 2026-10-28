@@ -1169,10 +1169,7 @@ impl App {
         let file = selected.file;
         // Unlike Blame, the editor opens working tree files, which bare
         // repositories lack.
-        let root = app
-            .show_repository()
-            .map(|root| Ok(root.to_path_buf()))
-            .unwrap_or_else(git::repository_root)?;
+        let root = git::repository_root_at(app.show_repository())?;
         let worktree = app.commits.get(app.selected).is_some_and(|commit| {
             matches!(
                 commit.kind,
