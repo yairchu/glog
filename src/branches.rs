@@ -503,6 +503,7 @@ fn load_metadata(rows: &mut [Commit], date: &str) -> Result<(), String> {
         .iter()
         .map(|record| (record[0], (record[1], record[2])))
         .collect();
+    let mut updates = branch_updates(rows, date).into_iter();
     for row in rows.iter_mut() {
         let (decorations, commit_date) = refs
             .get(row.hash.as_str())
@@ -512,7 +513,9 @@ fn load_metadata(rows: &mut [Commit], date: &str) -> Result<(), String> {
         }
         row.decorations = (*decorations).to_owned();
         if let Some(Annotation::Branch(node)) = &mut row.annotation {
-            node.updated_at = latest_update(&node.branches, &row.hash, date)?
+            node.updated_at = updates
+                .next()
+                .expect("an update for each branch row")?
                 .or_else(|| Some((*commit_date).to_owned()));
         }
     }
@@ -577,6 +580,34 @@ fn ref_update(reference: &str, hash: &str, date: &str) -> Option<String> {
         .1
         .strip_suffix('}')
         .map(str::to_owned)
+}
+
+/// Each reflog needs its own Git process, so read them concurrently.
+/// Results follow the order of the branch rows.
+fn branch_updates(rows: &[Commit], date: &str) -> Vec<Result<Option<String>, String>> {
+    let nodes: Vec<_> = rows
+        .iter()
+        .filter_map(|row| Some((row.branch()?, row.hash.as_str())))
+        .collect();
+    let workers = std::thread::available_parallelism().map_or(1, usize::from);
+    let chunk = nodes.len().div_ceil(workers).max(1);
+    std::thread::scope(|scope| {
+        let readers: Vec<_> = nodes
+            .chunks(chunk)
+            .map(|chunk| {
+                scope.spawn(move || {
+                    chunk
+                        .iter()
+                        .map(|(node, hash)| latest_update(&node.branches, hash, date))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        readers
+            .into_iter()
+            .flat_map(|reader| reader.join().expect("reflog reader panicked"))
+            .collect()
+    })
 }
 
 fn latest_update(branches: &[Branch], hash: &str, date: &str) -> Result<Option<String>, String> {
