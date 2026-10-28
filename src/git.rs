@@ -5349,6 +5349,38 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn merge_range_compares_as_a_combined_diff() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write("note.txt", "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        git(&["checkout", "-qb", "side"]);
+        fs::write("side.txt", "side\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "side"]);
+        git(&["checkout", "-q", "-"]);
+        fs::write("main.txt", "main\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "main"]);
+        git(&["merge", "-q", "--no-edit", "side"]);
+        // Git diffs a merge's M^! against each parent, so neither parent
+        // alone is the old side.
+        assert_eq!(comparison_sides(&["HEAD^!".to_owned()], None), Ok(None));
+    }
+
+    #[test]
     fn loads_format_metadata_with_git_date_options() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
