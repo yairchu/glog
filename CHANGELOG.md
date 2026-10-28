@@ -36,6 +36,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   wrapped lines stay aligned. Tabs in diffs and Blame now stop every 8
   columns, matching `git show` in a terminal.
 
+- Select the matching line when pressing `p` in Blame on files with a
+  `textconv` diff driver.
+
 - Recognize commit types with consecutive parenthesized groups, such as
   `test(failing)(dsp):`, for highlighting and filtering.
 

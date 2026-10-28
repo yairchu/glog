@@ -466,7 +466,12 @@ pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<(Vec<Commit>, us
             "diff",
             "--no-color",
             "--no-ext-diff",
-            "--no-textconv",
+            // Map line numbers in the text that blame shows.
+            if line.file.textconv {
+                "--textconv"
+            } else {
+                "--no-textconv"
+            },
             "-U0",
             "--inter-hunk-context=0",
         ])
