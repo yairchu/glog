@@ -55,23 +55,9 @@ pub fn parse_args(args: &[String]) -> Result<(Option<ColorMoved>, Vec<String>), 
             rest.extend(args.cloned());
             break;
         }
-        if crate::log_format::takes_pattern(arg)
-            || matches!(
-                arg.as_str(),
-                "--format"
-                    | "--pretty"
-                    | "--hide-types"
-                    | "--date"
-                    | "-L"
-                    | "-n"
-                    | "--max-count"
-                    | "--skip"
-                    | "--since"
-                    | "--until"
-                    | "--after"
-                    | "--before"
-            )
-        {
+        // Of the values Git options take, only search patterns can sensibly
+        // spell a session flag.
+        if crate::log_format::takes_pattern(arg) {
             rest.push(arg.clone());
             if let Some(value) = args.next() {
                 rest.push(value.clone());
@@ -174,7 +160,6 @@ mod tests {
             vec!["--grep", "--color-moved"],
             vec!["--author", "--no-color-moved"],
             vec!["-S", "--color-moved=zebra"],
-            vec!["--format", "--color-moved"],
             vec!["--", "--color-moved", "--no-color-moved"],
         ] {
             let (mode, rest) = parse(&args).unwrap();
