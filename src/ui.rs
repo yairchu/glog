@@ -783,88 +783,34 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
     app.ensure_show_rows();
     app.show_row_origin = area.y;
     app.visible_show_rows = area.height as usize;
-    let mut lines: Vec<_> = app
-        .show_rows
-        .iter()
-        .enumerate()
-        .map(|(index, row)| {
-            let mut line = if row.fold_separator {
-                Line::from("━".repeat(area.width as usize))
-            } else if row.summary {
-                summary_line(&row.text)
-            } else {
-                ansi::normalized_line(&row.text)
-            };
-            if let Some(ranges) = message_entry(&app.show_message_styles, row) {
-                line = ansi::style_ranges(line, ranges.iter().cloned());
-            }
-            if let Some(links) = message_entry(&app.show_links, row) {
-                let style = Style::default()
-                    .fg(Color::LightCyan)
-                    .add_modifier(Modifier::UNDERLINED);
-                line =
-                    ansi::style_ranges(line, links.iter().map(|link| (link.range.clone(), style)));
-            }
-            if row.file.is_none() {
-                let text = line.to_string();
-                if text == "Notes:" || (text.starts_with("Notes (") && text.ends_with("):")) {
-                    for span in &mut line.spans {
-                        span.style = span.style.add_modifier(Modifier::BOLD);
-                    }
-                }
-            }
-            if row.folded || row.summary {
-                line.style = Style::default()
-                    .fg(Color::Yellow)
-                    .add_modifier(Modifier::BOLD);
-            } else if row.fold_separator {
-                line.style = Style::default().fg(Color::Yellow);
-            }
-            if index == app.show_cursor {
-                line.style = line.style.bg(Color::DarkGray);
-                if row.folded {
-                    line.style = line.style.fg(Color::LightYellow);
-                }
-                for span in &mut line.spans {
-                    if let Some(bg) = span.style.bg {
-                        span.style.bg = Some(brighten_background(bg));
-                    }
-                }
-            }
-            line
-        })
-        .collect();
-    let cursor_background = lines
-        .get(app.show_cursor)
+    // Rows only change when rebuilt, which clears their starts, so wrap
+    // them once per width rather than on every frame.
+    if app.show_row_starts.len() != app.show_rows.len() + 1 || app.show_rows_width != area.width {
+        // Use Ratatui's own wrapping rules, including word boundaries and wide glyphs.
+        let mut starts = Vec::with_capacity(app.show_rows.len() + 1);
+        starts.push(0);
+        for row in &app.show_rows {
+            let mut line = show_row_line(row, area.width);
+            line.spans = ansi::display_spans(line.spans);
+            let height = Paragraph::new(line)
+                .wrap(Wrap { trim: false })
+                .line_count(area.width)
+                .max(1);
+            starts.push(starts.last().unwrap() + height);
+        }
+        app.show_row_starts = starts;
+        app.show_rows_width = area.width;
+    }
+    let rows = app.show_rows.len();
+    let cursor_line =
+        (app.show_cursor < rows).then(|| styled_show_line(app, app.show_cursor, area.width));
+    let cursor_background = cursor_line
+        .as_ref()
         .and_then(|line| line.spans.last())
         .and_then(|span| span.style.bg)
         .unwrap_or(Color::DarkGray);
-    if let Some(query) = &app.search {
-        lines = lines
-            .into_iter()
-            .enumerate()
-            .map(|(index, line)| {
-                let current = app.search_match == Some((Mode::Show, index));
-                highlight_matches(line, query, current)
-            })
-            .collect();
-    }
-    // Style and search ranges refer to the original bytes; expand only after styling.
-    for line in &mut lines {
-        line.spans = ansi::display_spans(std::mem::take(&mut line.spans));
-    }
-    // Use Ratatui's own wrapping rules, including word boundaries and wide glyphs.
-    let mut starts = Vec::with_capacity(lines.len() + 1);
-    starts.push(0);
-    for line in &lines {
-        let height = Paragraph::new(line.clone())
-            .wrap(Wrap { trim: false })
-            .line_count(area.width)
-            .max(1);
-        starts.push(starts.last().unwrap() + height);
-    }
-    app.show_row_starts = starts;
-    let cursor_start = app.show_row_starts[app.show_cursor.min(lines.len())];
+    let cursor_line = cursor_line.map(|line| drawn_show_line(app, app.show_cursor, line));
+    let cursor_start = app.show_row_starts[app.show_cursor.min(rows)];
     let cursor_end = app
         .show_row_starts
         .get(app.show_cursor + 1)
@@ -879,7 +825,7 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
         .saturating_sub(height);
     let request = app.show_scroll.take();
     let matched_rows = if matches!(request, Some(ShowScroll::Search)) {
-        lines.get(app.show_cursor).and_then(|line| {
+        cursor_line.as_ref().and_then(|line| {
             app.search.as_deref().and_then(|query| {
                 wrapped_match_rows(line, query, area.width, cursor_end - cursor_start)
             })
@@ -915,10 +861,10 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
         .show_row_starts
         .partition_point(|&start| start <= app.show_offset)
         .saturating_sub(1)
-        .min(lines.len());
+        .min(rows);
     let within = app.show_offset - app.show_row_starts[first];
     // Each row takes at least one screen line, so no later row can be visible.
-    let visible = first..lines.len().min(first + height);
+    let visible = first..rows.min(first + height);
     if app.show_rows[visible.clone()]
         .iter()
         .any(|row| message_entry(&app.show_links, row).is_some())
@@ -928,6 +874,7 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
         use ratatui::{buffer::Buffer, widgets::Widget};
         let mut targets = Vec::new();
         let marker_lines: Vec<_> = visible
+            .clone()
             .map(|index| {
                 let mut marked =
                     Line::raw(ansi::normalized_line(&app.show_rows[index].text).to_string());
@@ -985,16 +932,21 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
     }
+    let lines: Vec<_> = visible
+        .clone()
+        .map(|index| match &cursor_line {
+            Some(line) if index == app.show_cursor => line.clone(),
+            _ => drawn_show_line(app, index, styled_show_line(app, index, area.width)),
+        })
+        .collect();
     frame.render_widget(
-        Paragraph::new(Text::from(
-            lines.into_iter().skip(first).collect::<Vec<_>>(),
-        ))
-        .scroll((within.min(u16::MAX as usize) as u16, 0))
-        .wrap(Wrap { trim: false }),
+        Paragraph::new(Text::from(lines))
+            .scroll((within.min(u16::MAX as usize) as u16, 0))
+            .wrap(Wrap { trim: false }),
         area,
     );
-    for (index, row) in app.show_rows.iter().enumerate() {
-        if let Some(preview) = &row.preview {
+    for index in visible {
+        if let Some(preview) = &app.show_rows[index].preview {
             let screen = app.show_row_starts[index];
             if screen >= app.show_offset && screen < app.show_offset + usize::from(area.height) {
                 app.images.render(
@@ -1023,6 +975,70 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
     }
+}
+
+/// A Show row's text, before styles that depend on the view.
+fn show_row_line(row: &crate::app::ShowRow, width: u16) -> Line<'static> {
+    if row.fold_separator {
+        Line::from("━".repeat(width as usize))
+    } else if row.summary {
+        summary_line(&row.text)
+    } else {
+        ansi::normalized_line(&row.text)
+    }
+}
+
+/// A Show row with the styles of its content and the cursor.
+fn styled_show_line(app: &App, index: usize, width: u16) -> Line<'static> {
+    let row = &app.show_rows[index];
+    let mut line = show_row_line(row, width);
+    if let Some(ranges) = message_entry(&app.show_message_styles, row) {
+        line = ansi::style_ranges(line, ranges.iter().cloned());
+    }
+    if let Some(links) = message_entry(&app.show_links, row) {
+        let style = Style::default()
+            .fg(Color::LightCyan)
+            .add_modifier(Modifier::UNDERLINED);
+        line = ansi::style_ranges(line, links.iter().map(|link| (link.range.clone(), style)));
+    }
+    if row.file.is_none() {
+        let text = line.to_string();
+        if text == "Notes:" || (text.starts_with("Notes (") && text.ends_with("):")) {
+            for span in &mut line.spans {
+                span.style = span.style.add_modifier(Modifier::BOLD);
+            }
+        }
+    }
+    if row.folded || row.summary {
+        line.style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+    } else if row.fold_separator {
+        line.style = Style::default().fg(Color::Yellow);
+    }
+    if index == app.show_cursor {
+        line.style = line.style.bg(Color::DarkGray);
+        if row.folded {
+            line.style = line.style.fg(Color::LightYellow);
+        }
+        for span in &mut line.spans {
+            if let Some(bg) = span.style.bg {
+                span.style.bg = Some(brighten_background(bg));
+            }
+        }
+    }
+    line
+}
+
+/// Highlight search matches in a styled Show row, then expand its tabs.
+fn drawn_show_line(app: &App, index: usize, mut line: Line<'static>) -> Line<'static> {
+    if let Some(query) = &app.search {
+        let current = app.search_match == Some((Mode::Show, index));
+        line = highlight_matches(line, query, current);
+    }
+    // Style and search ranges refer to the original bytes; expand only after styling.
+    line.spans = ansi::display_spans(std::mem::take(&mut line.spans));
+    line
 }
 
 pub(crate) fn summary_line(text: &str) -> Line<'static> {

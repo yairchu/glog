@@ -42,6 +42,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Recognize commit types with consecutive parenthesized groups, such as
   `test(failing)(dsp):`, for highlighting and filtering.
 
+- Keep moving through large patches in Show responsive: redraws no longer
+  restyle and rewrap every line of the patch.
+
 ## 0.6.1 - 2026-10-20
 
 ### Added

@@ -132,6 +132,8 @@ pub struct App {
     pub show_rows: Vec<ShowRow>,
     // Start of each wrapped row, followed by the total screen height.
     pub show_row_starts: Vec<usize>,
+    // The width show_row_starts wraps rows to.
+    pub show_rows_width: u16,
     pub show_scroll: Option<ShowScroll>,
     pub status: Option<String>,
     pub search: Option<String>,
@@ -214,6 +216,7 @@ impl App {
             stat_submodule_bookmark: None,
             show_rows: Vec::new(),
             show_row_starts: Vec::new(),
+            show_rows_width: 0,
             show_scroll: None,
             status: None,
             search: None,
