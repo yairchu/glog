@@ -1004,6 +1004,77 @@ mod tests {
     }
 
     #[test]
+    fn review_blame_uses_recorded_submodule_revisions_and_repository() {
+        use crate::git::tests::git as output;
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        git(&["init", "-q", "module space"]);
+        fs::write("module space/file.txt", "before\n").unwrap();
+        git(&["-C", "module space", "add", "."]);
+        git(&["-C", "module space", "commit", "-qm", "original module"]);
+        let old = output(&["-C", "module space", "rev-parse", "HEAD"]);
+        fs::write(
+            ".gitmodules",
+            "[submodule \"module space\"]\n\tpath = module space\n\turl = ./unused\n",
+        )
+        .unwrap();
+        git(&["add", ".gitmodules", "module space"]);
+        git(&["commit", "-qm", "add module"]);
+        git(&["submodule", "absorbgitdirs"]);
+        // The recorded old revision is not the new revision's parent.
+        for (contents, message) in [
+            ("intermediate\n", "intermediate module"),
+            ("after\n", "updated module"),
+        ] {
+            fs::write("module space/file.txt", contents).unwrap();
+            git(&["-C", "module space", "commit", "-qam", message]);
+        }
+        let new = output(&["-C", "module space", "rev-parse", "HEAD"]);
+        git(&["add", "module space"]);
+        git(&["commit", "-qm", "update module"]);
+        git(&["-C", "module space", "checkout", "-q", old.trim()]);
+        fs::write("module space/file.txt", "uncommitted contents\n").unwrap();
+        fs::create_dir("launch").unwrap();
+        std::env::set_current_dir("launch").unwrap();
+
+        for (patch_line, expected, hash, subject) in [
+            ("+after", "after", new.trim(), "updated module"),
+            ("-before", "before", old.trim(), "original module"),
+        ] {
+            let mut app = crate::git::load_show_app(&["HEAD".into()]).unwrap();
+            while let Some(cursor) = app.show_rows.iter().position(|row| row.folded) {
+                app.show_cursor = cursor;
+                app.toggle_show_file();
+            }
+            app.show_cursor = app
+                .show_rows
+                .iter()
+                .position(|row| crate::ansi::plain(&row.text).trim_start() == patch_line)
+                .unwrap();
+            let cursor = app.show_cursor;
+            let text = app.show_text.clone();
+            press(&mut app, KeyCode::Char('b'));
+            assert_eq!(app.status, None, "{patch_line}");
+            assert_eq!(app.history, History::Blame);
+            let line = app.commits[app.selected].blame().unwrap();
+            assert_eq!(code(line), expected);
+            assert_eq!(line.number, 1);
+            assert_eq!(app.commits[app.selected].hash, hash);
+            assert_eq!(line.source_path, b"file.txt");
+            // Opening the blamed commit must query the module, too.
+            press(&mut app, KeyCode::Enter);
+            assert_eq!(app.status, None);
+            assert!(app.show_text.contains(subject), "{}", app.show_text);
+            press(&mut app, KeyCode::Esc);
+            press(&mut app, KeyCode::Backspace);
+            assert_eq!(app.mode, Mode::Show);
+            assert_eq!(app.show_cursor, cursor);
+            assert_eq!(app.show_text, text);
+        }
+    }
+
+    #[test]
     fn review_blame_opens_added_and_deleted_files_with_quoted_paths() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
