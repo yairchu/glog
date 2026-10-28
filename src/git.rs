@@ -5408,6 +5408,35 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn cached_comparison_without_revisions_reads_head_as_loaded() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        let git = |args: &[&str]| {
+            let output = Command::new("git").args(args).output().unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write("note.txt", "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        // A root commit's HEAD^@ resolves to nothing, leaving HEAD as the old
+        // side, which must not move with later commits.
+        let options = ["--cached".to_owned(), "HEAD^@".to_owned()];
+        assert_eq!(
+            comparison_sides(&options, None),
+            Ok(Some((Version::Revision(head), Version::Index)))
+        );
+    }
+
+    #[test]
     fn loads_format_metadata_with_git_date_options() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
