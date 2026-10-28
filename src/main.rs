@@ -6,6 +6,7 @@ mod commit_links;
 mod diff;
 mod editor;
 mod git;
+mod hunk;
 mod images;
 mod input;
 mod log_folds;

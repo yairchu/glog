@@ -26,44 +26,26 @@ impl Target {
         worktree: bool,
         textconv: Textconv,
     ) -> Self {
-        let mut blob = None;
-        let mut line = None;
-        let mut parents = 1;
-        for (index, text) in patch.lines().enumerate() {
-            let text = ansi::plain(text);
-            if line.is_none() && !worktree {
-                if let Some(ids) = text.strip_prefix("index ") {
-                    blob = ids
-                        .split_whitespace()
-                        .next()
-                        .and_then(|ids| ids.split_once(".."))
-                        .map(|(_, result)| result)
-                        .filter(|id| {
-                            (4..=64).contains(&id.len())
-                                && id.bytes().all(|b| b.is_ascii_hexdigit())
-                                && id.bytes().any(|b| b != b'0')
-                        })
-                        .map(str::to_owned);
-                }
-            }
-            if let Some((_, (start, _))) = hunk(&text) {
-                parents = text.bytes().take_while(|&b| b == b'@').count() - 1;
-                line = Some(start.max(1));
-            }
-            if index == row {
-                break;
-            }
-            if line.is_some() {
-                let prefix = text.as_bytes().get(..parents).unwrap_or_default();
-                // Combined deletions have a '-' in at least one parent column;
-                // they are absent from the result. Context and additions survive.
-                if text.is_empty()
-                    || (prefix.len() == parents && prefix.iter().all(|b| matches!(b, b' ' | b'+')))
-                {
-                    line = line.map(|n| n.saturating_add(1));
-                }
-            }
-        }
+        let blob = if worktree {
+            None
+        } else {
+            patch
+                .lines()
+                .map(ansi::plain)
+                .take_while(|text| !text.starts_with("@@"))
+                .filter_map(|text| {
+                    let ids = text.strip_prefix("index ")?;
+                    let (_, result) = ids.split_whitespace().next()?.split_once("..")?;
+                    Some(result.to_owned())
+                })
+                .last()
+                .filter(|id| {
+                    (4..=64).contains(&id.len())
+                        && id.bytes().all(|b| b.is_ascii_hexdigit())
+                        && id.bytes().any(|b| b != b'0')
+                })
+        };
+        let line = crate::hunk::position(patch, row).map(|position| position.new.max(1));
         Self {
             root,
             path,
@@ -222,29 +204,15 @@ fn command_for(
     command
 }
 
-type Range = (u32, u32);
-
-fn hunk(line: &str) -> Option<(Range, Range)> {
-    if !line.starts_with("@@") {
-        return None;
-    }
-    let mut fields = line.split_whitespace();
-    fields.next()?;
-    let old = range(fields.next()?.strip_prefix('-')?)?;
-    let new = fields.find_map(|field| field.strip_prefix('+').and_then(range))?;
-    Some((old, new))
-}
-
-fn range(text: &str) -> Option<Range> {
-    let (start, count) = text.split_once(',').unwrap_or((text, "1"));
-    Some((start.parse().ok()?, count.parse().ok()?))
-}
-
 /// Map unchanged lines exactly; replaced/deleted lines land on the nearest
 /// replacement or surviving line. Zero-length old ranges insert *after* start.
 fn map_line(line: u32, patch: &str) -> u32 {
     let mut offset = 0_i64;
-    for ((old, count), (new, added)) in patch.lines().filter_map(hunk) {
+    for header in patch.lines().filter_map(crate::hunk::header) {
+        let [(old, count)] = header.old[..] else {
+            continue;
+        };
+        let (new, added) = header.new;
         // Empty ranges name the preceding line, not their first line.
         let old = old.saturating_add(u32::from(count == 0));
         let new = new.saturating_add(u32::from(added == 0));

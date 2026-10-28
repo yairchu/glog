@@ -123,70 +123,17 @@ pub fn load_patch(
 
 /// The parent column (None for the result) and its one-based line number.
 fn patch_position(patch: &str, row: usize) -> Option<(Option<usize>, usize)> {
-    let mut old = Vec::new();
-    let mut new = 0;
-    for (index, text) in patch.lines().enumerate() {
-        let text = crate::ansi::plain(text);
-        if text.starts_with("@@") {
-            let mut fields = text.split_whitespace().skip(1);
-            old.clear();
-            for field in fields.by_ref() {
-                if let Some(range) = field.strip_prefix('-') {
-                    old.push(range.split(',').next()?.parse::<usize>().ok()?);
-                } else {
-                    let range = field.strip_prefix('+')?;
-                    new = range.split(',').next()?.parse::<usize>().ok()?;
-                    break;
-                }
-            }
-            if index == row {
-                return (!old.is_empty()).then_some((None, new.max(1)));
-            }
-            continue;
+    let position = crate::hunk::position(patch, row)?;
+    let (parent, number) = match position.row {
+        crate::hunk::Row::Header => (None, position.new.max(1)),
+        crate::hunk::Row::Line { result: true, .. } => (None, position.new),
+        crate::hunk::Row::Line { parents, .. } => {
+            let parent = parents.iter().position(|&present| present)?;
+            (Some(parent), position.old[parent])
         }
-        if index > row {
-            break;
-        }
-        if old.is_empty() {
-            continue;
-        }
-        // diff.suppressBlankEmpty prints blank context lines without a space.
-        let context = vec![b' '; old.len()];
-        let prefix = if text.is_empty() {
-            &context
-        } else {
-            text.as_bytes().get(..old.len())?
-        };
-        if !prefix.iter().all(|byte| matches!(byte, b' ' | b'+' | b'-')) {
-            if index == row {
-                return None;
-            }
-            continue;
-        }
-        let deleted = prefix.iter().position(|&byte| byte == b'-');
-        if index == row {
-            return Some(match deleted {
-                Some(parent) => (Some(parent), old[parent]),
-                None => (None, new),
-            });
-        }
-        for (column, number) in old.iter_mut().enumerate() {
-            // A deletion belongs only to the parents marked '-'. Result
-            // lines belong to each parent whose column is unchanged.
-            let present = if deleted.is_some() {
-                prefix[column] == b'-'
-            } else {
-                prefix[column] == b' '
-            };
-            if present {
-                *number += 1;
-            }
-        }
-        if deleted.is_none() {
-            new += 1;
-        }
-    }
-    None
+        crate::hunk::Row::Other => return None,
+    };
+    Some((parent, number as usize))
 }
 
 fn parent_path(revision: &str, result: &str, path: &[u8], top: &Path) -> Result<Vec<u8>, String> {
@@ -460,21 +407,13 @@ fn blob_spec(revision: &str, path: &[u8]) -> std::ffi::OsString {
 /// before them.
 fn parent_line(diff: &str, line: usize) -> usize {
     let mut offset = 0isize;
-    for header in diff.lines().filter_map(|l| l.strip_prefix("@@ -")) {
-        let Some((old, new)) = header.split_once(" +") else {
+    for header in diff.lines().filter_map(crate::hunk::header) {
+        let [(old_start, old_count)] = header.old[..] else {
             continue;
         };
-        let new = new.split(' ').next().unwrap_or(new);
-        let range = |range: &str| -> Option<(usize, usize)> {
-            match range.split_once(',') {
-                Some((start, count)) => Some((start.parse().ok()?, count.parse().ok()?)),
-                None => Some((range.parse().ok()?, 1)),
-            }
-        };
-        let (Some((old_start, old_count)), Some((new_start, new_count))) = (range(old), range(new))
-        else {
-            continue;
-        };
+        let (new_start, new_count) = header.new;
+        let [old_start, old_count, new_start, new_count] =
+            [old_start, old_count, new_start, new_count].map(|n| n as usize);
         // An empty range names the line before the position it refers to.
         let (old_first, old_end) = if old_count == 0 {
             (old_start + 1, old_start + 1)
