@@ -39,6 +39,36 @@ pub fn parse_line(input: &str) -> Line<'static> {
     Line::from(spans)
 }
 
+/// Expand tabs and replace control characters, keeping each span's style.
+pub fn display_spans(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    let mut column = 0;
+    let mut output = Vec::with_capacity(spans.len());
+    for span in spans {
+        let content = span.content.strip_suffix('\r').unwrap_or(&span.content);
+        let mut text = String::with_capacity(content.len());
+        for (index, segment) in content.split('\t').enumerate() {
+            if index > 0 {
+                let spaces = 4 - column % 4;
+                text.extend(std::iter::repeat_n(' ', spaces));
+                column += spaces;
+            }
+            let start = text.len();
+            text.extend(segment.chars().map(|ch| {
+                if ch.is_control() {
+                    char::REPLACEMENT_CHARACTER
+                } else {
+                    ch
+                }
+            }));
+            // Measure rendered text together so combining marks and emoji
+            // sequences use the same display width as the terminal UI.
+            column += Span::raw(&text[start..]).width();
+        }
+        output.push(Span::styled(text, span.style));
+    }
+    output
+}
+
 pub fn plain(input: &str) -> String {
     parse_line(input)
         .spans

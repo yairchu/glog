@@ -1215,6 +1215,7 @@ impl StatusView {
             if self.offset + screen == self.cursor {
                 line.style = line.style.bg(Color::DarkGray);
             }
+            line.spans = crate::ansi::display_spans(line.spans);
             let row_area = Rect::new(area.x, self.origin + screen as u16, area.width, 1);
             if self.offset + screen == self.cursor {
                 frame.render_widget(

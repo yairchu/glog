@@ -17,6 +17,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Fixed
 
+- Expand tabs consistently when rendering diffs so cursor highlights and
+  wrapped lines stay aligned.
+
 - Recognize commit types with consecutive parenthesized groups, such as
   `test(failing)(dsp):`, for highlighting and filtering.
 

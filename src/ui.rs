@@ -763,6 +763,10 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             })
             .collect();
     }
+    // Style and search ranges refer to the original bytes; expand only after styling.
+    for line in &mut lines {
+        line.spans = ansi::display_spans(std::mem::take(&mut line.spans));
+    }
     // Use Ratatui's own wrapping rules, including word boundaries and wide glyphs.
     let mut starts = Vec::with_capacity(lines.len() + 1);
     starts.push(0);
@@ -839,23 +843,25 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
         let mut targets = Vec::new();
         let marker_lines: Vec<_> = visible
             .map(|index| {
-                let marked = Line::raw(lines[index].to_string());
-                let Some(links) = message_entry(&app.show_links, &app.show_rows[index]) else {
-                    return marked;
-                };
-                ansi::style_ranges(
-                    marked,
-                    links.iter().map(|link| {
-                        targets.push(link.target.clone());
-                        let id = targets.len() as u32;
-                        let style = Style::default().fg(Color::Rgb(
-                            (id >> 16) as u8,
-                            (id >> 8) as u8,
-                            id as u8,
-                        ));
-                        (link.range.clone(), style)
-                    }),
-                )
+                let mut marked =
+                    Line::raw(ansi::normalized_line(&app.show_rows[index].text).to_string());
+                if let Some(links) = message_entry(&app.show_links, &app.show_rows[index]) {
+                    marked = ansi::style_ranges(
+                        marked,
+                        links.iter().map(|link| {
+                            targets.push(link.target.clone());
+                            let id = targets.len() as u32;
+                            let style = Style::default().fg(Color::Rgb(
+                                (id >> 16) as u8,
+                                (id >> 8) as u8,
+                                id as u8,
+                            ));
+                            (link.range.clone(), style)
+                        }),
+                    );
+                }
+                marked.spans = ansi::display_spans(marked.spans);
+                marked
             })
             .collect();
         let mut mask = Buffer::empty(area);
@@ -1856,6 +1862,81 @@ mod tests {
     }
 
     #[test]
+    fn makefile_tabs_keep_text_and_cursor_rows_aligned() {
+        let mut terminal = Terminal::new(TestBackend::new(32, 10)).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = concat!(
+            " \x1b[38;2;230;219;116m\tbin/chopi.sh \\\x1b[0m\n",
+            "\x1b[48;2;0;40;0m+\x1b[38;2;230;219;116m\t.internal/session-proxy.sh \\\x1b[0m\x1b[48;2;0;40;0m\x1b[0K\x1b[0m\n",
+            "after",
+        )
+        .to_owned();
+        app.ensure_show_rows();
+        for cursor in 0..3 {
+            app.show_cursor = cursor;
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            assert_eq!(app.show_row_starts, vec![0, 1, 2, 3]);
+            let row_text = |y| -> String {
+                (0..32)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect()
+            };
+            assert!(row_text(1).starts_with("    bin/chopi.sh"));
+            assert!(row_text(2).starts_with("+   .internal/session-proxy.sh"));
+            for row in 0..3 {
+                assert_eq!(
+                    terminal.backend().buffer()[(31, row + 1)].bg,
+                    if row as usize == cursor {
+                        if cursor == 1 {
+                            Color::Rgb(32, 72, 32)
+                        } else {
+                            Color::DarkGray
+                        }
+                    } else if row == 1 {
+                        Color::Rgb(0, 40, 0)
+                    } else {
+                        Color::Reset
+                    },
+                    "cursor={cursor}, row={row}",
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tab_expansion_preserves_search_and_link_positions() {
+        use crate::commit_links::{Link, Target};
+        let mut terminal = Terminal::new(TestBackend::new(16, 8)).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = "\t1234567890123456\n\tlink".to_owned();
+        app.ensure_show_rows();
+        let target = Target::Url("https://example.com".to_owned());
+        app.show_links.insert(
+            1,
+            vec![Link {
+                range: 1..5,
+                target: target.clone(),
+            }],
+        );
+        app.search = Some("link".to_owned());
+        app.search_match = Some((Mode::Show, 1));
+        app.show_cursor = 1;
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.show_row_starts, vec![0, 2, 3]);
+        assert_eq!(
+            app.visible_show_links,
+            vec![(Rect::new(4, 3, 4, 1), target)]
+        );
+        for x in 4..8 {
+            let cell = &terminal.backend().buffer()[(x, 3)];
+            assert_eq!(cell.bg, Color::Yellow);
+            assert!(cell.modifier.contains(Modifier::UNDERLINED));
+        }
+    }
+
+    #[test]
     fn show_cursor_preserves_current_search_highlight() {
         let mut terminal = Terminal::new(TestBackend::new(40, 6)).unwrap();
         let mut app = App::new(Vec::new());
@@ -2017,7 +2098,13 @@ mod show_wrapping_tests {
     }
     #[test]
     fn wrapped_cursor_continuations_and_blank_rows_have_full_background() {
-        for input in ["abcdefghijklmno", "界界界界界界", "one two three four", ""] {
+        for input in [
+            "abcdefghijklmno",
+            "界界界界界界",
+            "one two three four",
+            "one\ttwo\tthree\tfour",
+            "",
+        ] {
             let mut terminal = Terminal::new(TestBackend::new(10, 8)).unwrap();
             let mut app = App::new(Vec::new());
             app.mode = Mode::Show;

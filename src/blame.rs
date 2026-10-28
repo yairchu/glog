@@ -18,7 +18,6 @@ use crate::{
 
 const UNCOMMITTED_AUTHOR: &str = "Not committed yet";
 const MAX_AUTHOR_WIDTH: usize = 20;
-const TAB_WIDTH: usize = 4;
 const USAGE: &str = "use glog blame [-L LINE] [--date=STYLE] [revision] [--] file";
 
 /// A pinned file snapshot whose attribution has not been requested yet.
@@ -568,10 +567,12 @@ fn render_lines(
             commit.annotation = Some(Annotation::Blame(BlameLine {
                 file: file.clone(),
                 number: line.number,
-                code: display_code(match highlighted.as_mut().and_then(Iterator::next) {
-                    Some(spans) => spans,
-                    None => vec![Span::raw(line.code)],
-                }),
+                code: crate::ansi::display_spans(
+                    match highlighted.as_mut().and_then(Iterator::next) {
+                        Some(spans) => spans,
+                        None => vec![Span::raw(line.code)],
+                    },
+                ),
                 starts_chunk,
                 source_path: line.source_path,
                 source_number: line.source_number,
@@ -753,36 +754,6 @@ fn highlight(path: &str, lines: &[PorcelainLine]) -> Option<Vec<Vec<Span<'static
         })
         .collect();
     (highlighted.len() == lines.len()).then_some(highlighted)
-}
-
-/// Expand tabs and replace control characters, keeping each span's style.
-fn display_code(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
-    let mut column = 0;
-    let mut output = Vec::with_capacity(spans.len());
-    for span in spans {
-        let content = span.content.strip_suffix('\r').unwrap_or(&span.content);
-        let mut text = String::with_capacity(content.len());
-        for (index, segment) in content.split('\t').enumerate() {
-            if index > 0 {
-                let spaces = TAB_WIDTH - column % TAB_WIDTH;
-                text.extend(std::iter::repeat_n(' ', spaces));
-                column += spaces;
-            }
-            let start = text.len();
-            text.extend(segment.chars().map(|ch| {
-                if ch.is_control() {
-                    char::REPLACEMENT_CHARACTER
-                } else {
-                    ch
-                }
-            }));
-            // Measure rendered text together so combining marks and emoji
-            // sequences use the same display width as the terminal UI.
-            column += Span::raw(&text[start..]).width();
-        }
-        output.push(Span::styled(text, span.style));
-    }
-    output
 }
 
 fn badge_width(collaborators: &Collaborators) -> usize {
@@ -1663,7 +1634,8 @@ mod tests {
     #[test]
     fn tabs_expand_across_highlighted_spans() {
         let style = Style::default().fg(Color::Red);
-        let spans = display_code(vec![Span::raw("\tab"), Span::styled("\tc\x07\r", style)]);
+        let spans =
+            crate::ansi::display_spans(vec![Span::raw("\tab"), Span::styled("\tc\x07\r", style)]);
         assert_eq!(spans[0].content, "    ab");
         assert_eq!(spans[1].content, "  c\u{fffd}");
         assert_eq!(spans[1].style, style);
@@ -1679,7 +1651,7 @@ mod tests {
                     Span::styled("\tX", Style::default().fg(Color::Red)),
                 ],
             ] {
-                let output = display_code(spans);
+                let output = crate::ansi::display_spans(spans);
                 let text: String = output.iter().map(|span| span.content.as_ref()).collect();
                 assert_eq!(text, format!("{prefix}  X"));
             }
@@ -1695,7 +1667,7 @@ mod tests {
                 Span::styled("\u{301}\tX", Style::default().fg(Color::Red)),
             ],
         ] {
-            let output = display_code(spans);
+            let output = crate::ansi::display_spans(spans);
             let text: String = output.iter().map(|span| span.content.as_ref()).collect();
             assert_eq!(text, "e\u{301}   X");
         }
