@@ -809,6 +809,21 @@ fn resolve_revision(revision: &str, directory: Option<&std::path::Path>) -> Resu
     Err(stderr_message("could not resolve revision", &stderr))
 }
 
+/// The commit HEAD points to, or None on an unborn branch.
+fn head_commit(directory: Option<&std::path::Path>) -> Result<Option<String>, String> {
+    let output = read_command_at(directory)
+        .args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
+        .output()
+        .map_err(|error| format!("could not resolve HEAD: {error}"))?;
+    match output.status.code() {
+        Some(0) => Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_owned(),
+        )),
+        Some(1) => Ok(None),
+        _ => Err(stderr_message("could not resolve HEAD", &output.stderr)),
+    }
+}
+
 /// Peel a resolved object: after REV:, Git treats an appended ^{commit} as
 /// part of the filename instead of a type requirement.
 fn peel_commit(object: &str, directory: Option<&std::path::Path>) -> Result<String, String> {
@@ -847,19 +862,23 @@ pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
                 .to_owned(),
         );
     }
-    let kind = if revisions.is_empty() {
-        if cached {
-            CommitKind::Staged
-        } else {
-            CommitKind::Unstaged
-        }
+    // Resolve the sides before loading the patch, so Blame reads the versions
+    // it shows even after refs move.
+    let (kind, sides) = if !revisions.is_empty() {
+        let sides = comparison_sides(&options, None)?;
+        let kind = CommitKind::Comparison {
+            worktree: matches!(sides, Some((_, Version::Worktree))),
+        };
+        let sides = sides
+            .map(|(old, new)| (Some(old), new))
+            .ok_or("Cannot blame a combined diff of several revisions");
+        (kind, sides)
+    } else if cached {
+        let head = head_commit(None)?.map(Version::Revision);
+        (CommitKind::Staged, Ok((head, Version::Index)))
     } else {
-        CommitKind::Comparison {
-            worktree: matches!(
-                comparison_sides(&options, None)?,
-                Some((_, Version::Worktree))
-            ),
-        }
+        let sides = (Some(Version::Index), Version::Worktree);
+        (CommitKind::Unstaged, Ok(sides))
     };
     let mut entry = match kind {
         CommitKind::Unstaged => pseudo_commit(kind, "worktree", "Unstaged changes"),
@@ -878,6 +897,11 @@ pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
     });
     app.show_stat = stat;
     app.show_paths = paths;
+    app.diff_sides = Some(
+        sides
+            .map(|(old, new)| crate::blame::PatchSides::Pair { old, new })
+            .map_err(str::to_owned),
+    );
     if !app.commits.is_empty() {
         app.mode = crate::app::Mode::Show;
         app.show_text = text;
@@ -973,7 +997,7 @@ pub enum Version {
 
 /// The old and new sides of a `glog diff` comparison, as git diff picks
 /// them, or None for a combined diff of several revisions.
-pub(crate) fn comparison_sides(
+fn comparison_sides(
     diff_args: &[String],
     directory: Option<&std::path::Path>,
 ) -> Result<Option<(Version, Version)>, String> {

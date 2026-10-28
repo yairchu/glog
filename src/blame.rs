@@ -42,6 +42,7 @@ impl FileRevision {
 }
 
 /// The file versions a patch compares.
+#[derive(Clone)]
 pub enum PatchSides {
     /// A commit's patch. Its parent column N shows `{hash}^N`.
     Commit(String),
@@ -50,39 +51,24 @@ pub enum PatchSides {
 }
 
 impl PatchSides {
-    /// The sides of the patch shown for `commit`, in the section of `file`.
-    pub fn of(commit: &Commit, file: &FileSection, top: &Path) -> Result<Self, String> {
+    /// The sides of the patch shown for a revision or stash `commit`, in the
+    /// section of `file`. `glog diff` resolves its sides when it loads.
+    pub fn of(commit: &Commit, file: &FileSection) -> Result<Self, String> {
         let revision = |revision: String| Some(Version::Revision(revision));
-        Ok(match commit.kind {
-            CommitKind::Revision => match (&commit.annotation, file.stash_layer) {
-                (Some(Annotation::Stash(_)), Some(layer)) => {
-                    let (old, new) = crate::stash::layer_revisions(&commit.hash, layer);
-                    Self::Pair {
-                        old: old.and_then(revision),
-                        new: Version::Revision(new),
-                    }
-                }
-                (Some(Annotation::Stash(_)), None) => return Err("Select a stash file".into()),
-                _ => Self::Commit(commit.hash.clone()),
-            },
-            CommitKind::Staged => Self::Pair {
-                old: revision("HEAD".into()),
-                new: Version::Index,
-            },
-            CommitKind::Unstaged => Self::Pair {
-                old: Some(Version::Index),
-                new: Version::Worktree,
-            },
-            CommitKind::Comparison { .. } => {
-                let (old, new) = git::comparison_sides(&commit.diff_args, Some(top))?
-                    .ok_or("Cannot blame a combined diff of several revisions")?;
-                Self::Pair {
-                    old: Some(old),
-                    new,
-                }
+        match (commit.kind, &commit.annotation, file.stash_layer) {
+            (CommitKind::Revision, Some(Annotation::Stash(_)), Some(layer)) => {
+                let (old, new) = crate::stash::layer_revisions(&commit.hash, layer);
+                Ok(Self::Pair {
+                    old: old.and_then(revision),
+                    new: Version::Revision(new),
+                })
             }
-            CommitKind::WorkingTree => return Err("Select a patch to blame".into()),
-        })
+            (CommitKind::Revision, Some(Annotation::Stash(_)), None) => {
+                Err("Select a stash file".into())
+            }
+            (CommitKind::Revision, ..) => Ok(Self::Commit(commit.hash.clone())),
+            _ => Err("Select a patch to blame".into()),
+        }
     }
 
     /// The version shown by a parent column, or by the result for None.
@@ -1163,7 +1149,7 @@ mod tests {
             String::from_utf8(output.stdout).unwrap().trim().to_owned()
         };
         let (base, head) = (short("HEAD^"), short("HEAD"));
-        check(diff(&["--cached"]), "-c", "HEAD", true);
+        check(diff(&["--cached"]), "-c", &head, true);
         check(diff(&["--cached"]), "+staged", "index", false);
         check(diff(&[]), "-staged", "index", false);
         check(diff(&[]), "+worktree", "working tree", false);

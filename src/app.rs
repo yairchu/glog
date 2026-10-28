@@ -156,6 +156,8 @@ pub struct App {
     submodules: HashMap<Vec<u8>, Box<App>>,
     submodule_rows: HashMap<usize, (Vec<u8>, usize)>,
     submodule_patch: Option<SubmodulePatch>,
+    /// The versions a `glog diff` patch compares, resolved when it loaded.
+    pub diff_sides: Option<Result<crate::blame::PatchSides, String>>,
 }
 
 impl App {
@@ -234,6 +236,7 @@ impl App {
             submodules: HashMap::new(),
             submodule_rows: HashMap::new(),
             submodule_patch: None,
+            diff_sides: None,
         };
         if let Some(root) = app
             .commits
@@ -1093,10 +1096,11 @@ impl App {
             ),
             None => {
                 let commit = app.commits.get(app.selected).ok_or("No commit selected")?;
-                (
-                    crate::blame::PatchSides::of(commit, selected.file, &top)?,
-                    commit.textconv(),
-                )
+                let sides = match &app.diff_sides {
+                    Some(sides) => sides.clone()?,
+                    None => crate::blame::PatchSides::of(commit, selected.file)?,
+                };
+                (sides, commit.textconv())
             }
         };
         crate::blame::load_patch(
