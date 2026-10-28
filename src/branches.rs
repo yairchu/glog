@@ -1021,6 +1021,23 @@ mod tests {
     }
 
     #[test]
+    fn tab_does_not_open_a_branch_log() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        let tree = git(&["write-tree"]);
+        let root = commit(&tree, "root", &[]);
+        let main = commit(&tree, "main", &[&root]);
+        let feature = commit(&tree, "feature", &[&root]);
+        git(&["update-ref", "refs/heads/main", &main]);
+        git(&["update-ref", "refs/heads/feature", &feature]);
+        let mut app = interactive();
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.history, History::Branches);
+        assert_eq!(app.mode, Mode::Log);
+    }
+
+    #[test]
     fn branch_logs_stop_at_forks_and_return_to_the_picker_without_checkout() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
