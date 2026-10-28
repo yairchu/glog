@@ -1,7 +1,12 @@
 //! `glog blame`: one row per line of a file, each carrying the commit that
 //! last changed it.
 
-use std::{collections::HashMap, io::Write, process::Stdio, sync::Arc};
+use std::{
+    collections::HashMap,
+    io::Write,
+    process::Stdio,
+    sync::{Arc, OnceLock},
+};
 
 #[cfg(test)]
 use std::process::Command;
@@ -21,6 +26,43 @@ const UNCOMMITTED_AUTHOR: &str = "Not committed yet";
 const MAX_AUTHOR_WIDTH: usize = 20;
 const USAGE: &str = "use glog blame [-L LINE] [--date=STYLE] [revision] [--] file";
 
+// Fixed at startup, so Blames opened from other views keep the session's dates.
+static SESSION_DATE: OnceLock<Option<String>> = OnceLock::new();
+
+pub fn initialize_date(args: &[String]) {
+    SESSION_DATE
+        .set(date_style(args))
+        .expect("blame date initialized once");
+}
+
+/// The date style a session's arguments request. As in Git, the last
+/// `--date` or `--relative-date` before `--` wins.
+fn date_style(args: &[String]) -> Option<String> {
+    let mut style = None;
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            break;
+        } else if crate::log_format::takes_pattern(arg) {
+            args.next();
+        } else if arg == "--date" {
+            style = args.next().cloned();
+        } else if let Some(value) = arg.strip_prefix("--date=") {
+            style = Some(value.to_owned());
+        } else if arg == "--relative-date" {
+            style = Some("relative".to_owned());
+        }
+    }
+    style
+}
+
+fn date_at(repository: Option<&git::Repository>) -> Result<String, String> {
+    match SESSION_DATE.get().cloned().flatten() {
+        Some(date) => Ok(date),
+        None => git::configured_log_date_at("format-local:%Y-%m-%d", repository),
+    }
+}
+
 /// A pinned file snapshot whose attribution has not been requested yet.
 pub struct FileRevision {
     revision: String,
@@ -30,7 +72,7 @@ pub struct FileRevision {
 
 impl FileRevision {
     pub fn blame(&self) -> Result<Vec<Commit>, String> {
-        let date = git::configured_log_date("format-local:%Y-%m-%d")?;
+        let date = date_at(Some(&self.repository))?;
         blame(
             Some(&self.revision),
             &self.path,
@@ -113,7 +155,7 @@ pub fn load_patch(
             })
             .ok_or("Could not locate the parent file")?,
     };
-    let date = git::configured_log_date_at("format-local:%Y-%m-%d", Some(&repository))?;
+    let date = date_at(Some(&repository))?;
     let rows = blame_version(&version, &path, &repository, &date, textconv)?;
     if rows.is_empty() {
         return Err("The file is empty at this revision".into());
@@ -526,7 +568,7 @@ fn load(args: &[String]) -> Result<(Vec<Commit>, usize), String> {
     };
     let date = match date {
         Some(date) => date,
-        None => git::configured_log_date("format-local:%Y-%m-%d")?,
+        None => date_at(None)?,
     };
     let rows = blame(revision, path.as_bytes(), None, &date)?;
     let selected = line

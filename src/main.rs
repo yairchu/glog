@@ -47,6 +47,7 @@ fn main() -> ExitCode {
         }
     };
     patch_options::initialize(color_moved);
+    blame::initialize_date(&command_args);
     let command_args = command_args.as_slice();
     let (log_format, log_options, log_args) = match if command == Command::Log {
         log_format::parse_args(command_args)
