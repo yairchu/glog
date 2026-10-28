@@ -1,6 +1,7 @@
 mod ansi;
 mod app;
 mod blame;
+mod branches;
 mod commit_links;
 mod diff;
 mod editor;
@@ -81,6 +82,14 @@ fn main() -> ExitCode {
         Command::Diff => git::load_diff_app(command_args),
         Command::Reflog => git::load_reflog(command_args).map(App::new),
         Command::Stash => stash::load_app(command_args),
+        Command::Branch => match branches::load(command_args) {
+            Ok(branches::Launch::Print(text)) => {
+                print!("{text}");
+                return ExitCode::SUCCESS;
+            }
+            Ok(branches::Launch::Interactive(app)) => Ok(*app),
+            Err(error) => Err(error),
+        },
         Command::Blame => blame::load(command_args).map(|(rows, selected)| {
             let mut app = App::new(rows);
             app.selected = selected;
@@ -161,6 +170,7 @@ enum Command {
     Reflog,
     Blame,
     Stash,
+    Branch,
     Show,
     Diff,
     Status,
@@ -171,6 +181,7 @@ fn parse_command(args: &[String]) -> (Command, &[String]) {
         Some("reflog") => (Command::Reflog, &args[1..]),
         Some("blame") => (Command::Blame, &args[1..]),
         Some("stash") => (Command::Stash, &args[1..]),
+        Some("branch") => (Command::Branch, &args[1..]),
         Some("status") => (Command::Status, &args[1..]),
         Some("show") => (Command::Show, &args[1..]),
         Some("diff") => (Command::Diff, &args[1..]),
@@ -194,6 +205,7 @@ const HELP: &str = "glog — an interactive git log and git show browser
 Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
             [--exit-on-esc]
        glog [log] [git log arguments] [--] [pathspec...]
+       glog branch [--date=STYLE]
        glog reflog [ref] [--all] [-n COUNT] [--date=STYLE]
        glog blame [-L LINE] [--date=STYLE] [revision] [--] file
        glog stash [list [-n COUNT] [--date=STYLE]]
@@ -206,7 +218,7 @@ Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
 Options:
   --pretty=format:FORMAT / --format=FORMAT
                 Format Log rows (%h %H %ad %an %ae %d %D %s %%)
-  --date=STYLE  Format Log, Blame, and Stash dates or Reflog update times
+  --date=STYLE  Format Log, Blame, Branch, and Stash dates or Reflog update times
                 using Git (e.g. short, relative, iso)
   -L LINE       Open Blame at a line
   --oneline     Use the compact hash, refs, and subject layout
@@ -226,6 +238,18 @@ Options:
   -h, --help    Print help
   -V, --version Print version
 
+Branch lists local branches and shared ancestors in a compact graph, including
+origin's stored default tip (origin/HEAD, or origin/main / origin/master).
+Rows use Git's standard ref decorations and show the last branch-ref update
+from its reflog, or the newest update when branch tips coincide. Shared
+ancestors and tips without reflogs use the commit date as a fallback.
+Use --date=STYLE or d to format or hide dates.
+Enter or click opens the commits since the next shared node; Backspace or
+Escape returns from that Log. Roots and merged branches show full history.
+Merged tips do not cut off other Logs unless they are also a shared ancestor
+of open branches. Merged status uses the local branch named by origin/HEAD,
+falling back to main or master. With only the current branch (or no branches),
+print git branch output and exit.
 Status opens the Working tree detail view in a watch session.
 Watch mode includes one Working tree item; commits open Show.
 Log shows committed history, loaded once unless --watch is used.
@@ -504,6 +528,8 @@ mod tests {
             ),
             (vec!["log", "blame"], Command::Log, vec!["blame"]),
             (vec!["log", "reflog"], Command::Log, vec!["reflog"]),
+            (vec!["branch"], Command::Branch, vec![]),
+            (vec!["log", "branch"], Command::Log, vec!["branch"]),
             (vec!["stash"], Command::Stash, vec![]),
             (
                 vec!["stash", "show", "1"],

@@ -45,9 +45,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         History::Blame if file_view => "File",
         History::Blame => "Blame",
         History::Stash => "Stash",
+        History::Branches => "Branches",
     };
-    // The file view has no commit to open.
-    let labels: &[&str] = match (has_log, file_view) {
+    // File and Branches have no detail tab; branches open a separate Log.
+    let labels: &[&str] = match (has_log, file_view || app.history == History::Branches) {
         (false, _) => &[],
         (true, true) => &[log_label],
         (true, false) => &[log_label, detail],
@@ -126,6 +127,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         format!("{prefix}{input}█")
     } else if let Some(message) = app.message() {
         message.to_owned()
+    } else if app.history == History::Branches {
+        "h help  q quit  ↑/k ↓/j  Enter/click branch log  d date  / ? search".to_owned()
     } else if app.mode == Mode::Log && app.history == History::Reflog {
         "h help  q quit  ↑/k ↓/j  ←/→ entry  Enter show  z fold  / ? search".to_owned()
     } else if app.mode == Mode::Log && app.history == History::Stash {
@@ -166,6 +169,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 History::Blame if file_view => HelpView::File,
                 History::Blame => HelpView::Blame,
                 History::Stash => HelpView::Stash,
+                History::Branches => HelpView::Branches,
             },
         );
     }
@@ -181,6 +185,7 @@ enum HelpView {
     /// Show, Diff, or Status without a Log to return to.
     Detail,
     File,
+    Branches,
 }
 
 /// A key and its description in the Log, Reflog, Blame, Stash, Detail, and File
@@ -431,6 +436,30 @@ const HELP_ROWS: &[HelpRow] = &[
 ];
 
 fn help_text(view: HelpView) -> String {
+    if matches!(view, HelpView::Branches) {
+        return "  ↑/k, ↓/j          select a branch or shared ancestor
+  Enter / click     open its log up to the next shared node
+  Page Up/Down      page through branches
+  Home/End          first / last node
+  d                 show / hide dates
+  /, ?              search forward / backward
+  n, N              repeat / reverse search
+  Backspace / Esc   return here from a branch Log
+  Ctrl-L            redraw the screen
+  h / Escape        close help
+  q                 quit (or close help)
+
+  Refs use the same decorations as Log.
+  Branches at the same commit share a node.
+  Dates show the latest ref update, or the commit date.
+  The remote default tip is labelled, e.g. origin/main.
+  ◆ current branch   ● local branch   ○ remote tip
+  ● shared ancestor (where histories meet)
+  ⋮ continues into omitted older history.
+  Merged branches open their full history.
+  Merged tips alone do not cut off other Logs."
+            .into();
+    }
     HELP_ROWS
         .iter()
         .filter_map(|(key, texts)| {
@@ -568,7 +597,10 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
         .enumerate()
         .take(app.selected)
         .filter(|(i, _)| app.log_folds.graph_visible(*i))
-        .map(|(i, commit)| app.log_folds.display_height(i, commit))
+        .map(|(i, commit)| {
+            app.log_folds.display_height(i, commit)
+                + usize::from(commit.branch().is_some_and(|node| node.continues))
+        })
         .sum::<usize>()
         + usize::from(separator_before.is_some_and(|index| app.selected >= index));
     let selected_subject_row = selected_start_row
@@ -576,14 +608,21 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             .log_folds
             .display_height(app.selected, &app.commits[app.selected])
             .saturating_sub(1);
+    let selected_end_row = selected_subject_row
+        + usize::from(
+            height > 1
+                && app.commits[app.selected]
+                    .branch()
+                    .is_some_and(|node| node.continues),
+        );
     if !app.log_folds.visible(app.selected) {
         app.log_offset = 0;
     } else if std::mem::take(&mut app.center_selection) {
         app.log_offset = selected_subject_row.saturating_sub(height / 2);
     } else if selected_subject_row < app.log_offset {
         app.log_offset = selected_start_row;
-    } else if selected_subject_row >= app.log_offset + height.max(1) {
-        app.log_offset = selected_subject_row + 1 - height.max(1);
+    } else if selected_end_row >= app.log_offset + height.max(1) {
+        app.log_offset = selected_end_row + 1 - height.max(1);
     }
     if app.history == History::Blame {
         // Blame rows are one line each; keep the last line at the bottom.
@@ -623,7 +662,8 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             graph_row += 1;
         }
         // Rows above the screen are counted without drawing them.
-        let rows = app.log_folds.display_height(index, commit);
+        let continues = commit.branch().is_some_and(|node| node.continues);
+        let rows = app.log_folds.display_height(index, commit) + usize::from(continues);
         if graph_row + rows <= app.log_offset {
             graph_row += rows;
             continue;
@@ -644,6 +684,8 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                         format!("{} ", app.log_folds.marker(index).unwrap_or(" ")),
                         Style::default().fg(Color::Yellow),
                     ));
+                } else if let Some(node) = commit.branch() {
+                    line = node.style_graph(line, commit.graph_node, index == app.selected);
                 } else if let Some(marker) = app.log_folds.marker(index) {
                     // Git's graph and the ASCII fallback keep Git's node marker.
                     let nodes = [
@@ -687,6 +729,36 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 (routing_selectable || !graph_only && part + 1 == graph_rows.len())
                     .then_some(index),
             );
+            graph_row += 1;
+        }
+        if continues {
+            if graph_row >= app.log_offset {
+                if lines.len() >= height {
+                    break;
+                }
+                // Follow the terminal node's column and colour, preserving any
+                // other lanes passing through it. This is a visual edge, not a
+                // synthetic commit that selection or Log ranges could include.
+                let mut line = ansi::parse_line(graph_rows.last().unwrap());
+                let unicode_node = crate::log_folds::unicode_node(commit.graph_node);
+                if let Some(span) = line
+                    .spans
+                    .iter_mut()
+                    .find(|span| span.content.contains([commit.graph_node, unicode_node]))
+                {
+                    span.content = span
+                        .content
+                        .replacen(unicode_node, "⋮", 1)
+                        .replacen(commit.graph_node, ":", 1)
+                        .into();
+                }
+                line.spans.push(Span::styled(
+                    "older history",
+                    Style::default().fg(Color::Gray),
+                ));
+                lines.push(line);
+                app.visible_log_rows.push(None);
+            }
             graph_row += 1;
         }
     }

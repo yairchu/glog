@@ -149,6 +149,7 @@ impl LogFormat {
             Some(Annotation::Blame(line)) => {
                 return crate::blame::spans(commit, line, line.starts_chunk, self)
             }
+            Some(Annotation::Branch(node)) => return crate::branches::spans(commit, node, self),
             None => {}
         }
         // Synthetic entries must remain identifiable even in author-only formats.
@@ -200,27 +201,21 @@ impl LogFormat {
             } else {
                 text
             };
-            let style = match part.field {
-                Field::Hash => Style::default().fg(Color::Yellow),
-                Field::Date => Style::default().fg(Color::Gray),
-                Field::Author => Style::default().fg(Color::Cyan),
-                Field::Refs => Style::default().fg(Color::Green),
-                Field::Subject => Style::default(),
-            };
+            let span = field_span(part.field, text);
             if part.field == Field::Subject
                 && crate::log_folds::commit_type_prefix(commit).is_some()
             {
                 // Preserve format literals and the subject's original spelling.
-                let start = text.len() - value.len() - part.suffix.len();
+                let start = span.content.len() - value.len() - part.suffix.len();
                 spans.extend(
                     crate::ansi::style_ranges(
-                        ratatui::text::Line::from(Span::styled(text, style)),
+                        ratatui::text::Line::from(span),
                         crate::message_format::subject_ranges(&value, start),
                     )
                     .spans,
                 );
             } else {
-                spans.push(Span::styled(text, style));
+                spans.push(span);
             }
             if Some(index) == last_author {
                 spans.extend(coauthor_badge(&commit.collaborators));
@@ -283,6 +278,18 @@ pub fn coauthor_badge(collaborators: &Collaborators) -> Vec<Span<'static>> {
         Span::styled("+", Style::default().fg(Color::Rgb(160, 160, 160))),
         badge,
     ]
+}
+
+/// Shared styling for fields in Log and the branch graph.
+pub(crate) fn field_span(field: Field, text: String) -> Span<'static> {
+    let style = match field {
+        Field::Hash => Style::default().fg(Color::Yellow),
+        Field::Date => Style::default().fg(Color::Gray),
+        Field::Author => Style::default().fg(Color::Cyan),
+        Field::Refs => Style::default().fg(Color::Green),
+        Field::Subject => Style::default(),
+    };
+    Span::styled(text, style)
 }
 
 fn reflog_spans(commit: &Commit, entry: &ReflogEntry) -> Vec<Span<'static>> {

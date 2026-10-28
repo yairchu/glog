@@ -106,6 +106,7 @@ fn apply(event: Event, app: &mut App) {
                     History::Log => true,
                     History::Blame => Field::ATTRIBUTION.contains(field),
                     History::Stash => matches!(field, Field::Author | Field::Date),
+                    History::Branches => field == &Field::Date,
                     History::Reflog => false,
                 })
             }
@@ -146,6 +147,7 @@ fn apply(event: Event, app: &mut App) {
             KeyCode::Esc if app.history == History::Blame && app.has_blame_back() => {
                 app.blame_back()
             }
+            KeyCode::Esc if app.has_branch_back() => app.reference_back(),
             // Leave a followed reference before exiting to the calling tool.
             KeyCode::Esc if app.exit_on_esc && app.has_reference_back() => app.reference_back(),
             KeyCode::Esc if app.exit_on_esc => app.quit = true,
@@ -230,7 +232,8 @@ fn apply(event: Event, app: &mut App) {
             {
                 let row = usize::from(mouse.row - app.log_row_origin);
                 if let Some(Some(selected)) = app.visible_log_rows.get(row).copied() {
-                    if app.selected == selected {
+                    if app.selected == selected || app.history == History::Branches {
+                        app.selected = selected;
                         app.switch_mode();
                     } else {
                         app.selected = selected;

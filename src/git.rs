@@ -96,6 +96,7 @@ pub enum Annotation {
     Reflog(ReflogEntry),
     Blame(crate::blame::BlameLine),
     Stash(crate::stash::StashEntry),
+    Branch(crate::branches::BranchNode),
 }
 
 impl Commit {
@@ -119,6 +120,13 @@ impl Commit {
     pub fn reflog(&self) -> Option<&ReflogEntry> {
         match &self.annotation {
             Some(Annotation::Reflog(entry)) => Some(entry),
+            _ => None,
+        }
+    }
+
+    pub fn branch(&self) -> Option<&crate::branches::BranchNode> {
+        match &self.annotation {
+            Some(Annotation::Branch(node)) => Some(node),
             _ => None,
         }
     }

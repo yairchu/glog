@@ -38,6 +38,7 @@ pub enum History {
     Reflog,
     Blame,
     Stash,
+    Branches,
 }
 
 /// A blame view to return to after blaming a parent.
@@ -162,6 +163,7 @@ impl App {
                 Some(git::Annotation::Reflog(_)) => History::Reflog,
                 Some(git::Annotation::Blame(_)) => History::Blame,
                 Some(git::Annotation::Stash(_)) => History::Stash,
+                Some(git::Annotation::Branch(_)) => History::Branches,
             },
             commits,
             pending_blame: None,
@@ -233,7 +235,7 @@ impl App {
         {
             app.set_repository(Some(root));
         }
-        if app.history == History::Reflog {
+        if matches!(app.history, History::Reflog | History::Branches) {
             app.refresh_log_folds();
         }
         app
@@ -327,6 +329,10 @@ impl App {
     }
 
     pub fn switch_mode(&mut self) {
+        if self.history == History::Branches {
+            self.open_branch();
+            return;
+        }
         if self.mode == Mode::Log && self.refuse_in_file_view() {
             return;
         }
@@ -1742,6 +1748,39 @@ impl App {
             .partition_point(|&start| start <= screen)
             .saturating_sub(1)
             .min(self.show_rows.len().saturating_sub(1))
+    }
+
+    fn open_branch(&mut self) {
+        let Some(node) = self.commits.get(self.selected) else {
+            return;
+        };
+        let args = crate::branches::log_args(node, &self.commits);
+        let label = node
+            .branch()
+            .and_then(|node| {
+                node.branches
+                    .iter()
+                    .find(|branch| branch.current)
+                    .or_else(|| node.branches.first())
+            })
+            .map_or_else(|| node.short_hash.clone(), |branch| branch.name.clone());
+        let loaded = git::load_log_at(&args, self.repository.as_deref()).and_then(|commits| {
+            if commits.is_empty() {
+                return Err("No commits between this node and its shared ancestors".into());
+            }
+            let mut target = App::new(commits);
+            self.prepare_followed(&mut target);
+            target.context = format!("log {label}");
+            target.refresh_log_folds();
+            Ok(target)
+        });
+        self.enter_followed(loaded);
+    }
+
+    pub fn has_branch_back(&self) -> bool {
+        self.reference_back
+            .as_ref()
+            .is_some_and(|origin| origin.history == History::Branches)
     }
 
     pub fn has_reference_back(&self) -> bool {
