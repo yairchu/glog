@@ -664,14 +664,19 @@ fn blame_with_textconv(
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|error| format!("could not run git blame: {error}"))?;
-    if let (Some(contents), Some(mut stdin)) = (contents, child.stdin.take()) {
-        // Git reads all contents before it writes any output. It closes its
-        // input early only on errors, which its exit status reports.
-        let _ = stdin.write_all(contents);
-    }
-    let output = child
-        .wait_with_output()
-        .map_err(|error| format!("could not run git blame: {error}"))?;
+    let stdin = child.stdin.take();
+    let output = std::thread::scope(|scope| {
+        if let (Some(contents), Some(mut stdin)) = (contents, stdin) {
+            // Write while reading, so Git can't block on a full stderr pipe
+            // before it reads all contents. It closes its input early only on
+            // errors, which its exit status reports.
+            scope.spawn(move || {
+                let _ = stdin.write_all(contents);
+            });
+        }
+        child.wait_with_output()
+    })
+    .map_err(|error| format!("could not run git blame: {error}"))?;
     if !output.status.success() {
         return Err(git::stderr_message("git blame failed", &output.stderr));
     }
