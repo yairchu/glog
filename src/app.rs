@@ -1341,7 +1341,7 @@ impl App {
                         crate::images::sources(
                             &lines[file.start..file.end].join("\n"),
                             git::raw_path(&file.path_bytes),
-                            &self.images.root,
+                            self.show_repository().unwrap_or(&self.images.root),
                             self.commits.get(self.selected).is_some_and(|c| {
                                 matches!(
                                     c.kind,
@@ -1608,7 +1608,6 @@ impl App {
                     Ok((root, text)) => {
                         let mut child = App::new(Vec::new());
                         child.images.enabled = self.images.enabled;
-                        child.images.root = root.clone();
                         child.submodule_patch = Some(SubmodulePatch {
                             root,
                             old: old.clone(),
