@@ -782,7 +782,7 @@ impl App {
         {
             return;
         }
-        let text = match git::show(commit, &self.show_paths) {
+        let text = match git::show_at(commit, &self.show_paths, self.repository.as_deref()) {
             Ok(text) => text,
             Err(error) => {
                 self.status = Some(error);
