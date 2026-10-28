@@ -2147,6 +2147,28 @@ mod tests {
     }
 
     #[test]
+    fn blame_parent_maps_lines_through_the_blamed_text_conversion() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write(".gitattributes", "file.txt diff=readable\n").unwrap();
+        git(&["config", "diff.readable.textconv", "sed '/^#/d'"]);
+        fs::write("file.txt", "#\n#\na\nb\nc\nd\ne\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        // Removing the hidden lines shifts raw line numbers, but not the
+        // converted ones that blame shows.
+        fs::write("file.txt", "a\nb\nC\nd\ne\n").unwrap();
+        git(&["commit", "-qam", "edit"]);
+
+        let (rows, _) = load(&["file.txt".into()]).unwrap();
+        let commit = &rows[2];
+        assert_eq!(code(commit.blame().unwrap()), "C");
+        let (parent, selected) = load_parent(commit, commit.blame().unwrap()).unwrap();
+        assert_eq!(code(parent[selected].blame().unwrap()), "c");
+    }
+
+    #[test]
     fn blame_parent_ignores_configured_inter_hunk_context() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
