@@ -1257,6 +1257,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn review_blame_converts_the_working_tree_before_the_first_commit() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write(".git/info/attributes", "*.txt diff=readable\n").unwrap();
+        git(&["config", "diff.readable.textconv", "sed '1d'"]);
+        fs::write("file.txt", "header\na\nstaged\n").unwrap();
+        git(&["add", "."]);
+        fs::write("file.txt", "header\na\nworktree\n").unwrap();
+
+        let mut app = select_line(crate::git::load_diff_app(&[]).unwrap(), "+worktree");
+        press(&mut app, KeyCode::Char('B'));
+        assert_eq!(app.status, None);
+        assert_eq!(app.context, "blame working tree -- file.txt");
+        // The patch numbers lines in the converted text.
+        assert_eq!(app.selected, 1);
+        assert_eq!(code(app.commits[1].blame().unwrap()), "worktree");
+    }
+
     #[cfg(unix)]
     #[test]
     fn review_blame_reads_an_untracked_symlink_as_its_target_path() {
