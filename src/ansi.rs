@@ -44,11 +44,16 @@ pub fn parse_line(input: &str) -> Line<'static> {
 const TAB_WIDTH: usize = 8;
 
 /// Expand tabs and replace control characters, keeping each span's style.
+/// A CRLF line's carriage return is hidden, as in Git's pager.
 pub fn display_spans(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    let last = spans.iter().rposition(|span| !span.content.is_empty());
     let mut column = 0;
     let mut output = Vec::with_capacity(spans.len());
-    for span in spans {
-        let content = span.content.strip_suffix('\r').unwrap_or(&span.content);
+    for (index, span) in spans.into_iter().enumerate() {
+        let content = match span.content.strip_suffix('\r') {
+            Some(content) if Some(index) == last => content,
+            _ => &span.content,
+        };
         let mut text = String::with_capacity(content.len());
         for (index, segment) in content.split('\t').enumerate() {
             if index > 0 {
