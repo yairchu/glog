@@ -954,6 +954,17 @@ mod tests {
                         "replacement"
                     );
                 }
+                // Backspace in a parent blame's Show steps back through it, too.
+                press(&mut app, KeyCode::Char('p'));
+                press(&mut app, KeyCode::Enter);
+                assert_eq!(app.mode, Mode::Show);
+                press(&mut app, KeyCode::Backspace);
+                assert_eq!(app.history, History::Blame);
+                assert_eq!(app.mode, Mode::Log);
+                assert_eq!(
+                    code(app.commits[app.selected].blame().unwrap()),
+                    "replacement"
+                );
             }
             press(&mut app, KeyCode::Backspace);
             assert_eq!(app.mode, Mode::Show);
