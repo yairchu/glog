@@ -27,12 +27,12 @@ pub fn collect(text: &str, repository: &mut Option<Option<String>>) -> HashMap<u
     collect_at(text, repository, None)
 }
 
-/// `repository` caches the GitHub repository for `directory`; look it up
+/// `repository` caches the GitHub repository for `git_repository`; look it up
 /// only once an issue reference or URL appears.
 pub fn collect_at(
     text: &str,
     repository: &mut Option<Option<String>>,
-    directory: Option<&std::path::Path>,
+    git_repository: Option<&crate::git::Repository>,
 ) -> HashMap<usize, Vec<Link>> {
     enum Candidate<'a> {
         Commit(&'a str),
@@ -59,7 +59,7 @@ pub fn collect_at(
                 if url.start >= start {
                     let url_text = &plain[url.clone()];
                     let local = repository
-                        .get_or_insert_with(|| crate::git::github_repository_at(directory))
+                        .get_or_insert_with(|| crate::git::github_repository_at(git_repository))
                         .as_deref()
                         .and_then(|repository| local(url_text, repository));
                     candidates.push((
@@ -117,7 +117,7 @@ pub fn collect_at(
                 Candidate::Url(_, Some(Local::Range(base, head))) => vec![*base, *head],
                 Candidate::Issue(_) | Candidate::Url(_, None) => Vec::new(),
             }),
-        directory,
+        git_repository,
     );
     let commit = |hash: &str| resolved.get(hash).cloned();
     let mut links = HashMap::new();
@@ -125,7 +125,7 @@ pub fn collect_at(
         let target = match candidate {
             Candidate::Commit(hash) => commit(hash).map(Target::Commit),
             Candidate::Issue(number) => repository
-                .get_or_insert_with(|| crate::git::github_repository_at(directory))
+                .get_or_insert_with(|| crate::git::github_repository_at(git_repository))
                 .as_ref()
                 .map(|repo| Target::Url(format!("{repo}/issues/{number}"))),
             Candidate::Url(url, local) => Some(

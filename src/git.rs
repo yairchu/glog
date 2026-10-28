@@ -12,6 +12,9 @@ const FIELD: char = '\x1f';
 const COAUTHOR: char = '\x1d';
 
 mod empty_commits;
+mod repository;
+
+pub(crate) use repository::Repository;
 
 // Patch paths are parsed relative to the repository, independent of user
 // preferences such as diff.relative, diff.noprefix and diff.mnemonicPrefix.
@@ -31,11 +34,17 @@ pub(crate) fn read_command() -> Command {
 }
 
 /// Build a reader for an explicitly selected repository without changing process state.
-pub(crate) fn read_command_at(directory: Option<&std::path::Path>) -> Command {
-    let mut command = read_command();
-    if let Some(directory) = directory {
-        repository_env(&mut command, directory).current_dir(directory);
+pub(crate) fn read_command_at(repository: Option<&Repository>) -> Command {
+    match repository {
+        Some(repository) => read_command_in(repository.directory()),
+        None => read_command(),
     }
+}
+
+/// Build a reader running in `directory`, a working tree or Git directory.
+pub(crate) fn read_command_in(directory: &std::path::Path) -> Command {
+    let mut command = read_command();
+    repository_env(&mut command, directory).current_dir(directory);
     command
 }
 
@@ -44,8 +53,19 @@ pub(crate) fn patch_command() -> Command {
 }
 
 /// Apply preferences in the repository being queried, including submodules.
-pub(crate) fn patch_command_at(directory: Option<&std::path::Path>) -> Command {
-    let mut command = read_command_at(directory);
+pub(crate) fn patch_command_at(repository: Option<&Repository>) -> Command {
+    match repository {
+        Some(repository) => patch_command_in(repository.directory()),
+        None => patch_options(read_command(), None),
+    }
+}
+
+/// [`patch_command_at`] for a repository running in `directory`.
+pub(crate) fn patch_command_in(directory: &std::path::Path) -> Command {
+    patch_options(read_command_in(directory), Some(directory))
+}
+
+fn patch_options(mut command: Command, directory: Option<&std::path::Path>) -> Command {
     // Patches pass through UTF-8 text (and optionally delta) before parsing.
     // Quote non-ASCII path bytes so this conversion cannot lose file identities.
     command.args(["-c", "core.quotePath=true"]);
@@ -349,9 +369,9 @@ pub(crate) fn configured_log_date(fallback: &str) -> Result<String, String> {
 
 pub(crate) fn configured_log_date_at(
     fallback: &str,
-    directory: Option<&std::path::Path>,
+    repository: Option<&Repository>,
 ) -> Result<String, String> {
-    let configured_date = read_command_at(directory)
+    let configured_date = read_command_at(repository)
         .args(["config", "--get", "log.date"])
         .output()
         .map_err(|error| format!("could not read Git date configuration: {error}"))?;
@@ -368,18 +388,15 @@ pub(crate) fn configured_log_date_at(
     }
 }
 
-fn log_command(
-    user_args: &[String],
-    directory: Option<&std::path::Path>,
-) -> Result<Command, String> {
-    let mut command = read_command_at(directory);
+fn log_command(user_args: &[String], repository: Option<&Repository>) -> Result<Command, String> {
+    let mut command = read_command_at(repository);
     command.env("LC_ALL", "C");
     // Use configuration so --date and --relative-date retain their precedence.
     command.args([
         "-c",
         &format!(
             "log.date={}",
-            configured_log_date_at("format-local:%Y-%m-%d %H:%M", directory)?
+            configured_log_date_at("format-local:%Y-%m-%d %H:%M", repository)?
         ),
     ]);
     command.args(["--no-pager", "log"]);
@@ -401,9 +418,9 @@ pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
 
 pub fn load_log_at(
     user_args: &[String],
-    directory: Option<&std::path::Path>,
+    repository: Option<&Repository>,
 ) -> Result<Vec<Commit>, String> {
-    let output = log_command(user_args, directory)?
+    let output = log_command(user_args, repository)?
         .output()
         .map_err(|error| {
             if error.kind() == std::io::ErrorKind::NotFound {
@@ -436,7 +453,7 @@ pub fn load_log_at(
     for commit in &mut commits {
         commit.first_parent_only = first_parent_only;
     }
-    empty_commits::mark(&mut commits, directory);
+    empty_commits::mark(&mut commits, repository);
     Ok(commits)
 }
 
@@ -488,7 +505,7 @@ pub fn log_ancestry(commits: &[Commit], known: usize) -> AncestryRead {
 pub fn log_ancestry_at(
     commits: &[Commit],
     known: usize,
-    directory: Option<&std::path::Path>,
+    repository: Option<&Repository>,
 ) -> AncestryRead {
     let revisions: Vec<_> = commits
         .iter()
@@ -514,7 +531,7 @@ pub fn log_ancestry_at(
         input.push('\n');
     }
     let first_parent = revisions.iter().any(|commit| commit.first_parent_only);
-    let mut command = read_command_at(directory);
+    let mut command = read_command_at(repository);
     Box::new(move |cancel| {
         command
             .args(["rev-list", "--parents", "--stdin"])
@@ -567,7 +584,7 @@ pub fn load_show_app(args: &[String]) -> Result<crate::app::App, String> {
 /// Show text loads.
 pub fn load_show_app_with(
     args: &[String],
-    directory: Option<&std::path::Path>,
+    repository: Option<&Repository>,
     prepare: impl FnOnce(&mut crate::app::App),
 ) -> Result<crate::app::App, String> {
     let separator = args
@@ -586,14 +603,14 @@ pub fn load_show_app_with(
     };
     // An unresolvable revision keeps Git's error, rather than one about a
     // file found by splitting a search pattern such as :/fix: at a colon.
-    let object = resolve_revision(revision, directory)?;
-    let hash = match peel_commit(&object, directory) {
+    let object = resolve_revision(revision, repository)?;
+    let hash = match peel_commit(&object, repository) {
         Ok(hash) => hash,
         Err(error) => {
             // Let Git interpret revision syntax: braces can be literal in ref
             // names and search patterns, and selectors can contain colons.
             for (index, _) in revision.match_indices(':') {
-                if let Ok(hash) = resolve_show_commit(&revision[..index], directory) {
+                if let Ok(hash) = resolve_show_commit(&revision[..index], repository) {
                     if stat || separator != args.len() {
                         return Err("use glog show REV:path without --stat or path filters".into());
                     }
@@ -603,9 +620,12 @@ pub fn load_show_app_with(
             return Err(error);
         }
     };
-    let commits = load_log_at(&["-1".to_owned(), hash.clone(), "--".to_owned()], directory)?;
+    let commits = load_log_at(
+        &["-1".to_owned(), hash.clone(), "--".to_owned()],
+        repository,
+    )?;
     let mut app = crate::app::App::new(commits);
-    app.set_repository(directory.map(std::path::Path::to_path_buf));
+    app.set_repository(repository.cloned());
     app.show_stat = stat;
     app.show_paths = args.get(separator + 1..).unwrap_or_default().to_vec();
     let mut history = if revisions.is_empty() {
@@ -628,8 +648,8 @@ pub(crate) fn github_repository() -> Option<String> {
 
 /// Use origin if it exists; otherwise the sole GitHub repository among the remotes.
 /// Preserve a stored GitHub URL even if transport is rewritten; resolve aliases locally.
-pub(crate) fn github_repository_at(directory: Option<&std::path::Path>) -> Option<String> {
-    let output = read_command_at(directory)
+pub(crate) fn github_repository_at(repository: Option<&Repository>) -> Option<String> {
+    let output = read_command_at(repository)
         .args(["config", "--get-regexp", r"^remote\..*\.url$"])
         .output()
         .ok()?;
@@ -649,7 +669,7 @@ pub(crate) fn github_repository_at(directory: Option<&std::path::Path>) -> Optio
     }
     let repository = |(remote, stored): (&str, &str)| {
         github_repository_url(stored).or_else(|| {
-            let output = read_command_at(directory)
+            let output = read_command_at(repository)
                 .args(["remote", "get-url", remote])
                 .output()
                 .ok()?;
@@ -713,7 +733,7 @@ fn github_repository_url(remote: &str) -> Option<String> {
 /// checks every hash, plus one per hash that a hex-like ref name shadows.
 pub(crate) fn resolve_commits<'a>(
     hashes: impl IntoIterator<Item = &'a str>,
-    directory: Option<&std::path::Path>,
+    repository: Option<&Repository>,
 ) -> std::collections::HashMap<String, String> {
     let mut hashes: Vec<_> = hashes.into_iter().collect();
     hashes.sort_unstable();
@@ -724,7 +744,7 @@ pub(crate) fn resolve_commits<'a>(
             .map(|object| format!("{object}^{{commit}}\n"))
             .collect();
         let output = pipe_through(
-            read_command_at(directory)
+            read_command_at(repository)
                 .args(["cat-file", "--batch-check=%(objectname)"])
                 .env("GIT_NO_LAZY_FETCH", "1"),
             input.as_bytes(),
@@ -747,7 +767,7 @@ pub(crate) fn resolve_commits<'a>(
         if resolved.get(hash).is_none_or(|full| full.starts_with(hash)) {
             continue;
         }
-        let objects = read_command_at(directory)
+        let objects = read_command_at(repository)
             .args(["rev-parse", &format!("--disambiguate={hash}")])
             .env("GIT_NO_LAZY_FETCH", "1")
             .stderr(Stdio::null())
@@ -783,15 +803,12 @@ pub(crate) fn commit_message_range(text: &str) -> std::ops::Range<usize> {
     start..end
 }
 
-fn resolve_show_commit(
-    revision: &str,
-    directory: Option<&std::path::Path>,
-) -> Result<String, String> {
-    peel_commit(&resolve_revision(revision, directory)?, directory)
+fn resolve_show_commit(revision: &str, repository: Option<&Repository>) -> Result<String, String> {
+    peel_commit(&resolve_revision(revision, repository)?, repository)
 }
 
-fn resolve_revision(revision: &str, directory: Option<&std::path::Path>) -> Result<String, String> {
-    let output = read_command_at(directory)
+fn resolve_revision(revision: &str, repository: Option<&Repository>) -> Result<String, String> {
+    let output = read_command_at(repository)
         .args(["rev-parse", "--verify", "--end-of-options", revision])
         .output()
         .map_err(|error| format!("could not resolve revision: {error}"))?;
@@ -800,7 +817,7 @@ fn resolve_revision(revision: &str, directory: Option<&std::path::Path>) -> Resu
     }
     // rev-parse --verify only says it needed a single revision; cat-file
     // names the missing object or path.
-    let stderr = read_command_at(directory)
+    let stderr = read_command_at(repository)
         .args(["cat-file", "-t", revision])
         .output()
         .ok()
@@ -810,8 +827,8 @@ fn resolve_revision(revision: &str, directory: Option<&std::path::Path>) -> Resu
 }
 
 /// The commit HEAD points to, or None on an unborn branch.
-pub(crate) fn head_commit(directory: Option<&std::path::Path>) -> Result<Option<String>, String> {
-    let output = read_command_at(directory)
+pub(crate) fn head_commit(repository: Option<&Repository>) -> Result<Option<String>, String> {
+    let output = read_command_at(repository)
         .args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
         .output()
         .map_err(|error| format!("could not resolve HEAD: {error}"))?;
@@ -826,8 +843,8 @@ pub(crate) fn head_commit(directory: Option<&std::path::Path>) -> Result<Option<
 
 /// Peel a resolved object: after REV:, Git treats an appended ^{commit} as
 /// part of the filename instead of a type requirement.
-fn peel_commit(object: &str, directory: Option<&std::path::Path>) -> Result<String, String> {
-    let output = read_command_at(directory)
+fn peel_commit(object: &str, repository: Option<&Repository>) -> Result<String, String> {
+    let output = read_command_at(repository)
         .args(["rev-parse", "--verify", "--end-of-options"])
         .arg(format!("{object}^{{commit}}"))
         .output()
@@ -956,11 +973,11 @@ fn comparison_options(options: &[String]) -> (bool, Vec<&String>) {
 /// excluded ones.
 fn resolve_revisions(
     revisions: &[&String],
-    directory: Option<&std::path::Path>,
+    repository: Option<&Repository>,
 ) -> Result<Vec<String>, String> {
     // One argument can expand to multiple endpoints (HEAD^!, HEAD^-),
     // while HEAD^@ can expand to just one parent or none for a root commit.
-    let output = read_command_at(directory)
+    let output = read_command_at(repository)
         .args(["rev-parse", "--revs-only", "--end-of-options"])
         .args(revisions)
         .arg("--")
@@ -993,10 +1010,10 @@ pub enum Version {
 /// None when it is an unborn HEAD.
 fn comparison_sides(
     diff_args: &[String],
-    directory: Option<&std::path::Path>,
+    repository: Option<&Repository>,
 ) -> Result<Option<(Option<Version>, Version)>, String> {
     let (cached, revisions) = comparison_options(diff_args);
-    let resolved = resolve_revisions(&revisions, directory)?;
+    let resolved = resolve_revisions(&revisions, repository)?;
     let (excluded, included): (Vec<_>, Vec<_>) = resolved
         .iter()
         .partition(|revision| revision.starts_with('^'));
@@ -1012,7 +1029,7 @@ fn comparison_sides(
         // shows a combined diff for it.
         ([old], [new]) | ([old, ..], [new, _]) => Some((Some(revision(&old[1..])), revision(new))),
         ([], []) if cached => Some((
-            head_commit(directory)?.map(Version::Revision),
+            head_commit(repository)?.map(Version::Revision),
             Version::Index,
         )),
         ([], []) => Some((Some(Version::Index), Version::Worktree)),
@@ -1201,7 +1218,7 @@ pub fn show(commit: &Commit, paths: &[String]) -> Result<String, String> {
 pub fn show_at(
     commit: &Commit,
     paths: &[String],
-    directory: Option<&std::path::Path>,
+    repository: Option<&Repository>,
 ) -> Result<String, String> {
     if let Some(Annotation::Stash(entry)) = &commit.annotation {
         return crate::stash::show(commit, entry);
@@ -1214,7 +1231,7 @@ pub fn show_at(
             show_diff(&args, paths)
         }
         CommitKind::Revision => {
-            let text = show_revision(commit, paths, directory)?;
+            let text = show_revision(commit, paths, repository)?;
             Ok(mark_agent_coauthors(
                 &text,
                 &commit.collaborators.agent_trailers,
@@ -1231,9 +1248,9 @@ pub fn show_at(
 fn show_revision(
     commit: &Commit,
     paths: &[String],
-    directory: Option<&std::path::Path>,
+    repository: Option<&Repository>,
 ) -> Result<String, String> {
-    let mut command = patch_command_at(directory);
+    let mut command = patch_command_at(repository);
     command.args(["--no-pager", "show"]);
     if !commit.textconv() {
         command.arg("--no-textconv");
@@ -1361,15 +1378,14 @@ fn show_unstaged(paths: &[String]) -> Result<String, String> {
 
 /// Read only local objects; never fetch or compare against the current checkout.
 pub fn show_submodule(
-    root: Option<&std::path::Path>,
+    repository: Option<&Repository>,
     path: impl AsRef<std::path::Path>,
     old: &str,
     new: &str,
-) -> Result<(std::path::PathBuf, String), String> {
-    let root = if let Some(root) = root {
-        root.to_owned()
-    } else {
-        repository_root()?
+) -> Result<(Repository, String), String> {
+    let root = match repository {
+        Some(repository) => repository.work_tree()?.to_owned(),
+        None => repository_root()?,
     };
     let directory = root.join(path.as_ref());
     let path = path.as_ref().display();
@@ -1378,7 +1394,7 @@ pub fn show_submodule(
     if !directory.join(".git").exists() {
         return Err(format!("Submodule {path} is not initialized locally"));
     }
-    let output = patch_command_at(Some(&directory))
+    let output = patch_command_in(&directory)
         .env("GIT_NO_LAZY_FETCH", "1")
         .args([
             "--no-pager",
@@ -1398,7 +1414,10 @@ pub fn show_submodule(
             "Submodule {path}: cannot compare recorded commits (history may be missing locally)"
         ));
     }
-    Ok((directory, format_output(output.stdout)?))
+    Ok((
+        Repository::checked_out(directory),
+        format_output(output.stdout)?,
+    ))
 }
 
 /// Shows untracked `path`, relative to the repository root.
@@ -1418,7 +1437,7 @@ pub fn show_untracked_in(root: &std::path::Path, path: &std::path::Path) -> Resu
     }
     let mut output = Vec::new();
     if !untracked_regular_file_diff(&root.join(path), path, &mut output)? {
-        let untracked = patch_command_at(Some(root))
+        let untracked = patch_command_in(root)
             .args([
                 "--no-pager",
                 "diff",
@@ -1646,7 +1665,11 @@ fn repository_env<'a>(command: &'a mut Command, directory: &std::path::Path) -> 
         return command;
     }
     if MAIN_ROOT
-        .get_or_init(|| repository_directory().ok())
+        .get_or_init(|| {
+            Repository::main()
+                .ok()
+                .map(|main| main.directory().to_owned())
+        })
         .as_deref()
         != Some(directory)
     {
@@ -1686,47 +1709,9 @@ const REPOSITORY_PATH_ENV: [&str; 8] = [
     "GIT_COMMON_DIR",
 ];
 
-/// The working tree root, or the Git directory for a bare repository.
-pub(crate) fn repository_directory() -> Result<std::path::PathBuf, String> {
-    let bare = read_command()
-        .args(["rev-parse", "--is-bare-repository"])
-        .output()
-        .map_err(|error| format!("could not run git rev-parse: {error}"))?;
-    if !bare.status.success() {
-        return Err(stderr_message(
-            "could not inspect the repository",
-            &bare.stderr,
-        ));
-    }
-    let root = if bare.stdout.starts_with(b"true") {
-        "--absolute-git-dir"
-    } else {
-        "--show-toplevel"
-    };
-    let output = read_command()
-        .args(["rev-parse", root])
-        .output()
-        .map_err(|error| format!("could not run git rev-parse: {error}"))?;
-    if !output.status.success() {
-        return Err(stderr_message(
-            "could not find the repository root",
-            &output.stderr,
-        ));
-    }
-    let top = output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout);
-    Ok(raw_path(top))
-}
-
 /// Git terminates its raw repository path with exactly one newline.
 pub(crate) fn repository_root() -> Result<std::path::PathBuf, String> {
-    repository_root_at(None)
-}
-
-/// The working tree root of `directory`'s repository, failing in bare ones.
-pub(crate) fn repository_root_at(
-    directory: Option<&std::path::Path>,
-) -> Result<std::path::PathBuf, String> {
-    let output = read_command_at(directory)
+    let output = read_command()
         .args(["rev-parse", "--show-toplevel"])
         .output()
         .map_err(|error| format!("could not locate repository: {error}"))?;
@@ -3086,7 +3071,13 @@ pub(crate) mod tests {
                     .count();
                 results.push((paths, Some(expanded)));
             }
-            let (_, patch) = show_submodule(Some(directory.path()), ".", "HEAD~", "HEAD").unwrap();
+            let (_, patch) = show_submodule(
+                Some(&Repository::checked_out(directory.path().to_owned())),
+                ".",
+                "HEAD~",
+                "HEAD",
+            )
+            .unwrap();
             results.push((
                 crate::diff::file_sections(&patch)
                     .into_iter()
@@ -4496,7 +4487,10 @@ pub(crate) mod tests {
                 show_submodule(None, "module", &old, &new)
             };
             let (module, patch) = result.expect("submodule lookup must use the exact root");
-            assert_eq!(module, root.join("module").canonicalize().unwrap());
+            assert_eq!(
+                module.directory(),
+                root.join("module").canonicalize().unwrap()
+            );
             let plain = crate::ansi::plain(&patch);
             assert!(plain.contains("-before"));
             assert!(plain.contains("+after"));

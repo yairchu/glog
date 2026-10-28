@@ -167,10 +167,10 @@ enum Fold {
 }
 
 impl LogFolds {
-    pub(crate) fn set_repository(&mut self, directory: Option<std::path::PathBuf>) {
-        self.load_ancestry = match directory {
-            Some(directory) => Box::new(move |commits, known| {
-                git::log_ancestry_at(commits, known, Some(&directory))
+    pub(crate) fn set_repository(&mut self, repository: Option<git::Repository>) {
+        self.load_ancestry = match repository {
+            Some(repository) => Box::new(move |commits, known| {
+                git::log_ancestry_at(commits, known, Some(&repository))
             }),
             None => Box::new(git::log_ancestry),
         };

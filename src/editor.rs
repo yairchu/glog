@@ -101,7 +101,7 @@ impl Target {
     }
 
     fn git(&self) -> Command {
-        let mut command = git::patch_command_at(Some(&self.root));
+        let mut command = git::patch_command_in(&self.root);
         command.arg("--literal-pathspecs");
         command
     }

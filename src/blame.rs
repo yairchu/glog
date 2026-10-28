@@ -1,13 +1,7 @@
 //! `glog blame`: one row per line of a file, each carrying the commit that
 //! last changed it.
 
-use std::{
-    collections::HashMap,
-    io::Write,
-    path::{Path, PathBuf},
-    process::Stdio,
-    sync::Arc,
-};
+use std::{collections::HashMap, io::Write, process::Stdio, sync::Arc};
 
 #[cfg(test)]
 use std::process::Command;
@@ -31,13 +25,18 @@ const USAGE: &str = "use glog blame [-L LINE] [--date=STYLE] [revision] [--] fil
 pub struct FileRevision {
     revision: String,
     path: Vec<u8>,
-    top: PathBuf,
+    repository: git::Repository,
 }
 
 impl FileRevision {
     pub fn blame(&self) -> Result<Vec<Commit>, String> {
         let date = git::configured_log_date("format-local:%Y-%m-%d")?;
-        blame(Some(&self.revision), &self.path, Some(&self.top), &date)
+        blame(
+            Some(&self.revision),
+            &self.path,
+            Some(&self.repository),
+            &date,
+        )
     }
 }
 
@@ -94,7 +93,7 @@ pub fn load_patch(
     patch: &str,
     row: usize,
     path: &[u8],
-    top: PathBuf,
+    repository: git::Repository,
 ) -> Result<crate::app::App, String> {
     let (parent, number) =
         patch_position(patch, row).ok_or("Select a code line or hunk to blame")?;
@@ -104,7 +103,7 @@ pub fn load_patch(
         (PatchSides::Commit(hash), Version::Revision(revision)) if !is_two_way(patch) => {
             // Combined diffs normally show only the result's name, even when
             // this parent used another name. Ask Git for the rename mapping.
-            parent_path(revision, hash, path, &top)?
+            parent_path(revision, hash, path, &repository)?
         }
         _ => crate::hunk::file_headers(patch)
             .find_map(|line| {
@@ -114,13 +113,13 @@ pub fn load_patch(
             })
             .ok_or("Could not locate the parent file")?,
     };
-    let date = git::configured_log_date_at("format-local:%Y-%m-%d", Some(&top))?;
-    let rows = blame_version(&version, &path, &top, &date, textconv)?;
+    let date = git::configured_log_date_at("format-local:%Y-%m-%d", Some(&repository))?;
+    let rows = blame_version(&version, &path, &repository, &date, textconv)?;
     if rows.is_empty() {
         return Err("The file is empty at this revision".into());
     }
     let mut app = crate::app::App::new(rows);
-    app.set_repository(Some(top));
+    app.set_repository(Some(repository));
     app.selected = number.saturating_sub(1).min(app.commits.len() - 1);
     app.center_selection = true;
     app.context = format!(
@@ -154,29 +153,41 @@ fn version_label(version: &Version) -> String {
 fn blame_version(
     version: &Version,
     path: &[u8],
-    top: &Path,
+    repository: &git::Repository,
     date: &str,
     textconv: bool,
 ) -> Result<Vec<Commit>, String> {
-    let top = top.to_path_buf();
+    let repository = repository.clone();
     // Git blames uncommitted versions against HEAD, so before the first
     // commit, every line is uncommitted.
     let unborn = matches!(version, Version::Index | Version::Worktree)
-        && git::head_commit(Some(&top))?.is_none();
+        && git::head_commit(Some(&repository))?.is_none();
     let uncommitted = |contents: &[u8]| {
         let lines = unattributed_lines(contents, &"0".repeat(40), path);
-        render_lines(lines, HashMap::new(), top.clone(), date, path, textconv)
+        render_lines(
+            lines,
+            HashMap::new(),
+            repository.clone(),
+            date,
+            path,
+            textconv,
+        )
     };
     match version {
-        Version::Revision(revision) => {
-            blame_with_textconv(Some(revision), path, Some(&top), date, textconv, None)
-        }
+        Version::Revision(revision) => blame_with_textconv(
+            Some(revision),
+            path,
+            Some(&repository),
+            date,
+            textconv,
+            None,
+        ),
         Version::Worktree if !unborn => {
-            blame_with_textconv(None, path, Some(&top), date, textconv, None)
+            blame_with_textconv(None, path, Some(&repository), date, textconv, None)
         }
         Version::Index => {
             // Blame reads --contents as is, so convert them as the patch did.
-            let mut command = git::read_command_at(Some(&top));
+            let mut command = git::read_command_at(Some(&repository));
             command.arg("cat-file");
             command.arg(if textconv { "--textconv" } else { "blob" });
             let output = command
@@ -192,13 +203,20 @@ fn blame_version(
             if unborn {
                 return Ok(uncommitted(&output.stdout));
             }
-            blame_with_textconv(None, path, Some(&top), date, textconv, Some(&output.stdout))
+            blame_with_textconv(
+                None,
+                path,
+                Some(&repository),
+                date,
+                textconv,
+                Some(&output.stdout),
+            )
         }
         // Before the first commit, convert the file as its patch did.
-        Version::Worktree if textconv => Ok(uncommitted(&converted_worktree(path, &top)?)),
+        Version::Worktree if textconv => Ok(uncommitted(&converted_worktree(path, &repository)?)),
         // Git refuses to blame untracked paths.
         Version::Worktree | Version::Untracked => {
-            let file = top.join(git::raw_path(path));
+            let file = repository.work_tree()?.join(git::raw_path(path));
             let error = |error| format!("could not read the working tree file: {error}");
             // Git records a symlink's target path rather than what it points to.
             let contents = if file.symlink_metadata().map_err(error)?.is_symlink() {
@@ -212,8 +230,8 @@ fn blame_version(
 }
 
 /// A tracked working tree file as textconv converts it.
-fn converted_worktree(path: &[u8], top: &Path) -> Result<Vec<u8>, String> {
-    let empty_tree = git::read_command_at(Some(top))
+fn converted_worktree(path: &[u8], repository: &git::Repository) -> Result<Vec<u8>, String> {
+    let empty_tree = git::read_command_at(Some(repository))
         .args(["hash-object", "-t", "tree", "--stdin"])
         .stdin(Stdio::null())
         .output()
@@ -225,7 +243,7 @@ fn converted_worktree(path: &[u8], top: &Path) -> Result<Vec<u8>, String> {
         ));
     }
     // A diff from the empty tree adds every converted line.
-    let output = git::read_command_at(Some(top))
+    let output = git::read_command_at(Some(repository))
         .args([
             "--literal-pathspecs",
             "diff",
@@ -276,8 +294,13 @@ fn patch_position(patch: &str, row: usize) -> Option<(Option<usize>, usize)> {
     Some((parent, number as usize))
 }
 
-fn parent_path(revision: &str, result: &str, path: &[u8], top: &Path) -> Result<Vec<u8>, String> {
-    let output = git::read_command_at(Some(top))
+fn parent_path(
+    revision: &str,
+    result: &str,
+    path: &[u8],
+    repository: &git::Repository,
+) -> Result<Vec<u8>, String> {
+    let output = git::read_command_at(Some(repository))
         .args([
             "diff",
             "--name-status",
@@ -350,10 +373,10 @@ pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String
         }
         path = parts.join(&b'/');
     }
-    let top = git::repository_directory()?;
+    let repository = git::Repository::main()?;
     // Unlike `cat-file blob`, --textconv also accepts trees. Keep this view
     // restricted to files before asking Git to convert their contents.
-    let output = git::read_command_at(Some(&top))
+    let output = git::read_command_at(Some(&repository))
         .args(["cat-file", "-t"])
         .arg(blob_spec(&revision, &path))
         .output()
@@ -367,7 +390,7 @@ pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String
     if output.stdout != b"blob\n" {
         return Err("the path is not a file; this view supports text files".into());
     }
-    let output = git::read_command_at(Some(&top))
+    let output = git::read_command_at(Some(&repository))
         // Match blame's text conversion so loading attribution keeps the
         // displayed lines and their positions unchanged.
         .args(["cat-file", "--textconv"])
@@ -381,9 +404,9 @@ pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String
         return Err("the file is binary; this view supports text files".into());
     }
     let lines = unattributed_lines(&output.stdout, &revision, &path);
-    let rows = render_lines(lines, HashMap::new(), top.clone(), "", &path, true);
+    let rows = render_lines(lines, HashMap::new(), repository.clone(), "", &path, true);
     let mut app = crate::app::App::new(rows);
-    app.set_repository(Some(top.clone()));
+    app.set_repository(Some(repository.clone()));
     app.history = crate::app::History::Blame;
     for field in Field::ATTRIBUTION {
         app.log_format.toggle(field);
@@ -391,7 +414,7 @@ pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String
     app.pending_blame = Some(FileRevision {
         revision,
         path,
-        top,
+        repository,
     });
     Ok(app)
 }
@@ -417,7 +440,7 @@ fn unattributed_lines(contents: &[u8], hash: &str, path: &[u8]) -> Vec<Porcelain
 pub struct BlameFile {
     /// Paths in Git's blame output are relative to the repository root.
     /// In bare repositories, run historical queries from the Git directory.
-    pub top: PathBuf,
+    pub repository: git::Repository,
     date: String,
     pub textconv: bool,
     hash_width: usize,
@@ -451,7 +474,7 @@ pub fn load_app(args: &[String]) -> Result<crate::app::App, String> {
         app.commits
             .first()
             .and_then(Commit::blame)
-            .map(|line| line.file.top.clone()),
+            .map(|line| line.file.repository.clone()),
     );
     app.selected = selected;
     app.center_selection = true;
@@ -527,7 +550,7 @@ fn parse_line(value: &str) -> Result<usize, String> {
 /// commit added it.
 pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<(Vec<Commit>, usize), String> {
     let (parent, path) = line.previous.as_ref().ok_or("nothing earlier to blame")?;
-    let output = git::read_command_at(Some(&line.file.top))
+    let output = git::read_command_at(Some(&line.file.repository))
         .env("LC_ALL", "C")
         .args([
             "diff",
@@ -553,7 +576,7 @@ pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<(Vec<Commit>, us
     let rows = blame_with_textconv(
         Some(parent),
         path,
-        Some(&line.file.top),
+        Some(&line.file.repository),
         &line.file.date,
         line.file.textconv,
         None,
@@ -606,22 +629,22 @@ fn parent_line(diff: &str, line: usize) -> usize {
 fn blame(
     revision: Option<&str>,
     path: &[u8],
-    top: Option<&PathBuf>,
+    repository: Option<&git::Repository>,
     date: &str,
 ) -> Result<Vec<Commit>, String> {
-    blame_with_textconv(revision, path, top, date, true, None)
+    blame_with_textconv(revision, path, repository, date, true, None)
 }
 
 fn blame_with_textconv(
     revision: Option<&str>,
     path: &[u8],
-    top: Option<&PathBuf>,
+    repository: Option<&git::Repository>,
     date: &str,
     textconv: bool,
     // Blame these file contents in place of the working tree's.
     contents: Option<&[u8]>,
 ) -> Result<Vec<Commit>, String> {
-    let mut command = git::read_command_at(top.map(PathBuf::as_path));
+    let mut command = git::read_command_at(repository);
     command.args(["-c", "core.quotepath=true", "blame", "--porcelain"]);
     if !textconv {
         command.arg("--no-textconv");
@@ -653,18 +676,20 @@ fn blame_with_textconv(
         return Err(git::stderr_message("git blame failed", &output.stderr));
     }
     let lines = parse_porcelain(&String::from_utf8_lossy(&output.stdout))?;
-    let top = match top {
-        Some(top) => top.clone(),
-        None => git::repository_directory()?,
+    let repository = match repository {
+        Some(repository) => repository.clone(),
+        None => git::Repository::main()?,
     };
-    let details = commit_details(&lines, date, &top)?;
-    Ok(render_lines(lines, details, top, date, path, textconv))
+    let details = commit_details(&lines, date, &repository)?;
+    Ok(render_lines(
+        lines, details, repository, date, path, textconv,
+    ))
 }
 
 fn render_lines(
     lines: Vec<PorcelainLine>,
     details: HashMap<String, Details>,
-    top: PathBuf,
+    repository: git::Repository,
     date: &str,
     path: &[u8],
     textconv: bool,
@@ -672,7 +697,7 @@ fn render_lines(
     let mut highlighted = highlight(&crate::diff::display_path(path), &lines).map(Vec::into_iter);
     let width = |text: &str| Span::raw(text).width();
     let file = Arc::new(BlameFile {
-        top,
+        repository,
         date: date.to_owned(),
         textconv,
         hash_width: details
@@ -849,7 +874,7 @@ struct Details {
 fn commit_details(
     lines: &[PorcelainLine],
     date: &str,
-    top: &Path,
+    repository: &git::Repository,
 ) -> Result<HashMap<String, Details>, String> {
     let mut input = String::new();
     let mut seen = std::collections::HashSet::new();
@@ -863,7 +888,7 @@ fn commit_details(
         return Ok(HashMap::new());
     }
     let output = git::pipe_through(
-        git::read_command_at(Some(top))
+        git::read_command_at(Some(repository))
             .env("LC_ALL", "C")
             .args(["log", "--no-walk=unsorted", "--stdin", "--no-show-signature"])
             .arg(format!("--date={date}"))
@@ -1556,7 +1581,7 @@ mod tests {
             root.canonicalize().unwrap(),
             directory.path().join("module").canonicalize().unwrap()
         );
-        let output = crate::git::read_command_at(Some(root))
+        let output = crate::git::read_command_in(root)
             .args(["cat-file", "blob", oid])
             .output()
             .unwrap();
@@ -2078,8 +2103,13 @@ mod tests {
                 // Exercise the second command independently of the parent diff.
                 let line = rows[2].blame().unwrap();
                 let (parent, path) = line.previous.as_ref().unwrap();
-                let rows =
-                    blame(Some(parent), path, Some(&line.file.top), &line.file.date).unwrap();
+                let rows = blame(
+                    Some(parent),
+                    path,
+                    Some(&line.file.repository),
+                    &line.file.date,
+                )
+                .unwrap();
                 assert_eq!(code(rows[1].blame().unwrap()), "b");
             } else {
                 let mut app = App::new(rows);
@@ -2137,8 +2167,13 @@ mod tests {
             if historical_only {
                 let line = rows[2].blame().unwrap();
                 let (parent, path) = line.previous.as_ref().unwrap();
-                let rows =
-                    blame(Some(parent), path, Some(&line.file.top), &line.file.date).unwrap();
+                let rows = blame(
+                    Some(parent),
+                    path,
+                    Some(&line.file.repository),
+                    &line.file.date,
+                )
+                .unwrap();
                 assert_eq!(code(rows[1].blame().unwrap()), "b");
             } else {
                 let mut app = App::new(rows);

@@ -51,7 +51,7 @@ struct BlameFrame {
 
 /// The repository and recorded endpoints of an expanded submodule patch.
 struct SubmodulePatch {
-    root: std::path::PathBuf,
+    repository: git::Repository,
     old: String,
     new: String,
 }
@@ -121,7 +121,7 @@ pub struct App {
     /// Remotes rarely change during a session, so look up issue links once.
     github_repository: Option<Option<String>>,
     // Explicit repository for views reached across a submodule boundary.
-    repository: Option<std::path::PathBuf>,
+    repository: Option<git::Repository>,
     // Each browser opener still running, which may yet report an error.
     browser_results: Vec<crate::commit_links::BrowserResult>,
     pub show_stat: bool,
@@ -280,7 +280,7 @@ impl App {
         self.file_view()
     }
 
-    pub(crate) fn set_repository(&mut self, repository: Option<std::path::PathBuf>) {
+    pub(crate) fn set_repository(&mut self, repository: Option<git::Repository>) {
         self.log_folds.set_repository(repository.clone());
         self.github_repository = None;
         self.repository = repository;
@@ -315,7 +315,7 @@ impl App {
         match if self.watch {
             git::load_watch_log()
         } else {
-            git::load_log_at(&args, self.repository.as_deref())
+            git::load_log_at(&args, self.repository.as_ref())
         } {
             Ok(commits) => {
                 self.pending_history = None;
@@ -794,7 +794,7 @@ impl App {
         {
             return;
         }
-        let text = match git::show_at(commit, &self.show_paths, self.repository.as_deref()) {
+        let text = match git::show_at(commit, &self.show_paths, self.repository.as_ref()) {
             Ok(text) => text,
             Err(error) => {
                 self.status = Some(error);
@@ -974,7 +974,7 @@ impl App {
         }
         self.show_offset = 0;
         self.show_cursor = 0;
-        match git::show_at(&commit, &self.show_paths, self.repository.as_deref()) {
+        match git::show_at(&commit, &self.show_paths, self.repository.as_ref()) {
             Ok(text) => {
                 self.show_text = text.clone();
                 if commit.kind == CommitKind::Revision {
@@ -1026,7 +1026,7 @@ impl App {
                     let links = crate::commit_links::collect_at(
                         &self.show_text,
                         &mut self.github_repository,
-                        self.repository.as_deref(),
+                        self.repository.as_ref(),
                     );
                     if let Some(cached) = cached {
                         cached.links = Some(links.clone());
@@ -1083,10 +1083,10 @@ impl App {
     fn show_blame(&self, cursor: usize) -> Result<App, String> {
         let selected = self.show_file(cursor)?;
         let app = selected.app;
-        let top = app
-            .show_repository()
-            .map(|root| Ok(root.to_path_buf()))
-            .unwrap_or_else(git::repository_directory)?;
+        let repository = match app.show_repository() {
+            Some(repository) => repository.clone(),
+            None => git::Repository::main()?,
+        };
         let sides = match &app.submodule_patch {
             Some(patch) => crate::blame::PatchSides::Pair {
                 old: Some(git::Version::Revision(patch.old.clone())),
@@ -1113,7 +1113,7 @@ impl App {
             &selected.patch,
             selected.line,
             &selected.file.path_bytes,
-            top,
+            repository,
         )
     }
 
@@ -1145,12 +1145,10 @@ impl App {
         })
     }
 
-    fn show_repository(&self) -> Option<&std::path::Path> {
-        self.repository.as_deref().or_else(|| {
-            self.submodule_patch
-                .as_ref()
-                .map(|patch| patch.root.as_path())
-        })
+    fn show_repository(&self) -> Option<&git::Repository> {
+        self.repository
+            .as_ref()
+            .or_else(|| self.submodule_patch.as_ref().map(|patch| &patch.repository))
     }
 
     pub fn set_editor_error(&mut self, error: Option<String>) {
@@ -1167,9 +1165,10 @@ impl App {
         let selected = self.show_file(cursor)?;
         let app = selected.app;
         let file = selected.file;
-        // Unlike Blame, the editor opens working tree files, which bare
-        // repositories lack.
-        let root = git::repository_root_at(app.show_repository())?;
+        let root = match app.show_repository() {
+            Some(repository) => repository.work_tree()?.to_owned(),
+            None => git::repository_root()?,
+        };
         let worktree = app.commits.get(app.selected).is_some_and(|commit| {
             matches!(
                 commit.kind,
@@ -1354,7 +1353,8 @@ impl App {
                         crate::images::sources(
                             &lines[file.start..file.end].join("\n"),
                             git::raw_path(&file.path_bytes),
-                            self.show_repository().unwrap_or(&self.images.root),
+                            self.show_repository()
+                                .map_or(&self.images.root, git::Repository::directory),
                             self.commits.get(self.selected).is_some_and(|c| {
                                 matches!(
                                     c.kind,
@@ -1618,11 +1618,11 @@ impl App {
                     old,
                     new,
                 ) {
-                    Ok((root, text)) => {
+                    Ok((repository, text)) => {
                         let mut child = App::new(Vec::new());
                         child.images.enabled = self.images.enabled;
                         child.submodule_patch = Some(SubmodulePatch {
-                            root,
+                            repository,
                             old: old.clone(),
                             new: new.clone(),
                         });
@@ -1776,7 +1776,7 @@ impl App {
                     .or_else(|| node.branches.first())
             })
             .map_or_else(|| node.short_hash.clone(), |branch| branch.name.clone());
-        let loaded = git::load_log_at(&args, self.repository.as_deref()).and_then(|commits| {
+        let loaded = git::load_log_at(&args, self.repository.as_ref()).and_then(|commits| {
             if commits.is_empty() {
                 return Err("No commits between this node and its shared ancestors".into());
             }
@@ -1841,7 +1841,7 @@ impl App {
         } else {
             vec![hash.to_owned()]
         };
-        let loaded = git::load_show_app_with(&args, self.repository.as_deref(), |target| {
+        let loaded = git::load_show_app_with(&args, self.repository.as_ref(), |target| {
             self.prepare_followed(target)
         })
         .and_then(|mut target| match target.status.take() {
@@ -1864,7 +1864,7 @@ impl App {
             .join("..");
         let loaded = git::load_log_at(
             &[range.to_owned(), "--".to_owned()],
-            self.repository.as_deref(),
+            self.repository.as_ref(),
         )
         .and_then(|commits| {
             if commits.is_empty() {

@@ -110,7 +110,8 @@ pub fn apply(command: &mut Command, directory: Option<&Path>) {
 }
 
 fn default_mode(directory: Option<&Path>) -> Option<ColorMoved> {
-    crate::git::read_command_at(directory)
+    directory
+        .map_or_else(crate::git::read_command, crate::git::read_command_in)
         .args(["config", "--get", "diff.colorMoved"])
         .output()
         .ok()
@@ -255,7 +256,7 @@ mod tests {
         git(&["init", "-q", "child"]);
         git(&["-C", "child", "config", "diff.colorMoved", "false"]);
         let child = directory.path().join("child");
-        let mut command = crate::git::patch_command_at(Some(&child));
+        let mut command = crate::git::patch_command_in(&child);
         let output = command
             .args(["config", "--get", "diff.colorMoved"])
             .output()
