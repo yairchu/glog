@@ -1506,6 +1506,22 @@ mod tests {
     }
 
     #[test]
+    fn submodule_blame_show_refreshes_in_its_own_repository() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        let (mut app, _, _) = module_review(false);
+        press(&mut app, KeyCode::Char('B'));
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.status, None);
+        // Moved decorations invalidate the cached text, so Show reloads it.
+        let mut commits = app.commits.clone();
+        commits[app.selected].decorations = "moved".into();
+        app.replace_commits(commits);
+        assert_eq!(app.status, None);
+        assert!(app.show_text.contains("updated module"));
+    }
+
+    #[test]
     fn review_blame_opens_added_and_deleted_files_with_quoted_paths() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
