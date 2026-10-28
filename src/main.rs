@@ -91,13 +91,7 @@ fn main() -> ExitCode {
             Ok(branches::Launch::Interactive(app)) => Ok(*app),
             Err(error) => Err(error),
         },
-        Command::Blame => blame::load(command_args).and_then(|(rows, selected)| {
-            let mut app = App::new(rows);
-            app.set_repository(Some(git::repository_directory()?));
-            app.selected = selected;
-            app.center_selection = true;
-            Ok(app)
-        }),
+        Command::Blame => blame::load_app(command_args),
         Command::Log if watch => git::load_watch_log().map(App::new),
         Command::Log => git::load_log(git_args).map(App::new),
     };

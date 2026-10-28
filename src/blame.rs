@@ -395,8 +395,19 @@ pub struct BlameLine {
     pub previous: Option<(String, Vec<u8>)>,
 }
 
+/// The view for `glog blame` arguments.
+pub fn load_app(args: &[String]) -> Result<crate::app::App, String> {
+    let (rows, selected) = load(args)?;
+    let mut app = crate::app::App::new(rows);
+    // Blame resolved its repository for the rows.
+    app.set_repository(Some(git::repository_directory()?));
+    app.selected = selected;
+    app.center_selection = true;
+    Ok(app)
+}
+
 /// Rows for `glog blame` arguments, and the row to select.
-pub fn load(args: &[String]) -> Result<(Vec<Commit>, usize), String> {
+fn load(args: &[String]) -> Result<(Vec<Commit>, usize), String> {
     let mut line = None;
     let mut date = None;
     let mut positional = Vec::new();
