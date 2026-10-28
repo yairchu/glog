@@ -122,6 +122,7 @@ fn apply(event: Event, app: &mut App) {
         match key.code {
             KeyCode::Char('q') => app.quit = true,
             KeyCode::Tab => app.switch_mode(),
+            KeyCode::Enter if app.history == History::Branches => app.open_branch(),
             KeyCode::Enter if app.mode == Mode::Log => app.switch_mode(),
             KeyCode::Char('p') if app.mode == Mode::Log && app.history == History::Blame => {
                 app.blame_parent()
@@ -232,8 +233,10 @@ fn apply(event: Event, app: &mut App) {
             {
                 let row = usize::from(mouse.row - app.log_row_origin);
                 if let Some(Some(selected)) = app.visible_log_rows.get(row).copied() {
-                    if app.selected == selected || app.history == History::Branches {
+                    if app.history == History::Branches {
                         app.selected = selected;
+                        app.open_branch();
+                    } else if app.selected == selected {
                         app.switch_mode();
                     } else {
                         app.selected = selected;

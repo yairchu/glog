@@ -340,8 +340,8 @@ impl App {
     }
 
     pub fn switch_mode(&mut self) {
+        // Branches have no detail view; Enter and clicks open a branch's Log.
         if self.history == History::Branches {
-            self.open_branch();
             return;
         }
         if self.mode == Mode::Log && self.refuse_in_file_view() {
@@ -1765,7 +1765,7 @@ impl App {
             .min(self.show_rows.len().saturating_sub(1))
     }
 
-    fn open_branch(&mut self) {
+    pub fn open_branch(&mut self) {
         let Some(node) = self.commits.get(self.selected) else {
             return;
         };
