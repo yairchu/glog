@@ -69,6 +69,14 @@ pub enum LogAction {
 }
 
 /// Links are resolved on first display, so revisiting a commit runs no Git process.
+/// A file section selected in Show, with the view that owns it.
+struct ShowFile<'a> {
+    app: &'a App,
+    file: &'a FileSection,
+    patch: String,
+    line: usize,
+}
+
 struct CachedShow {
     text: String,
     links: Option<HashMap<usize, Vec<crate::commit_links::Link>>>,
@@ -1059,8 +1067,34 @@ impl App {
     }
 
     fn show_blame(&self, cursor: usize) -> Result<App, String> {
+        let selected = self.show_file(cursor)?;
+        let app = selected.app;
+        let source = match &app.submodule_patch {
+            Some(patch) => crate::blame::PatchRevision::Submodule {
+                old: &patch.old,
+                new: &patch.new,
+            },
+            None => crate::blame::PatchRevision::Commit(
+                app.commits.get(app.selected).ok_or("No commit selected")?,
+            ),
+        };
+        let top = app
+            .show_repository()
+            .map(|root| Ok(root.to_path_buf()))
+            .unwrap_or_else(git::repository_directory)?;
+        crate::blame::load_patch(
+            source,
+            &selected.patch,
+            selected.line,
+            &selected.file.path_bytes,
+            top,
+        )
+    }
+
+    /// The patch file beneath `cursor`, resolved inside expanded submodules.
+    fn show_file(&self, cursor: usize) -> Result<ShowFile<'_>, String> {
         if let Some((key, row)) = self.submodule_rows.get(&cursor) {
-            return self.submodules[key].show_blame(*row);
+            return self.submodules[key].show_file(*row);
         }
         let row = self.show_rows.get(cursor).ok_or("No file selected")?;
         let file = row
@@ -1070,21 +1104,6 @@ impl App {
         if file.submodule.is_some() {
             return Err("Expand the submodule and select a file".into());
         }
-        let source = match &self.submodule_patch {
-            Some(patch) => crate::blame::PatchRevision::Submodule {
-                old: &patch.old,
-                new: &patch.new,
-            },
-            None => crate::blame::PatchRevision::Commit(
-                self.commits
-                    .get(self.selected)
-                    .ok_or("No commit selected")?,
-            ),
-        };
-        let top = self
-            .show_repository()
-            .map(|root| Ok(root.to_path_buf()))
-            .unwrap_or_else(git::repository_directory)?;
         let patch = self
             .show_text
             .lines()
@@ -1092,13 +1111,12 @@ impl App {
             .take(file.end - file.start)
             .collect::<Vec<_>>()
             .join("\n");
-        crate::blame::load_patch(
-            source,
-            &patch,
-            row.source - file.start,
-            &file.path_bytes,
-            top,
-        )
+        Ok(ShowFile {
+            app: self,
+            file,
+            patch,
+            line: row.source - file.start,
+        })
     }
 
     fn show_repository(&self) -> Option<&std::path::Path> {
@@ -1128,29 +1146,14 @@ impl App {
     }
 
     fn show_editor_target(&self, cursor: usize) -> Result<crate::editor::Target, String> {
-        if let Some((key, row)) = self.submodule_rows.get(&cursor) {
-            return self.submodules[key].show_editor_target(*row);
-        }
-        let row = self.show_rows.get(cursor).ok_or("No file selected")?;
-        let file = row
-            .file
-            .map(|index| &self.show_files[index])
-            .ok_or("No file selected")?;
-        if file.submodule.is_some() {
-            return Err("Expand the submodule and select a file".to_owned());
-        }
-        let root = self
+        let selected = self.show_file(cursor)?;
+        let app = selected.app;
+        let file = selected.file;
+        let root = app
             .show_repository()
             .map(|root| Ok(root.to_path_buf()))
             .unwrap_or_else(git::repository_root)?;
-        let patch = self
-            .show_text
-            .lines()
-            .skip(file.start)
-            .take(file.end - file.start)
-            .collect::<Vec<_>>()
-            .join("\n");
-        let worktree = self.commits.get(self.selected).is_some_and(|commit| {
+        let worktree = app.commits.get(app.selected).is_some_and(|commit| {
             matches!(
                 commit.kind,
                 CommitKind::Unstaged | CommitKind::Comparison { worktree: true }
@@ -1159,16 +1162,16 @@ impl App {
         Ok(crate::editor::Target::from_patch(
             root,
             git::raw_path(&file.path_bytes),
-            &patch,
-            row.source - file.start,
+            &selected.patch,
+            selected.line,
             worktree,
-            if self.submodule_patch.is_some()
-                || self
+            if app.submodule_patch.is_some()
+                || app
                     .commits
-                    .get(self.selected)
+                    .get(app.selected)
                     .and_then(Commit::blame)
                     .is_some_and(|line| !line.file.textconv)
-                || self.raw_untracked_files.contains(&file.key)
+                || app.raw_untracked_files.contains(&file.key)
             {
                 crate::editor::Textconv::Disabled
             } else {
