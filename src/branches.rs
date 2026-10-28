@@ -121,7 +121,24 @@ pub fn load(args: &[String]) -> Result<Launch, String> {
     // Pin the refs before traversal so concurrent branch changes cannot mix snapshots.
     let mut hashes: Vec<_> = tips.keys().cloned().collect();
     hashes.sort();
-    let input = hashes.join("\n") + "\n";
+    let mut input = hashes.join("\n") + "\n";
+    // Everything below a common ancestor of every tip is shared by all of
+    // them, so no fork can appear there. Stop the walk at that ancestor.
+    let base = git::read_command()
+        .args(["merge-base", "--octopus"])
+        .args(&hashes)
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok());
+    if let Some(base) = base
+        .as_deref()
+        .map(str::trim)
+        .filter(|base| !base.is_empty())
+    {
+        input += &format!("^{base}^@\n");
+    }
     let output = git::pipe_through(
         git::read_command()
             .args(["rev-list", "--topo-order", "--parents", "--stdin"])
@@ -299,7 +316,10 @@ pub fn log_args(node: &Commit, rows: &[Commit]) -> Vec<String> {
 
 struct Node {
     hash: String,
+    /// Parents within the walk. Those below its common-ancestor cutoff
+    /// carry no forks, so they only mark that older history continues.
     parents: Vec<usize>,
+    has_parents: bool,
 }
 
 fn compact(
@@ -319,21 +339,15 @@ fn compact(
         .collect();
     let nodes: Vec<_> = records
         .iter()
-        .map(|fields| {
-            Ok(Node {
-                hash: fields[0].into(),
-                parents: fields[1..]
-                    .iter()
-                    .map(|hash| {
-                        indices
-                            .get(hash)
-                            .copied()
-                            .ok_or("incomplete branch ancestry")
-                    })
-                    .collect::<Result<_, _>>()?,
-            })
+        .map(|fields| Node {
+            hash: fields[0].into(),
+            parents: fields[1..]
+                .iter()
+                .filter_map(|hash| indices.get(hash).copied())
+                .collect(),
+            has_parents: fields.len() > 1,
         })
-        .collect::<Result<_, &str>>()?;
+        .collect();
     if let Some(primary) = primary {
         let primary_index = tips.iter().find_map(|(hash, branches)| {
             branches
@@ -443,7 +457,7 @@ fn compact(
                 annotation: Some(Annotation::Branch(BranchNode {
                     branches,
                     shared_ancestor: shared_ancestor[index],
-                    continues: parents[&index].is_empty() && !node.parents.is_empty(),
+                    continues: parents[&index].is_empty() && node.has_parents,
                     updated_at: None,
                     update_width: 0,
                 })),
@@ -885,6 +899,8 @@ mod tests {
             ("a b\nb r\nr\n", "review-fixes", 1),
             ("a b\nb\n", "review-fixes", 0),
             ("a x\nb x\nx r\nr\n", "feature", 1),
+            // The walk stops at a common ancestor, leaving its parent unlisted.
+            ("a x\nb x\nx r\n", "feature", 1),
             ("a r\nb s\nr\ns\n", "orphan", 2),
         ];
         for (ancestry, other, count) in cases {
