@@ -864,21 +864,14 @@ pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
     }
     // Resolve the sides before loading the patch, so Blame reads the versions
     // it shows even after refs move.
-    let (kind, sides) = if !revisions.is_empty() {
-        let sides = comparison_sides(&options, None)?;
-        let kind = CommitKind::Comparison {
-            worktree: matches!(sides, Some((_, Version::Worktree))),
-        };
-        let sides = sides
-            .map(|(old, new)| (Some(old), new))
-            .ok_or("Cannot blame a combined diff of several revisions");
-        (kind, sides)
-    } else if cached {
-        let head = head_commit(None)?.map(Version::Revision);
-        (CommitKind::Staged, Ok((head, Version::Index)))
-    } else {
-        let sides = (Some(Version::Index), Version::Worktree);
-        (CommitKind::Unstaged, Ok(sides))
+    let sides = comparison_sides(&options, None)?
+        .ok_or("Cannot blame a combined diff of several revisions");
+    let kind = match (revisions.is_empty(), cached) {
+        (true, true) => CommitKind::Staged,
+        (true, false) => CommitKind::Unstaged,
+        (false, _) => CommitKind::Comparison {
+            worktree: matches!(sides, Ok((_, Version::Worktree))),
+        },
     };
     let mut entry = match kind {
         CommitKind::Unstaged => pseudo_commit(kind, "worktree", "Unstaged changes"),
@@ -996,11 +989,12 @@ pub enum Version {
 }
 
 /// The old and new sides of a `glog diff` comparison, as git diff picks
-/// them, or None for a combined diff of several revisions.
+/// them, or None for a combined diff of several revisions. The old side is
+/// None when it is an unborn HEAD.
 fn comparison_sides(
     diff_args: &[String],
     directory: Option<&std::path::Path>,
-) -> Result<Option<(Version, Version)>, String> {
+) -> Result<Option<(Option<Version>, Version)>, String> {
     let (cached, revisions) = comparison_options(diff_args);
     let resolved = resolve_revisions(&revisions, directory)?;
     let (excluded, included): (Vec<_>, Vec<_>) = resolved
@@ -1016,11 +1010,14 @@ fn comparison_sides(
         // A..B and B^! exclude the old side; A...B excludes the merge bases
         // and lists B first. A merge's M^! excludes several parents, so Git
         // shows a combined diff for it.
-        ([old], [new]) | ([old, ..], [new, _]) => Some((revision(&old[1..]), revision(new))),
-        ([], []) if cached => Some((revision("HEAD"), Version::Index)),
-        ([], []) => Some((Version::Index, Version::Worktree)),
-        ([], [old]) => Some((revision(old), current)),
-        ([], [old, new]) => Some((revision(old), revision(new))),
+        ([old], [new]) | ([old, ..], [new, _]) => Some((Some(revision(&old[1..])), revision(new))),
+        ([], []) if cached => Some((
+            head_commit(directory)?.map(Version::Revision),
+            Version::Index,
+        )),
+        ([], []) => Some((Some(Version::Index), Version::Worktree)),
+        ([], [old]) => Some((Some(revision(old)), current)),
+        ([], [old, new]) => Some((Some(revision(old)), revision(new))),
         _ => None,
     })
 }
@@ -5432,7 +5429,7 @@ pub(crate) mod tests {
         let options = ["--cached".to_owned(), "HEAD^@".to_owned()];
         assert_eq!(
             comparison_sides(&options, None),
-            Ok(Some((Version::Revision(head), Version::Index)))
+            Ok(Some((Some(Version::Revision(head)), Version::Index)))
         );
     }
 
