@@ -810,7 +810,7 @@ fn resolve_revision(revision: &str, directory: Option<&std::path::Path>) -> Resu
 }
 
 /// The commit HEAD points to, or None on an unborn branch.
-fn head_commit(directory: Option<&std::path::Path>) -> Result<Option<String>, String> {
+pub(crate) fn head_commit(directory: Option<&std::path::Path>) -> Result<Option<String>, String> {
     let output = read_command_at(directory)
         .args(["rev-parse", "--verify", "--quiet", "HEAD^{commit}"])
         .output()

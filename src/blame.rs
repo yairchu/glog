@@ -158,11 +158,21 @@ fn blame_version(
     textconv: bool,
 ) -> Result<Vec<Commit>, String> {
     let top = top.to_path_buf();
+    // Git blames uncommitted versions against HEAD, so before the first
+    // commit, every line is uncommitted.
+    let unborn = matches!(version, Version::Index | Version::Worktree)
+        && git::head_commit(Some(&top))?.is_none();
+    let uncommitted = |contents: &[u8]| {
+        let lines = unattributed_lines(contents, &"0".repeat(40), path);
+        render_lines(lines, HashMap::new(), top.clone(), date, path, textconv)
+    };
     match version {
         Version::Revision(revision) => {
             blame_with_textconv(Some(revision), path, Some(&top), date, textconv, None)
         }
-        Version::Worktree => blame_with_textconv(None, path, Some(&top), date, textconv, None),
+        Version::Worktree if !unborn => {
+            blame_with_textconv(None, path, Some(&top), date, textconv, None)
+        }
         Version::Index => {
             // Blame reads --contents as is, so convert them as the patch did.
             let mut command = git::read_command_at(Some(&top));
@@ -178,27 +188,22 @@ fn blame_version(
                     &output.stderr,
                 ));
             }
+            if unborn {
+                return Ok(uncommitted(&output.stdout));
+            }
             blame_with_textconv(None, path, Some(&top), date, textconv, Some(&output.stdout))
         }
-        Version::Untracked => {
-            // Git refuses to blame untracked paths, but every line is uncommitted.
+        // Git refuses to blame untracked paths.
+        Version::Worktree | Version::Untracked => {
             let file = top.join(git::raw_path(path));
-            let error = |error| format!("could not read the untracked file: {error}");
+            let error = |error| format!("could not read the working tree file: {error}");
             // Git records a symlink's target path rather than what it points to.
             let contents = if file.symlink_metadata().map_err(error)?.is_symlink() {
                 git::path_bytes(&std::fs::read_link(&file).map_err(error)?).into_owned()
             } else {
                 std::fs::read(&file).map_err(error)?
             };
-            let lines = unattributed_lines(&contents, &"0".repeat(40), path);
-            Ok(render_lines(
-                lines,
-                HashMap::new(),
-                top,
-                date,
-                path,
-                textconv,
-            ))
+            Ok(uncommitted(&contents))
         }
     }
 }
