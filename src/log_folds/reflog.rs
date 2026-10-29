@@ -1,18 +1,28 @@
-//! Reflog folds describe operations, independently of commit ancestry.
+//! Reflog folds describe operations; successive rebases can form a chain
+//! when their targets advance along the same ancestry path.
 use std::collections::{BTreeMap, HashMap};
 
-use crate::git::{Annotation, Commit};
+use crate::git::{self, Annotation, Commit};
 
 use super::{Fold, Layout};
 
 #[derive(Default)]
 pub(super) struct Folds {
     groups: BTreeMap<usize, Group>,
+    chains: Vec<Chain>,
 }
 
+#[derive(PartialEq, Eq)]
 enum Kind {
     Rebase,
     Amend,
+}
+
+struct Chain {
+    // Individual rebase headers, newest first. The newest header also
+    // represents the chain so opening a commit keeps its usual meaning.
+    headers: Vec<usize>,
+    expanded: bool,
 }
 
 struct Group {
@@ -24,7 +34,7 @@ struct Group {
 }
 
 impl Folds {
-    pub(super) fn new(commits: &[Commit]) -> Self {
+    pub(super) fn new(commits: &[Commit], repository: Option<&git::Repository>) -> Self {
         let mut pending: HashMap<&str, Vec<usize>> = HashMap::new();
         let mut groups = BTreeMap::new();
         for (index, commit) in commits.iter().enumerate() {
@@ -113,7 +123,14 @@ impl Folds {
         for rows in pending.into_values() {
             insert_group(&mut groups, Kind::Amend, rows);
         }
-        Self { groups }
+        let chains = rebase_chains(commits, &groups, |old, new| {
+            git::read_command_at(repository)
+                .args(["merge-base", "--is-ancestor", old, new])
+                .env("GIT_NO_LAZY_FETCH", "1")
+                .output()
+                .is_ok_and(|output| output.status.success())
+        });
+        Self { groups, chains }
     }
 
     pub(super) fn layout(&self, rows: usize) -> Layout {
@@ -135,6 +152,22 @@ impl Folds {
                 Fold::Folded(group.rows.len() - 1)
             };
         }
+        // Apply outer folds last: every hidden row must point directly to
+        // its visible owner, including the steps of folded child rebases.
+        for chain in self.chains.iter().filter(|chain| !chain.expanded) {
+            let header = chain.headers[0];
+            let mut hidden = 0;
+            for child in &chain.headers {
+                for &row in &self.groups[child].rows {
+                    if row != header {
+                        layout.visible[row] = false;
+                        layout.owners[row] = Some(header);
+                        hidden += 1;
+                    }
+                }
+            }
+            layout.folds[header] = Fold::Folded(hidden);
+        }
         layout
     }
 
@@ -143,12 +176,36 @@ impl Folds {
     }
 
     pub(super) fn toggle(&mut self, index: usize) {
+        if let Some(chain) = self.chains.iter_mut().find(|c| c.headers[0] == index) {
+            let latest = self.groups.get_mut(&index).unwrap();
+            // Parent and newest child share a header. Cycle through both
+            // levels without adding a navigation key or a synthetic commit.
+            if !chain.expanded {
+                chain.expanded = true;
+            } else if !latest.expanded {
+                latest.expanded = true;
+            } else {
+                latest.expanded = false;
+                chain.expanded = false;
+            }
+            return;
+        }
         if let Some(group) = self.groups.values_mut().find(|g| g.rows.contains(&index)) {
             group.expanded = !group.expanded;
         }
     }
 
     pub(super) fn reveal(&mut self, index: usize) {
+        for chain in &mut self.chains {
+            if index != chain.headers[0]
+                && chain
+                    .headers
+                    .iter()
+                    .any(|h| self.groups[h].rows.contains(&index))
+            {
+                chain.expanded = true;
+            }
+        }
         if let Some(group) = self
             .groups
             .values_mut()
@@ -159,6 +216,17 @@ impl Folds {
     }
 
     pub(super) fn label(&self, index: usize) -> String {
+        if let Some(chain) = self.chains.iter().find(|c| c.headers[0] == index) {
+            let mut label = format!(" · {} rebases", chain.headers.len());
+            if chain.expanded {
+                label.push_str(if self.groups[&index].expanded {
+                    " · z: fold chain"
+                } else {
+                    " · z: latest steps"
+                });
+            }
+            return label;
+        }
         let Some(group) = self.groups.get(&index).filter(|group| !group.expanded) else {
             return String::new();
         };
@@ -169,6 +237,73 @@ impl Folds {
         };
         format!(" · {count} {noun}{}", if count == 1 { "" } else { "s" })
     }
+}
+
+/// Match only complete, successful operations adjacent on the same ref.
+/// Other refs may interleave in --all without becoming part of the fold.
+fn rebase_chains(
+    commits: &[Commit],
+    groups: &BTreeMap<usize, Group>,
+    mut is_ancestor: impl FnMut(&str, &str) -> bool,
+) -> Vec<Chain> {
+    let mut next_on_ref = vec![None; commits.len()];
+    let mut next = HashMap::new();
+    for (index, commit) in commits.iter().enumerate().rev() {
+        if let Some(Annotation::Reflog(entry)) = &commit.annotation {
+            next_on_ref[index] = next.insert(entry.reference.as_str(), index);
+        }
+    }
+    let branch = |header: usize| {
+        let Some(Annotation::Reflog(entry)) = &commits[header].annotation else {
+            return None;
+        };
+        let (action, body) = entry.action.split_once(": ")?;
+        (rebase_stage(action) == Some("finish"))
+            .then(|| body.strip_prefix("returning to refs/heads/"))
+            .flatten()
+    };
+    let mut chains = Vec::new();
+    let mut included = std::collections::HashSet::new();
+    let mut ancestry = HashMap::new();
+    for (&header, group) in groups {
+        if group.kind != Kind::Rebase || included.contains(&header) {
+            continue;
+        }
+        let Some(branch_name) = branch(header) else {
+            continue;
+        };
+        let mut headers = vec![header];
+        let mut newer = group;
+        while let Some(older_header) = next_on_ref[*newer.rows.last().unwrap()] {
+            let Some(older) = groups.get(&older_header).filter(|g| g.kind == Kind::Rebase) else {
+                break;
+            };
+            if branch(older_header) != Some(branch_name) {
+                break;
+            }
+            // Start entries pin the targets, even when Git recorded a mutable
+            // branch name in the action. Equality is not forward progress.
+            let old = commits[*older.rows.last().unwrap()].hash.as_str();
+            let new = commits[*newer.rows.last().unwrap()].hash.as_str();
+            if old == new
+                || !*ancestry
+                    .entry((old, new))
+                    .or_insert_with(|| is_ancestor(old, new))
+            {
+                break;
+            }
+            headers.push(older_header);
+            included.insert(older_header);
+            newer = older;
+        }
+        if headers.len() > 1 {
+            chains.push(Chain {
+                headers,
+                expanded: false,
+            });
+        }
+    }
+    chains
 }
 
 fn insert_group(groups: &mut BTreeMap<usize, Group>, kind: Kind, rows: Vec<usize>) {
@@ -288,6 +423,68 @@ mod tests {
         (0..app.commits.len())
             .filter(|&i| app.log_folds.visible(i))
             .collect()
+    }
+
+    #[test]
+    fn rebase_chains_stop_at_aborts_branch_changes_and_other_actions() {
+        for (newest, between, oldest) in [
+            (
+                "rebase (abort): returning to refs/heads/topic",
+                None,
+                "rebase (finish): returning to refs/heads/topic",
+            ),
+            (
+                "rebase (finish): returning to refs/heads/topic",
+                None,
+                "rebase (abort): returning to refs/heads/topic",
+            ),
+            (
+                "rebase (finish): returning to refs/heads/topic",
+                None,
+                "rebase (finish): returning to refs/heads/other",
+            ),
+            (
+                "rebase (finish): returning to refs/heads/topic",
+                Some("checkout: moving from topic to other"),
+                "rebase (finish): returning to refs/heads/topic",
+            ),
+            (
+                "rebase (finish): returning to refs/heads/topic",
+                Some("commit: independent change"),
+                "rebase (finish): returning to refs/heads/topic",
+            ),
+            (
+                "rebase (finish): returning to refs/heads/topic",
+                Some("reset: moving to HEAD~1"),
+                "rebase (finish): returning to refs/heads/topic",
+            ),
+        ] {
+            let mut events = vec![
+                newest,
+                "rebase (pick): latest",
+                "rebase (start): checkout main",
+            ];
+            events.extend(between);
+            events.extend([
+                oldest,
+                "rebase (pick): earlier",
+                "rebase (start): checkout main",
+            ]);
+            let mut app = app(&events
+                .iter()
+                .map(|event| ("HEAD", *event))
+                .collect::<Vec<_>>());
+            // Give the two starts distinct targets. Even with proven ancestry,
+            // the operation boundaries above must prevent chain formation.
+            let last = app.commits.len() - 1;
+            app.commits[2].hash = "a".repeat(40);
+            app.commits[last].hash = "b".repeat(40);
+            let groups = &app.log_folds.reflog.as_ref().unwrap().groups;
+            assert!(
+                rebase_chains(&app.commits, groups, |_, _| true).is_empty(),
+                "{events:?}"
+            );
+        }
     }
 
     #[test]

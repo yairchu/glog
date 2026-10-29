@@ -95,6 +95,7 @@ pub const READING: &str = "Reading omitted history…";
 
 pub struct LogFolds {
     reflog: Option<reflog::Folds>,
+    repository: Option<git::Repository>,
     pub start_collapsed: bool,
     pub ascii_graph: bool,
     load_ancestry: AncestrySource,
@@ -124,6 +125,7 @@ impl Default for LogFolds {
     fn default() -> Self {
         Self {
             reflog: None,
+            repository: None,
             start_collapsed: false,
             ascii_graph: false,
             load_ancestry: Box::new(git::log_ancestry),
@@ -168,6 +170,7 @@ enum Fold {
 
 impl LogFolds {
     pub(crate) fn set_repository(&mut self, repository: Option<git::Repository>) {
+        self.repository = repository.clone();
         self.load_ancestry = match repository {
             Some(repository) => Box::new(move |commits, known| {
                 git::log_ancestry_at(commits, known, Some(&repository))
@@ -287,7 +290,7 @@ impl LogFolds {
             .first()
             .is_some_and(|c| matches!(c.annotation, Some(git::Annotation::Reflog(_))))
         {
-            let folds = reflog::Folds::new(commits);
+            let folds = reflog::Folds::new(commits, self.repository.as_ref());
             self.view = View {
                 layout: folds.layout(commits.len()),
                 ..View::default()

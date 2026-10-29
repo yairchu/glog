@@ -7,6 +7,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Fold consecutive rebases of the same branch into a chain when their targets
+  advance along an ancestry path, including when commits are skipped. Expand
+  the chain to browse individual rebases; search reveals their hidden steps.
+
 - Press `O` to open the selected commit on GitHub. In Show, jump to the
   selected file or code line in the commit's diff, including deleted lines.
 

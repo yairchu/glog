@@ -2109,6 +2109,99 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn reflog_rebase_chains_allow_skipped_targets_and_reveal_nested_steps() {
+        use crate::app::{App, LogAction};
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        git(&["checkout", "-qb", "topic"]);
+        std::fs::write("topic", "change\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "topic change"]);
+        git(&["checkout", "-q", "main"]);
+        for name in ["first target", "skipped target", "last target"] {
+            git(&["commit", "--allow-empty", "-qm", name]);
+        }
+        let old = git(&["rev-parse", "HEAD~2"]);
+        let new = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "topic"]);
+        git(&["rebase", &old]);
+        git(&["rebase", &new]);
+
+        let mut app = App::new(load_reflog(&[]).unwrap());
+        let shown = |app: &App| {
+            (0..app.commits.len())
+                .filter(|&index| app.log_folds.visible(index))
+                .collect::<Vec<_>>()
+        };
+        let tail: Vec<_> = (6..app.commits.len()).collect();
+        assert_eq!(shown(&app), [vec![0], tail.clone()].concat());
+        assert_eq!(app.log_folds.label(0), " · 2 rebases");
+        let mut terminal = Terminal::new(TestBackend::new(160, 15)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("2 rebases"));
+        assert!(!screen.contains("rebase (pick):"));
+
+        app.apply_log_action(LogAction::Fold);
+        assert_eq!(shown(&app), [vec![0, 3], tail.clone()].concat());
+        assert!(app.log_folds.label(0).contains("z: latest steps"));
+        app.apply_log_action(LogAction::Fold);
+        assert_eq!(shown(&app), [vec![0, 1, 2, 3], tail.clone()].concat());
+        assert!(app.log_folds.label(0).contains("z: fold chain"));
+        app.apply_log_action(LogAction::Fold);
+        assert_eq!(shown(&app), [vec![0], tail.clone()].concat());
+
+        app.search = Some(old.clone());
+        app.next_match(false);
+        assert_eq!(app.selected, 5);
+        assert_eq!(shown(&app), [vec![0, 3, 4, 5], tail.clone()].concat());
+        app.apply_log_action(LogAction::Fold);
+        assert_eq!(app.selected, 3);
+        assert_eq!(shown(&app), [vec![0, 3], tail].concat());
+
+        // A partial oldest operation cannot become a child of the chain.
+        let truncated = App::new(load_reflog(&["-n5".into()]).unwrap());
+        assert_eq!(truncated.log_folds.label(0), " · 2 rebase steps");
+        assert!(truncated.log_folds.visible(3));
+        assert!(truncated.log_folds.visible(4));
+
+        // --all interleaves branch updates; they remain independently visible.
+        let all = App::new(load_reflog(&["--all".into()]).unwrap());
+        let header = all
+            .commits
+            .iter()
+            .position(|commit| {
+                let entry = commit.reflog().unwrap();
+                entry.reference == "HEAD" && entry.action.starts_with("rebase (finish):")
+            })
+            .unwrap();
+        assert_eq!(all.log_folds.label(header), " · 2 rebases");
+        for (index, commit) in all.commits.iter().enumerate() {
+            if commit.reflog().unwrap().reference != "HEAD" {
+                assert!(all.log_folds.visible(index));
+            }
+        }
+
+        // A later rebase backwards does not absorb the earlier forward chain.
+        git(&["rebase", "--onto", &old, &new]);
+        let backwards = App::new(load_reflog(&[]).unwrap());
+        assert_eq!(backwards.log_folds.label(0), " · 2 rebase steps");
+        assert_eq!(backwards.log_folds.label(3), " · 2 rebases");
+    }
+
+    #[test]
     fn reflog_rebase_folds_follow_real_git_events_and_reveal_search_matches() {
         use crate::{app::App, input, ui};
         use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};

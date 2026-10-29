@@ -335,10 +335,22 @@ const HELP_ROWS: &[HelpRow] = &[
         "z",
         [
             Some("fold merge (Log) / file (Show)"),
-            Some("fold rebase or amend chain (Reflog) / file (Show)"),
+            Some("fold rebase, rebase chain, or amend chain / file (Show)"),
             FILE_FOLD,
             FILE_FOLD,
             FILE_FOLD,
+            None,
+            None,
+        ],
+    ),
+    (
+        "",
+        [
+            None,
+            Some("At a chain head: rebases / latest steps / folded chain"),
+            None,
+            None,
+            None,
             None,
             None,
         ],

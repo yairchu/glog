@@ -257,6 +257,10 @@ Enter opens the selected commit. Tab or Escape returns to the reflog, and
 Left/Right in Show moves between reflog entries. Search matches the displayed
 event text or commit hash. Repeated visits to the same commit remain separate
 entries. Finished or aborted rebases start folded at their final entry.
+Consecutive rebases of the same branch also fold into a chain when their
+targets advance along an ancestry path. At the chain's newest entry, `z`
+cycles through individual rebases, the newest rebase's steps, and the folded
+chain. Older rebases expand independently.
 Consecutive amendments start folded at their newest version, including the
 adjacent original commit when available. Press `z` to expand or fold either
 group; search reveals matching entries. This view is read-only and loaded
