@@ -317,6 +317,18 @@ const HELP_ROWS: &[HelpRow] = &[
         ],
     ),
     every("", "Views and search"),
+    (
+        "W",
+        [
+            Some("toggle watch (Log/Show)"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("toggle watch"),
+        ],
+    ),
     every("O", "open commit on GitHub (selected file/line in Show)"),
     detail("B", "blame selected line (Show)"),
     (

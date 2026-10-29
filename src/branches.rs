@@ -41,15 +41,19 @@ pub enum Launch {
 }
 
 pub fn load(args: &[String]) -> Result<Launch, String> {
+    let source_args = args.to_vec();
+    let mut watch = false;
     let mut date = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
-        if arg == "--date" {
+        if arg == "--watch" {
+            watch = true;
+        } else if arg == "--date" {
             date = Some(args.next().ok_or("--date requires a value")?.clone());
         } else if let Some(value) = arg.strip_prefix("--date=") {
             date = Some(value.to_owned());
         } else {
-            return Err("use glog branch [--date=STYLE] (lists local branches)".into());
+            return Err("use glog branch [--watch] [--date=STYLE] (lists local branches)".into());
         }
     }
     let output = git::read_command()
@@ -88,7 +92,7 @@ pub fn load(args: &[String]) -> Result<Launch, String> {
         current |= branch.current;
         tips.entry((*hash).into()).or_default().push(branch);
     }
-    if count == 0 || (count == 1 && current) {
+    if !watch && (count == 0 || (count == 1 && current)) {
         // Match Git's own empty/unborn and single-current-branch output.
         let output = git::read_command()
             .args(["--no-pager", "branch", "--list"])
@@ -126,13 +130,17 @@ pub fn load(args: &[String]) -> Result<Launch, String> {
     for base in history_cutoffs(&hashes) {
         input += &format!("^{base}^@\n");
     }
-    let output = git::pipe_through(
-        git::read_command()
-            .args(["rev-list", "--topo-order", "--parents", "--stdin"])
-            .env("GIT_NO_LAZY_FETCH", "1"),
-        input.as_bytes(),
-    )
-    .ok_or("could not read branch ancestry")?;
+    let output = if hashes.is_empty() {
+        String::new()
+    } else {
+        git::pipe_through(
+            git::read_command()
+                .args(["rev-list", "--topo-order", "--parents", "--stdin"])
+                .env("GIT_NO_LAZY_FETCH", "1"),
+            input.as_bytes(),
+        )
+        .ok_or("could not read branch ancestry")?
+    };
     let mut rows = compact(&output, tips, primary.as_deref())?;
     let date = date
         .map(Ok)
@@ -146,9 +154,24 @@ pub fn load(args: &[String]) -> Result<Launch, String> {
         })
         .unwrap_or(0);
     let mut app = App::new(rows);
+    app.history = crate::app::History::Branches;
+    app.watch = watch;
+    app.watch_source = Some(crate::app::WatchSource::Branches(source_args));
     app.selected = selected;
     app.center_selection = true;
     Ok(Launch::Interactive(Box::new(app)))
+}
+
+/// Watch sessions keep the picker open even for empty and trivial lists.
+pub fn load_watched(args: &[String]) -> Result<Vec<Commit>, String> {
+    let mut args = args.to_vec();
+    if !args.iter().any(|arg| arg == "--watch") {
+        args.push("--watch".into());
+    }
+    match load(&args)? {
+        Launch::Interactive(app) => Ok(app.commits),
+        Launch::Print(_) => unreachable!("watch always opens the branch picker"),
+    }
 }
 
 fn origin_default_ref() -> Option<String> {
@@ -537,6 +560,9 @@ fn compact(
 /// Fetch standard decorations and fallback commit dates for retained nodes,
 /// including refs that do not themselves add nodes to the compact graph.
 fn load_metadata(rows: &mut [Commit], date: &str) -> Result<(), String> {
+    if rows.is_empty() {
+        return Ok(());
+    }
     let input: String = rows.iter().map(|row| format!("{}\n", row.hash)).collect();
     let output = git::pipe_through(
         git::read_command()
@@ -1002,6 +1028,88 @@ mod tests {
         press(&mut app, KeyCode::Tab);
         assert_eq!(app.history, History::Branches);
         assert_eq!(app.mode, Mode::Log);
+    }
+
+    #[test]
+    fn watching_branch_cleanup_preserves_names_and_resumes_after_a_followed_log() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        let tree = git(&["write-tree"]);
+        let root = commit(&tree, "root", &[]);
+        let main = commit(&tree, "main", &[&root]);
+        let feature = commit(&tree, "feature", &[&root]);
+        git(&["update-ref", "refs/heads/main", &main]);
+        git(&["update-ref", "refs/heads/feature", &feature]);
+        git(&["branch", "alias", &feature]);
+        git(&["checkout", "-q", "feature"]);
+        let mut app = interactive();
+        app.selected = app.commits.iter().position(|c| c.hash == feature).unwrap();
+        press(&mut app, KeyCode::Char('W'));
+        assert!(app.watch);
+        assert!(app.poll_watch());
+        assert!(!app.poll_watch());
+        let advanced = commit(&tree, "advanced feature", &[&feature]);
+        git(&["update-ref", "refs/heads/feature", &advanced]);
+        // The alias keeps the original hash visible, but selection follows
+        // the surviving branch name even when its commit changes.
+        assert!(app.poll_watch());
+        assert_eq!(app.commits[app.selected].hash, advanced);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.history, History::Log);
+        assert!(!app.watch);
+        git(&["checkout", "-q", "main"]);
+        git(&["branch", "-D", "feature", "alias"]);
+        app.reference_back();
+        assert!(app.watch);
+        assert!(app.poll_watch());
+        assert_eq!(app.history, History::Branches);
+        assert_eq!(app.commits.len(), 1);
+        assert_eq!(app.commits[app.selected].hash, main);
+        press(&mut app, KeyCode::Char('W'));
+        git(&["branch", "new-feature", &feature]);
+        assert!(!app.poll_watch());
+        assert_eq!(app.commits.len(), 1);
+        press(&mut app, KeyCode::Char('W'));
+        assert!(app.poll_watch());
+        assert!(app.commits.iter().any(|c| c.hash == feature));
+    }
+
+    #[test]
+    fn branch_watch_stays_open_across_empty_and_single_branch_lists() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        let Launch::Interactive(mut app) =
+            load(&["--watch".into(), "--date=iso-strict".into()]).unwrap()
+        else {
+            panic!("watch must keep the empty picker open");
+        };
+        assert_eq!(app.history, History::Branches);
+        assert!(app.watch);
+        assert!(app.commits.is_empty());
+        assert!(app.poll_watch());
+        let tree = git(&["write-tree"]);
+        let root = commit(&tree, "root", &[]);
+        git(&["update-ref", "refs/heads/main", &root]);
+        assert!(app.poll_watch());
+        assert_eq!(app.commits.len(), 1);
+        // Switching between aliases at the same commit changes current markers.
+        git(&["branch", "alias"]);
+        assert!(app.poll_watch());
+        git(&["checkout", "-q", "alias"]);
+        assert!(app.poll_watch());
+        assert!(app.commits[0]
+            .branch()
+            .unwrap()
+            .branches
+            .iter()
+            .any(|b| b.name == "alias" && b.current));
+        git(&["checkout", "-q", "--detach"]);
+        git(&["branch", "-D", "alias", "main"]);
+        assert!(app.poll_watch());
+        assert!(app.commits.is_empty());
+        assert_eq!(app.history, History::Branches);
     }
 
     #[test]

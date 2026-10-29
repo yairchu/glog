@@ -64,20 +64,11 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let watch = match if command == Command::Status {
-        Ok(true)
-    } else if command != Command::Log {
-        Ok(false)
-    } else {
+    let (watch, git_args) = if command == Command::Log {
         parse_watch(&log_args)
-    } {
-        Ok(watch) => watch,
-        Err(error) => {
-            eprintln!("glog: {error}");
-            return ExitCode::FAILURE;
-        }
+    } else {
+        (command == Command::Status, log_args)
     };
-    let git_args = if watch { &[][..] } else { &log_args };
     let loaded = match command {
         Command::Status => status::load_app(command_args),
         Command::Show => git::load_show_app(command_args),
@@ -93,8 +84,8 @@ fn main() -> ExitCode {
             Err(error) => Err(error),
         },
         Command::Blame => blame::load_app(command_args),
-        Command::Log if watch => git::load_watch_log().map(App::new),
-        Command::Log => git::load_log(git_args).map(App::new),
+        Command::Log if watch && git_args.is_empty() => git::load_watch_log().map(App::new),
+        Command::Log => git::load_log(&git_args).map(App::new),
     };
     let mut app = match loaded {
         Ok(app) => app,
@@ -103,6 +94,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    let watch = watch || app.watch;
     if command != Command::Status && !should_start_tui(watch, app.commits.len()) {
         let message = match command {
             Command::Diff => "no changes",
@@ -133,6 +125,13 @@ fn main() -> ExitCode {
         app.log_format = log_format;
     }
     app.watch = watch;
+    if matches!(command, Command::Log | Command::Status) {
+        app.watch_source = Some(app::WatchSource::Log(if command == Command::Status {
+            Vec::new()
+        } else {
+            git_args
+        }));
+    }
     app.context = args.join(" ");
     let result = run(&mut terminal, &mut app);
     let _ = app.images.clear(&mut io::stdout());
@@ -202,7 +201,7 @@ const HELP: &str = "glog — an interactive git log and git show browser
 Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
             [--exit-on-esc]
        glog [log] [git log arguments] [--] [pathspec...]
-       glog branch [--date=STYLE]
+       glog branch [--watch] [--date=STYLE]
        glog reflog [ref] [--all] [-n COUNT] [--date=STYLE]
        glog blame [-L LINE] [--date=STYLE] [revision] [--] file
        glog stash [list [-n COUNT] [--date=STYLE]]
@@ -225,7 +224,7 @@ Options:
   --hide-types=TYPES
                 Hide comma-separated commit types (e.g. test,refactor,docs);
                 T clears filters
-  --watch       Include a Working tree item and refresh the default HEAD view
+  --watch       Refresh Log or Branches as the repository changes (W toggles)
   --exit-on-esc Exit from the Log list with Escape (glog / glog log)
   --color-moved[=MODE]
                 Highlight moved code for this session (bare flag: zebra).
@@ -246,10 +245,11 @@ Escape returns from that Log. Roots and merged branches show full history.
 Merged tips do not cut off other Logs unless they are also a shared ancestor
 of open branches. Merged status uses the local branch named by origin/HEAD,
 falling back to main or master. With only the current branch (or no branches),
-print git branch output and exit.
+print git branch output and exit, unless --watch keeps the picker open.
 Status opens the Working tree detail view in a watch session.
-Watch mode includes one Working tree item; commits open Show.
-Log shows committed history, loaded once unless --watch is used.
+Log shows committed history, loaded once unless --watch or W enables refresh.
+Watching preserves revision/path arguments; the default HEAD view also
+includes a Working tree item. W toggles watching in Log and Branches.
 Graphs use rounded paths, ● for commits, • for empty non-merge commits or a
 clean working tree, and ○ for boundary commits. Merge commits stay filled.
 ╪ crosses paths without joining them.
@@ -308,11 +308,6 @@ fn start_terminal() -> io::Result<Terminal<ratatui::backend::CrosstermBackend<io
 fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
     let mut last_watch = Instant::now();
     let mut last_status = Instant::now();
-    let mut fingerprint = app
-        .watch
-        .then(git::watch_fingerprint)
-        .transpose()
-        .map_err(io::Error::other)?;
     let mut deferred = None;
     // App state changes only within this loop, so a frame is drawn only after
     // input, a completed background task, or a refresh.
@@ -378,25 +373,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
             last_status = Instant::now();
         }
         if app.watch && last_watch.elapsed() >= Duration::from_secs(1) {
-            match git::watch_fingerprint() {
-                Ok(current) if fingerprint != Some(current) => match git::load_watch_log() {
-                    Ok(commits) => {
-                        app.status = None;
-                        app.replace_commits(commits);
-                        fingerprint = Some(current);
-                        changed = true;
-                    }
-                    Err(error) => {
-                        app.status = Some(format!("Watch refresh failed: {error}"));
-                        changed = true;
-                    }
-                },
-                Ok(_) => {}
-                Err(error) => {
-                    app.status = Some(format!("Watch refresh failed: {error}"));
-                    changed = true;
-                }
-            }
+            changed |= app.poll_watch();
             last_watch = Instant::now();
         }
     }
@@ -429,14 +406,19 @@ fn handle_burst(
     Ok((changed, None))
 }
 
-fn parse_watch(args: &[String]) -> Result<bool, String> {
-    match args {
-        [flag] if flag == "--watch" => Ok(true),
-        _ if args.iter().any(|arg| arg == "--watch") => {
-            Err("--watch currently supports only the default HEAD view".to_owned())
+fn parse_watch(args: &[String]) -> (bool, Vec<String>) {
+    let mut watch = false;
+    let mut paths = false;
+    let mut git_args = Vec::new();
+    for arg in args {
+        if !paths && arg == "--watch" {
+            watch = true;
+        } else {
+            paths |= arg == "--";
+            git_args.push(arg.clone());
         }
-        _ => Ok(false),
     }
+    (watch, git_args)
 }
 
 fn should_start_tui(watch: bool, commit_count: usize) -> bool {
@@ -559,24 +541,45 @@ mod tests {
     }
 
     #[test]
-    fn watch_limits_traversal_but_allows_display_filters() {
+    fn watch_preserves_traversal_arguments_and_pathspecs() {
         let check = |args: &[&str]| {
             let args = args.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
             let (_, _, git) = log_format::parse_args(&args)?;
-            parse_watch(&git)
+            Ok::<_, String>(parse_watch(&git))
         };
-        assert!(!check(&[]).unwrap());
-        assert!(!check(&["--hide-types=test", "--hide-merges"]).unwrap());
-        assert!(check(&[
-            "--watch",
-            "--fold-merges",
-            "--hide-types=tests,doc",
-            "--hide-merges"
-        ])
-        .unwrap());
-        assert!(check(&["--watch", "--hide-types", "test", "--oneline"]).unwrap());
-        assert!(check(&["--watch", "--hide-merges", "--all"]).is_err());
-        assert!(check(&["main", "--watch"]).is_err());
+        assert!(!check(&[]).unwrap().0);
+        assert!(!check(&["--hide-types=test", "--hide-merges"]).unwrap().0);
+        assert!(
+            check(&[
+                "--watch",
+                "--fold-merges",
+                "--hide-types=tests,doc",
+                "--hide-merges"
+            ])
+            .unwrap()
+            .0
+        );
+        assert!(
+            check(&["--watch", "--hide-types", "test", "--oneline"])
+                .unwrap()
+                .0
+        );
+        assert_eq!(
+            check(&["--watch", "--hide-merges", "--all"]).unwrap(),
+            (true, vec!["--all".into()])
+        );
+        assert_eq!(
+            check(&["main", "--watch"]).unwrap(),
+            (true, vec!["main".into()])
+        );
+        assert_eq!(
+            check(&["--watch", "main", "--", "src"]).unwrap(),
+            (true, vec!["main".into(), "--".into(), "src".into()])
+        );
+        assert_eq!(
+            check(&["--", "--watch"]).unwrap(),
+            (false, vec!["--".into(), "--watch".into()])
+        );
     }
 
     #[test]

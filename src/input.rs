@@ -53,6 +53,10 @@ fn apply(event: Event, app: &mut App) {
             app.open_github_commit();
             return;
         }
+        if key.code == KeyCode::Char('W') && app.mode != Mode::Status {
+            app.toggle_watch();
+            return;
+        }
         if key.code == KeyCode::Backspace && app.history == History::Blame && app.has_blame_back() {
             app.blame_back();
             return;

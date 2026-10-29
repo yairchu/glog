@@ -7,6 +7,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Watch the branch picker with `glog branch --watch`, including when only one
+  branch remains or the list is empty. Refresh preserves the selected branch
+  as its tip moves. Press `W` in Branches or Log/Show to toggle watching;
+  watched Logs retain their original revision and path arguments.
+
 - Fold consecutive rebases of the same branch into a chain when their targets
   advance along an ancestry path, including when commits are skipped. Expand
   the chain to browse individual rebases; search reveals their hidden steps.

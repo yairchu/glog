@@ -86,6 +86,8 @@ Run `glog branch` to browse local branches as a graph of branch tips and
 their shared ancestors, alongside the remote default branch such as
 `origin/main`. Enter or click a branch to see its commits since the shared
 ancestor; Backspace or Escape returns to the graph.
+Use `glog branch --watch`, or press `W` in the picker, to refresh it as you
+clean up branches in another terminal. `W` toggles watching off again.
 
 ### Folding merge histories
 
@@ -229,10 +231,9 @@ change:
 glog --watch
 ```
 
-`--watch` accepts glog's own display options: `--fold-merges`, `--hide-merges`,
-`--hide-types`, `--oneline`, and `--format`/`--pretty`. Git options such as
-`--all` or `--date` fail with a concise error rather than providing partial
-watch semantics.
+Press `W` in Log or Show to toggle watching during a session. Revision and
+path arguments are preserved when watching a scoped Log; the default `HEAD`
+view also includes the `Working tree` item.
 
 ## Reflog
 
@@ -492,6 +493,7 @@ so graph edges may span them.
 | `L` | — | expand/fold all lockfiles |
 | `e` | — | open working file at the selected line in your editor |
 | `O` | open commit on GitHub | open commit on GitHub at the selected file/line |
+| `W` | toggle watch | toggle watch for the current Log |
 | `m` | expand/fold all merge histories | — |
 | `M` | hide/show merge commits | — |
 | `t`, `T` | hide selected commit type / clear filters | — |

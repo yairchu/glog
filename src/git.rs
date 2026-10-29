@@ -1054,12 +1054,7 @@ pub fn watch_fingerprint() -> Result<u64, String> {
         &["diff", "--cached", "--binary", "--no-ext-diff"],
         false,
     )?;
-    hash_command(&mut fingerprint, &["rev-parse", "--verify", "HEAD"], true)?;
-    hash_command(
-        &mut fingerprint,
-        &["show-ref", "--head", "--dereference"],
-        true,
-    )?;
+    fingerprint.write_u64(refs_fingerprint_at(None)?);
     let root = repository_root()?;
     for path in untracked_paths(&[])? {
         fingerprint.write(path.as_os_str().as_encoded_bytes());
@@ -1089,12 +1084,35 @@ pub fn watch_fingerprint() -> Result<u64, String> {
     Ok(fingerprint.finish())
 }
 
+/// Branch pickers and scoped Logs need only ref changes, including switching
+/// between branches at the same commit or changing origin's default branch.
+pub fn refs_fingerprint_at(repository: Option<&Repository>) -> Result<u64, String> {
+    let mut fingerprint = DefaultHasher::new();
+    for args in [
+        vec!["show-ref", "--head", "--dereference"],
+        vec!["symbolic-ref", "--quiet", "HEAD"],
+        vec!["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"],
+    ] {
+        hash_command_at(&mut fingerprint, &args, true, repository)?;
+    }
+    Ok(fingerprint.finish())
+}
+
 fn hash_command(
     fingerprint: &mut impl Hasher,
     args: &[&str],
     allow_failure: bool,
 ) -> Result<(), String> {
-    let output = read_command()
+    hash_command_at(fingerprint, args, allow_failure, None)
+}
+
+fn hash_command_at(
+    fingerprint: &mut impl Hasher,
+    args: &[&str],
+    allow_failure: bool,
+    repository: Option<&Repository>,
+) -> Result<(), String> {
+    let output = read_command_at(repository)
         .args(args)
         .output()
         .map_err(|error| format!("could not inspect repository: {error}"))?;
@@ -5892,6 +5910,62 @@ pub(crate) mod tests {
         assert!(output.contains("diff --git a/generated.bin b/generated.bin"));
         assert!(output.contains("new file mode 100644"));
         assert!(output.contains("Binary files /dev/null and b/generated.bin differ"));
+    }
+
+    #[test]
+    fn enabling_watch_preserves_log_revisions_paths_and_selection() {
+        use crate::app::{App, WatchSource};
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        fs::write("source", "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        let args = vec!["main".into(), "--".into(), "source".into()];
+        let mut app = App::new(load_log(&args).unwrap());
+        app.watch_source = Some(WatchSource::Log(args));
+        crate::input::handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT)),
+            &mut app,
+        );
+        assert!(app.watch);
+        assert!(app.poll_watch());
+        assert_eq!(app.commits[app.selected].hash, base);
+        assert_eq!(app.commits.len(), 1);
+        fs::write("other", "unrelated\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "other file"]);
+        assert!(app.poll_watch());
+        assert_eq!(app.commits.len(), 1);
+        fs::write("source", "updated\n").unwrap();
+        git(&["commit", "-qam", "source update"]);
+        assert!(app.poll_watch());
+        assert_eq!(app.commits.len(), 2);
+        assert_eq!(app.commits[app.selected].hash, base);
+        git(&["checkout", "-qb", "other-branch"]);
+        fs::write("source", "other branch\n").unwrap();
+        git(&["commit", "-qam", "other branch update"]);
+        assert!(app.poll_watch());
+        assert_eq!(app.commits.len(), 2);
+        assert!(app
+            .commits
+            .iter()
+            .all(|commit| commit.subject != "other branch update"));
+
+        // Default HEAD sessions acquire the Working tree row when W is enabled,
+        // keeping the selected historical commit and allowing W to freeze it.
+        let mut default = App::new(load_log(&[]).unwrap());
+        let selected = default.commits[0].hash.clone();
+        default.watch_source = Some(WatchSource::Log(Vec::new()));
+        default.toggle_watch();
+        assert!(default.poll_watch());
+        assert_eq!(default.commits[0].kind, CommitKind::WorkingTree);
+        assert_eq!(default.commits[default.selected].hash, selected);
+        default.toggle_watch();
+        assert!(!default.poll_watch());
     }
 
     #[test]

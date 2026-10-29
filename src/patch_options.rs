@@ -170,7 +170,7 @@ mod tests {
         let (mode, rest) = parse(&["--watch", "--no-color-moved", "--hide-types=test"]).unwrap();
         assert_eq!(mode, Some(ColorMoved::No));
         let (_, _, git_args) = crate::log_format::parse_args(&rest).unwrap();
-        assert!(crate::parse_watch(&git_args).unwrap());
+        assert!(crate::parse_watch(&git_args).0);
     }
 
     fn patch(mode: Option<ColorMoved>, directory: Option<&Path>) -> String {

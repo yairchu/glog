@@ -41,6 +41,13 @@ pub enum History {
     Branches,
 }
 
+/// The command to repeat when this view watches its repository.
+#[derive(Clone)]
+pub enum WatchSource {
+    Log(Vec<String>),
+    Branches(Vec<String>),
+}
+
 /// A blame view to return to after blaming a parent.
 struct BlameFrame {
     commits: Vec<Commit>,
@@ -149,6 +156,8 @@ pub struct App {
     pub show_row_origin: u16,
     pub visible_show_rows: usize,
     pub watch: bool,
+    pub watch_source: Option<WatchSource>,
+    watch_fingerprint: Option<u64>,
     pub context: String,
     pub log_tab_start: u16,
     pub log_tab_end: u16,
@@ -231,6 +240,8 @@ impl App {
             show_row_origin: 0,
             visible_show_rows: 0,
             watch: false,
+            watch_source: None,
+            watch_fingerprint: None,
             context: String::new(),
             log_tab_start: 7,
             log_tab_end: 12,
@@ -726,7 +737,73 @@ impl App {
         }
     }
 
+    pub fn toggle_watch(&mut self) {
+        if self.watch_source.is_none() {
+            self.status = Some("Watch is available in Log and Branches".into());
+            return;
+        }
+        self.watch = !self.watch;
+        if self.watch {
+            self.watch_fingerprint = None;
+        }
+        self.status = None;
+    }
+
+    /// Each view retains its own snapshot, including while a followed view
+    /// is open. Returning compares against that snapshot on the next poll.
+    pub fn poll_watch(&mut self) -> bool {
+        if !self.watch {
+            return false;
+        }
+        match self.refresh_watched() {
+            Ok(changed) => changed,
+            Err(error) => {
+                self.status = Some(format!("Watch refresh failed: {error}"));
+                true
+            }
+        }
+    }
+
+    fn refresh_watched(&mut self) -> Result<bool, String> {
+        let Some(source) = &self.watch_source else {
+            return Ok(false);
+        };
+        let default_log = matches!(source, WatchSource::Log(args) if args.is_empty())
+            && self.repository.is_none();
+        let fingerprint = if default_log {
+            git::watch_fingerprint()?
+        } else {
+            git::refs_fingerprint_at(self.repository.as_ref())?
+        };
+        if self.watch_fingerprint == Some(fingerprint) {
+            return Ok(false);
+        }
+        let commits = match source {
+            WatchSource::Log(_) if default_log => git::load_watch_log()?,
+            WatchSource::Log(args) => git::load_log_at(args, self.repository.as_ref())?,
+            WatchSource::Branches(args) => crate::branches::load_watched(args)?,
+        };
+        self.status = None;
+        self.replace_commits(commits);
+        self.watch_fingerprint = Some(fingerprint);
+        Ok(true)
+    }
+
     pub fn replace_commits(&mut self, commits: Vec<Commit>) {
+        let selected_branch = self.commits.get(self.selected).and_then(Commit::branch);
+        let moved_branch = selected_branch.and_then(|node| {
+            node.branches
+                .iter()
+                .filter(|branch| branch.current)
+                .chain(node.branches.iter().filter(|branch| !branch.current))
+                .find_map(|branch| {
+                    commits.iter().position(|commit| {
+                        commit.branch().is_some_and(|node| {
+                            node.branches.iter().any(|new| new.name == branch.name)
+                        })
+                    })
+                })
+        });
         let selected = self
             .commits
             .get(self.selected)
@@ -745,10 +822,12 @@ impl App {
         self.cache_order
             .retain(|hash| self.cache.contains_key(hash));
         self.commits = commits;
-        let preserved = selected.and_then(|key| {
-            self.commits
-                .iter()
-                .position(|commit| commit.kind == key.0 && commit.hash == key.1)
+        let preserved = moved_branch.or_else(|| {
+            selected.and_then(|key| {
+                self.commits
+                    .iter()
+                    .position(|commit| commit.kind == key.0 && commit.hash == key.1)
+            })
         });
         self.selected =
             preserved.unwrap_or_else(|| self.selected.min(self.commits.len().saturating_sub(1)));
@@ -1783,6 +1862,7 @@ impl App {
             let mut target = App::new(commits);
             self.prepare_followed(&mut target);
             target.context = format!("log {label}");
+            target.watch_source = Some(WatchSource::Log(args.clone()));
             target.refresh_log_folds();
             Ok(target)
         });
