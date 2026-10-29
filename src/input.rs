@@ -49,6 +49,10 @@ fn apply(event: Event, app: &mut App) {
             }
             return;
         }
+        if key.code == KeyCode::Char('O') {
+            app.open_github_commit();
+            return;
+        }
         if key.code == KeyCode::Backspace && app.history == History::Blame && app.has_blame_back() {
             app.blame_back();
             return;

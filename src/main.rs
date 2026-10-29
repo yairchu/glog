@@ -334,9 +334,11 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
             terminal.hide_cursor()?;
             terminal.clear()?;
             match result {
-                Ok(status) if status.success() => app.set_editor_error(None),
-                Ok(status) => app.set_editor_error(Some(format!("Editor exited with {status}"))),
-                Err(error) => app.set_editor_error(Some(format!("Could not open editor: {error}"))),
+                Ok(status) if status.success() => app.set_external_error(None),
+                Ok(status) => app.set_external_error(Some(format!("Editor exited with {status}"))),
+                Err(error) => {
+                    app.set_external_error(Some(format!("Could not open editor: {error}")))
+                }
             }
             if let Some(view) = &mut app.status_view {
                 let _ = view.refresh();

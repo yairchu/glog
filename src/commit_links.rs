@@ -235,6 +235,26 @@ fn local<'a>(url: &'a str, repository: &str) -> Option<Local<'a>> {
 
 pub type BrowserResult = std::sync::mpsc::Receiver<Result<(), String>>;
 
+/// GitHub identifies a file's diff by the SHA-256 of its repository-relative
+/// path, including for renamed files (the destination) and deleted files.
+pub fn diff_anchor(path: &[u8], position: Option<crate::hunk::Position>) -> String {
+    use sha2::{Digest, Sha256};
+    let mut anchor = format!("#diff-{:x}", Sha256::digest(path));
+    if let Some(crate::hunk::Position {
+        row: crate::hunk::Row::Line { result, .. },
+        old,
+        new,
+    }) = position
+    {
+        // GitHub's two-sided diff cannot address combined parent columns.
+        if let [old] = old.as_slice() {
+            let (side, line) = if result { ('R', new) } else { ('L', *old) };
+            anchor.push_str(&format!("{side}{line}"));
+        }
+    }
+    anchor
+}
+
 // A browser that xdg-open launches inherits its stderr, so a pipe there
 // would stay open for the browser's lifetime and break once glog exits.
 const XDG_OPEN: bool = cfg!(not(any(target_os = "macos", target_os = "windows")));

@@ -317,6 +317,7 @@ const HELP_ROWS: &[HelpRow] = &[
         ],
     ),
     every("", "Views and search"),
+    every("O", "open commit on GitHub (selected file/line in Show)"),
     detail("B", "blame selected line (Show)"),
     (
         "Enter",

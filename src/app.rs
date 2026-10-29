@@ -1065,10 +1065,10 @@ impl App {
         };
         match target.and_then(crate::editor::Target::command) {
             Ok(command) => {
-                self.set_editor_error(None);
+                self.set_external_error(None);
                 self.pending_editor = Some(command);
             }
-            Err(error) => self.set_editor_error(Some(error)),
+            Err(error) => self.set_external_error(Some(error)),
         }
     }
 
@@ -1151,7 +1151,7 @@ impl App {
             .or_else(|| self.submodule_patch.as_ref().map(|patch| &patch.repository))
     }
 
-    pub fn set_editor_error(&mut self, error: Option<String>) {
+    pub fn set_external_error(&mut self, error: Option<String>) {
         if self.mode == Mode::Status {
             if let Some(view) = &mut self.status_view {
                 view.error = error;
@@ -1814,6 +1814,71 @@ impl App {
         }
     }
 
+    pub fn open_github_commit(&mut self) {
+        match self.github_commit_url() {
+            Ok(url) => self.follow_link(&crate::commit_links::Target::Url(url)),
+            Err(error) => self.set_external_error(Some(error)),
+        }
+    }
+
+    fn github_commit_url(&mut self) -> Result<String, String> {
+        let commit = self
+            .commits
+            .get(self.selected)
+            .ok_or("No commit selected")?;
+        if commit.kind != CommitKind::Revision {
+            return Err("These changes have no GitHub commit page".into());
+        }
+        if matches!(commit.annotation, Some(git::Annotation::Stash(_))) {
+            return Err("Stashes have no GitHub commit page".into());
+        }
+        let hash = commit.hash.clone();
+        if self.github_repository.is_none() {
+            self.github_repository = Some(git::github_repository_at(self.show_repository()));
+        }
+        let repository = self
+            .github_repository
+            .as_ref()
+            .and_then(Option::as_ref)
+            .ok_or("No GitHub repository found in Git remotes")?;
+        let mut url = format!("{repository}/commit/{hash}");
+        if self.mode == Mode::Show {
+            // Expanded submodules compare two revisions, not the enclosing
+            // commit. Keep those rows on that commit's gitlink diff instead.
+            let nested = self.submodule_rows.get(&self.show_cursor);
+            let file = if let Some((key, _)) = nested {
+                self.show_files.iter().find(|file| &file.key == key)
+            } else {
+                self.show_rows
+                    .get(self.show_cursor)
+                    .and_then(|row| row.file)
+                    .map(|index| &self.show_files[index])
+            };
+            if let Some(file) = file {
+                let position = if nested.is_none() {
+                    let patch = self
+                        .show_text
+                        .lines()
+                        .skip(file.start)
+                        .take(file.end - file.start)
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    crate::hunk::position(
+                        &patch,
+                        self.show_rows[self.show_cursor].source - file.start,
+                    )
+                } else {
+                    None
+                };
+                url.push_str(&crate::commit_links::diff_anchor(
+                    &file.path_bytes,
+                    position,
+                ));
+            }
+        }
+        Ok(url)
+    }
+
     /// Report browser failures, returning whether one was reported.
     pub fn poll_browser(&mut self) -> bool {
         use std::sync::mpsc::TryRecvError;
@@ -2126,6 +2191,90 @@ mod tests {
             graph_node: '*',
         }
     }
+
+    #[test]
+    fn github_commit_links_keep_line_sides_and_renamed_paths() {
+        let mut app = App::new(vec![commit("a")]);
+        app.github_repository = Some(Some("https://github.com/owner/repo".into()));
+        let base = format!("https://github.com/owner/repo/commit/{}", "a".repeat(40));
+        let renamed = "#diff-b335630551682c19a781afebcf4d07bf978fb1f8ac04c6bf87428ed5106870f5";
+        let deleted = "#diff-ae4f60a2c989c229789920130b7d0489c9477f2a59d7ed86efcf3156247b888d";
+        app.mode = Mode::Show;
+        app.show_text = "commit message\ndiff --git a/old.md b/README.md\nrename from old.md\nrename to README.md\n--- a/old.md\n+++ b/README.md\n@@ -10,2 +10,2 @@\n context\n-old\n+new\ndiff --git a/gone.rs b/gone.rs\ndeleted file mode 100644\n--- a/gone.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-gone\n".into();
+        app.ensure_show_rows();
+        for (text, anchor, suffix) in [
+            ("commit message", "", ""),
+            ("+++ b/README.md", renamed, ""),
+            ("@@ -10,2 +10,2 @@", renamed, ""),
+            (" context", renamed, "R10"),
+            ("-old", renamed, "L11"),
+            ("+new", renamed, "R11"),
+            ("+++ /dev/null", deleted, ""),
+            ("-gone", deleted, "L1"),
+        ] {
+            app.show_cursor = app
+                .show_rows
+                .iter()
+                .position(|row| row.text == text)
+                .unwrap();
+            assert_eq!(
+                app.github_commit_url().unwrap(),
+                format!("{base}{anchor}{suffix}"),
+                "{text}"
+            );
+        }
+        app.toggle_show_stat();
+        assert_eq!(app.github_commit_url().unwrap(), format!("{base}{deleted}"));
+        app.mode = Mode::Log;
+        assert_eq!(app.github_commit_url().unwrap(), base);
+    }
+
+    #[test]
+    fn github_links_in_expanded_submodules_stay_on_the_enclosing_commit() {
+        let mut child = App::new(Vec::new());
+        child.show_text = "diff --git a/inner.rs b/inner.rs\n--- a/inner.rs\n+++ b/inner.rs\n@@ -1 +1 @@\n-before\n+after\n".into();
+        child.ensure_show_rows();
+        let mut app = App::new(vec![commit("a")]);
+        app.github_repository = Some(Some("https://github.com/owner/repo".into()));
+        app.mode = Mode::Show;
+        app.show_text = format!(
+            "diff --git a/module b/module\nindex {}..{} 160000\n",
+            "1".repeat(40),
+            "2".repeat(40)
+        );
+        app.ensure_show_rows();
+        app.submodules.insert(b"module".to_vec(), Box::new(child));
+        app.expanded_folds.insert(b"module".to_vec());
+        app.rebuild_show_rows();
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.text.contains("+after"))
+            .unwrap();
+        assert_eq!(app.github_commit_url().unwrap(), format!("https://github.com/owner/repo/commit/{}#diff-120970d812836f19888625587a4606a5ad23cef31c8684e601771552548fc6b9", "a".repeat(40)));
+    }
+
+    #[test]
+    fn github_commit_shortcut_reports_unavailable_pages_without_opening_a_browser() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let mut app = App::new(vec![commit("a")]);
+        app.github_repository = Some(None);
+        crate::input::handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::SHIFT)),
+            &mut app,
+        );
+        assert_eq!(
+            app.status.as_deref(),
+            Some("No GitHub repository found in Git remotes")
+        );
+        app.commits[0].kind = CommitKind::Unstaged;
+        assert_eq!(
+            app.github_commit_url().unwrap_err(),
+            "These changes have no GitHub commit page"
+        );
+        assert!(app.browser_results.is_empty());
+    }
+
     #[test]
     fn selection_is_bounded() {
         let mut app = App::new(vec![commit("a"), commit("b")]);

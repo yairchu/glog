@@ -487,6 +487,7 @@ so graph edges may span them.
 | `z` | expand/fold selected merge history | expand/fold current folded file |
 | `L` | — | expand/fold all lockfiles |
 | `e` | — | open working file at the selected line in your editor |
+| `O` | open commit on GitHub | open commit on GitHub at the selected file/line |
 | `m` | expand/fold all merge histories | — |
 | `M` | hide/show merge commits | — |
 | `t`, `T` | hide selected commit type / clear filters | — |

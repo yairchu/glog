@@ -5,6 +5,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Press `O` to open the selected commit on GitHub. In Show, jump to the
+  selected file or code line in the commit's diff, including deleted lines.
+
 ## 0.7.0 - 2026-10-28
 
 ### Added
