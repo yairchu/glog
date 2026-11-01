@@ -741,7 +741,7 @@ impl App {
 
     pub fn toggle_watch(&mut self) {
         if self.watch_source.is_none() {
-            self.status = Some("Watch is available in Log and Branches".into());
+            self.status = Some("This view cannot be watched".into());
             return;
         }
         self.watch = !self.watch;
