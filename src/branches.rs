@@ -1031,6 +1031,53 @@ mod tests {
     }
 
     #[test]
+    fn watched_logs_opened_from_branches_follow_the_selected_ref() {
+        for remote in [false, true] {
+            let directory = TestDirectory::new();
+            let _cwd = CurrentDirGuard::enter(directory.path());
+            git(&["init", "-qb", "main"]);
+            let tree = git(&["write-tree"]);
+            let root = commit(&tree, "root", &[]);
+            let feature = commit(&tree, "feature", &[&root]);
+            git(&["update-ref", "refs/heads/main", &root]);
+            let reference = if remote {
+                git(&["update-ref", "refs/heads/alias", &root]);
+                git(&[
+                    "symbolic-ref",
+                    "refs/remotes/origin/HEAD",
+                    "refs/remotes/origin/feature",
+                ]);
+                "refs/remotes/origin/feature"
+            } else {
+                // The current alias wins over the first name at this tip.
+                git(&["update-ref", "refs/heads/alias", &feature]);
+                git(&["symbolic-ref", "HEAD", "refs/heads/feature"]);
+                "refs/heads/feature"
+            };
+            git(&["update-ref", reference, &feature]);
+            // A tag with the same short name must not redirect the refresh.
+            let tag = if remote { "origin/feature" } else { "feature" };
+            git(&["tag", tag, &root]);
+            let mut app = interactive();
+            app.selected = app.commits.iter().position(|c| c.hash == feature).unwrap();
+            press(&mut app, KeyCode::Enter);
+            assert_eq!(app.history, History::Log);
+            assert!(!app.watch);
+            press(&mut app, KeyCode::Char('W'));
+            assert!(app.poll_watch());
+            let advanced = commit(&tree, "advanced feature", &[&feature]);
+            git(&["update-ref", reference, &advanced]);
+            assert!(app.poll_watch());
+            assert!(
+                app.commits.iter().any(|c| c.hash == advanced),
+                "watched Log did not follow {reference}"
+            );
+            assert_eq!(app.commits[app.selected].hash, feature);
+            assert!(!app.poll_watch());
+        }
+    }
+
+    #[test]
     fn watching_branch_cleanup_preserves_names_and_resumes_after_a_followed_log() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
