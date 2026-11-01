@@ -1862,15 +1862,19 @@ impl App {
             return;
         };
         let args = crate::branches::log_args(node, &self.commits);
-        let label = node
-            .branch()
-            .and_then(|node| {
-                node.branches
-                    .iter()
-                    .find(|branch| branch.current)
-                    .or_else(|| node.branches.first())
-            })
-            .map_or_else(|| node.short_hash.clone(), |branch| branch.name.clone());
+        let branch = node.branch().and_then(|node| {
+            node.branches
+                .iter()
+                .find(|branch| branch.current)
+                .or_else(|| node.branches.first())
+        });
+        let label = branch.map_or_else(|| node.short_hash.clone(), |branch| branch.name.clone());
+        let mut watch_args = args.clone();
+        if let Some(branch) = branch {
+            // Load the picker's pinned snapshot first, but follow its chosen
+            // ref when watching. Shared ancestors keep their fixed hash.
+            watch_args[0] = crate::branches::branch_ref(branch);
+        }
         let loaded = git::load_log_at(&args, self.repository.as_ref()).and_then(|commits| {
             if commits.is_empty() {
                 return Err("No commits between this node and its shared ancestors".into());
@@ -1878,7 +1882,7 @@ impl App {
             let mut target = App::new(commits);
             self.prepare_followed(&mut target);
             target.context = format!("log {label}");
-            target.watch_source = Some(WatchSource::Log(args.clone()));
+            target.watch_source = Some(WatchSource::Log(watch_args));
             target.refresh_log_folds();
             Ok(target)
         });

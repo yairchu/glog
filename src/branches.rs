@@ -627,7 +627,7 @@ fn load_metadata(rows: &mut [Commit], date: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn branch_ref(branch: &Branch) -> String {
+pub(crate) fn branch_ref(branch: &Branch) -> String {
     format!(
         "refs/{}/{}",
         match branch.kind {
