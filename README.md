@@ -233,7 +233,7 @@ glog --watch
 
 Press `W` in Log or Show to toggle watching during a session. Revision and
 path arguments are preserved when watching a scoped Log; Logs that name no
-revision, and so start at `HEAD`, also include the `Working tree` item.
+revision or path also include the `Working tree` item.
 
 ## Reflog
 
