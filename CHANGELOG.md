@@ -7,6 +7,16 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Align metadata columns in the default Log layout, keeping refs immediately
+  before the subject. Hashes follow their graph closely, with padding after
+  the hash. Graph/hash and author columns are sized to visible rows.
+  Long author names are abbreviated while preserving coauthor badges; custom
+  formats retain their explicit layout.
+
+- Shorten bot authors in the default Log: show `Copilot 🤖` and `Dependabot 🤖`,
+  and replace other `[bot]` suffixes with `🤖`. Original names remain searchable
+  and visible in Show and explicit formats.
+
 - Watch the branch picker with `glog branch --watch`, including when only one
   branch remains or the list is empty. Refresh preserves the selected branch
   as its tip moves. Press `W` in Branches or Log/Show to toggle watching;

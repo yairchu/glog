@@ -652,6 +652,12 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             .min(app.commits.len().saturating_sub(height.max(1)));
     }
     let mut lines = Vec::new();
+    let columns = (app.history == History::Log)
+        .then(|| app.log_format.columns(&app.commits))
+        .flatten();
+    // Collect actual on-screen commit rows before measuring their combined
+    // graph/hash column. Routing lines and off-screen history reserve no space.
+    let mut metadata_rows = Vec::new();
     let mut graph_row = 0;
     // Routing rows below a filtered-out commit carry its edges, so clicking
     // them selects nothing rather than the commit they lead to.
@@ -698,6 +704,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 break 'commits;
             }
             let mut line = ansi::parse_line(graph);
+            let mut deferred_metadata = false;
             if !graph_only && part + 1 == graph_rows.len() {
                 if app.history == History::Reflog {
                     line.spans.push(Span::styled(
@@ -720,22 +727,27 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                         span.content = span.content.replacen(nodes, marker, 1).into();
                     }
                 }
-                line.spans.extend(match commit.blame() {
-                    // Name the commit of a chunk that starts above the screen.
-                    Some(blame) => crate::blame::spans(
-                        commit,
-                        blame,
-                        blame.starts_chunk || lines.is_empty(),
-                        &app.log_format,
-                    ),
-                    None => app.log_format.spans(commit),
-                });
-                line.spans.push(Span::styled(
-                    app.log_folds.label(index),
-                    Style::default().fg(Color::Yellow),
-                ));
+                if columns.is_some() && commit.kind == crate::git::CommitKind::Revision {
+                    metadata_rows.push((lines.len(), index));
+                    deferred_metadata = true;
+                } else {
+                    line.spans.extend(match commit.blame() {
+                        // Name the commit of a chunk that starts above the screen.
+                        Some(blame) => crate::blame::spans(
+                            commit,
+                            blame,
+                            blame.starts_chunk || lines.is_empty(),
+                            &app.log_format,
+                        ),
+                        None => app.log_format.spans_with_columns(commit, columns.as_ref()),
+                    });
+                    line.spans.push(Span::styled(
+                        app.log_folds.label(index),
+                        Style::default().fg(Color::Yellow),
+                    ));
+                }
             }
-            if let Some(query) = &app.search {
+            if let Some(query) = app.search.as_ref().filter(|_| !deferred_metadata) {
                 let current = app.search_match == Some((Mode::Log, index));
                 line = highlight_matches(line, query, current);
             }
@@ -750,6 +762,44 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                     .then_some(index),
             );
             graph_row += 1;
+        }
+    }
+    if let Some(columns) = columns {
+        let columns = columns
+            .with_visible_authors(metadata_rows.iter().map(|&(_, index)| &app.commits[index]));
+        let show_hash = app.log_format.shows(crate::log_format::Field::Hash);
+        let width = metadata_rows
+            .iter()
+            .map(|&(row, index)| {
+                lines[row].width()
+                    + if show_hash {
+                        Span::raw(&app.commits[index].short_hash).width()
+                    } else {
+                        0
+                    }
+            })
+            .max()
+            .unwrap_or(0);
+        for (row, index) in metadata_rows {
+            let line = &mut lines[row];
+            let hash_width = width.saturating_sub(line.width());
+            if !show_hash && hash_width > 0 {
+                line.spans.push(Span::raw(" ".repeat(hash_width)));
+            }
+            // The hash touches its own graph; all alignment padding follows it.
+            let columns = columns.with_hash_width(hash_width);
+            line.spans.extend(
+                app.log_format
+                    .spans_with_columns(&app.commits[index], Some(&columns)),
+            );
+            line.spans.push(Span::styled(
+                app.log_folds.label(index),
+                Style::default().fg(Color::Yellow),
+            ));
+            if let Some(query) = &app.search {
+                let current = app.search_match == Some((Mode::Log, index));
+                *line = highlight_matches(std::mem::take(line), query, current);
+            }
         }
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
@@ -1779,6 +1829,128 @@ mod tests {
                 1
             );
         }
+    }
+
+    #[test]
+    fn default_log_graph_hash_column_uses_visible_commit_rows() {
+        let mut commits: Vec<_> = (0..4)
+            .map(|index| {
+                let mut commit = crate::log_format::tests::commit();
+                commit.hash = index.to_string();
+                commit.short_hash = if index == 1 { "bbbbbbbbb" } else { "aaaaaaa" }.into();
+                commit.subject = format!("subject-{index}");
+                commit.decorations.clear();
+                commit.author = if index == 3 { "Longest author" } else { "Al" }.into();
+                commit.graph = vec![match index {
+                    1 => "| * ",
+                    3 => "| | | | | * ",
+                    _ => "* ",
+                }
+                .into()];
+                commit
+            })
+            .collect();
+        commits[0].decorations = "HEAD -> main".into();
+        let mut app = App::new(commits);
+        let mut terminal = Terminal::new(TestBackend::new(110, 4)).unwrap();
+        for show_hash in [true, false] {
+            if !show_hash {
+                app.log_format.toggle(crate::log_format::Field::Hash);
+            }
+            for (selected, graph_width, hash_width) in [(0, 4, 9), (3, 12, 7), (0, 4, 9)] {
+                app.selected = selected;
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                let mut subject_head = None;
+                for (row, index) in app.visible_log_rows.iter().enumerate() {
+                    let Some(index) = index else { continue };
+                    let commit = &app.commits[*index];
+                    let y = app.log_row_origin + row as u16;
+                    let text: String = (0..110)
+                        .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                        .collect();
+                    let column = |start| Span::raw(&text[..start]).width();
+                    if show_hash {
+                        assert_eq!(
+                            column(text.find(&commit.short_hash).unwrap()),
+                            Span::raw(&commit.graph[0]).width()
+                        );
+                    } else {
+                        assert!(!text.contains(&commit.short_hash));
+                    }
+                    assert_eq!(
+                        column(text.find(&commit.author_date).unwrap()),
+                        graph_width + if show_hash { hash_width + 1 } else { 0 }
+                    );
+                    let start = text
+                        .find(if *index == 0 { "(HEAD" } else { "subject-" })
+                        .unwrap();
+                    assert_eq!(column(start), *subject_head.get_or_insert(column(start)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn author_columns_follow_visible_labels_and_exclude_filtered_authors() {
+        let names = [
+            "copilot-swe-agent[bot]",
+            "dependabot[bot]",
+            "Longer author outside viewport",
+            "李 e\u{301}",
+        ];
+        let commits = names
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let mut commit = crate::log_format::tests::commit();
+                commit.hash = index.to_string();
+                commit.author = (*name).into();
+                commit.subject = format!(
+                    "{}: subject-{index}",
+                    if index == 2 { "chore" } else { "feat" }
+                );
+                commit.decorations.clear();
+                commit.collaborators.codex = index == 0 || index == 3;
+                commit.collaborators.others = usize::from(index == 1);
+                commit
+            })
+            .collect();
+        let mut app = App::new(commits);
+        let render = |app: &mut App, terminal: &mut Terminal<TestBackend>, width| {
+            terminal.draw(|frame| draw(frame, app)).unwrap();
+            for (row, index) in app.visible_log_rows.iter().enumerate() {
+                let Some(index) = index else { continue };
+                let commit = &app.commits[*index];
+                let y = app.log_row_origin + row as u16;
+                // Inspect actual cell coordinates: emoji continuation cells
+                // must not count as extra spaces in the author column.
+                let column = |text: &str| {
+                    (0..110 - text.len() as u16)
+                        .find(|&x| {
+                            text.chars().enumerate().all(|(offset, ch)| {
+                                terminal.backend().buffer()[(x + offset as u16, y)].symbol()
+                                    == ch.to_string()
+                            })
+                        })
+                        .unwrap()
+                };
+                let author_start =
+                    column(&commit.author_date) + commit.author_date.len() as u16 + 1;
+                assert_eq!(column(&commit.subject) - author_start, width + 1);
+            }
+        };
+        let mut small = Terminal::new(TestBackend::new(110, 4)).unwrap();
+        render(&mut app, &mut small, 15);
+        app.selected = 3;
+        let long_width = Span::raw(names[2]).width() as u16;
+        render(&mut app, &mut small, long_width);
+        app.selected = 0;
+        render(&mut app, &mut small, 15);
+        let mut large = Terminal::new(TestBackend::new(110, 8)).unwrap();
+        render(&mut app, &mut large, long_width);
+        app.apply_log_action(LogAction::Type("chore".into()));
+        render(&mut app, &mut large, 15);
+        assert!(!app.visible_log_rows.contains(&Some(2)));
     }
 
     #[test]

@@ -2,8 +2,11 @@ use ratatui::{
     style::{Color, Style},
     text::Span,
 };
+use std::borrow::Cow;
 
 use crate::git::{Agent, Annotation, Collaborators, Commit, CommitKind, ReflogEntry};
+
+const MAX_AUTHOR_WIDTH: usize = 32;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
@@ -42,11 +45,48 @@ struct Part {
 #[derive(Clone, Debug)]
 pub struct LogFormat {
     parts: Vec<Part>,
+    tabular: bool,
+}
+
+/// Screen widths for the default Log's metadata. The renderer adjusts author
+/// and graph/hash widths to the rows actually on screen.
+#[derive(Clone, Copy)]
+pub struct Columns {
+    hash: usize,
+    date: usize,
+    author: usize,
+}
+
+impl Columns {
+    pub fn with_hash_width(self, hash: usize) -> Self {
+        Self { hash, ..self }
+    }
+
+    pub fn with_visible_authors<'a>(self, commits: impl IntoIterator<Item = &'a Commit>) -> Self {
+        let author = commits
+            .into_iter()
+            .map(author_width)
+            .max()
+            .unwrap_or(0)
+            .min(MAX_AUTHOR_WIDTH);
+        Self { author, ..self }
+    }
+
+    fn width(&self, field: Field) -> Option<usize> {
+        match field {
+            Field::Hash => Some(self.hash),
+            Field::Date => Some(self.date),
+            Field::Author => Some(self.author),
+            _ => None,
+        }
+    }
 }
 
 impl Default for LogFormat {
     fn default() -> Self {
-        Self::parse("%h %ad %an (%D) %s").unwrap()
+        let mut format = Self::parse("%h %ad %an (%D) %s").unwrap();
+        format.tabular = true;
+        format
     }
 }
 
@@ -103,7 +143,33 @@ impl LogFormat {
         } else {
             return Err("log format must contain at least one supported field".into());
         }
-        Ok(Self { parts })
+        Ok(Self {
+            parts,
+            tabular: false,
+        })
+    }
+
+    pub fn columns(&self, commits: &[Commit]) -> Option<Columns> {
+        if !self.tabular {
+            return None;
+        }
+        let mut columns = Columns {
+            hash: 0,
+            date: 0,
+            author: 0,
+        };
+        for commit in commits
+            .iter()
+            .filter(|c| c.kind == CommitKind::Revision && c.annotation.is_none())
+        {
+            columns.hash = columns.hash.max(Span::raw(&commit.short_hash).width());
+            columns.date = columns.date.max(Span::raw(&commit.author_date).width());
+            columns.author = columns
+                .author
+                .max(author_width(commit))
+                .min(MAX_AUTHOR_WIDTH);
+        }
+        Some(columns)
     }
 
     pub fn shows(&self, field: Field) -> bool {
@@ -143,6 +209,14 @@ impl LogFormat {
     }
 
     pub fn spans(&self, commit: &Commit) -> Vec<Span<'static>> {
+        self.spans_with_columns(commit, None)
+    }
+
+    pub fn spans_with_columns(
+        &self,
+        commit: &Commit,
+        columns: Option<&Columns>,
+    ) -> Vec<Span<'static>> {
         match &commit.annotation {
             Some(Annotation::Reflog(entry)) => return reflog_spans(commit, entry),
             Some(Annotation::Stash(entry)) => return crate::stash::spans(commit, entry, self),
@@ -172,6 +246,11 @@ impl LogFormat {
                     _ => false,
                 }
         });
+        let displayed_author = if columns.is_some() {
+            author_label(&commit.author)
+        } else {
+            Cow::Borrowed(commit.author.as_str())
+        };
         for (index, part) in self
             .parts
             .iter()
@@ -182,12 +261,13 @@ impl LogFormat {
                 "h" => &commit.short_hash,
                 "H" => &commit.hash,
                 "ad" => &commit.author_date,
-                "an" => &commit.author,
+                "an" => &displayed_author,
                 "ae" => &commit.author_email,
                 "d" | "D" => commit.decorations.ansi(),
                 _ => &commit.subject,
             };
-            if value.is_empty() {
+            let width = columns.and_then(|columns| columns.width(part.field));
+            if value.is_empty() && width.unwrap_or(0) == 0 {
                 continue;
             }
             let value = if part.token == "d" {
@@ -195,6 +275,19 @@ impl LogFormat {
             } else {
                 value.to_owned()
             };
+            let badges = if Some(index) == last_author {
+                coauthor_badge(&commit.collaborators)
+            } else {
+                Vec::new()
+            };
+            let badge_width: usize = badges.iter().map(Span::width).sum();
+            let value = match (part.field, width) {
+                (Field::Author, Some(width)) => truncate(&value, width.saturating_sub(badge_width)),
+                _ => value,
+            };
+            let padding = width.map_or(0, |width| {
+                width.saturating_sub(Span::raw(&value).width() + badge_width)
+            });
             let text = format!("{}{value}{}", part.prefix, part.suffix);
             let text = if spans.is_empty() {
                 text.trim_start().to_owned()
@@ -221,8 +314,9 @@ impl LogFormat {
             } else {
                 spans.push(span);
             }
-            if Some(index) == last_author {
-                spans.extend(coauthor_badge(&commit.collaborators));
+            spans.extend(badges);
+            if padding > 0 {
+                spans.push(Span::raw(" ".repeat(padding)));
             }
         }
         spans
@@ -234,6 +328,51 @@ impl LogFormat {
             .map(|span| span.content.as_ref())
             .collect()
     }
+}
+
+/// Compact labels are a presentation of GitHub-style bot names. Leave the
+/// stored author untouched for searching, explicit formats, and Show.
+fn author_label(author: &str) -> Cow<'_, str> {
+    let Some(name) = author.strip_suffix("[bot]") else {
+        return Cow::Borrowed(author);
+    };
+    let name = match name {
+        "copilot-swe-agent" => "Copilot",
+        "dependabot" => "Dependabot",
+        "" => return Cow::Borrowed("🤖"),
+        name => name,
+    };
+    Cow::Owned(format!("{name} 🤖"))
+}
+
+fn author_width(commit: &Commit) -> usize {
+    let badges: usize = coauthor_badge(&commit.collaborators)
+        .iter()
+        .map(Span::width)
+        .sum();
+    Span::raw(author_label(&commit.author)).width() + badges
+}
+
+fn truncate(text: &str, width: usize) -> String {
+    let span = Span::raw(text);
+    if span.width() <= width {
+        return text.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut result = String::new();
+    let mut used = 0;
+    for grapheme in span.styled_graphemes(Style::default()) {
+        let next = Span::raw(grapheme.symbol).width();
+        if used + next > width - 1 {
+            break;
+        }
+        result.push_str(grapheme.symbol);
+        used += next;
+    }
+    result.push('…');
+    result
 }
 
 /// An agent's symbol and its color, or None for the terminal foreground.
@@ -958,6 +1097,113 @@ pub(crate) mod tests {
         format.toggle(Field::Author);
         format.toggle(Field::Date);
         assert_eq!(format.text(&commit()), "A subject");
+    }
+
+    #[test]
+    fn bot_author_labels_shrink_columns_without_losing_raw_names_or_badges() {
+        let cases = [
+            ("copilot-swe-agent[bot]", "Copilot 🤖"),
+            ("dependabot[bot]", "Dependabot 🤖"),
+            ("release[bot]", "release 🤖"),
+            ("Yair Chuchem", "Yair Chuchem"),
+            ("Copilot", "Copilot"),
+        ];
+        let commits: Vec<_> = cases
+            .iter()
+            .enumerate()
+            .map(|(index, (name, _))| {
+                let mut commit = commit();
+                commit.author = (*name).into();
+                commit.subject = format!("subject-{index}");
+                commit.decorations.clear();
+                commit.collaborators.codex = index == 0;
+                commit
+            })
+            .collect();
+        let format = LogFormat::default();
+        let columns = format.columns(&commits).unwrap();
+        assert_eq!(columns.author, Span::raw("Dependabot 🤖").width());
+        assert!(columns.author < Span::raw(cases[0].0).width());
+        let mut subject_column = None;
+        for (commit, (original, label)) in commits.iter().zip(cases) {
+            let rendered: String = format
+                .spans_with_columns(commit, Some(&columns))
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect();
+            assert!(rendered.contains(label), "{rendered}");
+            let column = Span::raw(&rendered[..rendered.find("subject-").unwrap()]).width();
+            assert_eq!(column, *subject_column.get_or_insert(column));
+            assert!(format.text(commit).contains(original));
+            assert!(LogFormat::parse("%an <%ae> %s")
+                .unwrap()
+                .text(commit)
+                .starts_with(&format!("{original} <")));
+        }
+        let rendered: String = format
+            .spans_with_columns(&commits[0], Some(&columns))
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        assert!(rendered.contains("Copilot 🤖+꩜"));
+
+        let mut app = crate::app::App::new(commits);
+        app.selected = 1;
+        app.search = Some("copilot-swe-agent[bot]".into());
+        app.next_match(false);
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
+    fn default_columns_align_subject_heads_with_unicode_names_and_badges() {
+        let mut commits = vec![commit(), commit(), commit()];
+        for (index, commit) in commits.iter_mut().enumerate() {
+            commit.subject = format!("subject-{index}");
+            commit.decorations.clear();
+        }
+        commits[0].author = "Al".into();
+        commits[0].decorations = "HEAD -> main".into();
+        commits[0].collaborators.codex = true;
+        commits[1].author = "李 e\u{301}".into();
+        commits[1].short_hash.push_str("12");
+        commits[1].author_date = "Nov 1".into();
+        commits[1].collaborators.others = 12;
+        commits[2].author = "👩‍💻".repeat(24);
+        commits[2].collaborators.claude = true;
+        let format = LogFormat::default();
+        let columns = format.columns(&commits).unwrap();
+        let rendered: Vec<String> = commits
+            .iter()
+            .map(|commit| {
+                format
+                    .spans_with_columns(commit, Some(&columns))
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect()
+            })
+            .collect();
+        let starts: Vec<_> = rendered
+            .iter()
+            .enumerate()
+            .map(|(index, text)| {
+                let start = text
+                    .find(if index == 0 { "(HEAD" } else { "subject-" })
+                    .unwrap();
+                Span::raw(&text[..start]).width()
+            })
+            .collect();
+        assert!(starts.iter().all(|column| *column == starts[0]));
+        assert!(rendered[0].ends_with("(HEAD -> main) subject-0"));
+        assert!(rendered[0].contains("Al+꩜"));
+        assert!(rendered[1].contains("李 e\u{301}+12"));
+        assert!(rendered[2].contains("👩‍💻…+❋"));
+        assert!(!rendered[2].contains(&commits[2].author));
+        // Truncation is only visual: full author names remain searchable.
+        assert!(format.text(&commits[2]).contains(&commits[2].author));
+
+        let explicit = LogFormat::parse("%an (%D) %s").unwrap();
+        assert!(explicit.columns(&commits).is_none());
+        assert_eq!(explicit.text(&commits[0]), "Al+꩜ (HEAD -> main) subject-0");
     }
 
     #[test]
