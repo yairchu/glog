@@ -85,7 +85,7 @@ pub struct Commit {
     pub diff_args: Vec<String>,
     pub hash: String,
     pub short_hash: String,
-    pub decorations: String,
+    pub decorations: Decorations,
     pub subject: String,
     pub author: String,
     pub author_email: String,
@@ -97,6 +97,50 @@ pub struct Commit {
     pub first_parent_only: bool,
     /// Git's node marker, including comparison and excluded-boundary markers.
     pub graph_node: char,
+}
+
+/// Git's styled ref names, with a plain view for identity checks and search.
+/// Keep both representations together so ANSI escapes never become ref text.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Decorations {
+    plain: String,
+    ansi: String,
+}
+
+impl Decorations {
+    pub fn ansi(&self) -> &str {
+        &self.ansi
+    }
+
+    #[cfg(test)]
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+impl std::ops::Deref for Decorations {
+    type Target = str;
+
+    fn deref(&self) -> &str {
+        &self.plain
+    }
+}
+
+impl From<String> for Decorations {
+    fn from(ansi: String) -> Self {
+        let plain = crate::ansi::plain(&ansi);
+        if plain.is_empty() {
+            Self::default()
+        } else {
+            Self { plain, ansi }
+        }
+    }
+}
+
+impl From<&str> for Decorations {
+    fn from(ansi: &str) -> Self {
+        ansi.to_owned().into()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -406,7 +450,7 @@ fn log_command(user_args: &[String], repository: Option<&Repository>) -> Result<
         "--decorate=short",
         "--color=always",
         "--no-abbrev-commit",
-        "--pretty=format:%x1e%H%x1f%h%x1f%D%x1f%an%x1f%ae%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)%x1f%P%x1f%s",
+        "--pretty=format:%x1e%H%x1f%h%x1f%C(auto)%D%C(reset)%x1f%an%x1f%ae%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)%x1f%P%x1f%s",
     ]);
     command.args(user_args);
     Ok(command)
@@ -1153,7 +1197,7 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
                     diff_args: Vec::new(),
                     hash: fields[0].to_owned(),
                     short_hash: fields[1].to_owned(),
-                    decorations: fields[2].to_owned(),
+                    decorations: fields[2].into(),
                     author: fields[3].to_owned(),
                     author_email: fields[4].to_owned(),
                     author_date: fields[5].to_owned(),
@@ -1201,7 +1245,7 @@ fn pseudo_commit(kind: CommitKind, short_hash: &str, subject: &str) -> Commit {
         diff_args: Vec::new(),
         hash: format!("[{short_hash}]"),
         short_hash: short_hash.to_owned(),
-        decorations: String::new(),
+        decorations: Default::default(),
         author: String::new(),
         author_email: String::new(),
         author_date: String::new(),

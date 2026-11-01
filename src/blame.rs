@@ -779,7 +779,7 @@ fn render_lines(
                 diff_args: Vec::new(),
                 hash: line.hash.clone(),
                 short_hash: line.hash[..file.hash_width.min(line.hash.len())].to_owned(),
-                decorations: String::new(),
+                decorations: Default::default(),
                 subject: String::new(),
                 author: if line.is_uncommitted() {
                     UNCOMMITTED_AUTHOR.to_owned()

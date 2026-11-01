@@ -178,13 +178,13 @@ impl LogFormat {
             .enumerate()
             .filter(|(_, part)| part.enabled)
         {
-            let value = match part.token.as_str() {
+            let value: &str = match part.token.as_str() {
                 "h" => &commit.short_hash,
                 "H" => &commit.hash,
                 "ad" => &commit.author_date,
                 "an" => &commit.author,
                 "ae" => &commit.author_email,
-                "d" | "D" => &commit.decorations,
+                "d" | "D" => commit.decorations.ansi(),
                 _ => &commit.subject,
             };
             if value.is_empty() {
@@ -193,7 +193,7 @@ impl LogFormat {
             let value = if part.token == "d" {
                 format!(" ({value})")
             } else {
-                value.clone()
+                value.to_owned()
             };
             let text = format!("{}{value}{}", part.prefix, part.suffix);
             let text = if spans.is_empty() {
@@ -201,6 +201,10 @@ impl LogFormat {
             } else {
                 text
             };
+            if part.field == Field::Refs {
+                spans.extend(crate::ansi::parse_line(&text).spans);
+                continue;
+            }
             let span = field_span(part.field, text);
             if part.field == Field::Subject
                 && crate::log_folds::commit_type_prefix(commit).is_some()
@@ -292,8 +296,7 @@ pub(crate) fn field_span(field: Field, text: String) -> Span<'static> {
         Field::Hash => Style::default().fg(Color::Yellow),
         Field::Date => Style::default().fg(Color::Gray),
         Field::Author => Style::default().fg(Color::Cyan),
-        Field::Refs => Style::default().fg(Color::Green),
-        Field::Subject => Style::default(),
+        Field::Refs | Field::Subject => Style::default(),
     };
     Span::styled(text, style)
 }

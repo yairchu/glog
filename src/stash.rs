@@ -132,7 +132,7 @@ fn load_list(args: &[String]) -> Result<Vec<Commit>, String> {
                 author_email: fields[4].into(),
                 author_date: fields[5].into(),
                 collaborators: Collaborators::default(),
-                decorations: String::new(),
+                decorations: Default::default(),
                 graph: vec![String::new()],
                 first_parent_only: false,
                 graph_node: '*',

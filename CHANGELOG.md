@@ -19,6 +19,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Press `O` to open the selected commit on GitHub. In Show, jump to the
   selected file or code line in the commit's diff, including deleted lines.
 
+### Fixed
+
+- Use Git's decoration colors for local branches, remote refs, HEAD, and tags
+  in Log and Branches, including configured `color.decorate.*` styles.
+
 ## 0.7.0 - 2026-10-28
 
 ### Added

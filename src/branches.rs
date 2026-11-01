@@ -538,7 +538,7 @@ fn compact(
                 })),
                 hash: node.hash.clone(),
                 short_hash: node.hash[..node.hash.len().min(7)].into(),
-                decorations: String::new(),
+                decorations: Default::default(),
                 subject,
                 author: String::new(),
                 author_email: String::new(),
@@ -571,12 +571,12 @@ fn load_metadata(rows: &mut [Commit], date: &str) -> Result<(), String> {
                 "--no-walk=unsorted",
                 "--stdin",
                 "--decorate=short",
-                "--no-color",
+                "--color=always",
                 "--no-patch",
                 "--no-show-signature",
                 "--no-notes",
                 "-z",
-                "--format=%H%x00%D%x00%cd",
+                "--format=%H%x00%C(auto)%D%C(reset)%x00%cd",
             ])
             .arg(format!("--date={date}")),
         input.as_bytes(),
@@ -603,7 +603,7 @@ fn load_metadata(rows: &mut [Commit], date: &str) -> Result<(), String> {
         if commit_date.chars().any(char::is_control) {
             return Err("Git commit dates must fit on one line; use --date=iso-strict".into());
         }
-        row.decorations = (*decorations).to_owned();
+        row.decorations = (*decorations).into();
         if let Some(Annotation::Branch(node)) = &mut row.annotation {
             node.updated_at = updates
                 .next()
@@ -741,14 +741,14 @@ pub fn spans(
         let date = node.updated_at.as_deref().unwrap_or("");
         spans.push(field_span(Field::Date, pad(date, node.update_width)));
     }
-    let refs = if commit.decorations.is_empty() && !node.branches.is_empty() {
+    let refs: &str = if commit.decorations.is_empty() && !node.branches.is_empty() {
         // Keep pinned branch names identifiable if their refs moved during loading.
         &commit.subject
     } else {
-        &commit.decorations
+        commit.decorations.ansi()
     };
     if !refs.is_empty() {
-        spans.push(field_span(Field::Refs, format!("({refs})")));
+        spans.extend(crate::ansi::parse_line(&format!("({refs})")).spans);
     }
     if node.branches.is_empty() {
         if !spans.is_empty() {
@@ -1497,7 +1497,7 @@ mod tests {
                 "--format=%D",
                 &row.hash,
             ]);
-            assert_eq!(row.decorations, expected);
+            assert_eq!(&*row.decorations, expected);
             assert!(app.log_format.text(row).contains(&format!("({expected})")));
         }
         let root = app.commits.iter().find(|row| row.hash == root).unwrap();
@@ -1506,6 +1506,67 @@ mod tests {
         assert!(app.commits[app.selected]
             .decorations
             .contains("HEAD -> main"));
+    }
+
+    #[test]
+    fn ref_colors_match_git_in_branch_and_log_formats() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        let tree = git(&["write-tree"]);
+        let root = commit(&tree, "root", &[]);
+        let middle = commit(&tree, "undecorated", &[&root]);
+        let main = commit(&tree, "main", &[&middle]);
+        git(&["update-ref", "refs/heads/main", &main]);
+        git(&["update-ref", "refs/heads/upstream/local", &root]);
+        git(&["update-ref", "refs/remotes/upstream/main", &root]);
+        git(&["tag", "published", &root]);
+        for custom in [false, true] {
+            if custom {
+                for (key, value) in [
+                    ("color.decorate.branch", "bold #123456"),
+                    ("color.decorate.remoteBranch", "italic 201"),
+                    ("color.decorate.HEAD", "normal"),
+                    ("color.decorate.tag", "yellow blue ul"),
+                ] {
+                    git(&["config", key, value]);
+                }
+            }
+            let branches = interactive();
+            let log = git::load_log(&["--all".into()]).unwrap();
+            let undecorated = log.iter().find(|row| row.hash == middle).unwrap();
+            assert!(undecorated.decorations.is_empty());
+            for row in branches.commits.iter().chain(&log) {
+                let colored = git(&[
+                    "log",
+                    "--no-walk",
+                    "--decorate=short",
+                    "--color=always",
+                    "--format=%C(auto)%D%C(reset)",
+                    &row.hash,
+                ]);
+                let plain = crate::ansi::plain(&colored);
+                assert_eq!(&*row.decorations, plain);
+                for format in [
+                    crate::log_format::LogFormat::default(),
+                    crate::log_format::LogFormat::parse("%h%d %s").unwrap(),
+                    crate::log_format::LogFormat::parse("%D %s").unwrap(),
+                ] {
+                    let actual = format.spans(row);
+                    for expected in crate::ansi::parse_line(&colored).spans {
+                        assert!(
+                            actual.iter().any(|span| span == &expected),
+                            "missing {expected:?} in {actual:?}; custom={custom}"
+                        );
+                    }
+                    let text = format.text(row);
+                    assert!(!text.contains('\x1b'));
+                    if !plain.is_empty() {
+                        assert!(text.contains(&plain));
+                    }
+                }
+            }
+        }
     }
 
     #[test]

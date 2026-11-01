@@ -2260,7 +2260,7 @@ mod tests {
             diff_args: Vec::new(),
             hash: subject.repeat(40).chars().take(40).collect(),
             short_hash: subject.to_owned(),
-            decorations: String::new(),
+            decorations: Default::default(),
             author: String::new(),
             author_email: String::new(),
             author_date: String::new(),
