@@ -38,8 +38,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Pick up repository changes made while a `--watch` session starts.
 
-- Retry a failing watch refresh after increasing delays, rather than rerunning
-  Git and rewriting the footer every second.
+- Retry a failing watch refresh after increasing delays, or as soon as the
+  repository changes, rather than rerunning Git and rewriting the footer every
+  second.
 
 ## 0.7.0 - 2026-10-28
 

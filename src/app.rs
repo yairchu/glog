@@ -65,13 +65,17 @@ pub enum WatchSource {
 pub type WatchSnapshot = Result<u64, String>;
 
 /// When to retry a failed watch refresh. Backing off keeps a lasting
-/// failure, such as a deleted branch, from rerunning Git on every poll,
+/// failure, such as a deleted branch, from reloading the view on every poll,
 /// while a passing one, such as a lock held by another Git command, still
-/// recovers on its own.
+/// recovers on its own. A change to the repository, such as recreating the
+/// branch, retries right away.
 #[derive(Clone, Copy)]
 struct WatchRetry {
     at: Instant,
     delay: Duration,
+    /// The repository state the failed load read, when the snapshot
+    /// succeeded.
+    snapshot: Option<u64>,
 }
 
 impl WatchRetry {
@@ -853,16 +857,34 @@ impl App {
     }
 
     pub(crate) fn poll_watch_at(&mut self, now: Instant) -> bool {
-        if !self.watch || self.watch_retry.is_some_and(|retry| now < retry.at) {
+        let Some(source) = self.watch_source.as_ref().filter(|_| self.watch) else {
+            return false;
+        };
+        let waiting = self.watch_retry.filter(|retry| now < retry.at);
+        if waiting.is_some_and(|retry| retry.snapshot.is_none()) {
             return false;
         }
-        match self.refresh_watched() {
+        let snapshot = source.snapshot(self.repository.as_ref());
+        // Snapshots cost far less than loads, so keep comparing them.
+        if let Some(failed) = waiting.and_then(|retry| retry.snapshot) {
+            if !snapshot.as_ref().is_ok_and(|current| *current != failed) {
+                return false;
+            }
+        }
+        let snapshot = match snapshot {
+            Ok(snapshot) => snapshot,
+            Err(error) => {
+                self.watch_failed(error, None, now);
+                return true;
+            }
+        };
+        match self.refresh_watched(snapshot) {
             Ok(changed) => {
                 self.watch_retry = None;
                 changed
             }
             Err(error) => {
-                self.watch_failed(error, now);
+                self.watch_failed(error, Some(snapshot), now);
                 true
             }
         }
@@ -871,7 +893,7 @@ impl App {
     /// Report a failure and retry later, waiting longer after each
     /// consecutive failure. Whatever the view shows, the first success
     /// reloads it, which also clears the report.
-    fn watch_failed(&mut self, error: String, now: Instant) {
+    fn watch_failed(&mut self, error: String, snapshot: Option<u64>, now: Instant) {
         self.status = Some(format!("Watch refresh failed: {error}"));
         self.watch_snapshot = None;
         let delay = self.watch_retry.map_or(WatchRetry::FIRST_DELAY, |retry| {
@@ -880,6 +902,7 @@ impl App {
         self.watch_retry = Some(WatchRetry {
             at: now + delay,
             delay,
+            snapshot,
         });
     }
 
@@ -890,23 +913,22 @@ impl App {
         self.watch_retry = None;
         self.watch_snapshot = match snapshot {
             Some(Err(error)) => {
-                self.watch_failed(error, Instant::now());
+                self.watch_failed(error, None, Instant::now());
                 None
             }
             snapshot => snapshot.and_then(Result::ok),
         };
     }
 
-    fn refresh_watched(&mut self) -> Result<bool, String> {
+    /// Reload the view unless the repository is still at this snapshot.
+    fn refresh_watched(&mut self, snapshot: u64) -> Result<bool, String> {
         let Some(source) = &self.watch_source else {
             return Ok(false);
         };
-        let repository = self.repository.as_ref();
-        let snapshot = source.snapshot(repository)?;
         if self.watch_snapshot == Some(snapshot) {
             return Ok(false);
         }
-        let commits = source.load(repository)?;
+        let commits = source.load(self.repository.as_ref())?;
         self.status = None;
         self.watch_snapshot = Some(snapshot);
         self.replace_commits(commits);

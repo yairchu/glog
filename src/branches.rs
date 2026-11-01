@@ -1160,7 +1160,7 @@ mod tests {
     }
 
     #[test]
-    fn watched_logs_of_deleted_branches_report_failure_once() {
+    fn watched_logs_of_deleted_branches_recover_when_recreated() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         git(&["init", "-qb", "main"]);
@@ -1177,8 +1177,12 @@ mod tests {
         git(&["update-ref", "-d", "refs/heads/feature"]);
         assert!(app.poll_watch());
         assert!(app.status.is_some());
-        // Retry only after a delay.
+        // Retry only after a delay, unless the refs change.
         assert!(!app.poll_watch());
+        git(&["update-ref", "refs/heads/feature", &feature]);
+        assert!(app.poll_watch());
+        assert_eq!(app.status, None);
+        assert_eq!(app.commits[0].hash, feature);
     }
 
     #[test]
