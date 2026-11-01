@@ -612,24 +612,38 @@ pub fn load_log_with_working_tree(args: &[String]) -> Result<Vec<Commit>, String
     Ok(entries)
 }
 
-/// Whether a Log with these arguments starts at HEAD. Git uses `--default`
-/// only when no revision is named, which makes an invalid ref name there fail.
-/// Arguments Git rejects also fail, leaving loading the Log to report them.
-pub fn log_starts_at_head(args: &[String]) -> bool {
-    args.is_empty()
-        || !read_command()
-            .args([
-                "log",
-                "--no-walk",
-                "--format=",
-                "--default",
-                "glog no revision",
-            ])
-            .args(args)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .is_ok_and(|status| status.success())
+/// Whether a Log with these arguments leads with the working tree: Git finds
+/// that they name no revision, so the Log starts at HEAD, and no path, whose
+/// limit the repository-wide working tree item would ignore. Arguments Git
+/// rejects count as naming one, leaving loading the Log to report them.
+pub fn log_shows_working_tree(args: &[String]) -> bool {
+    // Git uses `--default` only when no revision is named, which makes an
+    // invalid ref name there fail.
+    let names_revision = || log_probe(&[], &["--default", "glog no revision"], args);
+    // Git rejects these global settings together only once it parses a
+    // pathspec. `--all` keeps an unborn HEAD from failing.
+    let names_no_path = || {
+        log_probe(
+            &["--literal-pathspecs", "--icase-pathspecs"],
+            &["--all"],
+            args,
+        )
+    };
+    args.is_empty() || (!names_revision() && names_no_path())
+}
+
+/// Whether Git accepts a Log with these arguments, without listing commits.
+/// Unlike `--no-walk`, `--max-count=0` combines with options such as `--graph`.
+fn log_probe(global: &[&str], options: &[&str], args: &[String]) -> bool {
+    read_command()
+        .args(global)
+        .args(["log", "--max-count=0", "--format="])
+        .args(options)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
 }
 
 pub fn working_tree_commit(summary: &crate::status::WorkingTreeSummary) -> Commit {
@@ -6088,7 +6102,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn watched_logs_starting_at_head_show_the_working_tree() {
+    fn watched_logs_of_head_without_paths_show_the_working_tree() {
         use crate::app::WatchSource;
 
         let directory = TestDirectory::new();
@@ -6107,11 +6121,18 @@ pub(crate) mod tests {
             &["--date=short"],
             &["-n", "5"],
             &["--author", "nobody"],
-            &["--", "src"],
+            &["--graph"],
         ] {
             assert!(shows(args), "{args:?}");
         }
-        for args in [&["main"][..], &["--all"], &["main", "--", "src"]] {
+        // The working tree's changes may lie outside the paths.
+        for args in [
+            &["main"][..],
+            &["--all"],
+            &["--graph", "main"],
+            &["--", "src"],
+            &["main", "--", "src"],
+        ] {
             assert!(!shows(args), "{args:?}");
         }
     }

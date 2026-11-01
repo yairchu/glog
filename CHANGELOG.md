@@ -21,7 +21,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   branch remains or the list is empty. Refresh preserves the selected branch
   as its tip moves. Press `W` in Branches or Log/Show to toggle watching;
   watched Logs retain their original revision and path arguments, and those
-  that name no revision keep the Working tree item. Logs opened from Branches
+  that name no revision or path keep the Working tree item. Logs opened from Branches
   follow the selected branch's ref when watching is enabled.
 
 - Fold consecutive rebases of the same branch into a chain when their targets

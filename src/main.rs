@@ -252,8 +252,8 @@ falling back to main or master. With only the current branch (or no branches),
 print git branch output and exit, unless --watch keeps the picker open.
 Status opens the Working tree detail view in a watch session.
 Log shows committed history, loaded once unless --watch or W enables refresh.
-Watching preserves revision/path arguments; Logs that name no revision also
-include a Working tree item. W toggles watching in Log and Branches.
+Watching preserves revision/path arguments; Logs that name no revision or path
+also include a Working tree item. W toggles watching in Log and Branches.
 Graphs use rounded paths, ● for commits, • for empty non-merge commits or a
 clean working tree, and ○ for boundary commits. Merge commits stay filled.
 ╪ crosses paths without joining them.

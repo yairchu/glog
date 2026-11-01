@@ -47,7 +47,8 @@ pub enum History {
 /// The command to repeat when this view watches its repository.
 #[derive(Clone)]
 pub enum WatchSource {
-    /// A Log, which also shows the working tree when it starts at HEAD.
+    /// A Log, which also shows the working tree when it starts at HEAD and
+    /// is not limited to paths.
     Log {
         args: Vec<String>,
         working_tree: bool,
@@ -80,9 +81,9 @@ impl WatchRetry {
 
 impl WatchSource {
     /// A Log of the current repository, with the working tree when Git
-    /// finds that the arguments name no revision.
+    /// finds that the arguments name no revision and no path.
     pub fn log(args: Vec<String>) -> Self {
-        let working_tree = git::log_starts_at_head(&args);
+        let working_tree = git::log_shows_working_tree(&args);
         Self::Log { args, working_tree }
     }
 
