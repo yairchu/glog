@@ -308,6 +308,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
     // App state changes only within this loop, so a frame is drawn only after
     // input, a completed background task, or a refresh.
     let mut changed = true;
+    app.seed_watch();
     while !app.quit {
         if let Some(mut command) = app.pending_editor.take() {
             app.images.clear(&mut io::stdout())?;

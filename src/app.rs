@@ -786,17 +786,34 @@ impl App {
         }
     }
 
+    /// Snapshot the repository for a view loaded already watched, so the
+    /// first poll reloads only after a change.
+    pub fn seed_watch(&mut self) {
+        if self.watch && self.watch_source.is_some() {
+            self.watch_fingerprint = self.fingerprint(self.is_default_log()).ok();
+        }
+    }
+
+    /// The default Log also shows the working tree; other views only refs.
+    fn is_default_log(&self) -> bool {
+        matches!(&self.watch_source, Some(WatchSource::Log(args)) if args.is_empty())
+            && self.repository.is_none()
+    }
+
+    fn fingerprint(&self, default_log: bool) -> Result<u64, String> {
+        if default_log {
+            git::watch_fingerprint()
+        } else {
+            git::refs_fingerprint_at(self.repository.as_ref())
+        }
+    }
+
     fn refresh_watched(&mut self) -> Result<bool, String> {
+        let default_log = self.is_default_log();
         let Some(source) = &self.watch_source else {
             return Ok(false);
         };
-        let default_log = matches!(source, WatchSource::Log(args) if args.is_empty())
-            && self.repository.is_none();
-        let fingerprint = if default_log {
-            git::watch_fingerprint()?
-        } else {
-            git::refs_fingerprint_at(self.repository.as_ref())?
-        };
+        let fingerprint = self.fingerprint(default_log)?;
         if self.watch_fingerprint == Some(fingerprint) {
             return Ok(false);
         }

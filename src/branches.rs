@@ -1214,7 +1214,9 @@ mod tests {
         assert_eq!(app.history, History::Branches);
         assert!(app.watch);
         assert!(app.commits.is_empty());
-        assert!(app.poll_watch());
+        // As at startup, a freshly loaded picker reloads only after a change.
+        app.seed_watch();
+        assert!(!app.poll_watch());
         let tree = git(&["write-tree"]);
         let root = commit(&tree, "root", &[]);
         git(&["update-ref", "refs/heads/main", &root]);
