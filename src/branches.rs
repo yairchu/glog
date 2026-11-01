@@ -41,7 +41,51 @@ pub enum Launch {
 }
 
 pub fn load(args: &[String]) -> Result<Launch, String> {
-    let source_args = args.to_vec();
+    let (watch, date) = parse_args(args)?;
+    let tips = local_tips()?;
+    let count: usize = tips.values().map(Vec::len).sum();
+    let current = tips.values().flatten().any(|branch| branch.current);
+    if !watch && (count == 0 || (count == 1 && current)) {
+        // Match Git's own empty/unborn and single-current-branch output.
+        let output = git::read_command()
+            .args(["--no-pager", "branch", "--list"])
+            .output()
+            .map_err(|error| format!("could not list branches: {error}"))?;
+        if !output.status.success() {
+            return Err(git::stderr_message(
+                "could not list branches",
+                &output.stderr,
+            ));
+        }
+        return Ok(Launch::Print(
+            String::from_utf8_lossy(&output.stdout).into(),
+        ));
+    }
+    let rows = rows(tips, date)?;
+    let selected = rows
+        .iter()
+        .position(|row| {
+            row.branch()
+                .is_some_and(|node| node.branches.iter().any(|b| b.current))
+        })
+        .unwrap_or(0);
+    let mut app = App::new(rows);
+    app.history = crate::app::History::Branches;
+    app.watch = watch;
+    app.watch_source = Some(crate::app::WatchSource::Branches(args.to_vec()));
+    app.selected = selected;
+    app.center_selection = true;
+    Ok(Launch::Interactive(Box::new(app)))
+}
+
+/// Watch sessions keep the picker open even for empty and trivial lists.
+pub fn load_watched(args: &[String]) -> Result<Vec<Commit>, String> {
+    let (_, date) = parse_args(args)?;
+    rows(local_tips()?, date)
+}
+
+/// Whether to watch, and the date style.
+fn parse_args(args: &[String]) -> Result<(bool, Option<String>), String> {
     let mut watch = false;
     let mut date = None;
     let mut args = args.iter();
@@ -56,6 +100,10 @@ pub fn load(args: &[String]) -> Result<Launch, String> {
             return Err("use glog branch [--watch] [--date=STYLE] (lists local branches)".into());
         }
     }
+    Ok((watch, date))
+}
+
+fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
     let output = git::read_command()
         .args([
             "for-each-ref",
@@ -75,8 +123,6 @@ pub fn load(args: &[String]) -> Result<Launch, String> {
         ));
     }
     let mut tips: HashMap<String, Vec<Branch>> = HashMap::new();
-    let mut count = 0;
-    let mut current = false;
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let fields: Vec<_> = line.split('\0').collect();
         let [hash, name, head] = fields.as_slice() else {
@@ -88,26 +134,15 @@ pub fn load(args: &[String]) -> Result<Launch, String> {
             merged_into: None,
             kind: BranchKind::Local,
         };
-        count += 1;
-        current |= branch.current;
         tips.entry((*hash).into()).or_default().push(branch);
     }
-    if !watch && (count == 0 || (count == 1 && current)) {
-        // Match Git's own empty/unborn and single-current-branch output.
-        let output = git::read_command()
-            .args(["--no-pager", "branch", "--list"])
-            .output()
-            .map_err(|error| format!("could not list branches: {error}"))?;
-        if !output.status.success() {
-            return Err(git::stderr_message(
-                "could not list branches",
-                &output.stderr,
-            ));
-        }
-        return Ok(Launch::Print(
-            String::from_utf8_lossy(&output.stdout).into(),
-        ));
-    }
+    Ok(tips)
+}
+
+fn rows(
+    mut tips: HashMap<String, Vec<Branch>>,
+    date: Option<String>,
+) -> Result<Vec<Commit>, String> {
     let remote_ref = origin_default_ref();
     let remote = remote_default(remote_ref.as_deref());
     let primary_name = remote_ref
@@ -146,32 +181,7 @@ pub fn load(args: &[String]) -> Result<Launch, String> {
         .map(Ok)
         .unwrap_or_else(|| git::configured_log_date("format-local:%Y-%m-%d %H:%M"))?;
     load_metadata(&mut rows, &date)?;
-    let selected = rows
-        .iter()
-        .position(|row| {
-            row.branch()
-                .is_some_and(|node| node.branches.iter().any(|b| b.current))
-        })
-        .unwrap_or(0);
-    let mut app = App::new(rows);
-    app.history = crate::app::History::Branches;
-    app.watch = watch;
-    app.watch_source = Some(crate::app::WatchSource::Branches(source_args));
-    app.selected = selected;
-    app.center_selection = true;
-    Ok(Launch::Interactive(Box::new(app)))
-}
-
-/// Watch sessions keep the picker open even for empty and trivial lists.
-pub fn load_watched(args: &[String]) -> Result<Vec<Commit>, String> {
-    let mut args = args.to_vec();
-    if !args.iter().any(|arg| arg == "--watch") {
-        args.push("--watch".into());
-    }
-    match load(&args)? {
-        Launch::Interactive(app) => Ok(app.commits),
-        Launch::Print(_) => unreachable!("watch always opens the branch picker"),
-    }
+    Ok(rows)
 }
 
 fn origin_default_ref() -> Option<String> {
