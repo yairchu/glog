@@ -80,6 +80,21 @@ pub enum LogAction {
     FoldAll,
 }
 
+/// The file section beneath a Show row of a view's own patch.
+enum CursorFile<'a> {
+    /// A row of an expanded submodule's nested diff, beneath its gitlink.
+    Submodule {
+        gitlink: &'a FileSection,
+        view: &'a App,
+        row: usize,
+    },
+    Own {
+        file: &'a FileSection,
+        /// The row's line within the file's patch.
+        line: usize,
+    },
+}
+
 /// A file section selected in Show, with the view that owns it.
 struct ShowFile<'a> {
     app: &'a App,
@@ -1224,25 +1239,38 @@ impl App {
         )
     }
 
-    /// The patch file beneath `cursor`, resolved inside expanded submodules.
-    fn show_file(&self, cursor: usize) -> Result<ShowFile<'_>, String> {
+    /// The file section of this view's own patch beneath `cursor`.
+    fn cursor_file(&self, cursor: usize) -> Option<CursorFile<'_>> {
         if let Some((key, row)) = self.submodule_rows.get(&cursor) {
-            return self.submodules[key].show_file(*row);
+            let gitlink = self.show_files.iter().find(|file| &file.key == key)?;
+            return Some(CursorFile::Submodule {
+                gitlink,
+                view: &self.submodules[key],
+                row: *row,
+            });
         }
-        let row = self.show_rows.get(cursor).ok_or("No file selected")?;
-        let file = row
-            .file
-            .map(|index| &self.show_files[index])
-            .ok_or("No file selected")?;
-        if file.submodule.is_some() {
-            return Err("Expand the submodule and select a file".into());
-        }
-        Ok(ShowFile {
-            app: self,
+        let row = self.show_rows.get(cursor)?;
+        let file = &self.show_files[row.file?];
+        Some(CursorFile::Own {
             file,
-            patch: self.file_patch(file),
             line: row.source - file.start,
         })
+    }
+
+    /// The patch file beneath `cursor`, resolved inside expanded submodules.
+    fn show_file(&self, cursor: usize) -> Result<ShowFile<'_>, String> {
+        match self.cursor_file(cursor).ok_or("No file selected")? {
+            CursorFile::Submodule { view, row, .. } => view.show_file(row),
+            CursorFile::Own { file, .. } if file.submodule.is_some() => {
+                Err("Expand the submodule and select a file".into())
+            }
+            CursorFile::Own { file, line } => Ok(ShowFile {
+                app: self,
+                file,
+                patch: self.file_patch(file),
+                line,
+            }),
+        }
     }
 
     /// The lines of `show_text` that make up one file's patch.
@@ -1963,29 +1991,17 @@ impl App {
         if self.mode == Mode::Show {
             // Expanded submodules compare two revisions, not the enclosing
             // commit. Keep those rows on that commit's gitlink diff instead.
-            let nested = self.submodule_rows.get(&self.show_cursor);
-            let file = if let Some((key, _)) = nested {
-                self.show_files.iter().find(|file| &file.key == key)
-            } else {
-                self.show_rows
-                    .get(self.show_cursor)
-                    .and_then(|row| row.file)
-                    .map(|index| &self.show_files[index])
-            };
-            if let Some(file) = file {
-                let position = if nested.is_none() {
-                    crate::hunk::position(
-                        &self.file_patch(file),
-                        self.show_rows[self.show_cursor].source - file.start,
-                    )
-                } else {
-                    None
-                };
-                url.push_str(&crate::commit_links::diff_anchor(
+            let anchor = match self.cursor_file(self.show_cursor) {
+                Some(CursorFile::Submodule { gitlink, .. }) => {
+                    Some(crate::commit_links::diff_anchor(&gitlink.path_bytes, None))
+                }
+                Some(CursorFile::Own { file, line }) => Some(crate::commit_links::diff_anchor(
                     &file.path_bytes,
-                    position,
-                ));
-            }
+                    crate::hunk::position(&self.file_patch(file), line),
+                )),
+                None => None,
+            };
+            url.extend(anchor);
         }
         Ok(url)
     }
