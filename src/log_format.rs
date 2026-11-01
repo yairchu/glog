@@ -355,7 +355,9 @@ fn author_width(commit: &Commit) -> usize {
     Span::raw(author_label(&commit.author)).width() + badges
 }
 
-fn truncate(text: &str, width: usize) -> String {
+/// Shorten text to a display width, ending it with an ellipsis.
+/// Graphemes stay whole, so combining marks keep their base letters.
+pub fn truncate(text: &str, width: usize) -> String {
     let span = Span::raw(text);
     if span.width() <= width {
         return text.to_owned();

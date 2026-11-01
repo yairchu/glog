@@ -1042,7 +1042,7 @@ pub fn spans(
         if details {
             let badge = crate::log_format::coauthor_badge(&commit.collaborators);
             let badge_width: usize = badge.iter().map(Span::width).sum();
-            let author = truncate(
+            let author = crate::log_format::truncate(
                 &commit.author,
                 file.author_width.saturating_sub(badge_width),
             );
@@ -1065,24 +1065,6 @@ pub fn spans(
     ));
     spans.extend(line.code.iter().cloned());
     spans
-}
-
-fn truncate(text: &str, width: usize) -> String {
-    if Span::raw(text).width() <= width {
-        return text.to_owned();
-    }
-    let mut output = String::new();
-    let mut used = 0;
-    for ch in text.chars() {
-        let ch_width = Span::raw(ch.encode_utf8(&mut [0; 4]).to_owned()).width();
-        if used + ch_width + 1 > width {
-            break;
-        }
-        output.push(ch);
-        used += ch_width;
-    }
-    output.push('…');
-    output
 }
 
 #[cfg(test)]
