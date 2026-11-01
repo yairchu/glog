@@ -7,6 +7,8 @@ use std::borrow::Cow;
 use crate::git::{Agent, Annotation, Collaborators, Commit, CommitKind, ReflogEntry};
 
 const MAX_AUTHOR_WIDTH: usize = 32;
+/// Names wider than this show later words as initials in the default Log.
+const COMPACT_NAME_WIDTH: usize = 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Field {
@@ -210,6 +212,7 @@ impl LogFormat {
         }
     }
 
+    #[cfg(test)]
     pub fn spans(&self, commit: &Commit) -> Vec<Span<'static>> {
         self.row(commit, None).spans
     }
@@ -219,7 +222,7 @@ impl LogFormat {
             Some(Annotation::Reflog(entry)) => reflog_spans(commit, entry),
             Some(Annotation::Stash(entry)) => crate::stash::spans(commit, entry, self),
             Some(Annotation::Blame(line)) => {
-                crate::blame::spans(commit, line, line.starts_chunk, self)
+                return crate::blame::row(commit, line, line.starts_chunk, self);
             }
             Some(Annotation::Branch(node)) => crate::branches::spans(commit, node, self),
             None => return self.commit_row(commit, columns),
@@ -346,17 +349,21 @@ impl LogFormat {
         Row { spans, abbreviated }
     }
 
+    #[cfg(test)]
     pub fn text(&self, commit: &Commit) -> String {
-        self.spans(commit)
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect()
+        self.row(commit, None).text()
     }
 
-    /// Whether a lowercase query matches the row's full text, or the compact
-    /// author label that a tabular Log displays in place of a bot's name.
+    /// Whether a lowercase query matches the row's text, the full values of
+    /// any it shows shortened, or the compact author label that a tabular Log
+    /// displays in place of a long or bot name.
     pub fn matches(&self, commit: &Commit, query: &str) -> bool {
-        self.text(commit).to_lowercase().contains(query)
+        let row = self.row(commit, None);
+        row.text().to_lowercase().contains(query)
+            || row
+                .abbreviated
+                .iter()
+                .any(|(_, full)| full.to_lowercase().contains(query))
             || self.tabular
                 && self.shows(Field::Author)
                 && commit.kind == CommitKind::Revision
@@ -372,11 +379,20 @@ pub struct Row {
     pub abbreviated: Vec<(std::ops::Range<usize>, String)>,
 }
 
-/// Compact labels are a presentation of GitHub-style bot names. Leave the
+impl Row {
+    pub fn text(&self) -> String {
+        self.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+}
+
+/// Compact labels present GitHub-style bot names and long names. Leave the
 /// stored author untouched for searching, explicit formats, and Show.
-fn author_label(author: &str) -> Cow<'_, str> {
+pub(crate) fn author_label(author: &str) -> Cow<'_, str> {
     let Some(name) = author.strip_suffix("[bot]") else {
-        return Cow::Borrowed(author);
+        return compact_name(author);
     };
     let name = match name {
         "copilot-swe-agent" => "Copilot",
@@ -385,6 +401,30 @@ fn author_label(author: &str) -> Cow<'_, str> {
         name => name,
     };
     Cow::Owned(format!("{name} 🤖"))
+}
+
+/// Each name's label depends only on the name, so it stays the same
+/// whichever rows are shown. Initials replace words after the first, last
+/// first, until the name fits; a name that still does not fit is truncated
+/// with the column.
+fn compact_name(name: &str) -> Cow<'_, str> {
+    if Span::raw(name).width() <= COMPACT_NAME_WIDTH {
+        return Cow::Borrowed(name);
+    }
+    let mut words: Vec<Cow<str>> = name.split_whitespace().map(Cow::Borrowed).collect();
+    for index in (1..words.len()).rev() {
+        let word = Span::raw(words[index].to_string());
+        let mut graphemes = word.styled_graphemes(Style::default());
+        let first = graphemes.next().map(|grapheme| grapheme.symbol.to_owned());
+        // Words as short as an initial, such as `B.` or `Jr`, stay.
+        if let Some(first) = first.filter(|_| graphemes.nth(1).is_some()) {
+            words[index] = Cow::Owned(format!("{first}."));
+        }
+        if Span::raw(words.join(" ")).width() <= COMPACT_NAME_WIDTH {
+            break;
+        }
+    }
+    Cow::Owned(words.join(" "))
 }
 
 fn author_width(commit: &Commit) -> usize {
@@ -1154,6 +1194,19 @@ pub(crate) mod tests {
             .max()
             .unwrap_or(0);
         DateColumn::measure(commits).columns(hash, author_column(commits))
+    }
+
+    #[test]
+    fn long_names_show_later_words_as_initials() {
+        for (name, label) in [
+            ("Yair Chuchem", "Yair Chuchem"),
+            ("Margaret Hamilton", "Margaret H."),
+            ("Ludwig van Beethoven", "Ludwig van B."),
+            ("Johann Sebastian Bachmann", "Johann S. B."),
+            ("Bartholomew-Alexander", "Bartholomew-Alexander"),
+        ] {
+            assert_eq!(author_label(name), label);
+        }
     }
 
     #[test]

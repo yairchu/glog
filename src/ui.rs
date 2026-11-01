@@ -703,6 +703,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             let mut line = ansi::parse_line(graph);
             let mut deferred_metadata = false;
+            let mut abbreviated = Vec::new();
             if !graph_only && part + 1 == graph_rows.len() {
                 if app.history == History::Reflog {
                     line.spans.push(Span::styled(
@@ -729,16 +730,19 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                     metadata_rows.push((lines.len(), index));
                     deferred_metadata = true;
                 } else {
-                    line.spans.extend(match commit.blame() {
+                    let start: usize = line.spans.iter().map(|span| span.content.len()).sum();
+                    let row = match commit.blame() {
                         // Name the commit of a chunk that starts above the screen.
-                        Some(blame) => crate::blame::spans(
+                        Some(blame) => crate::blame::row(
                             commit,
                             blame,
                             blame.starts_chunk || lines.is_empty(),
                             &app.log_format,
                         ),
-                        None => app.log_format.spans(commit),
-                    });
+                        None => app.log_format.row(commit, None),
+                    };
+                    line.spans.extend(row.spans);
+                    abbreviated = shifted(row.abbreviated, start);
                     line.spans.push(Span::styled(
                         app.log_folds.label(index),
                         Style::default().fg(Color::Yellow),
@@ -747,7 +751,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             if let Some(query) = app.search.as_ref().filter(|_| !deferred_metadata) {
                 let current = app.search_match == Some((Mode::Log, index));
-                line = highlight_matches(line, query, current);
+                line = highlight_row(line, abbreviated, query, current);
             }
             if !graph_only && index == app.selected {
                 line.style = Style::default()
@@ -796,19 +800,8 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             ));
             if let Some(query) = &app.search {
                 let current = app.search_match == Some((Mode::Log, index));
-                // Search matches full values. Mark a shortened cell whole
-                // when its full text matches, as part may be hidden.
-                let folded = query.to_lowercase();
-                let hidden_matches: Vec<_> = row
-                    .abbreviated
-                    .into_iter()
-                    .filter(|(_, full)| !query.is_empty() && full.to_lowercase().contains(&folded))
-                    .map(|(range, _)| {
-                        (start + range.start..start + range.end, match_style(current))
-                    })
-                    .collect();
-                let marked = ansi::style_ranges(std::mem::take(line), hidden_matches);
-                *line = highlight_matches(marked, query, current);
+                let abbreviated = shifted(row.abbreviated, start);
+                *line = highlight_row(std::mem::take(line), abbreviated, query, current);
             }
         }
     }
@@ -1194,6 +1187,34 @@ fn message_entry<'a, T>(
     row: &crate::app::ShowRow,
 ) -> Option<&'a T> {
     entries.get(&row.source).filter(|_| row.file.is_none())
+}
+
+/// Byte ranges of a row's shortened values, moved past what precedes it.
+fn shifted(
+    abbreviated: Vec<(std::ops::Range<usize>, String)>,
+    start: usize,
+) -> Vec<(std::ops::Range<usize>, String)> {
+    abbreviated
+        .into_iter()
+        .map(|(range, full)| (start + range.start..start + range.end, full))
+        .collect()
+}
+
+/// Search matches full values. Mark a shortened value whole when its full
+/// text matches, as part may be hidden, then the visible matches.
+fn highlight_row(
+    line: Line<'static>,
+    abbreviated: Vec<(std::ops::Range<usize>, String)>,
+    query: &str,
+    current: bool,
+) -> Line<'static> {
+    let folded = query.to_lowercase();
+    let hidden_matches: Vec<_> = abbreviated
+        .into_iter()
+        .filter(|(_, full)| !query.is_empty() && full.to_lowercase().contains(&folded))
+        .map(|(range, _)| (range, match_style(current)))
+        .collect();
+    highlight_matches(ansi::style_ranges(line, hidden_matches), query, current)
 }
 
 fn highlight_matches(line: Line<'static>, query: &str, current: bool) -> Line<'static> {
@@ -1959,7 +1980,7 @@ mod tests {
         let names = [
             "copilot-swe-agent[bot]",
             "dependabot[bot]",
-            "Longer author outside viewport",
+            "Longer-author-outside-viewport",
             "李 e\u{301}",
         ];
         let commits = names

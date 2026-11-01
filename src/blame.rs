@@ -755,7 +755,9 @@ fn render_lines(
         date_width: details.values().map(|d| width(&d.date)).max().unwrap_or(0),
         author_width: details
             .values()
-            .map(|d| width(&d.author) + badge_width(&d.collaborators))
+            .map(|d| {
+                width(&crate::log_format::author_label(&d.author)) + badge_width(&d.collaborators)
+            })
             .chain(
                 lines
                     .iter()
@@ -1011,14 +1013,17 @@ fn badge_width(collaborators: &Collaborators) -> usize {
 
 /// Commit details, or blanks in their place, then the line itself. The Log
 /// format's field toggles choose which details are shown.
-pub fn spans(
+/// A blame line's spans, recording an author shown shortened with the full
+/// name, which search matches.
+pub fn row(
     commit: &Commit,
     line: &BlameLine,
     details: bool,
     format: &LogFormat,
-) -> Vec<Span<'static>> {
+) -> crate::log_format::Row {
     let file = &line.file;
     let mut spans = Vec::new();
+    let mut abbreviated = Vec::new();
     let mut blank = 0;
     if format.shows(Field::Hash) {
         if details {
@@ -1044,13 +1049,21 @@ pub fn spans(
         if details {
             let badge = crate::log_format::coauthor_badge(&commit.collaborators);
             let badge_width: usize = badge.iter().map(Span::width).sum();
-            let author = crate::log_format::truncate(
-                &commit.author,
-                file.author_width.saturating_sub(badge_width),
-            );
+            // Uncommitted lines keep their placeholder whole.
+            let label = if commit.kind == CommitKind::Revision {
+                crate::log_format::author_label(&commit.author)
+            } else {
+                commit.author.as_str().into()
+            };
+            let author =
+                crate::log_format::truncate(&label, file.author_width.saturating_sub(badge_width));
             let padding = file
                 .author_width
                 .saturating_sub(Span::raw(author.as_str()).width() + badge_width);
+            if author != commit.author {
+                let start: usize = spans.iter().map(|span: &Span| span.content.len()).sum();
+                abbreviated.push((start..start + author.len(), commit.author.clone()));
+            }
             spans.push(Span::styled(author, Style::default().fg(Color::Cyan)));
             spans.extend(badge);
             spans.push(Span::raw(" ".repeat(padding + 1)));
@@ -1066,7 +1079,7 @@ pub fn spans(
         Style::default().fg(Color::DarkGray),
     ));
     spans.extend(line.code.iter().cloned());
-    spans
+    crate::log_format::Row { spans, abbreviated }
 }
 
 #[cfg(test)]
@@ -1100,6 +1113,41 @@ mod tests {
             .output()
             .unwrap();
         assert!(output.status.success(), "{output:?}");
+    }
+
+    #[test]
+    fn search_finds_and_marks_shortened_authors() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file.txt", "first\nsecond\n").unwrap();
+        git(&["add", "."]);
+        let output = Command::new("git")
+            .args(["-c", "commit.gpgsign=false", "commit", "-qm", "add"])
+            .env("GIT_AUTHOR_NAME", "Margaret Hamilton")
+            .env("GIT_AUTHOR_EMAIL", "margaret@example.com")
+            .env("GIT_COMMITTER_NAME", "Margaret Hamilton")
+            .env("GIT_COMMITTER_EMAIL", "margaret@example.com")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let mut app = load_app(&["file.txt".into()]).unwrap();
+        app.selected = 1;
+        app.search = Some("hamilton".into());
+        app.next_match(false);
+        assert_eq!(app.search_match, Some((Mode::Log, 0)));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 4)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let y = app.log_row_origin;
+        let row: String = (0..60).map(|x| buffer[(x, y)].symbol()).collect();
+        let x = row.find("Margaret H.").expect(&row) as u16;
+        // The shortened name is marked whole, as its full text matches.
+        assert_eq!(buffer[(x, y)].style(), buffer[(x + 10, y)].style());
+        assert_ne!(buffer[(x, y)].bg, buffer[(x + 12, y)].bg);
     }
 
     fn press(app: &mut App, key: KeyCode) {
@@ -2518,7 +2566,8 @@ mod tests {
         assert_eq!(rows[0].author_date, "2020-01-01");
         assert!(rows[0].collaborators.claude);
         assert_eq!(rows[4].kind, CommitKind::WorkingTree);
-        let text: String = spans(&rows[0], lines[0], true, &LogFormat::default())
+        let text: String = row(&rows[0], lines[0], true, &LogFormat::default())
+            .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();

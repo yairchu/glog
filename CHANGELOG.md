@@ -10,8 +10,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Align metadata columns in the default Log layout, keeping refs immediately
   before the subject. Hashes follow their graph closely, with padding after
   the hash. Graph/hash and author columns are sized to visible rows.
-  Long author names are abbreviated while preserving coauthor badges; custom
-  formats retain their explicit layout.
+  Author names over 15 columns show later words as initials, here and in
+  Blame, such as `Margaret H.` for `Margaret Hamilton`, and are truncated
+  past the column's limit while preserving coauthor badges. Search still
+  finds full names, and custom formats retain their explicit layout.
 
 - Shorten bot authors in the default Log: show `Copilot 🤖` and `Dependabot 🤖`,
   and replace other `[bot]` suffixes with `🤖`. Search finds both labels and
