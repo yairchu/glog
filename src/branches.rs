@@ -1063,6 +1063,29 @@ mod tests {
     }
 
     #[test]
+    fn logs_of_shared_ancestors_cannot_be_watched() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        let tree = git(&["write-tree"]);
+        let root = commit(&tree, "root", &[]);
+        let base = commit(&tree, "base", &[&root]);
+        let first = commit(&tree, "first", &[&base]);
+        let second = commit(&tree, "second", &[&base]);
+        git(&["update-ref", "refs/heads/main", &root]);
+        git(&["update-ref", "refs/heads/first", &first]);
+        git(&["update-ref", "refs/heads/second", &second]);
+        let mut app = interactive();
+        app.watch = true;
+        app.selected = app.commits.iter().position(|c| c.hash == base).unwrap();
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.history, History::Log);
+        press(&mut app, KeyCode::Char('W'));
+        assert!(!app.watch);
+        assert_eq!(app.status.as_deref(), Some("This view cannot be watched"));
+    }
+
+    #[test]
     fn watched_logs_opened_from_branches_follow_the_selected_ref() {
         for remote in [false, true] {
             let directory = TestDirectory::new();
@@ -1154,7 +1177,7 @@ mod tests {
         git(&["update-ref", "-d", "refs/heads/feature"]);
         assert!(app.poll_watch());
         assert!(app.status.is_some());
-        // Retry only after the refs change again.
+        // Retry only after a delay.
         assert!(!app.poll_watch());
     }
 

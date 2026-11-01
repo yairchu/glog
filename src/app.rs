@@ -2007,16 +2007,14 @@ impl App {
         });
         let label = branch.map_or_else(|| node.short_hash.clone(), |branch| branch.name.clone());
         // Follow the chosen branch when watching, as a fresh picker would
-        // open it. Shared ancestors keep their fixed hash.
+        // open it. Shared ancestors name only fixed hashes, which no refresh
+        // could change.
         let watch_source = match (branch, &self.watch_source) {
-            (Some(branch), Some(WatchSource::Branches(picker))) => WatchSource::BranchLog {
+            (Some(branch), Some(WatchSource::Branches(picker))) => Some(WatchSource::BranchLog {
                 picker: picker.clone(),
                 branch: branch.clone(),
-            },
-            _ => WatchSource::Log {
-                args: args.clone(),
-                working_tree: false,
-            },
+            }),
+            _ => None,
         };
         let loaded = git::load_log_at(&args, self.repository.as_ref()).and_then(|commits| {
             if commits.is_empty() {
@@ -2025,7 +2023,7 @@ impl App {
             let mut target = App::new(commits);
             self.prepare_followed(&mut target);
             target.context = format!("log {label}");
-            target.watch_source = Some(watch_source);
+            target.watch_source = watch_source;
             target.refresh_log_folds();
             Ok(target)
         });
