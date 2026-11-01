@@ -93,6 +93,13 @@ pub fn load_watched(args: &[String]) -> Result<Vec<Commit>, String> {
     rows(local_tips()?, date)
 }
 
+/// The picker's rows without their dates and decorations, enough to find
+/// which bases a branch's Log excludes.
+pub fn load_graph(args: &[String]) -> Result<Vec<Commit>, String> {
+    parse_args(args)?;
+    graph_rows(local_tips()?)
+}
+
 /// Whether to watch, and the date style.
 fn parse_args(args: &[String]) -> Result<(bool, Option<String>), String> {
     let mut watch = false;
@@ -148,10 +155,16 @@ fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
     Ok(tips)
 }
 
-fn rows(
-    mut tips: HashMap<String, Vec<Branch>>,
-    date: Option<String>,
-) -> Result<Vec<Commit>, String> {
+fn rows(tips: HashMap<String, Vec<Branch>>, date: Option<String>) -> Result<Vec<Commit>, String> {
+    let mut rows = graph_rows(tips)?;
+    let date = date
+        .map(Ok)
+        .unwrap_or_else(|| git::configured_log_date("format-local:%Y-%m-%d %H:%M"))?;
+    load_metadata(&mut rows, &date)?;
+    Ok(rows)
+}
+
+fn graph_rows(mut tips: HashMap<String, Vec<Branch>>) -> Result<Vec<Commit>, String> {
     let remote_ref = origin_default_ref();
     let remote = remote_default(remote_ref.as_deref());
     let primary_name = remote_ref
@@ -185,12 +198,7 @@ fn rows(
         )
         .ok_or("could not read branch ancestry")?
     };
-    let mut rows = compact(&output, tips, primary.as_deref())?;
-    let date = date
-        .map(Ok)
-        .unwrap_or_else(|| git::configured_log_date("format-local:%Y-%m-%d %H:%M"))?;
-    load_metadata(&mut rows, &date)?;
-    Ok(rows)
+    compact(&output, tips, primary.as_deref())
 }
 
 fn origin_default_ref() -> Option<String> {

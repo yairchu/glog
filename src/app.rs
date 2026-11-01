@@ -122,7 +122,7 @@ impl WatchSource {
             Self::Log { args, .. } => git::load_log_at(args, repository)?,
             Self::Branches(args) => crate::branches::load_watched(args)?,
             Self::BranchLog { picker, branch } => {
-                let rows = crate::branches::load_watched(picker)?;
+                let rows = crate::branches::load_graph(picker)?;
                 let args = crate::branches::followed_log_args(&rows, branch)?;
                 git::load_log_at(&args, repository)?
             }
