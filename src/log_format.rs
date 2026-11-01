@@ -588,6 +588,7 @@ pub struct LogOptions {
     pub ascii_graph: bool,
     pub hide_merges: bool,
     pub hidden_types: std::collections::BTreeSet<String>,
+    pub watch: bool,
 }
 
 /// Git consumes the following argument verbatim as a search pattern.
@@ -658,6 +659,8 @@ pub fn parse_args(args: &[String]) -> Result<(LogFormat, LogOptions, Vec<String>
             };
         } else if arg == "--exit-on-esc" {
             options.exit_on_esc = true;
+        } else if arg == "--watch" {
+            options.watch = true;
         } else if arg == "--ascii-graph" {
             options.ascii_graph = true;
         } else if arg == "--fold-merges" {
@@ -970,7 +973,7 @@ pub(crate) mod tests {
                 true,
                 vec!["main..HEAD"],
             ),
-            (vec!["--watch", "--exit-on-esc"], true, vec!["--watch"]),
+            (vec!["--watch", "--exit-on-esc"], true, vec![]),
             (
                 vec!["--grep", "--exit-on-esc"],
                 false,

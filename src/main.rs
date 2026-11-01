@@ -49,7 +49,7 @@ fn main() -> ExitCode {
     patch_options::initialize(color_moved);
     blame::initialize_date(&command_args);
     let command_args = command_args.as_slice();
-    let (log_format, log_options, log_args) = match if command == Command::Log {
+    let (log_format, log_options, git_args) = match if command == Command::Log {
         log_format::parse_args(command_args)
     } else {
         Ok((
@@ -64,11 +64,7 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let (watch, git_args) = if command == Command::Log {
-        parse_watch(&log_args)
-    } else {
-        (command == Command::Status, log_args)
-    };
+    let watch = log_options.watch || command == Command::Status;
     let loaded = match command {
         Command::Status => status::load_app(command_args),
         Command::Show => git::load_show_app(command_args),
@@ -406,27 +402,6 @@ fn handle_burst(
     Ok((changed, None))
 }
 
-fn parse_watch(args: &[String]) -> (bool, Vec<String>) {
-    let mut watch = false;
-    let mut git_args = Vec::new();
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        if log_format::takes_pattern(arg) {
-            git_args.push(arg.clone());
-            git_args.extend(args.next().cloned());
-        } else if arg == "--" {
-            git_args.push(arg.clone());
-            git_args.extend(args.cloned());
-            break;
-        } else if arg == "--watch" {
-            watch = true;
-        } else {
-            git_args.push(arg.clone());
-        }
-    }
-    (watch, git_args)
-}
-
 fn should_start_tui(watch: bool, commit_count: usize) -> bool {
     watch || commit_count > 0
 }
@@ -550,8 +525,8 @@ mod tests {
     fn watch_preserves_traversal_arguments_and_pathspecs() {
         let check = |args: &[&str]| {
             let args = args.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>();
-            let (_, _, git) = log_format::parse_args(&args)?;
-            Ok::<_, String>(parse_watch(&git))
+            let (_, options, git) = log_format::parse_args(&args)?;
+            Ok::<_, String>((options.watch, git))
         };
         assert!(!check(&[]).unwrap().0);
         assert!(!check(&["--hide-types=test", "--hide-merges"]).unwrap().0);
@@ -605,8 +580,8 @@ mod tests {
                     if watch {
                         args.push("--watch".into());
                     }
-                    let (_, _, git_args) = log_format::parse_args(&args).unwrap();
-                    assert_eq!(parse_watch(&git_args), (watch, expected), "{args:?}");
+                    let (_, options, git_args) = log_format::parse_args(&args).unwrap();
+                    assert_eq!((options.watch, git_args), (watch, expected), "{args:?}");
                 }
             }
         }
