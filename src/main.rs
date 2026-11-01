@@ -408,13 +408,19 @@ fn handle_burst(
 
 fn parse_watch(args: &[String]) -> (bool, Vec<String>) {
     let mut watch = false;
-    let mut paths = false;
     let mut git_args = Vec::new();
-    for arg in args {
-        if !paths && arg == "--watch" {
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if log_format::takes_pattern(arg) {
+            git_args.push(arg.clone());
+            git_args.extend(args.next().cloned());
+        } else if arg == "--" {
+            git_args.push(arg.clone());
+            git_args.extend(args.cloned());
+            break;
+        } else if arg == "--watch" {
             watch = true;
         } else {
-            paths |= arg == "--";
             git_args.push(arg.clone());
         }
     }
