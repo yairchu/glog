@@ -583,6 +583,30 @@ mod tests {
     }
 
     #[test]
+    fn watch_preserves_git_search_pattern_operands() {
+        for option in [
+            "--grep",
+            "--grep-reflog",
+            "--author",
+            "--committer",
+            "-G",
+            "-S",
+        ] {
+            for pattern in ["--watch", "--"] {
+                for watch in [false, true] {
+                    let mut args = vec![option.to_owned(), pattern.to_owned()];
+                    let expected = args.clone();
+                    if watch {
+                        args.push("--watch".into());
+                    }
+                    let (_, _, git_args) = log_format::parse_args(&args).unwrap();
+                    assert_eq!(parse_watch(&git_args), (watch, expected), "{args:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn startup_filters_select_visible_history_and_can_be_cleared() {
         let mut commits = Vec::new();
         for (i, subject) in ["Merge topic", "tests: coverage", "feat: feature"]
