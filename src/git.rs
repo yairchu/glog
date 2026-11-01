@@ -601,11 +601,35 @@ pub fn log_ancestry_at(
 
 /// Watch mode includes one stable working-tree item ahead of committed history.
 pub fn load_watch_log() -> Result<Vec<Commit>, String> {
-    let commits = load_log(&[])?;
+    load_log_with_working_tree(&[])
+}
+
+pub fn load_log_with_working_tree(args: &[String]) -> Result<Vec<Commit>, String> {
+    let commits = load_log(args)?;
     let summary = crate::status::working_tree_summary()?;
     let mut entries = vec![working_tree_commit(&summary)];
     entries.extend(commits);
     Ok(entries)
+}
+
+/// Whether a Log with these arguments starts at HEAD. Git uses `--default`
+/// only when no revision is named, which makes an invalid ref name there fail.
+/// Arguments Git rejects also fail, leaving loading the Log to report them.
+pub fn log_starts_at_head(args: &[String]) -> bool {
+    args.is_empty()
+        || !read_command()
+            .args([
+                "log",
+                "--no-walk",
+                "--format=",
+                "--default",
+                "glog no revision",
+            ])
+            .args(args)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|status| status.success())
 }
 
 pub fn working_tree_commit(summary: &crate::status::WorkingTreeSummary) -> Commit {
@@ -5970,7 +5994,7 @@ pub(crate) mod tests {
         let base = git(&["rev-parse", "HEAD"]);
         let args = vec!["main".into(), "--".into(), "source".into()];
         let mut app = App::new(load_log(&args).unwrap());
-        app.watch_source = Some(WatchSource::Log(args));
+        app.watch_source = Some(WatchSource::log(args));
         crate::input::handle(
             Event::Key(KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT)),
             &mut app,
@@ -6003,7 +6027,7 @@ pub(crate) mod tests {
         // keeping the selected historical commit and allowing W to freeze it.
         let mut default = App::new(load_log(&[]).unwrap());
         let selected = default.commits[0].hash.clone();
-        default.watch_source = Some(WatchSource::Log(Vec::new()));
+        default.watch_source = Some(WatchSource::log(Vec::new()));
         default.toggle_watch();
         assert!(default.poll_watch());
         assert_eq!(default.commits[0].kind, CommitKind::WorkingTree);
@@ -6021,7 +6045,7 @@ pub(crate) mod tests {
         git(&["init", "-qb", "main"]);
         git(&["commit", "-q", "--allow-empty", "-m", "root"]);
         let mut app = App::new(load_watch_log().unwrap());
-        app.watch_source = Some(WatchSource::Log(Vec::new()));
+        app.watch_source = Some(WatchSource::log(Vec::new()));
         app.toggle_watch();
         assert!(app.poll_watch());
         fs::remove_dir_all(".git").unwrap();
@@ -6034,6 +6058,72 @@ pub(crate) mod tests {
         app.status = None;
         assert!(!app.poll_watch());
         assert_eq!(app.status, None);
+    }
+
+    #[test]
+    fn watch_retries_a_failed_load_while_the_refs_are_unchanged() {
+        use crate::app::{App, WatchSource};
+        use std::time::{Duration, Instant};
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "root"]);
+        let root = git(&["rev-parse", "HEAD"]);
+        let mut app = App::new(load_log(&[]).unwrap());
+        app.set_watch_source(WatchSource::log(vec!["main".into()]), None);
+        app.toggle_watch();
+        assert!(app.poll_watch());
+        git(&["commit", "-q", "--allow-empty", "-m", "child"]);
+        // Loading fails, as while another Git command repacks objects.
+        let object = format!(".git/objects/{}/{}", &root[..2], &root[2..]);
+        fs::rename(&object, "object-elsewhere").unwrap();
+        assert!(app.poll_watch());
+        assert!(app.status.is_some());
+        fs::rename("object-elsewhere", &object).unwrap();
+        assert!(!app.poll_watch());
+        assert!(app.poll_watch_at(Instant::now() + Duration::from_secs(60)));
+        assert_eq!(app.status, None);
+        assert_eq!(app.commits.len(), 2);
+    }
+
+    #[test]
+    fn watched_logs_starting_at_head_show_the_working_tree() {
+        use crate::app::WatchSource;
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "root"]);
+        let shows = |args: &[&str]| {
+            let source = WatchSource::log(args.iter().map(|&arg| arg.into()).collect());
+            let commits = source.load(None).unwrap();
+            commits
+                .first()
+                .is_some_and(|commit| commit.kind == CommitKind::WorkingTree)
+        };
+        for args in [
+            &[][..],
+            &["--date=short"],
+            &["-n", "5"],
+            &["--author", "nobody"],
+            &["--", "src"],
+        ] {
+            assert!(shows(args), "{args:?}");
+        }
+        for args in [&["main"][..], &["--all"], &["main", "--", "src"]] {
+            assert!(!shows(args), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn watch_reports_a_failure_to_read_the_starting_state() {
+        use crate::app::{App, WatchSource};
+
+        let mut app = App::new(Vec::new());
+        app.watch = true;
+        app.set_watch_source(WatchSource::log(Vec::new()), Some(Err("broken".into())));
+        assert_eq!(app.status.as_deref(), Some("Watch refresh failed: broken"));
     }
 
     #[test]

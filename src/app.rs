@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::{
+    collections::{HashMap, HashSet, VecDeque},
+    time::{Duration, Instant},
+};
 
 use crate::{
     diff::{self, FileSection},
@@ -44,7 +47,11 @@ pub enum History {
 /// The command to repeat when this view watches its repository.
 #[derive(Clone)]
 pub enum WatchSource {
-    Log(Vec<String>),
+    /// A Log, which also shows the working tree when it starts at HEAD.
+    Log {
+        args: Vec<String>,
+        working_tree: bool,
+    },
     Branches(Vec<String>),
     /// A branch's Log opened from a picker with these arguments.
     BranchLog {
@@ -53,11 +60,32 @@ pub enum WatchSource {
     },
 }
 
-/// A repository state, or why it could not be read. Recording failures lets
-/// a persistent failure be reported once rather than on every poll.
+/// A repository state, or why it could not be read.
 pub type WatchSnapshot = Result<u64, String>;
 
+/// When to retry a failed watch refresh. Backing off keeps a lasting
+/// failure, such as a deleted branch, from rerunning Git on every poll,
+/// while a passing one, such as a lock held by another Git command, still
+/// recovers on its own.
+#[derive(Clone, Copy)]
+struct WatchRetry {
+    at: Instant,
+    delay: Duration,
+}
+
+impl WatchRetry {
+    const FIRST_DELAY: Duration = Duration::from_secs(2);
+    const MAX_DELAY: Duration = Duration::from_secs(60);
+}
+
 impl WatchSource {
+    /// A Log of the current repository, with the working tree when Git
+    /// finds that the arguments name no revision.
+    pub fn log(args: Vec<String>) -> Self {
+        let working_tree = git::log_starts_at_head(&args);
+        Self::Log { args, working_tree }
+    }
+
     /// Take this before loading the view, so that a change during the load
     /// is reloaded on the first poll.
     pub fn snapshot(&self, repository: Option<&git::Repository>) -> WatchSnapshot {
@@ -68,9 +96,29 @@ impl WatchSource {
         }
     }
 
-    /// The default Log also shows the working tree; other views only refs.
     fn shows_working_tree(&self, repository: Option<&git::Repository>) -> bool {
-        matches!(self, Self::Log(args) if args.is_empty()) && repository.is_none()
+        matches!(
+            self,
+            Self::Log {
+                working_tree: true,
+                ..
+            }
+        ) && repository.is_none()
+    }
+
+    pub fn load(&self, repository: Option<&git::Repository>) -> Result<Vec<Commit>, String> {
+        Ok(match self {
+            Self::Log { args, .. } if self.shows_working_tree(repository) => {
+                git::load_log_with_working_tree(args)?
+            }
+            Self::Log { args, .. } => git::load_log_at(args, repository)?,
+            Self::Branches(args) => crate::branches::load_watched(args)?,
+            Self::BranchLog { picker, branch } => {
+                let rows = crate::branches::load_watched(picker)?;
+                let args = crate::branches::followed_log_args(&rows, branch)?;
+                git::load_log_at(&args, repository)?
+            }
+        })
     }
 }
 
@@ -199,7 +247,9 @@ pub struct App {
     pub visible_show_rows: usize,
     pub watch: bool,
     pub watch_source: Option<WatchSource>,
-    watch_snapshot: Option<WatchSnapshot>,
+    // The repository state the view was last loaded from.
+    watch_snapshot: Option<u64>,
+    watch_retry: Option<WatchRetry>,
     pub context: String,
     pub log_tab_start: u16,
     pub log_tab_end: u16,
@@ -285,6 +335,7 @@ impl App {
             watch: false,
             watch_source: None,
             watch_snapshot: None,
+            watch_retry: None,
             context: String::new(),
             log_tab_start: 7,
             log_tab_end: 12,
@@ -787,7 +838,9 @@ impl App {
         }
         self.watch = !self.watch;
         if self.watch {
+            // Reload, and retry a failure, right away.
             self.watch_snapshot = None;
+            self.watch_retry = None;
         }
         self.status = None;
     }
@@ -795,23 +848,52 @@ impl App {
     /// Each view retains its own snapshot, including while a followed view
     /// is open. Returning compares against that snapshot on the next poll.
     pub fn poll_watch(&mut self) -> bool {
-        if !self.watch {
+        self.poll_watch_at(Instant::now())
+    }
+
+    pub(crate) fn poll_watch_at(&mut self, now: Instant) -> bool {
+        if !self.watch || self.watch_retry.is_some_and(|retry| now < retry.at) {
             return false;
         }
         match self.refresh_watched() {
-            Ok(changed) => changed,
+            Ok(changed) => {
+                self.watch_retry = None;
+                changed
+            }
             Err(error) => {
-                self.status = Some(format!("Watch refresh failed: {error}"));
+                self.watch_failed(error, now);
                 true
             }
         }
+    }
+
+    /// Report a failure and retry later, waiting longer after each
+    /// consecutive failure. Whatever the view shows, the first success
+    /// reloads it, which also clears the report.
+    fn watch_failed(&mut self, error: String, now: Instant) {
+        self.status = Some(format!("Watch refresh failed: {error}"));
+        self.watch_snapshot = None;
+        let delay = self.watch_retry.map_or(WatchRetry::FIRST_DELAY, |retry| {
+            (retry.delay * 2).min(WatchRetry::MAX_DELAY)
+        });
+        self.watch_retry = Some(WatchRetry {
+            at: now + delay,
+            delay,
+        });
     }
 
     /// Set what the view watches, with the snapshot taken before loading it
     /// when it starts watched.
     pub fn set_watch_source(&mut self, source: WatchSource, snapshot: Option<WatchSnapshot>) {
         self.watch_source = Some(source);
-        self.watch_snapshot = snapshot;
+        self.watch_retry = None;
+        self.watch_snapshot = match snapshot {
+            Some(Err(error)) => {
+                self.watch_failed(error, Instant::now());
+                None
+            }
+            snapshot => snapshot.and_then(Result::ok),
+        };
     }
 
     fn refresh_watched(&mut self) -> Result<bool, String> {
@@ -819,25 +901,13 @@ impl App {
             return Ok(false);
         };
         let repository = self.repository.as_ref();
-        let snapshot = source.snapshot(repository);
-        if self.watch_snapshot.as_ref() == Some(&snapshot) {
+        let snapshot = source.snapshot(repository)?;
+        if self.watch_snapshot == Some(snapshot) {
             return Ok(false);
         }
-        // Retry failures, such as loading a deleted branch, only after the
-        // repository or the failure changes.
-        self.watch_snapshot = Some(snapshot.clone());
-        snapshot?;
-        let commits = match source {
-            source if source.shows_working_tree(repository) => git::load_watch_log()?,
-            WatchSource::Log(args) => git::load_log_at(args, self.repository.as_ref())?,
-            WatchSource::Branches(args) => crate::branches::load_watched(args)?,
-            WatchSource::BranchLog { picker, branch } => {
-                let rows = crate::branches::load_watched(picker)?;
-                let args = crate::branches::followed_log_args(&rows, branch)?;
-                git::load_log_at(&args, self.repository.as_ref())?
-            }
-        };
+        let commits = source.load(repository)?;
         self.status = None;
+        self.watch_snapshot = Some(snapshot);
         self.replace_commits(commits);
         Ok(true)
     }
@@ -1943,7 +2013,10 @@ impl App {
                 picker: picker.clone(),
                 branch: branch.clone(),
             },
-            _ => WatchSource::Log(args.clone()),
+            _ => WatchSource::Log {
+                args: args.clone(),
+                working_tree: false,
+            },
         };
         let loaded = git::load_log_at(&args, self.repository.as_ref()).and_then(|commits| {
             if commits.is_empty() {

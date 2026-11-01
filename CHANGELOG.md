@@ -20,8 +20,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Watch the branch picker with `glog branch --watch`, including when only one
   branch remains or the list is empty. Refresh preserves the selected branch
   as its tip moves. Press `W` in Branches or Log/Show to toggle watching;
-  watched Logs retain their original revision and path arguments. Logs opened
-  from Branches follow the selected branch's ref when watching is enabled.
+  watched Logs retain their original revision and path arguments, and those
+  that name no revision keep the Working tree item. Logs opened from Branches
+  follow the selected branch's ref when watching is enabled.
 
 - Fold consecutive rebases of the same branch into a chain when their targets
   advance along an ancestry path, including when commits are skipped. Expand
@@ -37,8 +38,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Pick up repository changes made while a `--watch` session starts.
 
-- Report a persistent watch refresh failure once, rather than rewriting the
-  footer every second.
+- Retry a failing watch refresh after increasing delays, rather than rerunning
+  Git and rewriting the footer every second.
 
 ## 0.7.0 - 2026-10-28
 

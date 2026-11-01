@@ -66,8 +66,8 @@ fn main() -> ExitCode {
     };
     let watch = log_options.watch || command == Command::Status;
     let watch_source = match command {
-        Command::Status => Some(app::WatchSource::Log(Vec::new())),
-        Command::Log => Some(app::WatchSource::Log(git_args.clone())),
+        Command::Status => Some(app::WatchSource::log(Vec::new())),
+        Command::Log => Some(app::WatchSource::log(git_args.clone())),
         _ => None,
     };
     let watch_snapshot = watch_source
@@ -89,8 +89,11 @@ fn main() -> ExitCode {
             Err(error) => Err(error),
         },
         Command::Blame => blame::load_app(command_args),
-        Command::Log if watch && git_args.is_empty() => git::load_watch_log().map(App::new),
-        Command::Log => git::load_log(&git_args).map(App::new),
+        Command::Log => match &watch_source {
+            Some(source) if watch => source.load(None),
+            _ => git::load_log(&git_args),
+        }
+        .map(App::new),
     };
     let mut app = match loaded {
         Ok(app) => app,
@@ -249,8 +252,8 @@ falling back to main or master. With only the current branch (or no branches),
 print git branch output and exit, unless --watch keeps the picker open.
 Status opens the Working tree detail view in a watch session.
 Log shows committed history, loaded once unless --watch or W enables refresh.
-Watching preserves revision/path arguments; the default HEAD view also
-includes a Working tree item. W toggles watching in Log and Branches.
+Watching preserves revision/path arguments; Logs that name no revision also
+include a Working tree item. W toggles watching in Log and Branches.
 Graphs use rounded paths, ● for commits, • for empty non-merge commits or a
 clean working tree, and ○ for boundary commits. Merge commits stay filled.
 ╪ crosses paths without joining them.
