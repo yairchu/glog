@@ -655,16 +655,38 @@ pub fn log_shows_working_tree(args: &[String]) -> bool {
 
 /// Whether Git accepts a Log with these arguments, without listing commits.
 /// Unlike `--no-walk`, `--max-count=0` combines with options such as `--graph`.
+/// It follows the user's options so that it overrides their `-n`.
 fn log_probe(global: &[&str], options: &[&str], args: &[String]) -> bool {
+    let (user_options, rest) = args.split_at(options_end(args));
     read_command()
         .args(global)
-        .args(["log", "--max-count=0", "--format="])
+        .args(["log", "--format="])
         .args(options)
-        .args(args)
+        .args(user_options)
+        .arg("--max-count=0")
+        .args(rest)
+        .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
         .is_ok_and(|status| status.success())
+}
+
+/// Where Git stops reading options in Log arguments: at `--` or
+/// `--end-of-options`, but not at a search pattern that looks like the latter.
+fn options_end(args: &[String]) -> usize {
+    let mut index = 0;
+    while let Some(arg) = args.get(index) {
+        if arg == "--" || arg == "--end-of-options" {
+            return index;
+        }
+        index += if crate::log_format::takes_pattern(arg) {
+            2
+        } else {
+            1
+        };
+    }
+    args.len()
 }
 
 pub fn working_tree_commit(summary: &crate::status::WorkingTreeSummary) -> Commit {
@@ -6160,6 +6182,26 @@ pub(crate) mod tests {
             &["main", "--", "src"],
         ] {
             assert!(!shows(args), "{args:?}");
+        }
+    }
+
+    #[test]
+    fn working_tree_probe_does_not_walk_history() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "root"]);
+        let root = git(&["rev-parse", "HEAD"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "child"]);
+        // Walking now fails, so only a probe that lists no commits succeeds.
+        fs::remove_file(format!(".git/objects/{}/{}", &root[..2], &root[2..])).unwrap();
+        for args in [
+            &["-n", "5"][..],
+            &["--max-count=5", "--", "src"],
+            &["--grep", "--end-of-options", "-n", "5"],
+        ] {
+            let args: Vec<String> = args.iter().map(|&arg| arg.into()).collect();
+            assert!(log_probe(&[], &[], &args), "{args:?}");
         }
     }
 
