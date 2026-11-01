@@ -620,6 +620,7 @@ pub fn log_ancestry_at(
 }
 
 /// Watch mode includes one stable working-tree item ahead of committed history.
+#[cfg(test)]
 pub fn load_watch_log() -> Result<Vec<Commit>, String> {
     load_log_with_working_tree(&[])
 }
@@ -4538,8 +4539,13 @@ pub(crate) mod tests {
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
         let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        // Status watches the default Log, as `glog status` sets it up.
+        let watched = |app: &mut App| {
+            app.watch = true;
+            app.set_watch_source(crate::app::WatchSource::log(Vec::new()), None);
+        };
         let mut unborn = App::new(vec![working_tree_commit(&Default::default())]);
-        unborn.watch = true;
+        watched(&mut unborn);
         unborn.pending_history = Some(Vec::new());
         unborn.open_status();
         input::handle(key(KeyCode::Right), &mut unborn);
@@ -4556,7 +4562,7 @@ pub(crate) mod tests {
             } else {
                 load_watch_log().unwrap()
             });
-            app.watch = true;
+            watched(&mut app);
             if lazy {
                 app.pending_history = Some(Vec::new());
             }

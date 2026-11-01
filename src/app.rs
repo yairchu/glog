@@ -425,10 +425,10 @@ impl App {
         let Some(args) = self.pending_history.clone() else {
             return;
         };
-        match if self.watch {
-            git::load_watch_log()
-        } else {
-            git::load_log_at(&args, self.repository.as_ref())
+        let repository = self.repository.as_ref();
+        match match &self.watch_source {
+            Some(source) if self.watch => source.load(repository),
+            _ => git::load_log_at(&args, repository),
         } {
             Ok(commits) => {
                 self.pending_history = None;
