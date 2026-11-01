@@ -787,17 +787,28 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             // The hash touches its own graph; all alignment padding follows it.
             let columns = date_column.columns(hash_width, author);
-            line.spans.extend(
-                app.log_format
-                    .spans_with_columns(&app.commits[index], Some(&columns)),
-            );
+            let start: usize = line.spans.iter().map(|span| span.content.len()).sum();
+            let row = app.log_format.row(&app.commits[index], Some(&columns));
+            line.spans.extend(row.spans);
             line.spans.push(Span::styled(
                 app.log_folds.label(index),
                 Style::default().fg(Color::Yellow),
             ));
             if let Some(query) = &app.search {
                 let current = app.search_match == Some((Mode::Log, index));
-                *line = highlight_matches(std::mem::take(line), query, current);
+                // Search matches full values. Mark a shortened cell whole
+                // when its full text matches, as part may be hidden.
+                let folded = query.to_lowercase();
+                let hidden_matches: Vec<_> = row
+                    .abbreviated
+                    .into_iter()
+                    .filter(|(_, full)| !query.is_empty() && full.to_lowercase().contains(&folded))
+                    .map(|(range, _)| {
+                        (start + range.start..start + range.end, match_style(current))
+                    })
+                    .collect();
+                let marked = ansi::style_ranges(std::mem::take(line), hidden_matches);
+                *line = highlight_matches(marked, query, current);
             }
         }
     }
@@ -1211,8 +1222,12 @@ fn highlight_matches(line: Line<'static>, query: &str, current: bool) -> Line<'s
     if ranges.is_empty() {
         return line;
     }
+    let highlight = match_style(current);
+    ansi::style_ranges(line, ranges.into_iter().map(|range| (range, highlight)))
+}
 
-    let highlight = if current {
+fn match_style(current: bool) -> Style {
+    if current {
         Style::default()
             .fg(Color::Black)
             .bg(Color::Yellow)
@@ -1221,8 +1236,7 @@ fn highlight_matches(line: Line<'static>, query: &str, current: bool) -> Line<'s
         Style::default()
             .fg(Color::LightYellow)
             .add_modifier(Modifier::UNDERLINED)
-    };
-    ansi::style_ranges(line, ranges.into_iter().map(|range| (range, highlight)))
+    }
 }
 
 #[cfg(test)]
@@ -1860,6 +1874,25 @@ mod tests {
         longer.author_date = "2026-11-01 15:30 UTC".into();
         app.replace_commits(vec![longer]);
         assert_eq!(author_column(&mut app, &mut terminal), wide + 4);
+    }
+
+    #[test]
+    fn search_marks_shortened_authors_matched_by_their_full_name() {
+        let mut commit = crate::log_format::tests::commit();
+        commit.decorations.clear();
+        commit.author = "copilot-swe-agent[bot]".into();
+        commit.subject = "subject".into();
+        let mut app = App::new(vec![commit]);
+        app.search = Some("SWE-agent".into());
+        app.search_match = Some((Mode::Log, 0));
+        let mut terminal = Terminal::new(TestBackend::new(110, 4)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: Vec<_> = (0..110).map(|x| &buffer[(x, app.log_row_origin)]).collect();
+        let text: String = row.iter().map(|cell| cell.symbol()).collect();
+        let author = text.find("Copilot").unwrap();
+        assert_eq!(row[author].bg, Color::Yellow);
+        assert_ne!(row[text.find("subject").unwrap()].bg, Color::Yellow);
     }
 
     #[test]

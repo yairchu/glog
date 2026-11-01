@@ -219,26 +219,42 @@ impl LogFormat {
         commit: &Commit,
         columns: Option<&Columns>,
     ) -> Vec<Span<'static>> {
-        match &commit.annotation {
-            Some(Annotation::Reflog(entry)) => return reflog_spans(commit, entry),
-            Some(Annotation::Stash(entry)) => return crate::stash::spans(commit, entry, self),
+        self.row(commit, columns).spans
+    }
+
+    pub fn row(&self, commit: &Commit, columns: Option<&Columns>) -> Row {
+        let spans = match &commit.annotation {
+            Some(Annotation::Reflog(entry)) => reflog_spans(commit, entry),
+            Some(Annotation::Stash(entry)) => crate::stash::spans(commit, entry, self),
             Some(Annotation::Blame(line)) => {
-                return crate::blame::spans(commit, line, line.starts_chunk, self)
+                crate::blame::spans(commit, line, line.starts_chunk, self)
             }
-            Some(Annotation::Branch(node)) => return crate::branches::spans(commit, node, self),
-            None => {}
+            Some(Annotation::Branch(node)) => crate::branches::spans(commit, node, self),
+            None => return self.commit_row(commit, columns),
+        };
+        Row {
+            spans,
+            abbreviated: Vec::new(),
         }
+    }
+
+    fn commit_row(&self, commit: &Commit, columns: Option<&Columns>) -> Row {
         // Synthetic entries must remain identifiable even in author-only formats.
         if commit.kind != CommitKind::Revision {
-            return vec![
+            let spans = vec![
                 Span::styled(
                     format!("{} ", commit.short_hash),
                     Style::default().fg(Color::Yellow),
                 ),
                 Span::raw(commit.subject.clone()),
             ];
+            return Row {
+                spans,
+                abbreviated: Vec::new(),
+            };
         }
         let mut spans = Vec::new();
+        let mut abbreviated = Vec::new();
         // Append badges once, after the last visible author name/email field.
         let last_author = self.parts.iter().rposition(|part| {
             part.enabled
@@ -267,6 +283,11 @@ impl LogFormat {
                 "ae" => &commit.author_email,
                 "d" | "D" => commit.decorations.ansi(),
                 _ => &commit.subject,
+            };
+            let full = if part.token == "an" {
+                &commit.author
+            } else {
+                value
             };
             let width = columns.and_then(|columns| columns.width(part.field));
             if value.is_empty() && width.unwrap_or(0) == 0 {
@@ -300,6 +321,15 @@ impl LogFormat {
                 spans.extend(crate::ansi::parse_line(&text).spans);
                 continue;
             }
+            if value != full {
+                let end = spans
+                    .iter()
+                    .map(|span: &Span| span.content.len())
+                    .sum::<usize>()
+                    + text.len()
+                    - part.suffix.len();
+                abbreviated.push((end - value.len()..end, full.to_owned()));
+            }
             let span = field_span(part.field, text);
             if part.field == Field::Subject
                 && crate::log_folds::commit_type_prefix(commit).is_some()
@@ -321,7 +351,7 @@ impl LogFormat {
                 spans.push(Span::raw(" ".repeat(padding)));
             }
         }
-        spans
+        Row { spans, abbreviated }
     }
 
     pub fn text(&self, commit: &Commit) -> String {
@@ -330,6 +360,13 @@ impl LogFormat {
             .map(|span| span.content.as_ref())
             .collect()
     }
+}
+
+/// A Log row's spans, and the byte ranges in them of values shown shortened,
+/// with their full text, which search matches.
+pub struct Row {
+    pub spans: Vec<Span<'static>>,
+    pub abbreviated: Vec<(std::ops::Range<usize>, String)>,
 }
 
 /// Compact labels are a presentation of GitHub-style bot names. Leave the
