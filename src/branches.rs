@@ -25,6 +25,13 @@ pub struct Branch {
     kind: BranchKind,
 }
 
+impl Branch {
+    /// Local and remote branches can share a name.
+    pub fn same_ref(&self, other: &Branch) -> bool {
+        self.kind == other.kind && self.name == other.name
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BranchNode {
     // Multiple branches may name the same tip; the graph has one node per commit.
@@ -637,7 +644,20 @@ fn load_metadata(rows: &mut [Commit], date: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn branch_ref(branch: &Branch) -> String {
+/// The Log a fresh picker would open for this branch, which no longer
+/// excludes the bases it had when an earlier picker opened it.
+pub fn followed_log_args(rows: &[Commit], branch: &Branch) -> Result<Vec<String>, String> {
+    let node = rows
+        .iter()
+        .find(|row| {
+            row.branch()
+                .is_some_and(|node| node.branches.iter().any(|b| b.same_ref(branch)))
+        })
+        .ok_or_else(|| format!("Branch {} no longer exists", branch.name))?;
+    Ok(log_args(node, rows))
+}
+
+fn branch_ref(branch: &Branch) -> String {
     format!(
         "refs/{}/{}",
         match branch.kind {
@@ -1078,11 +1098,14 @@ mod tests {
             let advanced = commit(&tree, "advanced feature", &[&feature]);
             git(&["update-ref", reference, &advanced]);
             assert!(app.poll_watch());
-            assert!(
-                app.commits.iter().any(|c| c.hash == advanced),
-                "watched Log did not follow {reference}"
-            );
-            assert_eq!(app.commits[app.selected].hash, feature);
+            let hashes: Vec<_> = app.commits.iter().map(|c| c.hash.as_str()).collect();
+            if remote {
+                assert_eq!(hashes, [&advanced, &feature], "{reference}");
+                assert_eq!(app.commits[app.selected].hash, feature);
+            } else {
+                // The alias left at the old tip now marks where feature forked.
+                assert_eq!(hashes, [&advanced], "{reference}");
+            }
             assert!(!app.poll_watch());
         }
     }

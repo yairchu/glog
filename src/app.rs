@@ -46,6 +46,11 @@ pub enum History {
 pub enum WatchSource {
     Log(Vec<String>),
     Branches(Vec<String>),
+    /// A branch's Log opened from a picker with these arguments.
+    BranchLog {
+        picker: Vec<String>,
+        branch: crate::branches::Branch,
+    },
 }
 
 /// A blame view to return to after blaming a parent.
@@ -784,6 +789,11 @@ impl App {
             WatchSource::Log(_) if default_log => git::load_watch_log()?,
             WatchSource::Log(args) => git::load_log_at(args, self.repository.as_ref())?,
             WatchSource::Branches(args) => crate::branches::load_watched(args)?,
+            WatchSource::BranchLog { picker, branch } => {
+                let rows = crate::branches::load_watched(picker)?;
+                let args = crate::branches::followed_log_args(&rows, branch)?;
+                git::load_log_at(&args, self.repository.as_ref())?
+            }
         };
         self.status = None;
         self.replace_commits(commits);
@@ -1872,12 +1882,15 @@ impl App {
                 .or_else(|| node.branches.first())
         });
         let label = branch.map_or_else(|| node.short_hash.clone(), |branch| branch.name.clone());
-        let mut watch_args = args.clone();
-        if let Some(branch) = branch {
-            // Load the picker's pinned snapshot first, but follow its chosen
-            // ref when watching. Shared ancestors keep their fixed hash.
-            watch_args[0] = crate::branches::branch_ref(branch);
-        }
+        // Follow the chosen branch when watching, as a fresh picker would
+        // open it. Shared ancestors keep their fixed hash.
+        let watch_source = match (branch, &self.watch_source) {
+            (Some(branch), Some(WatchSource::Branches(picker))) => WatchSource::BranchLog {
+                picker: picker.clone(),
+                branch: branch.clone(),
+            },
+            _ => WatchSource::Log(args.clone()),
+        };
         let loaded = git::load_log_at(&args, self.repository.as_ref()).and_then(|commits| {
             if commits.is_empty() {
                 return Err("No commits between this node and its shared ancestors".into());
@@ -1885,7 +1898,7 @@ impl App {
             let mut target = App::new(commits);
             self.prepare_followed(&mut target);
             target.context = format!("log {label}");
-            target.watch_source = Some(WatchSource::Log(watch_args));
+            target.watch_source = Some(watch_source);
             target.refresh_log_folds();
             Ok(target)
         });
