@@ -211,15 +211,7 @@ impl LogFormat {
     }
 
     pub fn spans(&self, commit: &Commit) -> Vec<Span<'static>> {
-        self.spans_with_columns(commit, None)
-    }
-
-    pub fn spans_with_columns(
-        &self,
-        commit: &Commit,
-        columns: Option<&Columns>,
-    ) -> Vec<Span<'static>> {
-        self.row(commit, columns).spans
+        self.row(commit, None).spans
     }
 
     pub fn row(&self, commit: &Commit, columns: Option<&Columns>) -> Row {
@@ -1192,7 +1184,8 @@ pub(crate) mod tests {
         let mut subject_column = None;
         for (commit, (original, label)) in commits.iter().zip(cases) {
             let rendered: String = format
-                .spans_with_columns(commit, Some(&columns))
+                .row(commit, Some(&columns))
+                .spans
                 .iter()
                 .map(|span| span.content.as_ref())
                 .collect();
@@ -1206,7 +1199,8 @@ pub(crate) mod tests {
                 .starts_with(&format!("{original} <")));
         }
         let rendered: String = format
-            .spans_with_columns(&commits[0], Some(&columns))
+            .row(&commits[0], Some(&columns))
+            .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect();
@@ -1245,7 +1239,8 @@ pub(crate) mod tests {
             .iter()
             .map(|commit| {
                 format
-                    .spans_with_columns(commit, Some(&columns))
+                    .row(commit, Some(&columns))
+                    .spans
                     .iter()
                     .map(|span| span.content.as_ref())
                     .collect()
