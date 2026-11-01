@@ -859,6 +859,26 @@ fi
     }
 
     #[test]
+    fn watch_toggle_explains_that_followed_range_logs_are_fixed() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let base = commit("base");
+        let head = commit("head");
+        let mut app = git::load_show_app(std::slice::from_ref(&head)).unwrap();
+        app.follow_link(&Target::Range(format!("{base}..{head}")));
+        assert_eq!(app.mode, Mode::Log);
+        crate::input::handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('W'), KeyModifiers::SHIFT)),
+            &mut app,
+        );
+        assert!(!app.watch);
+        assert_eq!(app.status.as_deref(), Some("This view cannot be watched"));
+    }
+
+    #[test]
     fn following_a_side_branch_suspends_watch_until_returning() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
