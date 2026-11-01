@@ -299,13 +299,21 @@ impl LogFormat {
                 Vec::new()
             };
             let badge_width: usize = badges.iter().map(Span::width).sum();
-            let value = match (part.field, width) {
-                (Field::Author, Some(width)) => truncate(&value, width.saturating_sub(badge_width)),
-                _ => value,
+            let cell = match (part.field, width) {
+                (Field::Author, Some(width)) => {
+                    Some(AuthorCell::new(full, &value, width, badge_width))
+                }
+                _ => None,
             };
-            let padding = width.map_or(0, |width| {
-                width.saturating_sub(Span::raw(&value).width() + badge_width)
-            });
+            let (value, padding) = match &cell {
+                Some(cell) => (cell.text.clone(), cell.padding),
+                None => {
+                    let padding = width.map_or(0, |width| {
+                        width.saturating_sub(Span::raw(&value).width() + badge_width)
+                    });
+                    (value, padding)
+                }
+            };
             let text = format!("{}{value}{}", part.prefix, part.suffix);
             let text = if spans.is_empty() {
                 text.trim_start().to_owned()
@@ -316,19 +324,14 @@ impl LogFormat {
                 spans.extend(crate::ansi::parse_line(&text).spans);
                 continue;
             }
-            if value != full {
+            if let Some(cell) = &cell {
                 let end = spans
                     .iter()
                     .map(|span: &Span| span.content.len())
                     .sum::<usize>()
                     + text.len()
                     - part.suffix.len();
-                let range = end - value.len()..end;
-                // Search also matches a compact author label cut off here.
-                if part.token == "an" && *displayed_author != *full {
-                    abbreviated.push((range.clone(), displayed_author.to_string()));
-                }
-                abbreviated.push((range, full.to_owned()));
+                abbreviated.extend(cell.abbreviated(end - value.len()));
             }
             let span = field_span(part.field, text);
             if part.field == Field::Subject
@@ -442,7 +445,7 @@ fn author_width(commit: &Commit) -> usize {
 
 /// Shorten text to a display width, ending it with an ellipsis.
 /// Graphemes stay whole, so combining marks keep their base letters.
-pub fn truncate(text: &str, width: usize) -> String {
+fn truncate(text: &str, width: usize) -> String {
     let span = Span::raw(text);
     if span.width() <= width {
         return text.to_owned();
@@ -462,6 +465,44 @@ pub fn truncate(text: &str, width: usize) -> String {
     }
     result.push('…');
     result
+}
+
+/// A value in an author column, as the Log and Blame draw it: its label cut
+/// to the column, followed by badges and then padding.
+pub(crate) struct AuthorCell {
+    pub text: String,
+    pub padding: usize,
+    /// The texts a shortened cell stands for, which search matches.
+    stands_for: Vec<String>,
+}
+
+impl AuthorCell {
+    pub fn new(full: &str, label: &str, width: usize, badge_width: usize) -> Self {
+        let text = truncate(label, width.saturating_sub(badge_width));
+        let padding = width.saturating_sub(Span::raw(text.as_str()).width() + badge_width);
+        let mut stands_for = Vec::new();
+        if label != text && label != full {
+            stands_for.push(label.to_owned());
+        }
+        if full != text {
+            stands_for.push(full.to_owned());
+        }
+        Self {
+            text,
+            padding,
+            stands_for,
+        }
+    }
+
+    /// The row's shortened ranges for this cell, drawn starting at byte
+    /// `start` of the row.
+    pub fn abbreviated(&self, start: usize) -> Vec<(std::ops::Range<usize>, String)> {
+        let range = start..start + self.text.len();
+        self.stands_for
+            .iter()
+            .map(|text| (range.clone(), text.clone()))
+            .collect()
+    }
 }
 
 /// An agent's symbol and its color, or None for the terminal foreground.

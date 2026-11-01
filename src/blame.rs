@@ -1013,8 +1013,7 @@ fn badge_width(collaborators: &Collaborators) -> usize {
 
 /// Commit details, or blanks in their place, then the line itself. The Log
 /// format's field toggles choose which details are shown.
-/// A blame line's spans, recording an author shown shortened with the full
-/// name, which search matches.
+/// A shortened author records the texts it stands for, which search matches.
 pub fn row(
     commit: &Commit,
     line: &BlameLine,
@@ -1055,18 +1054,17 @@ pub fn row(
             } else {
                 commit.author.as_str().into()
             };
-            let author =
-                crate::log_format::truncate(&label, file.author_width.saturating_sub(badge_width));
-            let padding = file
-                .author_width
-                .saturating_sub(Span::raw(author.as_str()).width() + badge_width);
-            if author != commit.author {
-                let start: usize = spans.iter().map(|span: &Span| span.content.len()).sum();
-                abbreviated.push((start..start + author.len(), commit.author.clone()));
-            }
-            spans.push(Span::styled(author, Style::default().fg(Color::Cyan)));
+            let cell = crate::log_format::AuthorCell::new(
+                &commit.author,
+                &label,
+                file.author_width,
+                badge_width,
+            );
+            let start: usize = spans.iter().map(|span: &Span| span.content.len()).sum();
+            abbreviated.extend(cell.abbreviated(start));
+            spans.push(Span::styled(cell.text, Style::default().fg(Color::Cyan)));
             spans.extend(badge);
-            spans.push(Span::raw(" ".repeat(padding + 1)));
+            spans.push(Span::raw(" ".repeat(cell.padding + 1)));
         } else {
             blank += file.author_width + 1;
         }
@@ -1148,6 +1146,41 @@ mod tests {
         // The shortened name is marked whole, as its full text matches.
         assert_eq!(buffer[(x, y)].style(), buffer[(x + 10, y)].style());
         assert_ne!(buffer[(x, y)].bg, buffer[(x + 12, y)].bg);
+    }
+
+    #[test]
+    fn search_finds_and_marks_cut_off_author_labels() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file.txt", "first\n").unwrap();
+        git(&["add", "."]);
+        // Even with initials, the label is too wide for Blame's column.
+        let author = "Maximilianusvonhabsburg Ferdinand";
+        let output = Command::new("git")
+            .args(["-c", "commit.gpgsign=false", "commit", "-qm", "add"])
+            .env("GIT_AUTHOR_NAME", author)
+            .env("GIT_AUTHOR_EMAIL", "max@example.com")
+            .env("GIT_COMMITTER_NAME", author)
+            .env("GIT_COMMITTER_EMAIL", "max@example.com")
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let mut app = load_app(&["file.txt".into()]).unwrap();
+        app.search = Some("g f.".into());
+        app.next_match(false);
+        assert_eq!(app.search_match, Some((Mode::Log, 0)));
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, 4)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let y = app.log_row_origin;
+        let row: String = (0..60).map(|x| buffer[(x, y)].symbol()).collect();
+        assert!(!row.contains("g F."), "{row}");
+        let x = row.find("Maximilianus").expect(&row) as u16;
+        assert_eq!(buffer[(x, y)].bg, ratatui::style::Color::Yellow);
     }
 
     fn press(app: &mut App, key: KeyCode) {
