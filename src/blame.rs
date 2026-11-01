@@ -774,7 +774,12 @@ fn render_lines(
             let starts_chunk = previous_hash.as_ref() != Some(&line.hash);
             previous_hash = Some(line.hash.clone());
             let mut commit = Commit {
-                kind: CommitKind::Revision,
+                // Enter opens Status for lines changed in the working tree.
+                kind: if line.is_uncommitted() {
+                    CommitKind::WorkingTree
+                } else {
+                    CommitKind::Revision
+                },
                 annotation: None,
                 diff_args: Vec::new(),
                 hash: line.hash.clone(),
@@ -800,9 +805,6 @@ fn render_lines(
                 commit.author_email = details.author_email.clone();
                 commit.author_date = details.date.clone();
                 commit.collaborators = details.collaborators.clone();
-            } else if line.is_uncommitted() {
-                // Enter opens Status for lines changed in the working tree.
-                commit.kind = CommitKind::WorkingTree;
             }
             commit.annotation = Some(Annotation::Blame(BlameLine {
                 file: file.clone(),
