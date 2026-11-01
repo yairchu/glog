@@ -1102,6 +1102,28 @@ mod tests {
     }
 
     #[test]
+    fn watched_logs_of_deleted_branches_report_failure_once() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        let tree = git(&["write-tree"]);
+        let base = commit(&tree, "base", &[]);
+        let feature = commit(&tree, "feature", &[&base]);
+        git(&["update-ref", "refs/heads/main", &base]);
+        git(&["update-ref", "refs/heads/feature", &feature]);
+        let mut app = interactive();
+        app.selected = app.commits.iter().position(|c| c.hash == feature).unwrap();
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('W'));
+        app.poll_watch();
+        git(&["update-ref", "-d", "refs/heads/feature"]);
+        assert!(app.poll_watch());
+        assert!(app.status.is_some());
+        // Retry only after the refs change again.
+        assert!(!app.poll_watch());
+    }
+
+    #[test]
     fn watching_branch_cleanup_preserves_names_and_resumes_after_a_followed_log() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
