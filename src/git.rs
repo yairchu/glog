@@ -33,6 +33,26 @@ pub(crate) fn read_command() -> Command {
     command
 }
 
+/// `read` applied to each item, spread over the available cores.
+pub(crate) fn read_concurrently<T: Sync, R: Send>(
+    items: &[T],
+    read: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
+    let workers = std::thread::available_parallelism().map_or(1, usize::from);
+    let chunk = items.len().div_ceil(workers).max(1);
+    let read = &read;
+    std::thread::scope(|scope| {
+        let readers: Vec<_> = items
+            .chunks(chunk)
+            .map(|chunk| scope.spawn(move || chunk.iter().map(read).collect::<Vec<_>>()))
+            .collect();
+        readers
+            .into_iter()
+            .flat_map(|reader| reader.join().expect("reader panicked"))
+            .collect()
+    })
+}
+
 /// Build a reader for an explicitly selected repository without changing process state.
 pub(crate) fn read_command_at(repository: Option<&Repository>) -> Command {
     match repository {

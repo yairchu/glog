@@ -367,7 +367,7 @@ fn history_cutoffs(hashes: &[String]) -> Vec<String> {
     // with the anchor, the other tips share nothing. A tip can share history
     // with several anchors, so each group considers every tip.
     // Tips share history exactly when they share a root commit.
-    let roots = read_concurrently(hashes, |hash| root_commits(hash));
+    let roots = git::read_concurrently(hashes, |hash| root_commits(hash));
     let mut cutoffs = Vec::new();
     let mut ungrouped: Vec<_> = (0..hashes.len()).collect();
     while let Some(&anchor) = ungrouped.first() {
@@ -721,25 +721,8 @@ fn branch_updates(rows: &[Commit], date: &str) -> Vec<Result<Option<String>, Str
         .iter()
         .filter_map(|row| Some((row.branch()?, row.hash.as_str())))
         .collect();
-    read_concurrently(&nodes, |(node, hash)| {
+    git::read_concurrently(&nodes, |(node, hash)| {
         latest_update(&node.branches, hash, date)
-    })
-}
-
-/// `read` applied to each item, spread over the available cores.
-fn read_concurrently<T: Sync, R: Send>(items: &[T], read: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    let workers = std::thread::available_parallelism().map_or(1, usize::from);
-    let chunk = items.len().div_ceil(workers).max(1);
-    let read = &read;
-    std::thread::scope(|scope| {
-        let readers: Vec<_> = items
-            .chunks(chunk)
-            .map(|chunk| scope.spawn(move || chunk.iter().map(read).collect::<Vec<_>>()))
-            .collect();
-        readers
-            .into_iter()
-            .flat_map(|reader| reader.join().expect("reader panicked"))
-            .collect()
     })
 }
 

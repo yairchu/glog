@@ -123,12 +123,14 @@ impl Folds {
         for rows in pending.into_values() {
             insert_group(&mut groups, Kind::Amend, rows);
         }
-        let chains = rebase_chains(commits, &groups, |old, new| {
-            git::read_command_at(repository)
-                .args(["merge-base", "--is-ancestor", old, new])
-                .env("GIT_NO_LAZY_FETCH", "1")
-                .output()
-                .is_ok_and(|output| output.status.success())
+        let chains = rebase_chains(commits, &groups, |pairs| {
+            git::read_concurrently(pairs, |(old, new)| {
+                git::read_command_at(repository)
+                    .args(["merge-base", "--is-ancestor", old, new])
+                    .env("GIT_NO_LAZY_FETCH", "1")
+                    .output()
+                    .is_ok_and(|output| output.status.success())
+            })
         });
         Self { groups, chains }
     }
@@ -241,10 +243,14 @@ impl Folds {
 
 /// Match only complete, successful operations adjacent on the same ref.
 /// Other refs may interleave in --all without becoming part of the fold.
+///
+/// `are_ancestors` answers, for each pair of targets, whether the first is
+/// an ancestor of the second. Asking for every pair at once lets the checks
+/// run concurrently.
 fn rebase_chains(
     commits: &[Commit],
     groups: &BTreeMap<usize, Group>,
-    mut is_ancestor: impl FnMut(&str, &str) -> bool,
+    are_ancestors: impl FnOnce(&[(&str, &str)]) -> Vec<bool>,
 ) -> Vec<Chain> {
     let mut next_on_ref = vec![None; commits.len()];
     let mut next = HashMap::new();
@@ -262,39 +268,51 @@ fn rebase_chains(
             .then(|| body.strip_prefix("returning to refs/heads/"))
             .flatten()
     };
-    let mut chains = Vec::new();
-    let mut included = std::collections::HashSet::new();
-    let mut ancestry = HashMap::new();
-    for (&header, group) in groups {
-        if group.kind != Kind::Rebase || included.contains(&header) {
+    // Each rebase may continue the previous one on its ref: the same branch,
+    // rebased onto a target that advanced.
+    let mut links = Vec::new();
+    let mut targets = Vec::new();
+    for (&header, newer) in groups {
+        if newer.kind != Kind::Rebase {
             continue;
         }
         let Some(branch_name) = branch(header) else {
             continue;
         };
+        let Some(older_header) = next_on_ref[*newer.rows.last().unwrap()] else {
+            continue;
+        };
+        let Some(older) = groups.get(&older_header).filter(|g| g.kind == Kind::Rebase) else {
+            continue;
+        };
+        if branch(older_header) != Some(branch_name) {
+            continue;
+        }
+        // Start entries pin the targets, even when Git recorded a mutable
+        // branch name in the action. Equality is not forward progress.
+        let old = commits[*older.rows.last().unwrap()].hash.as_str();
+        let new = commits[*newer.rows.last().unwrap()].hash.as_str();
+        if old != new {
+            links.push((header, older_header));
+            targets.push((old, new));
+        }
+    }
+    let advanced = are_ancestors(&targets);
+    let older: HashMap<_, _> = links
+        .into_iter()
+        .zip(advanced)
+        .filter_map(|(link, advanced)| advanced.then_some(link))
+        .collect();
+    let mut chains = Vec::new();
+    let mut included = std::collections::HashSet::new();
+    for &header in groups.keys() {
+        if included.contains(&header) {
+            continue;
+        }
         let mut headers = vec![header];
-        let mut newer = group;
-        while let Some(older_header) = next_on_ref[*newer.rows.last().unwrap()] {
-            let Some(older) = groups.get(&older_header).filter(|g| g.kind == Kind::Rebase) else {
-                break;
-            };
-            if branch(older_header) != Some(branch_name) {
-                break;
-            }
-            // Start entries pin the targets, even when Git recorded a mutable
-            // branch name in the action. Equality is not forward progress.
-            let old = commits[*older.rows.last().unwrap()].hash.as_str();
-            let new = commits[*newer.rows.last().unwrap()].hash.as_str();
-            if old == new
-                || !*ancestry
-                    .entry((old, new))
-                    .or_insert_with(|| is_ancestor(old, new))
-            {
-                break;
-            }
+        while let Some(&older_header) = older.get(headers.last().unwrap()) {
             headers.push(older_header);
             included.insert(older_header);
-            newer = older;
         }
         if headers.len() > 1 {
             chains.push(Chain {
@@ -481,7 +499,7 @@ mod tests {
             app.commits[last].hash = "b".repeat(40);
             let groups = &app.log_folds.reflog.as_ref().unwrap().groups;
             assert!(
-                rebase_chains(&app.commits, groups, |_, _| true).is_empty(),
+                rebase_chains(&app.commits, groups, |pairs| vec![true; pairs.len()]).is_empty(),
                 "{events:?}"
             );
         }
