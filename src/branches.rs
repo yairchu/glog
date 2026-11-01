@@ -1078,6 +1078,30 @@ mod tests {
     }
 
     #[test]
+    fn watched_branch_logs_follow_rebases_onto_advanced_bases() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        let tree = git(&["write-tree"]);
+        let base = commit(&tree, "base", &[]);
+        let feature = commit(&tree, "feature", &[&base]);
+        git(&["update-ref", "refs/heads/main", &base]);
+        git(&["update-ref", "refs/heads/feature", &feature]);
+        let mut app = interactive();
+        app.selected = app.commits.iter().position(|c| c.hash == feature).unwrap();
+        press(&mut app, KeyCode::Enter);
+        press(&mut app, KeyCode::Char('W'));
+        app.poll_watch();
+        let advanced = commit(&tree, "advanced main", &[&base]);
+        let rebased = commit(&tree, "rebased feature", &[&advanced]);
+        git(&["update-ref", "refs/heads/main", &advanced]);
+        git(&["update-ref", "refs/heads/feature", &rebased]);
+        assert!(app.poll_watch());
+        let subjects: Vec<_> = app.commits.iter().map(|c| c.subject.as_str()).collect();
+        assert_eq!(subjects, ["rebased feature"]);
+    }
+
+    #[test]
     fn watching_branch_cleanup_preserves_names_and_resumes_after_a_followed_log() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
