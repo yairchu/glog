@@ -652,9 +652,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             .min(app.commits.len().saturating_sub(height.max(1)));
     }
     let mut lines = Vec::new();
-    let columns = (app.history == History::Log)
-        .then(|| app.log_format.columns(&app.commits))
-        .flatten();
+    let columns = app.log_columns();
     // Collect actual on-screen commit rows before measuring their combined
     // graph/hash column. Routing lines and off-screen history reserve no space.
     let mut metadata_rows = Vec::new();
@@ -1829,6 +1827,38 @@ mod tests {
                 1
             );
         }
+    }
+
+    #[test]
+    fn cached_log_columns_follow_history_refresh_and_format_changes() {
+        let mut short = crate::log_format::tests::commit();
+        short.author_date = "Nov 1".into();
+        short.author = "Al".into();
+        short.decorations.clear();
+        let mut long = short.clone();
+        long.hash = "other".into();
+        long.author_date = "2026-11-01 15:30".into();
+        let mut app = App::new(vec![short.clone(), long]);
+        let mut terminal = Terminal::new(TestBackend::new(110, 4)).unwrap();
+        let author_column = |app: &mut App, terminal: &mut Terminal<TestBackend>| {
+            terminal.draw(|frame| draw(frame, app)).unwrap();
+            let text: String = (0..110)
+                .map(|x| terminal.backend().buffer()[(x, app.log_row_origin)].symbol())
+                .collect();
+            text.find("Al").unwrap() - text.find(&app.commits[0].author_date).unwrap_or(0)
+        };
+        let wide = author_column(&mut app, &mut terminal);
+        assert_eq!(author_column(&mut app, &mut terminal), wide);
+        app.log_format = crate::log_format::LogFormat::parse("%an %s").unwrap();
+        assert_eq!(author_column(&mut app, &mut terminal), 2);
+        app.log_format = crate::log_format::LogFormat::default();
+        assert_eq!(author_column(&mut app, &mut terminal), wide);
+        app.replace_commits(vec![short]);
+        assert_eq!(author_column(&mut app, &mut terminal), wide - 11);
+        let mut longer = app.commits[0].clone();
+        longer.author_date = "2026-11-01 15:30 UTC".into();
+        app.replace_commits(vec![longer]);
+        assert_eq!(author_column(&mut app, &mut terminal), wide + 4);
     }
 
     #[test]

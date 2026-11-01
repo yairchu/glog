@@ -58,6 +58,26 @@ pub struct Columns {
 }
 
 impl Columns {
+    pub fn measure(commits: &[Commit]) -> Self {
+        let mut columns = Columns {
+            hash: 0,
+            date: 0,
+            author: 0,
+        };
+        for commit in commits
+            .iter()
+            .filter(|c| c.kind == CommitKind::Revision && c.annotation.is_none())
+        {
+            columns.hash = columns.hash.max(Span::raw(&commit.short_hash).width());
+            columns.date = columns.date.max(Span::raw(&commit.author_date).width());
+            columns.author = columns
+                .author
+                .max(author_width(commit))
+                .min(MAX_AUTHOR_WIDTH);
+        }
+        columns
+    }
+
     pub fn with_hash_width(self, hash: usize) -> Self {
         Self { hash, ..self }
     }
@@ -149,27 +169,8 @@ impl LogFormat {
         })
     }
 
-    pub fn columns(&self, commits: &[Commit]) -> Option<Columns> {
-        if !self.tabular {
-            return None;
-        }
-        let mut columns = Columns {
-            hash: 0,
-            date: 0,
-            author: 0,
-        };
-        for commit in commits
-            .iter()
-            .filter(|c| c.kind == CommitKind::Revision && c.annotation.is_none())
-        {
-            columns.hash = columns.hash.max(Span::raw(&commit.short_hash).width());
-            columns.date = columns.date.max(Span::raw(&commit.author_date).width());
-            columns.author = columns
-                .author
-                .max(author_width(commit))
-                .min(MAX_AUTHOR_WIDTH);
-        }
-        Some(columns)
+    pub fn is_tabular(&self) -> bool {
+        self.tabular
     }
 
     pub fn shows(&self, field: Field) -> bool {
@@ -1121,7 +1122,7 @@ pub(crate) mod tests {
             })
             .collect();
         let format = LogFormat::default();
-        let columns = format.columns(&commits).unwrap();
+        let columns = Columns::measure(&commits);
         assert_eq!(columns.author, Span::raw("Dependabot 🤖").width());
         assert!(columns.author < Span::raw(cases[0].0).width());
         let mut subject_column = None;
@@ -1171,7 +1172,7 @@ pub(crate) mod tests {
         commits[2].author = "👩‍💻".repeat(24);
         commits[2].collaborators.claude = true;
         let format = LogFormat::default();
-        let columns = format.columns(&commits).unwrap();
+        let columns = Columns::measure(&commits);
         let rendered: Vec<String> = commits
             .iter()
             .map(|commit| {
@@ -1202,7 +1203,7 @@ pub(crate) mod tests {
         assert!(format.text(&commits[2]).contains(&commits[2].author));
 
         let explicit = LogFormat::parse("%an (%D) %s").unwrap();
-        assert!(explicit.columns(&commits).is_none());
+        assert!(!explicit.is_tabular());
         assert_eq!(explicit.text(&commits[0]), "Al+꩜ (HEAD -> main) subject-0");
     }
 
