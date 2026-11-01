@@ -48,8 +48,43 @@ pub struct LogFormat {
     tabular: bool,
 }
 
-/// Screen widths for the default Log's metadata. The renderer adjusts author
-/// and graph/hash widths to the rows actually on screen.
+/// The default Log's date width, measured once per history. Graph/hash and
+/// author widths follow the rows on screen, so each draw supplies them.
+#[derive(Clone, Copy)]
+pub struct DateColumn(usize);
+
+impl DateColumn {
+    pub fn measure(commits: &[Commit]) -> Self {
+        Self(
+            commits
+                .iter()
+                .filter(|c| c.kind == CommitKind::Revision && c.annotation.is_none())
+                .map(|commit| Span::raw(&commit.author_date).width())
+                .max()
+                .unwrap_or(0),
+        )
+    }
+
+    pub fn columns(self, hash: usize, author: usize) -> Columns {
+        Columns {
+            hash,
+            date: self.0,
+            author,
+        }
+    }
+}
+
+/// The author column wide enough for these commits' compact labels.
+pub fn author_column<'a>(commits: impl IntoIterator<Item = &'a Commit>) -> usize {
+    commits
+        .into_iter()
+        .map(author_width)
+        .max()
+        .unwrap_or(0)
+        .min(MAX_AUTHOR_WIDTH)
+}
+
+/// Screen widths for one row of the default Log's metadata.
 #[derive(Clone, Copy)]
 pub struct Columns {
     hash: usize,
@@ -58,40 +93,6 @@ pub struct Columns {
 }
 
 impl Columns {
-    pub fn measure(commits: &[Commit]) -> Self {
-        let mut columns = Columns {
-            hash: 0,
-            date: 0,
-            author: 0,
-        };
-        for commit in commits
-            .iter()
-            .filter(|c| c.kind == CommitKind::Revision && c.annotation.is_none())
-        {
-            columns.hash = columns.hash.max(Span::raw(&commit.short_hash).width());
-            columns.date = columns.date.max(Span::raw(&commit.author_date).width());
-            columns.author = columns
-                .author
-                .max(author_width(commit))
-                .min(MAX_AUTHOR_WIDTH);
-        }
-        columns
-    }
-
-    pub fn with_hash_width(self, hash: usize) -> Self {
-        Self { hash, ..self }
-    }
-
-    pub fn with_visible_authors<'a>(self, commits: impl IntoIterator<Item = &'a Commit>) -> Self {
-        let author = commits
-            .into_iter()
-            .map(author_width)
-            .max()
-            .unwrap_or(0)
-            .min(MAX_AUTHOR_WIDTH);
-        Self { author, ..self }
-    }
-
     fn width(&self, field: Field) -> Option<usize> {
         match field {
             Field::Hash => Some(self.hash),
@@ -1100,6 +1101,16 @@ pub(crate) mod tests {
         assert_eq!(format.text(&commit()), "A subject");
     }
 
+    /// Columns for rendering every commit, as if all were on screen.
+    fn all_columns(commits: &[Commit]) -> Columns {
+        let hash = commits
+            .iter()
+            .map(|commit| Span::raw(&commit.short_hash).width())
+            .max()
+            .unwrap_or(0);
+        DateColumn::measure(commits).columns(hash, author_column(commits))
+    }
+
     #[test]
     fn bot_author_labels_shrink_columns_without_losing_raw_names_or_badges() {
         let cases = [
@@ -1122,7 +1133,7 @@ pub(crate) mod tests {
             })
             .collect();
         let format = LogFormat::default();
-        let columns = Columns::measure(&commits);
+        let columns = all_columns(&commits);
         assert_eq!(columns.author, Span::raw("Dependabot 🤖").width());
         assert!(columns.author < Span::raw(cases[0].0).width());
         let mut subject_column = None;
@@ -1172,7 +1183,7 @@ pub(crate) mod tests {
         commits[2].author = "👩‍💻".repeat(24);
         commits[2].collaborators.claude = true;
         let format = LogFormat::default();
-        let columns = Columns::measure(&commits);
+        let columns = all_columns(&commits);
         let rendered: Vec<String> = commits
             .iter()
             .map(|commit| {

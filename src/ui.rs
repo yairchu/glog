@@ -652,7 +652,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             .min(app.commits.len().saturating_sub(height.max(1)));
     }
     let mut lines = Vec::new();
-    let columns = app.log_columns();
+    let date_column = app.log_date_column();
     // Collect actual on-screen commit rows before measuring their combined
     // graph/hash column. Routing lines and off-screen history reserve no space.
     let mut metadata_rows = Vec::new();
@@ -725,7 +725,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                         span.content = span.content.replacen(nodes, marker, 1).into();
                     }
                 }
-                if columns.is_some() && commit.kind == crate::git::CommitKind::Revision {
+                if date_column.is_some() && commit.kind == crate::git::CommitKind::Revision {
                     metadata_rows.push((lines.len(), index));
                     deferred_metadata = true;
                 } else {
@@ -737,7 +737,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                             blame.starts_chunk || lines.is_empty(),
                             &app.log_format,
                         ),
-                        None => app.log_format.spans_with_columns(commit, columns.as_ref()),
+                        None => app.log_format.spans(commit),
                     });
                     line.spans.push(Span::styled(
                         app.log_folds.label(index),
@@ -762,9 +762,10 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             graph_row += 1;
         }
     }
-    if let Some(columns) = columns {
-        let columns = columns
-            .with_visible_authors(metadata_rows.iter().map(|&(_, index)| &app.commits[index]));
+    if let Some(date_column) = date_column {
+        let author = crate::log_format::author_column(
+            metadata_rows.iter().map(|&(_, index)| &app.commits[index]),
+        );
         let show_hash = app.log_format.shows(crate::log_format::Field::Hash);
         let width = metadata_rows
             .iter()
@@ -785,7 +786,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 line.spans.push(Span::raw(" ".repeat(hash_width)));
             }
             // The hash touches its own graph; all alignment padding follows it.
-            let columns = columns.with_hash_width(hash_width);
+            let columns = date_column.columns(hash_width, author);
             line.spans.extend(
                 app.log_format
                     .spans_with_columns(&app.commits[index], Some(&columns)),

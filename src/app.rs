@@ -114,7 +114,7 @@ pub struct App {
     pub center_selection: bool,
     pub log_folds: crate::log_folds::LogFolds,
     pub log_format: crate::log_format::LogFormat,
-    log_columns: Option<crate::log_format::Columns>,
+    log_date_column: Option<crate::log_format::DateColumn>,
     pub selected: usize,
     pub mode: Mode,
     pub log_offset: usize,
@@ -207,7 +207,7 @@ impl App {
             center_selection: false,
             log_folds: crate::log_folds::LogFolds::default(),
             log_format: crate::log_format::LogFormat::default(),
-            log_columns: None,
+            log_date_column: None,
             selected: 0,
             mode: Mode::Log,
             log_offset: 0,
@@ -791,21 +791,21 @@ impl App {
         Ok(true)
     }
 
-    /// History-wide widths change only when the Log's commits are replaced.
-    /// Visible graph/hash and author widths are adjusted separately on each draw.
-    pub fn log_columns(&mut self) -> Option<crate::log_format::Columns> {
+    /// The date width changes only when the Log's commits are replaced.
+    /// Graph/hash and author widths follow the visible rows on each draw.
+    pub fn log_date_column(&mut self) -> Option<crate::log_format::DateColumn> {
         if self.history != History::Log || !self.log_format.is_tabular() {
             return None;
         }
         Some(
             *self
-                .log_columns
-                .get_or_insert_with(|| crate::log_format::Columns::measure(&self.commits)),
+                .log_date_column
+                .get_or_insert_with(|| crate::log_format::DateColumn::measure(&self.commits)),
         )
     }
 
     pub fn replace_commits(&mut self, commits: Vec<Commit>) {
-        self.log_columns = None;
+        self.log_date_column = None;
         let selected_branch = self.commits.get(self.selected).and_then(Commit::branch);
         let moved_branch = selected_branch.and_then(|node| {
             node.branches
