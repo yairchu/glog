@@ -49,6 +49,8 @@ pub enum Launch {
 
 pub fn load(args: &[String]) -> Result<Launch, String> {
     let (watch, date) = parse_args(args)?;
+    let source = crate::app::WatchSource::Branches(args.to_vec());
+    let snapshot = watch.then(|| source.snapshot(None));
     let tips = local_tips()?;
     let count: usize = tips.values().map(Vec::len).sum();
     let current = tips.values().flatten().any(|branch| branch.current);
@@ -79,7 +81,7 @@ pub fn load(args: &[String]) -> Result<Launch, String> {
     let mut app = App::new(rows);
     app.history = crate::app::History::Branches;
     app.watch = watch;
-    app.watch_source = Some(crate::app::WatchSource::Branches(args.to_vec()));
+    app.set_watch_source(source, snapshot);
     app.selected = selected;
     app.center_selection = true;
     Ok(Launch::Interactive(Box::new(app)))
@@ -1214,8 +1216,7 @@ mod tests {
         assert_eq!(app.history, History::Branches);
         assert!(app.watch);
         assert!(app.commits.is_empty());
-        // As at startup, a freshly loaded picker reloads only after a change.
-        app.seed_watch();
+        // A freshly loaded picker reloads only after a change.
         assert!(!app.poll_watch());
         let tree = git(&["write-tree"]);
         let root = commit(&tree, "root", &[]);

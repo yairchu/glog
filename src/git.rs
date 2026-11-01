@@ -6013,6 +6013,30 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn watch_reports_a_persistent_refresh_failure_once() {
+        use crate::app::{App, WatchSource};
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        git(&["commit", "-q", "--allow-empty", "-m", "root"]);
+        let mut app = App::new(load_watch_log().unwrap());
+        app.watch_source = Some(WatchSource::Log(Vec::new()));
+        app.toggle_watch();
+        assert!(app.poll_watch());
+        fs::remove_dir_all(".git").unwrap();
+        assert!(app.poll_watch());
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap()
+            .starts_with("Watch refresh failed"));
+        app.status = None;
+        assert!(!app.poll_watch());
+        assert_eq!(app.status, None);
+    }
+
+    #[test]
     fn loads_log_and_show_from_a_repository() {
         let repository = TestDirectory::new();
         let git = |args: &[&str]| {

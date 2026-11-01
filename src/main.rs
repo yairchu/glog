@@ -65,6 +65,15 @@ fn main() -> ExitCode {
         }
     };
     let watch = log_options.watch || command == Command::Status;
+    let watch_source = match command {
+        Command::Status => Some(app::WatchSource::Log(Vec::new())),
+        Command::Log => Some(app::WatchSource::Log(git_args.clone())),
+        _ => None,
+    };
+    let watch_snapshot = watch_source
+        .as_ref()
+        .filter(|_| watch)
+        .map(|source| source.snapshot(None));
     let loaded = match command {
         Command::Status => status::load_app(command_args),
         Command::Show => git::load_show_app(command_args),
@@ -121,12 +130,8 @@ fn main() -> ExitCode {
         app.log_format = log_format;
     }
     app.watch = watch;
-    if matches!(command, Command::Log | Command::Status) {
-        app.watch_source = Some(app::WatchSource::Log(if command == Command::Status {
-            Vec::new()
-        } else {
-            git_args
-        }));
+    if let Some(source) = watch_source {
+        app.set_watch_source(source, watch_snapshot);
     }
     app.context = args.join(" ");
     let result = run(&mut terminal, &mut app);
@@ -308,7 +313,6 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
     // App state changes only within this loop, so a frame is drawn only after
     // input, a completed background task, or a refresh.
     let mut changed = true;
-    app.seed_watch();
     while !app.quit {
         if let Some(mut command) = app.pending_editor.take() {
             app.images.clear(&mut io::stdout())?;

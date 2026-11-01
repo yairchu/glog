@@ -53,6 +53,27 @@ pub enum WatchSource {
     },
 }
 
+/// A repository state, or why it could not be read. Recording failures lets
+/// a persistent failure be reported once rather than on every poll.
+pub type WatchSnapshot = Result<u64, String>;
+
+impl WatchSource {
+    /// Take this before loading the view, so that a change during the load
+    /// is reloaded on the first poll.
+    pub fn snapshot(&self, repository: Option<&git::Repository>) -> WatchSnapshot {
+        if self.shows_working_tree(repository) {
+            git::watch_fingerprint()
+        } else {
+            git::refs_fingerprint_at(repository)
+        }
+    }
+
+    /// The default Log also shows the working tree; other views only refs.
+    fn shows_working_tree(&self, repository: Option<&git::Repository>) -> bool {
+        matches!(self, Self::Log(args) if args.is_empty()) && repository.is_none()
+    }
+}
+
 /// A blame view to return to after blaming a parent.
 struct BlameFrame {
     commits: Vec<Commit>,
@@ -178,7 +199,7 @@ pub struct App {
     pub visible_show_rows: usize,
     pub watch: bool,
     pub watch_source: Option<WatchSource>,
-    watch_fingerprint: Option<u64>,
+    watch_snapshot: Option<WatchSnapshot>,
     pub context: String,
     pub log_tab_start: u16,
     pub log_tab_end: u16,
@@ -263,7 +284,7 @@ impl App {
             visible_show_rows: 0,
             watch: false,
             watch_source: None,
-            watch_fingerprint: None,
+            watch_snapshot: None,
             context: String::new(),
             log_tab_start: 7,
             log_tab_end: 12,
@@ -766,7 +787,7 @@ impl App {
         }
         self.watch = !self.watch;
         if self.watch {
-            self.watch_fingerprint = None;
+            self.watch_snapshot = None;
         }
         self.status = None;
     }
@@ -786,42 +807,28 @@ impl App {
         }
     }
 
-    /// Snapshot the repository for a view loaded already watched, so the
-    /// first poll reloads only after a change.
-    pub fn seed_watch(&mut self) {
-        if self.watch && self.watch_source.is_some() {
-            self.watch_fingerprint = self.fingerprint(self.is_default_log()).ok();
-        }
-    }
-
-    /// The default Log also shows the working tree; other views only refs.
-    fn is_default_log(&self) -> bool {
-        matches!(&self.watch_source, Some(WatchSource::Log(args)) if args.is_empty())
-            && self.repository.is_none()
-    }
-
-    fn fingerprint(&self, default_log: bool) -> Result<u64, String> {
-        if default_log {
-            git::watch_fingerprint()
-        } else {
-            git::refs_fingerprint_at(self.repository.as_ref())
-        }
+    /// Set what the view watches, with the snapshot taken before loading it
+    /// when it starts watched.
+    pub fn set_watch_source(&mut self, source: WatchSource, snapshot: Option<WatchSnapshot>) {
+        self.watch_source = Some(source);
+        self.watch_snapshot = snapshot;
     }
 
     fn refresh_watched(&mut self) -> Result<bool, String> {
-        let default_log = self.is_default_log();
         let Some(source) = &self.watch_source else {
             return Ok(false);
         };
-        let fingerprint = self.fingerprint(default_log)?;
-        if self.watch_fingerprint == Some(fingerprint) {
+        let repository = self.repository.as_ref();
+        let snapshot = source.snapshot(repository);
+        if self.watch_snapshot.as_ref() == Some(&snapshot) {
             return Ok(false);
         }
-        // Retry failed loads, such as of a deleted branch, only after the
-        // refs change again.
-        self.watch_fingerprint = Some(fingerprint);
+        // Retry failures, such as loading a deleted branch, only after the
+        // repository or the failure changes.
+        self.watch_snapshot = Some(snapshot.clone());
+        snapshot?;
         let commits = match source {
-            WatchSource::Log(_) if default_log => git::load_watch_log()?,
+            source if source.shows_working_tree(repository) => git::load_watch_log()?,
             WatchSource::Log(args) => git::load_log_at(args, self.repository.as_ref())?,
             WatchSource::Branches(args) => crate::branches::load_watched(args)?,
             WatchSource::BranchLog { picker, branch } => {

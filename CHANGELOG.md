@@ -35,6 +35,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Use Git's decoration colors for local branches, remote refs, HEAD, and tags
   in Log and Branches, including configured `color.decorate.*` styles.
 
+- Pick up repository changes made while a `--watch` session starts.
+
+- Report a persistent watch refresh failure once, rather than rewriting the
+  footer every second.
+
 ## 0.7.0 - 2026-10-28
 
 ### Added
