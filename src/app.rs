@@ -785,6 +785,9 @@ impl App {
         if self.watch_fingerprint == Some(fingerprint) {
             return Ok(false);
         }
+        // Retry failed loads, such as of a deleted branch, only after the
+        // refs change again.
+        self.watch_fingerprint = Some(fingerprint);
         let commits = match source {
             WatchSource::Log(_) if default_log => git::load_watch_log()?,
             WatchSource::Log(args) => git::load_log_at(args, self.repository.as_ref())?,
@@ -797,7 +800,6 @@ impl App {
         };
         self.status = None;
         self.replace_commits(commits);
-        self.watch_fingerprint = Some(fingerprint);
         Ok(true)
     }
 
