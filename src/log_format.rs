@@ -359,21 +359,21 @@ impl LogFormat {
         self.row(commit, None).text()
     }
 
-    /// Whether a lowercase query matches the row's text, the full values of
-    /// any it shows shortened, or the compact author label that a tabular Log
-    /// displays in place of a long or bot name.
-    pub fn matches(&self, commit: &Commit, query: &str) -> bool {
-        let row = self.row(commit, None);
+    /// Whether a lowercase query matches the row's text, as laid out in
+    /// columns or not, or the full values of any it shows shortened. Search
+    /// leaves out the padding, which depends on the rows on screen.
+    pub fn matches(&self, commit: &Commit, query: &str, in_columns: bool) -> bool {
+        let columns = in_columns.then(|| Columns {
+            hash: 0,
+            date: 0,
+            author: author_width(commit),
+        });
+        let row = self.row(commit, columns.as_ref());
         row.text().to_lowercase().contains(query)
             || row
                 .abbreviated
                 .iter()
                 .any(|(_, full)| full.to_lowercase().contains(query))
-            || self.tabular
-                && self.shows(Field::Author)
-                && commit.kind == CommitKind::Revision
-                && commit.annotation.is_none()
-                && author_label(&commit.author).to_lowercase().contains(query)
     }
 }
 

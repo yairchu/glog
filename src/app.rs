@@ -2349,6 +2349,7 @@ impl App {
         match self.mode {
             Mode::Status => {}
             Mode::Log => {
+                let in_columns = self.log_date_column().is_some();
                 let n = self.commits.len();
                 let start = self
                     .search_match
@@ -2364,7 +2365,8 @@ impl App {
                     if self.log_folds.filter_hidden(i, c) {
                         continue;
                     }
-                    if c.hash.to_lowercase().contains(&query) || self.log_format.matches(c, &query)
+                    if c.hash.to_lowercase().contains(&query)
+                        || self.log_format.matches(c, &query, in_columns)
                     {
                         self.log_folds.reveal(i, &self.commits);
                         self.selected = i;
