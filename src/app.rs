@@ -51,7 +51,9 @@ pub enum WatchSource {
     /// is not limited to paths.
     Log {
         args: Vec<String>,
-        working_tree: bool,
+        /// Asked of Git once watching needs it, so unwatched Logs start
+        /// without the extra Git processes.
+        working_tree: std::sync::OnceLock<bool>,
     },
     Branches(Vec<String>),
     /// A branch's Log opened from a picker with these arguments.
@@ -87,8 +89,10 @@ impl WatchSource {
     /// A Log of the current repository, with the working tree when Git
     /// finds that the arguments name no revision and no path.
     pub fn log(args: Vec<String>) -> Self {
-        let working_tree = git::log_shows_working_tree(&args);
-        Self::Log { args, working_tree }
+        Self::Log {
+            args,
+            working_tree: std::sync::OnceLock::new(),
+        }
     }
 
     /// Take this before loading the view, so that a change during the load
@@ -102,13 +106,12 @@ impl WatchSource {
     }
 
     fn shows_working_tree(&self, repository: Option<&git::Repository>) -> bool {
-        matches!(
-            self,
-            Self::Log {
-                working_tree: true,
-                ..
+        match self {
+            Self::Log { args, working_tree } if repository.is_none() => {
+                *working_tree.get_or_init(|| git::log_shows_working_tree(args))
             }
-        ) && repository.is_none()
+            _ => false,
+        }
     }
 
     pub fn load(&self, repository: Option<&git::Repository>) -> Result<Vec<Commit>, String> {
