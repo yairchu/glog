@@ -1917,6 +1917,25 @@ mod tests {
     }
 
     #[test]
+    fn search_marks_cut_off_author_labels_that_match() {
+        let mut commit = crate::log_format::tests::commit();
+        commit.decorations.clear();
+        // Even with initials, the label is too wide for the column.
+        commit.author = "Maximilianusvonhabsburgerlothringen Ferdinand".into();
+        commit.subject = "subject".into();
+        let mut app = App::new(vec![commit]);
+        app.search = Some("N F.".into());
+        app.search_match = Some((Mode::Log, 0));
+        let mut terminal = Terminal::new(TestBackend::new(110, 4)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let row: Vec<_> = (0..110).map(|x| &buffer[(x, app.log_row_origin)]).collect();
+        let text: String = row.iter().map(|cell| cell.symbol()).collect();
+        assert!(!text.contains("n F."), "{text}");
+        assert_eq!(row[text.find("Maximilianus").unwrap()].bg, Color::Yellow);
+    }
+
+    #[test]
     fn default_log_graph_hash_column_uses_visible_commit_rows() {
         let mut commits: Vec<_> = (0..4)
             .map(|index| {

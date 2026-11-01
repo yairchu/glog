@@ -323,7 +323,12 @@ impl LogFormat {
                     .sum::<usize>()
                     + text.len()
                     - part.suffix.len();
-                abbreviated.push((end - value.len()..end, full.to_owned()));
+                let range = end - value.len()..end;
+                // Search also matches a compact author label cut off here.
+                if part.token == "an" && *displayed_author != *full {
+                    abbreviated.push((range.clone(), displayed_author.to_string()));
+                }
+                abbreviated.push((range, full.to_owned()));
             }
             let span = field_span(part.field, text);
             if part.field == Field::Subject
@@ -373,7 +378,7 @@ impl LogFormat {
 }
 
 /// A Log row's spans, and the byte ranges in them of values shown shortened,
-/// with their full text, which search matches.
+/// with each text they stand for, which search matches.
 pub struct Row {
     pub spans: Vec<Span<'static>>,
     pub abbreviated: Vec<(std::ops::Range<usize>, String)>,
