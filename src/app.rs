@@ -827,7 +827,7 @@ impl App {
                 .find_map(|branch| {
                     commits.iter().position(|commit| {
                         commit.branch().is_some_and(|node| {
-                            node.branches.iter().any(|new| new.name == branch.name)
+                            node.branches.iter().any(|new| new.same_ref(branch))
                         })
                     })
                 })
