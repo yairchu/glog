@@ -1225,19 +1225,22 @@ impl App {
         if file.submodule.is_some() {
             return Err("Expand the submodule and select a file".into());
         }
-        let patch = self
-            .show_text
+        Ok(ShowFile {
+            app: self,
+            file,
+            patch: self.file_patch(file),
+            line: row.source - file.start,
+        })
+    }
+
+    /// The lines of `show_text` that make up one file's patch.
+    fn file_patch(&self, file: &crate::diff::FileSection) -> String {
+        self.show_text
             .lines()
             .skip(file.start)
             .take(file.end - file.start)
             .collect::<Vec<_>>()
-            .join("\n");
-        Ok(ShowFile {
-            app: self,
-            file,
-            patch,
-            line: row.source - file.start,
-        })
+            .join("\n")
     }
 
     fn show_repository(&self) -> Option<&git::Repository> {
@@ -1956,15 +1959,8 @@ impl App {
             };
             if let Some(file) = file {
                 let position = if nested.is_none() {
-                    let patch = self
-                        .show_text
-                        .lines()
-                        .skip(file.start)
-                        .take(file.end - file.start)
-                        .collect::<Vec<_>>()
-                        .join("\n");
                     crate::hunk::position(
-                        &patch,
+                        &self.file_patch(file),
                         self.show_rows[self.show_cursor].source - file.start,
                     )
                 } else {
