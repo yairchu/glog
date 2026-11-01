@@ -14,8 +14,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   formats retain their explicit layout.
 
 - Shorten bot authors in the default Log: show `Copilot 🤖` and `Dependabot 🤖`,
-  and replace other `[bot]` suffixes with `🤖`. Original names remain searchable
-  and visible in Show and explicit formats.
+  and replace other `[bot]` suffixes with `🤖`. Search finds both labels and
+  original names, which remain visible in Show and explicit formats.
 
 - Watch the branch picker with `glog branch --watch`, including when only one
   branch remains or the list is empty. Refresh preserves the selected branch

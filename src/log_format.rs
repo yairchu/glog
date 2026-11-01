@@ -360,6 +360,17 @@ impl LogFormat {
             .map(|span| span.content.as_ref())
             .collect()
     }
+
+    /// Whether a lowercase query matches the row's full text, or the compact
+    /// author label that a tabular Log displays in place of a bot's name.
+    pub fn matches(&self, commit: &Commit, query: &str) -> bool {
+        self.text(commit).to_lowercase().contains(query)
+            || self.tabular
+                && self.shows(Field::Author)
+                && commit.kind == CommitKind::Revision
+                && commit.annotation.is_none()
+                && author_label(&commit.author).to_lowercase().contains(query)
+    }
 }
 
 /// A Log row's spans, and the byte ranges in them of values shown shortened,
@@ -1206,6 +1217,10 @@ pub(crate) mod tests {
         app.search = Some("copilot-swe-agent[bot]".into());
         app.next_match(false);
         assert_eq!(app.selected, 0);
+        // Search also finds the label it highlights.
+        app.search = Some("Dependabot 🤖".into());
+        app.next_match(false);
+        assert_eq!(app.selected, 1);
     }
 
     #[test]

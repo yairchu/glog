@@ -2243,8 +2243,7 @@ impl App {
                     if self.log_folds.filter_hidden(i, c) {
                         continue;
                     }
-                    if c.hash.to_lowercase().contains(&query)
-                        || self.log_format.text(c).to_lowercase().contains(&query)
+                    if c.hash.to_lowercase().contains(&query) || self.log_format.matches(c, &query)
                     {
                         self.log_folds.reveal(i, &self.commits);
                         self.selected = i;
