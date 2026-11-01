@@ -412,7 +412,7 @@ pub(crate) fn author_label(author: &str) -> Cow<'_, str> {
 }
 
 /// Each name's label depends only on the name, so it stays the same
-/// whichever rows are shown. Initials replace words after the first, last
+/// whichever rows are shown. Initials replace words after the first, longest
 /// first, until the name fits; a name that still does not fit is truncated
 /// with the column.
 fn compact_name(name: &str) -> Cow<'_, str> {
@@ -420,19 +420,37 @@ fn compact_name(name: &str) -> Cow<'_, str> {
         return Cow::Borrowed(name);
     }
     let mut words: Vec<Cow<str>> = name.split_whitespace().map(Cow::Borrowed).collect();
-    for index in (1..words.len()).rev() {
-        let word = Span::raw(words[index].to_string());
-        let mut graphemes = word.styled_graphemes(Style::default());
-        let first = graphemes.next().map(|grapheme| grapheme.symbol.to_owned());
-        // Words as short as an initial, such as `B.` or `Jr`, stay.
-        if let Some(first) = first.filter(|_| graphemes.nth(1).is_some()) {
-            words[index] = Cow::Owned(format!("{first}."));
-        }
+    let mut initials: Vec<(usize, String)> = words
+        .iter()
+        .enumerate()
+        .skip(1)
+        .filter_map(|(index, word)| Some((index, initial(word)?)))
+        .collect();
+    // Of equally wide words, the later one goes first.
+    initials
+        .sort_by_key(|(index, _)| std::cmp::Reverse((Span::raw(&*words[*index]).width(), *index)));
+    for (index, initial) in initials {
+        words[index] = Cow::Owned(initial);
         if Span::raw(words.join(" ")).width() <= COMPACT_NAME_WIDTH {
             break;
         }
     }
     Cow::Owned(words.join(" "))
+}
+
+/// A name word's initial, if it is a name shortening could stand for.
+/// Words as short as an initial, such as `Jo`, stay, as do abbreviations
+/// such as `Jr.` and words that do not start with a letter, such as
+/// `(Contractor)`.
+fn initial(word: &str) -> Option<String> {
+    if word.ends_with('.') || !word.chars().next()?.is_alphabetic() {
+        return None;
+    }
+    let span = Span::raw(word);
+    let mut graphemes = span.styled_graphemes(Style::default());
+    let first = graphemes.next()?.symbol;
+    graphemes.nth(1)?;
+    Some(format!("{first}."))
 }
 
 fn author_width(commit: &Commit) -> usize {
@@ -1250,6 +1268,9 @@ pub(crate) mod tests {
             ("Ludwig van Beethoven", "Ludwig van B."),
             ("Johann Sebastian Bachmann", "Johann S. B."),
             ("Bartholomew-Alexander", "Bartholomew-Alexander"),
+            ("John Christopher Smith", "John C. Smith"),
+            ("Martin Luther King Jr.", "Martin L. K. Jr."),
+            ("Jane Doe (Contractor)", "Jane D. (Contractor)"),
         ] {
             assert_eq!(author_label(name), label);
         }
