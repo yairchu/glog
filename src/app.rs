@@ -54,8 +54,8 @@ pub enum WatchSource {
         /// Asked of Git once watching needs it, so unwatched Logs start
         /// without the extra Git processes.
         working_tree: std::sync::OnceLock<bool>,
-        /// Resolved once, rather than on every poll.
-        git_dir: std::sync::OnceLock<std::path::PathBuf>,
+        /// Resolved once, rather than on every poll and reload.
+        worktree: std::sync::OnceLock<git::Worktree>,
     },
     Branches(Vec<String>),
     /// A branch's Log opened from a picker with these arguments.
@@ -94,7 +94,7 @@ impl WatchSource {
         Self::Log {
             args,
             working_tree: std::sync::OnceLock::new(),
-            git_dir: std::sync::OnceLock::new(),
+            worktree: std::sync::OnceLock::new(),
         }
     }
 
@@ -102,18 +102,21 @@ impl WatchSource {
     /// is reloaded on the first poll.
     pub fn snapshot(&self, repository: Option<&git::Repository>) -> WatchSnapshot {
         match self {
-            Self::Log { git_dir, .. } if self.shows_working_tree(repository) => {
-                let git_dir = match git_dir.get() {
-                    Some(git_dir) => git_dir,
-                    None => {
-                        let resolved = git::repository_root()
-                            .and_then(|root| crate::operation::git_dir(&root))?;
-                        git_dir.get_or_init(|| resolved)
-                    }
-                };
-                git::watch_fingerprint_in(git_dir)
+            Self::Log { worktree, .. } if self.shows_working_tree(repository) => {
+                git::watch_fingerprint_in(Self::worktree(worktree)?)
             }
             _ => git::refs_fingerprint_at(repository),
+        }
+    }
+
+    /// The watched worktree, resolved on first use.
+    fn worktree(worktree: &std::sync::OnceLock<git::Worktree>) -> Result<&git::Worktree, String> {
+        match worktree.get() {
+            Some(worktree) => Ok(worktree),
+            None => {
+                let resolved = git::Worktree::current()?;
+                Ok(worktree.get_or_init(|| resolved))
+            }
         }
     }
 
@@ -130,8 +133,8 @@ impl WatchSource {
 
     pub fn load(&self, repository: Option<&git::Repository>) -> Result<Vec<Commit>, String> {
         Ok(match self {
-            Self::Log { args, .. } if self.shows_working_tree(repository) => {
-                git::load_log_with_working_tree(args)?
+            Self::Log { args, worktree, .. } if self.shows_working_tree(repository) => {
+                git::load_log_with_working_tree(args, Self::worktree(worktree)?)?
             }
             Self::Log { args, .. } => git::load_log_at(args, repository)?,
             Self::Branches(args) => crate::branches::load_watched(args)?,

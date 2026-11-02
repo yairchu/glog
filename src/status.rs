@@ -222,11 +222,9 @@ fn load_snapshot(root: &std::path::Path) -> Result<Snapshot, String> {
     parse(&output.stdout)
 }
 
-pub fn working_tree_summary() -> Result<WorkingTreeSummary, String> {
-    let root = crate::git::repository_root()?;
-    let mut snapshot = load_snapshot(&root)?;
-    let git_dir = crate::operation::git_dir(&root).ok();
-    snapshot.load_operations(&root, git_dir.as_deref());
+pub fn working_tree_summary(worktree: &crate::git::Worktree) -> Result<WorkingTreeSummary, String> {
+    let mut snapshot = load_snapshot(&worktree.root)?;
+    snapshot.load_operations(&worktree.root, Some(&worktree.git_dir));
     Ok(snapshot.summary())
 }
 

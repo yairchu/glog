@@ -603,12 +603,15 @@ pub fn log_ancestry_at(
 /// Watch mode includes one stable working-tree item ahead of committed history.
 #[cfg(test)]
 pub fn load_watch_log() -> Result<Vec<Commit>, String> {
-    load_log_with_working_tree(&[])
+    load_log_with_working_tree(&[], &Worktree::current()?)
 }
 
-pub fn load_log_with_working_tree(args: &[String]) -> Result<Vec<Commit>, String> {
+pub fn load_log_with_working_tree(
+    args: &[String],
+    worktree: &Worktree,
+) -> Result<Vec<Commit>, String> {
     let commits = load_log(args)?;
-    let summary = crate::status::working_tree_summary()?;
+    let summary = crate::status::working_tree_summary(worktree)?;
     let mut entries = vec![working_tree_commit(&summary)];
     entries.extend(commits);
     Ok(entries)
@@ -1145,12 +1148,11 @@ fn comparison_sides(
 
 #[cfg(test)]
 pub fn watch_fingerprint() -> Result<u64, String> {
-    watch_fingerprint_in(&crate::operation::git_dir(&repository_root()?)?)
+    watch_fingerprint_in(&Worktree::current()?)
 }
 
-/// What watching the working tree reloads on, for the worktree whose Git
-/// directory is `git_dir`.
-pub fn watch_fingerprint_in(git_dir: &std::path::Path) -> Result<u64, String> {
+/// What watching the working tree reloads on.
+pub fn watch_fingerprint_in(worktree: &Worktree) -> Result<u64, String> {
     let mut fingerprint = DefaultHasher::new();
     hash_command(
         &mut fingerprint,
@@ -1168,9 +1170,9 @@ pub fn watch_fingerprint_in(git_dir: &std::path::Path) -> Result<u64, String> {
         false,
     )?;
     fingerprint.write_u64(refs_fingerprint_at(None)?);
-    let root = repository_root()?;
+    let Worktree { root, git_dir } = worktree;
     // Operations such as a rebase can change without changing any file.
-    crate::operation::fingerprint(&root, git_dir, &mut fingerprint);
+    crate::operation::fingerprint(root, git_dir, &mut fingerprint);
     for path in untracked_paths(&[])? {
         fingerprint.write(path.as_os_str().as_encoded_bytes());
         let display = path.display();
@@ -1839,6 +1841,22 @@ const REPOSITORY_PATH_ENV: [&str; 8] = [
     "GIT_SHALLOW_FILE",
     "GIT_COMMON_DIR",
 ];
+
+/// The current worktree's root and the Git directory holding its operations,
+/// which stay the same while glog watches it.
+#[derive(Clone)]
+pub struct Worktree {
+    pub root: std::path::PathBuf,
+    pub git_dir: std::path::PathBuf,
+}
+
+impl Worktree {
+    pub fn current() -> Result<Self, String> {
+        let root = repository_root()?;
+        let git_dir = crate::operation::git_dir(&root)?;
+        Ok(Self { root, git_dir })
+    }
+}
 
 /// Git terminates its raw repository path with exactly one newline.
 pub(crate) fn repository_root() -> Result<std::path::PathBuf, String> {
