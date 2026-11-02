@@ -62,6 +62,8 @@ struct Snapshot {
     upstream: String,
     ahead_behind: String,
     initial: bool,
+    oid: String,
+    state: crate::operation::State,
     entries: Vec<Entry>,
 }
 
@@ -102,6 +104,10 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
         }
         if record == "# branch.oid (initial)" {
             snapshot.initial = true;
+            continue;
+        }
+        if let Some(oid) = record.strip_prefix("# branch.oid ") {
+            snapshot.oid = oid.to_owned();
             continue;
         }
         if record.starts_with('#') {
@@ -213,7 +219,10 @@ fn load_snapshot(root: &std::path::Path) -> Result<Snapshot, String> {
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
-    parse(&output.stdout)
+    let mut snapshot = parse(&output.stdout)?;
+    let detached = (snapshot.branch == "(detached)").then_some(snapshot.oid.as_str());
+    snapshot.state = crate::operation::load(root, detached)?;
+    Ok(snapshot)
 }
 
 pub fn working_tree_summary() -> Result<WorkingTreeSummary, String> {
@@ -255,12 +264,17 @@ impl Snapshot {
             .iter()
             .filter(|entry| entry.key.group == Group::Untracked)
             .count();
-        WorkingTreeSummary { changed, untracked }
+        WorkingTreeSummary {
+            operations: self.state.operations.clone(),
+            changed,
+            untracked,
+        }
     }
 }
 
 #[derive(Default)]
 pub struct WorkingTreeSummary {
+    operations: Vec<String>,
     changed: usize,
     untracked: usize,
 }
@@ -273,18 +287,17 @@ impl WorkingTreeSummary {
 
 impl std::fmt::Display for WorkingTreeSummary {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut parts = Vec::new();
+        let mut parts = self.operations.clone();
         for (count, kind) in [(self.changed, "changed"), (self.untracked, "untracked")] {
             if count > 0 {
                 let suffix = if count == 1 { "" } else { "s" };
                 parts.push(format!("{count} {kind} file{suffix}"));
             }
         }
-        if parts.is_empty() {
-            f.write_str("Clean")
-        } else {
-            f.write_str(&parts.join(" · "))
+        if self.is_clean() {
+            parts.push("Clean".to_owned());
         }
+        f.write_str(&parts.join(" · "))
     }
 }
 
@@ -1153,9 +1166,12 @@ impl StatusView {
         images: &mut crate::images::Images,
     ) {
         let branch = if self.snapshot.branch == "(detached)" {
-            "Detached HEAD"
+            match &self.snapshot.state.detached_at {
+                Some(commit) => format!("Detached HEAD at {commit}"),
+                None => "Detached HEAD".to_owned(),
+            }
         } else {
-            &self.snapshot.branch
+            self.snapshot.branch.clone()
         };
         let mut heading = format!(
             "{branch}{}",
@@ -1166,10 +1182,15 @@ impl StatusView {
             }
         );
         if !self.snapshot.upstream.is_empty() {
-            heading.push_str(&format!(
-                " → {} {}",
-                self.snapshot.upstream, self.snapshot.ahead_behind
-            ));
+            // Git omits the counts when the upstream branch no longer exists.
+            let ahead_behind = match self.snapshot.ahead_behind.as_str() {
+                "" => "gone",
+                ahead_behind => ahead_behind,
+            };
+            heading.push_str(&format!(" → {} {ahead_behind}", self.snapshot.upstream));
+        }
+        for operation in &self.snapshot.state.operations {
+            heading.push_str(&format!(" · {operation}"));
         }
         if self.unloaded {
             heading = "Working tree status unavailable".to_owned();

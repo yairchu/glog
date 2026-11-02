@@ -5,6 +5,12 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Show rebases, merges, cherry-picks, reverts, `git am` sessions and
+  bisections in progress in the Status heading and the Working tree item,
+  along with the commit a detached HEAD is at and when an upstream is gone.
+
 ### Changed
 
 - Connect continuing graph lanes directly, with diagonals between adjacent

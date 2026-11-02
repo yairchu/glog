@@ -12,6 +12,7 @@ mod input;
 mod log_folds;
 mod log_format;
 mod message_format;
+mod operation;
 mod patch_options;
 mod search_history;
 mod stash;

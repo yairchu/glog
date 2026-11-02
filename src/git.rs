@@ -1181,6 +1181,8 @@ pub fn watch_fingerprint() -> Result<u64, String> {
     )?;
     fingerprint.write_u64(refs_fingerprint_at(None)?);
     let root = repository_root()?;
+    // Operations such as a rebase can change without changing any file.
+    std::hash::Hash::hash(&crate::operation::load(&root, None)?, &mut fingerprint);
     for path in untracked_paths(&[])? {
         fingerprint.write(path.as_os_str().as_encoded_bytes());
         let display = path.display();
