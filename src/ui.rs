@@ -653,6 +653,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let mut lines = Vec::new();
     let date_column = app.log_date_column();
+    let show_hash = app.log_format.shows(crate::log_format::Field::Hash);
     // Collect actual on-screen commit rows before measuring their combined
     // graph/hash column. Routing lines and off-screen history reserve no space.
     let mut metadata_rows = Vec::new();
@@ -705,13 +706,21 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             let mut deferred_metadata = false;
             let mut abbreviated = Vec::new();
             if !graph_only && part + 1 == graph_rows.len() {
+                let deferred =
+                    date_column.is_some() && commit.kind == crate::git::CommitKind::Revision;
+                let marker = app.log_folds.marker(index);
+                // Reflog keeps its own nodes. Its fold control follows the
+                // hash in aligned columns, otherwise it leads the row.
+                let reflog_marker = marker.filter(|_| commit.reflog().is_some());
+                let hash_marker = reflog_marker.filter(|_| deferred && show_hash);
                 if let Some(node) = commit.branch() {
                     line = node.style_graph(line, commit.graph_node, index == app.selected);
-                } else if let Some(marker) = app
-                    .log_folds
-                    .marker(index)
-                    .filter(|_| commit.reflog().is_none())
-                {
+                } else if let Some(marker) = reflog_marker.filter(|_| hash_marker.is_none()) {
+                    line.spans.push(Span::styled(
+                        format!("{marker} "),
+                        Style::default().fg(Color::Yellow),
+                    ));
+                } else if let Some(marker) = marker.filter(|_| reflog_marker.is_none()) {
                     // Git's graph and the ASCII fallback keep Git's node marker.
                     let nodes = [
                         commit.graph_node,
@@ -725,9 +734,8 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                         span.content = span.content.replacen(nodes, marker, 1).into();
                     }
                 }
-                if date_column.is_some() && commit.kind == crate::git::CommitKind::Revision {
-                    let marker = commit.reflog().and_then(|_| app.log_folds.marker(index));
-                    metadata_rows.push((lines.len(), index, marker));
+                if deferred {
+                    metadata_rows.push((lines.len(), index, hash_marker));
                     deferred_metadata = true;
                 } else {
                     let start: usize = line.spans.iter().map(|span| span.content.len()).sum();
@@ -772,7 +780,6 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 .iter()
                 .map(|&(_, index, _)| &app.commits[index]),
         );
-        let show_hash = app.log_format.shows(crate::log_format::Field::Hash);
         let width = metadata_rows
             .iter()
             .map(|&(row, index, marker)| {
@@ -2063,6 +2070,26 @@ mod tests {
         let actor = text.find("Margaret H.").unwrap();
         let actor = Span::raw(&text[..actor]).width() as u16;
         assert_eq!(terminal.backend().buffer()[(actor, y)].bg, Color::Yellow);
+    }
+
+    #[test]
+    fn reflog_fold_controls_show_in_formats_without_aligned_hashes() {
+        for format in ["%s", "%h %s"] {
+            let mut commits = vec![
+                reflog_event("aaaaaaa", "Nov 1", "Al", "commit (amend): amended"),
+                reflog_event("bbbbbbb", "Nov 1", "Al", "commit: original"),
+            ];
+            commits[0].parents = vec!["ccccccc".into()];
+            commits[1].parents = vec!["ccccccc".into()];
+            let mut app = App::new(commits);
+            app.log_format = crate::log_format::LogFormat::parse(format).unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(80, 4)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let text: String = (0..80)
+                .map(|x| terminal.backend().buffer()[(x, app.log_row_origin)].symbol())
+                .collect();
+            assert!(text.contains("▶ "), "{format}: {text}");
+        }
     }
 
     #[test]

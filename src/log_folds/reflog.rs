@@ -2,20 +2,25 @@
 //! when their targets advance along the same ancestry path.
 use std::collections::{BTreeMap, HashMap};
 
-use crate::git::{self, Annotation, Commit};
+use crate::git::{self, Commit};
 
 use super::{Fold, Layout};
 
 #[derive(Default)]
 pub(super) struct Folds {
     groups: BTreeMap<usize, Group>,
-    chains: Vec<Chain>,
-    visits: Vec<Visits>,
+    /// Rebase chains by their newest header.
+    chains: BTreeMap<usize, Chain>,
+    /// Repeated visits by the entry representing them.
+    visits: BTreeMap<usize, Visits>,
+    /// The header of the group holding each row.
+    group_of: Vec<Option<usize>>,
+    /// The header of the visits listing each row as an entry.
+    visit_of: Vec<Option<usize>>,
     repeated: Vec<Option<usize>>,
 }
 
 struct Visits {
-    header: usize,
     entries: Vec<usize>,
     expanded: bool,
 }
@@ -58,7 +63,7 @@ impl Folds {
         let mut pending: HashMap<&str, Vec<usize>> = HashMap::new();
         let mut groups = BTreeMap::new();
         for (index, commit) in commits.iter().enumerate() {
-            let Some(Annotation::Reflog(entry)) = &commit.annotation else {
+            let Some(entry) = commit.reflog() else {
                 continue;
             };
             let reference = entry.reference.as_str();
@@ -98,7 +103,7 @@ impl Folds {
         // Tools can name the rebase with GIT_REFLOG_ACTION, but Git still
         // marks its start, e.g. "autofix (start)".
         for (index, commit) in commits.iter().enumerate() {
-            let Some(Annotation::Reflog(entry)) = &commit.annotation else {
+            let Some(entry) = commit.reflog() else {
                 continue;
             };
             if !entry.rebasing {
@@ -118,7 +123,7 @@ impl Folds {
         }
         let mut pending: HashMap<&str, Vec<usize>> = HashMap::new();
         for (index, commit) in commits.iter().enumerate() {
-            let Some(Annotation::Reflog(entry)) = &commit.annotation else {
+            let Some(entry) = commit.reflog() else {
                 continue;
             };
             let reference = entry.reference.as_str();
@@ -166,8 +171,8 @@ impl Folds {
             }
         }
         let mut pending: HashMap<&str, Vec<usize>> = HashMap::new();
-        let mut visits = Vec::new();
-        let finish = |rows: Vec<usize>, visits: &mut Vec<Visits>| {
+        let mut visits = BTreeMap::new();
+        let finish = |rows: Vec<usize>, visits: &mut BTreeMap<usize, Visits>| {
             if rows.len() > 1 {
                 let header = rows
                     .iter()
@@ -178,11 +183,13 @@ impl Folds {
                             .is_some_and(|entry| commit_event(&entry.action).is_some())
                     })
                     .unwrap_or(rows[0]);
-                visits.push(Visits {
+                visits.insert(
                     header,
-                    entries: rows,
-                    expanded: false,
-                });
+                    Visits {
+                        entries: rows,
+                        expanded: false,
+                    },
+                );
             }
         };
         for (row, commit) in commits.iter().enumerate() {
@@ -212,10 +219,27 @@ impl Folds {
         for rows in pending.into_values() {
             finish(rows, &mut visits);
         }
+        let mut group_of = vec![None; commits.len()];
+        for (&header, group) in &groups {
+            for &row in &group.rows {
+                group_of[row] = Some(header);
+            }
+        }
+        let mut visit_of = vec![None; commits.len()];
+        for (&header, visits) in &visits {
+            for &row in &visits.entries {
+                visit_of[row] = Some(header);
+            }
+        }
         Self {
             groups,
-            chains,
+            chains: chains
+                .into_iter()
+                .map(|chain| (chain.headers[0], chain))
+                .collect(),
             visits,
+            group_of,
+            visit_of,
             repeated,
         }
     }
@@ -242,7 +266,7 @@ impl Folds {
         }
         // Apply outer folds last: every hidden row must point directly to
         // its visible owner, including the steps of folded child rebases.
-        for chain in self.chains.iter().filter(|chain| !chain.expanded) {
+        for chain in self.chains.values().filter(|chain| !chain.expanded) {
             let header = chain.headers[0];
             let mut hidden = 0;
             for child in &chain.headers {
@@ -256,8 +280,7 @@ impl Folds {
             }
             layout.folds[header] = Fold::Folded(hidden);
         }
-        for visits in &self.visits {
-            let header = visits.header;
+        for (&header, visits) in &self.visits {
             if visits.expanded {
                 layout.folds[header] = Fold::Foldable;
             } else {
@@ -288,21 +311,29 @@ impl Folds {
     }
 
     pub(super) fn contains(&self, index: usize) -> bool {
-        self.groups.values().any(|g| g.rows.contains(&index))
-            || self
-                .visits
-                .iter()
-                .any(|visits| visits.entries.contains(&index))
+        self.group(index).is_some() || self.visit(index).is_some()
+    }
+
+    fn group(&self, index: usize) -> Option<usize> {
+        self.group_of.get(index).copied().flatten()
+    }
+
+    fn visit(&self, index: usize) -> Option<usize> {
+        self.visit_of.get(index).copied().flatten()
     }
 
     pub(super) fn toggle(&mut self, index: usize) {
-        if let Some(visits) = self.visits.iter_mut().find(|visits| {
-            visits.header == index
-                || (!self.groups.contains_key(&index) && visits.entries.contains(&index))
-        }) {
+        // A group's header toggles its visits only when it represents them.
+        let header = if self.groups.contains_key(&index) {
+            Some(index).filter(|index| self.visits.contains_key(index))
+        } else {
+            self.visit(index)
+        };
+        if let Some(header) = header {
+            let visits = self.visits.get_mut(&header).unwrap();
             // A producing entry can represent visits above and versions below.
             // Cycle both levels at their shared header, as for rebase chains.
-            if index == visits.header {
+            if index == header {
                 if !visits.expanded {
                     visits.expanded = true;
                 } else if let Some(group) = self.groups.get_mut(&index).filter(|g| !g.expanded) {
@@ -318,7 +349,7 @@ impl Folds {
             }
             return;
         }
-        if let Some(chain) = self.chains.iter_mut().find(|c| c.headers[0] == index) {
+        if let Some(chain) = self.chains.get_mut(&index) {
             let latest = self.groups.get_mut(&index).unwrap();
             // Parent and newest child share a header. Cycle through both
             // levels without adding a navigation key or a synthetic commit.
@@ -332,38 +363,37 @@ impl Folds {
             }
             return;
         }
-        if let Some(group) = self.groups.values_mut().find(|g| g.rows.contains(&index)) {
+        if let Some(header) = self.group(index) {
+            let group = self.groups.get_mut(&header).unwrap();
             group.expanded = !group.expanded;
         }
     }
 
     pub(super) fn reveal(&mut self, index: usize) {
-        for visits in &mut self.visits {
-            if visits.header != index && visits.rows(&self.groups).any(|row| row == index) {
-                visits.expanded = true;
-            }
+        let group = self.group(index);
+        // Visits list a group by its header, standing for all its rows.
+        for header in [self.visit(index), group.and_then(|group| self.visit(group))]
+            .into_iter()
+            .flatten()
+            .filter(|&header| header != index)
+        {
+            self.visits.get_mut(&header).unwrap().expanded = true;
         }
-        for chain in &mut self.chains {
-            if index != chain.headers[0]
-                && chain
-                    .headers
-                    .iter()
-                    .any(|h| self.groups[h].rows.contains(&index))
-            {
+        let Some(group) = group else {
+            return;
+        };
+        for (&header, chain) in &mut self.chains {
+            if index != header && chain.headers.contains(&group) {
                 chain.expanded = true;
             }
         }
-        if let Some(group) = self
-            .groups
-            .values_mut()
-            .find(|g| g.rows[1..].contains(&index))
-        {
-            group.expanded = true;
+        if index != group {
+            self.groups.get_mut(&group).unwrap().expanded = true;
         }
     }
 
     pub(super) fn label(&self, index: usize) -> String {
-        if let Some(visits) = self.visits.iter().find(|visits| visits.header == index) {
+        if let Some(visits) = self.visits.get(&index) {
             let mut label = self.group_label(index);
             for (direction, count) in [
                 (
@@ -384,7 +414,7 @@ impl Folds {
             }
             return label;
         }
-        if let Some(chain) = self.chains.iter().find(|c| c.headers[0] == index) {
+        if let Some(chain) = self.chains.get(&index) {
             let mut label = format!(" · {} rebases", chain.headers.len());
             if chain.expanded {
                 label.push_str(if self.groups[&index].expanded {
@@ -399,7 +429,7 @@ impl Folds {
     }
 
     pub(super) fn expanded_marker(&self, index: usize) -> &'static str {
-        let Some(visits) = self.visits.iter().find(|visits| visits.header == index) else {
+        let Some(visits) = self.visits.get(&index) else {
             return "▼";
         };
         let mut above = false;
@@ -458,9 +488,7 @@ fn rebase_chains(
 ) -> Vec<Chain> {
     let next_on_ref = next_on_ref(commits);
     let branch = |header: usize| {
-        let Some(Annotation::Reflog(entry)) = &commits[header].annotation else {
-            return None;
-        };
+        let entry = commits[header].reflog()?;
         let (action, body) = entry.action.split_once(": ")?;
         (rebase_stage(action) == Some("finish"))
             .then(|| body.strip_prefix("returning to refs/heads/"))
@@ -604,7 +632,7 @@ mod tests {
     use super::*;
     use crate::{
         app::{App, LogAction},
-        git::ReflogEntry,
+        git::{Annotation, ReflogEntry},
     };
 
     fn app(events: &[(&str, &str)]) -> App {

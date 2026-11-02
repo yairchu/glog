@@ -4,7 +4,7 @@
 //! Every event occupies exactly one line, even at forks and crossings.
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use crate::git::{Annotation, Commit};
+use crate::git::Commit;
 
 use super::{paint, Drawing, Fold, GraphRows, Layout, Plan, PALETTE};
 
@@ -15,10 +15,7 @@ struct Occurrences<'a> {
 }
 
 fn reference(commit: &Commit) -> &str {
-    match &commit.annotation {
-        Some(Annotation::Reflog(entry)) => &entry.reference,
-        _ => "",
-    }
+    commit.reflog().map_or("", |entry| &entry.reference)
 }
 
 impl<'a> Occurrences<'a> {
@@ -230,7 +227,7 @@ fn node(commit: &Commit, directions: u8, paths: u8, fold: Fold, repeated: bool) 
     if repeated {
         return Node::Repeat;
     }
-    let visit = if let Some(Annotation::Reflog(entry)) = &commit.annotation {
+    let visit = if let Some(entry) = commit.reflog() {
         let action = entry.action.split_once(": ").map(|(action, _)| action);
         matches!(action, Some("checkout" | "reset" | "clone" | "branch"))
             || action.is_some_and(|action| match super::rebase_stage(action) {
@@ -430,7 +427,10 @@ pub(super) fn draw(commits: &[Commit], layout: &Layout, repeated: &[Option<usize
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{git::ReflogEntry, log_folds::LogFolds};
+    use crate::{
+        git::{Annotation, ReflogEntry},
+        log_folds::LogFolds,
+    };
 
     fn events(rows: &[(&str, &[&str], &str, &str)]) -> Vec<Commit> {
         rows.iter()
