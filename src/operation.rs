@@ -259,18 +259,21 @@ fn operations(root: &Path, directory: &Path) -> Result<Vec<Operation>, String> {
         step,
         stopped: rebase_head.clone(),
     };
+    let merge = read(&merge_head).map(|heads| Operation::Merge {
+        heads: heads.lines().map(str::to_owned).collect(),
+    });
     if rebase_merge.is_dir() {
         operations.push(rebase(&rebase_merge, step(&rebase_merge, "msgnum", "end")));
+        // A rebase that recreates merges stops on their conflicts.
+        operations.extend(merge);
+    } else if let Some(merge) = merge {
+        operations.push(merge);
     } else if rebase_apply.is_dir() {
         let step = step(&rebase_apply, "next", "last");
         operations.push(if rebase_apply.join("applying").exists() {
             Operation::Am { step }
         } else {
             rebase(&rebase_apply, step)
-        });
-    } else if let Some(heads) = read(&merge_head) {
-        operations.push(Operation::Merge {
-            heads: heads.lines().map(str::to_owned).collect(),
         });
     } else if let Some(commit) = cherry_pick_head {
         operations.push(Operation::CherryPick {
@@ -542,6 +545,31 @@ mod tests {
         stop(&["am", "patch"]);
         assert_eq!(operations(), ["Applying patches, 1/1"]);
         git(&["am", "--abort"]);
+
+        // A rebase that recreates a merge stops on its conflict.
+        git(&["checkout", "-qb", "side", "main"]);
+        fs::write("other", "side\n").unwrap();
+        git(&["add", "other"]);
+        git(&["commit", "-qm", "side"]);
+        git(&["checkout", "-qb", "topic", "main"]);
+        fs::write("other", "topic\n").unwrap();
+        git(&["add", "other"]);
+        git(&["commit", "-qm", "topic"]);
+        stop(&["merge", "side"]);
+        fs::write("other", "merged\n").unwrap();
+        git(&["commit", "-qam", "merged"]);
+        git(&["checkout", "-q", "main"]);
+        git(&["commit", "--allow-empty", "-qm", "later"]);
+        git(&["checkout", "-q", "topic"]);
+        stop(&["rebase", "--rebase-merges", "main"]);
+        let [rebase, merge] = &operations()[..] else {
+            panic!("{:?}", operations());
+        };
+        let rebasing = format!("Rebasing topic onto {}", short("main"));
+        assert!(rebase.starts_with(&rebasing), "{rebase}");
+        assert_eq!(merge, &format!("Merging {}", short("MERGE_HEAD")));
+        git(&["rebase", "--abort"]);
+        git(&["checkout", "-q", "main"]);
 
         git(&["bisect", "start"]);
         assert_eq!(operations(), ["Bisecting from main"]);
