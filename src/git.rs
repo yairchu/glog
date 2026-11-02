@@ -292,29 +292,10 @@ pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
         }
         return Err(stderr_message("git reflog failed", &output.stderr));
     }
-    parse_reflog(&String::from_utf8_lossy(&output.stdout), rebasing())
-}
-
-/// Whether the current worktree has a rebase in progress. Failing to tell
-/// only keeps ongoing amendments folded, so it does not fail the reflog.
-fn rebasing() -> bool {
-    let Ok(output) = read_command()
-        .args(["rev-parse", "--git-path", "rebase-merge"])
-        .args(["--git-path", "rebase-apply"])
-        .output()
-    else {
-        return false;
-    };
-    let paths = String::from_utf8_lossy(&output.stdout);
-    let mut paths = paths.lines().map(std::path::Path::new);
-    let (merge, apply) = (paths.next(), paths.next());
-    output.status.success()
-        // Git records each todo command in `done` before running it, and
-        // logs the rebase's start first. Without it, e.g. while the todo is
-        // edited, no reflog entry belongs to the rebase yet.
-        && (merge.is_some_and(|path| path.join("done").exists())
-            // `git am` uses rebase-apply too; rebases mark it with `rebasing`.
-            || apply.is_some_and(|path| path.join("rebasing").exists()))
+    parse_reflog(
+        &String::from_utf8_lossy(&output.stdout),
+        crate::operation::rebase_logged(),
+    )
 }
 
 fn parse_reflog(output: &str, rebasing: bool) -> Result<Vec<Commit>, String> {

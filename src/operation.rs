@@ -2,7 +2,11 @@
 //! the state files `git status` reads to describe them.
 
 use ratatui::text::Span;
-use std::{collections::HashMap, fs, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
+};
 
 /// What `git status` reports beyond the changed files.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -213,8 +217,18 @@ pub fn fingerprint(root: &Path, git_dir: &Path, state: &mut impl std::hash::Hash
 
 /// The Git directory of the worktree at `root`, which holds its operation
 /// files, including in linked worktrees.
-pub fn git_dir(root: &Path) -> Result<std::path::PathBuf, String> {
-    let output = crate::git::read_command_in(root)
+pub fn git_dir(root: &Path) -> Result<PathBuf, String> {
+    absolute_git_dir(crate::git::read_command_in(root))
+}
+
+/// The Git directory of the repository glog was started in, honoring
+/// `GIT_DIR` as given.
+pub fn current_git_dir() -> Result<PathBuf, String> {
+    absolute_git_dir(crate::git::read_command())
+}
+
+fn absolute_git_dir(mut command: std::process::Command) -> Result<PathBuf, String> {
+    let output = command
         .args(["rev-parse", "--absolute-git-dir"])
         .output()
         .map_err(|error| error.to_string())?;
@@ -232,50 +246,72 @@ pub fn git_dir(root: &Path) -> Result<std::path::PathBuf, String> {
 
 /// The operations in progress, in the order `load` describes them.
 fn operations(root: &Path, directory: &Path) -> Result<Vec<Operation>, String> {
-    let [rebase_merge, rebase_apply, merge_head, todo, bisect_log, bisect_start] = [
-        "rebase-merge",
-        "rebase-apply",
-        "MERGE_HEAD",
-        "sequencer/todo",
-        "BISECT_LOG",
-        "BISECT_START",
-    ]
-    .map(|name| directory.join(name));
+    let [merge_head, todo, bisect_log, bisect_start] =
+        ["MERGE_HEAD", "sequencer/todo", "BISECT_LOG", "BISECT_START"]
+            .map(|name| directory.join(name));
     // Unlike MERGE_HEAD, these may be stored as refs rather than files.
     let [cherry_pick_head, revert_head, rebase_head] =
         resolve(root, ["CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"])?;
     let mut operations = Vec::new();
-    let step = |directory: &Path, current: &str, total: &str| {
+    let step = |state: &Path, interactive| {
+        let (current, total) = match interactive {
+            true => ("msgnum", "end"),
+            false => ("next", "last"),
+        };
         Some(format!(
             "{}/{}",
-            read(&directory.join(current))?,
-            read(&directory.join(total))?
+            read(&state.join(current))?,
+            read(&state.join(total))?
         ))
     };
-    let rebase = |directory: &Path, step| Operation::Rebase {
-        branch: read(&directory.join("head-name"))
+    let rebase = |state: &Path, interactive| Operation::Rebase {
+        branch: read(&state.join("head-name"))
             .and_then(|name| name.strip_prefix("refs/heads/").map(str::to_owned)),
-        onto: read(&directory.join("onto")),
-        step,
+        onto: read(&state.join("onto")),
+        step: step(state, interactive),
         stopped: rebase_head.clone(),
     };
     let merge = read(&merge_head).map(|heads| Operation::Merge {
         heads: heads.lines().map(str::to_owned).collect(),
     });
-    if rebase_merge.is_dir() {
-        operations.push(rebase(&rebase_merge, step(&rebase_merge, "msgnum", "end")));
-        // A rebase that recreates merges stops on their conflicts.
-        operations.extend(merge);
-    } else if let Some(merge) = merge {
-        operations.push(merge);
-    } else if rebase_apply.is_dir() {
-        let step = step(&rebase_apply, "next", "last");
-        operations.push(if rebase_apply.join("applying").exists() {
-            Operation::Am { step }
-        } else {
-            rebase(&rebase_apply, step)
-        });
-    } else if let Some(commit) = cherry_pick_head {
+    // Git's precedence: a merge hides the other operations, except an
+    // interactive rebase, which stops on the merges it recreates.
+    match (replay(directory), merge) {
+        (
+            Some(Replay::Rebase {
+                state,
+                interactive: true,
+            }),
+            merge,
+        ) => {
+            operations.push(rebase(&state, true));
+            operations.extend(merge);
+        }
+        (_, Some(merge)) => operations.push(merge),
+        (Some(Replay::Rebase { state, interactive }), None) => {
+            operations.push(rebase(&state, interactive));
+        }
+        (Some(Replay::Am { state }), None) => operations.push(Operation::Am {
+            step: step(&state, false),
+        }),
+        (None, None) => sequence(&mut operations, cherry_pick_head, revert_head, &todo),
+    }
+    if bisect_log.exists() {
+        if let Some(start) = read(&bisect_start) {
+            operations.push(Operation::Bisect { start });
+        }
+    }
+    Ok(operations)
+}
+
+/// A cherry-pick or revert, stopped at a commit or between them.
+fn sequence(
+    operations: &mut Vec<Operation>,
+    cherry_pick_head: Option<String>,
+    revert_head: Option<String>,
+    todo: &Path,
+) {
+    if let Some(commit) = cherry_pick_head {
         operations.push(Operation::CherryPick {
             commit: Some(commit),
         });
@@ -283,7 +319,7 @@ fn operations(root: &Path, directory: &Path) -> Result<Vec<Operation>, String> {
         operations.push(Operation::Revert {
             commit: Some(commit),
         });
-    } else if let Some(todo) = read(&todo) {
+    } else if let Some(todo) = read(todo) {
         // A sequence of picks or reverts between commits, with no commit
         // currently stopped.
         let command = todo
@@ -296,12 +332,63 @@ fn operations(root: &Path, directory: &Path) -> Result<Vec<Operation>, String> {
             _ => {}
         }
     }
-    if bisect_log.exists() {
-        if let Some(start) = read(&bisect_start) {
-            operations.push(Operation::Bisect { start });
-        }
+}
+
+/// A rebase or `git am`, which share their state directories.
+enum Replay {
+    /// `interactive` rebases, including merge-backend ones without `-i`,
+    /// keep their state in `rebase-merge`, the others in `rebase-apply`.
+    Rebase {
+        state: PathBuf,
+        interactive: bool,
+    },
+    Am {
+        state: PathBuf,
+    },
+}
+
+/// The rebase or `git am` in progress in the Git directory `directory`.
+fn replay(directory: &Path) -> Option<Replay> {
+    let merge = directory.join("rebase-merge");
+    if merge.is_dir() {
+        return Some(Replay::Rebase {
+            state: merge,
+            interactive: true,
+        });
     }
-    Ok(operations)
+    let apply = directory.join("rebase-apply");
+    if !apply.is_dir() {
+        return None;
+    }
+    // Rebases mark their state with `rebasing`. `git am` marks it with
+    // `applying`, but older versions left no marker.
+    Some(match apply.join("rebasing").exists() {
+        true => Replay::Rebase {
+            state: apply,
+            interactive: false,
+        },
+        false => Replay::Am { state: apply },
+    })
+}
+
+/// Whether the repository glog was started in has a rebase in progress that
+/// the reflog already records. Failing to tell only keeps ongoing amendments
+/// folded in Reflog, so it does not fail it.
+pub fn rebase_logged() -> bool {
+    let Ok(directory) = current_git_dir() else {
+        return false;
+    };
+    match replay(&directory) {
+        // Git records each todo command in `done` before running it, and
+        // logs the rebase's start first. Without it, e.g. while the todo is
+        // edited, no reflog entry belongs to the rebase yet.
+        Some(Replay::Rebase {
+            state,
+            interactive: true,
+        }) => state.join("done").exists(),
+        Some(Replay::Rebase { .. }) => true,
+        Some(Replay::Am { .. }) | None => false,
+    }
 }
 
 /// The commit each ref in `names` points to, if it exists.
@@ -391,6 +478,41 @@ mod tests {
             .output()
             .unwrap();
         assert!(!output.status.success(), "{output:?}");
+    }
+
+    #[test]
+    fn reflog_detects_a_rebase_in_a_repository_selected_by_git_dir() {
+        // GIT_DIR would redirect Git in concurrently running tests, so set it
+        // only for a child process running just this test.
+        const CHILD: &str = "GLOG_TEST_REBASE_GIT_DIR_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            assert!(rebase_logged());
+            return;
+        }
+        let directory = TestDirectory::new();
+        let git_dir = directory.path().join("repo.git");
+        let elsewhere = directory.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        crate::git::tests::succeed(
+            git_command(&["init", "-q", "--bare"])
+                .arg(&git_dir)
+                .current_dir(directory.path()),
+        );
+        fs::create_dir(git_dir.join("rebase-apply")).unwrap();
+        fs::write(git_dir.join("rebase-apply/rebasing"), "").unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "operation::tests::reflog_detects_a_rebase_in_a_repository_selected_by_git_dir",
+            ])
+            .current_dir(&elsewhere)
+            .env(CHILD, "1")
+            .env("GIT_DIR", &git_dir)
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(output.status.success(), "{stdout}");
+        assert!(stdout.contains("1 passed"), "{stdout}");
     }
 
     // Windows file names cannot contain newlines.
