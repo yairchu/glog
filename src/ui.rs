@@ -710,16 +710,18 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 let marker = app.log_folds.marker(index);
                 // Reflog keeps its own nodes. Its fold control follows the
                 // hash in aligned columns, otherwise it leads the row.
-                let reflog_marker = marker.filter(|_| commit.reflog().is_some());
+                let reflog = commit.reflog().is_some();
+                let reflog_marker = marker.filter(|_| reflog);
                 let hash_marker = reflog_marker.filter(|_| deferred && show_hash);
                 if let Some(node) = commit.branch() {
                     line = node.style_graph(line, commit.graph_node, index == app.selected);
-                } else if let Some(marker) = reflog_marker.filter(|_| hash_marker.is_none()) {
+                } else if reflog && !(deferred && show_hash) {
+                    // Every row reserves the control's slot to keep text aligned.
                     line.spans.push(Span::styled(
-                        format!("{marker} "),
+                        format!("{} ", reflog_marker.unwrap_or(" ")),
                         Style::default().fg(Color::Yellow),
                     ));
-                } else if let Some(marker) = marker.filter(|_| reflog_marker.is_none()) {
+                } else if let Some(marker) = marker.filter(|_| !reflog) {
                     // Git's graph and the ASCII fallback keep Git's node marker.
                     let nodes = [
                         commit.graph_node,
@@ -2077,6 +2079,7 @@ mod tests {
             let mut commits = vec![
                 reflog_event("aaaaaaa", "Nov 1", "Al", "commit (amend): amended"),
                 reflog_event("bbbbbbb", "Nov 1", "Al", "commit: original"),
+                reflog_event("ccccccc", "Nov 1", "Al", "commit (initial): base"),
             ];
             commits[0].parents = vec!["ccccccc".into()];
             commits[1].parents = vec!["ccccccc".into()];
@@ -2084,10 +2087,20 @@ mod tests {
             app.log_format = crate::log_format::LogFormat::parse(format).unwrap();
             let mut terminal = Terminal::new(TestBackend::new(80, 4)).unwrap();
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-            let text: String = (0..80)
-                .map(|x| terminal.backend().buffer()[(x, app.log_row_origin)].symbol())
-                .collect();
-            assert!(text.contains("▶ "), "{format}: {text}");
+            let row = |y: u16| -> String {
+                (0..80)
+                    .map(|x| terminal.backend().buffer()[(x, app.log_row_origin + y)].symbol())
+                    .collect()
+            };
+            let (folded, plain) = (row(0), row(1));
+            assert!(folded.contains("▶ "), "{format}: {folded}");
+            // Rows without a control keep its slot, aligning their text.
+            let column = |row: &str, text| row[..row.find(text).unwrap()].chars().count();
+            assert_eq!(
+                column(&folded, "commit (amend)"),
+                column(&plain, "commit (initial)"),
+                "{format}:\n{folded}\n{plain}"
+            );
         }
     }
 
