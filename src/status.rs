@@ -1302,32 +1302,15 @@ impl StatusView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::tests::{fail, git, git_command, succeed, CurrentDirGuard, TestDirectory};
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
     fn status_starts_in_log_when_clean_and_keeps_details_when_cleaned() {
-        use crate::{
-            app::Mode,
-            git::tests::{CurrentDirGuard, TestDirectory},
-        };
+        use crate::app::Mode;
 
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .args([
-                    "-c",
-                    "user.name=Test",
-                    "-c",
-                    "user.email=test@example.com",
-                    "-c",
-                    "commit.gpgsign=false",
-                ])
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{output:?}");
-        };
         git(&["init", "-q"]);
         let unborn = load_app(&[]).unwrap();
         assert_eq!(unborn.mode, Mode::Log);
@@ -1373,22 +1356,9 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn untracked_patches_label_files_relative_to_the_repository() {
-        let root = std::env::temp_dir().join(format!("glog-untracked-{}", std::process::id()));
-        std::fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(root.clone());
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .args(["init", "-q"])
-            .status()
-            .unwrap()
-            .success());
+        let directory = TestDirectory::new();
+        let root = directory.path().to_path_buf();
+        succeed(git_command(&["init", "-q"]).current_dir(&root));
         std::fs::write(root.join("new.txt"), "contents\n").unwrap();
         std::fs::write(root.join("blob.bin"), b"header\0payload").unwrap();
         std::os::unix::fs::symlink("new.txt", root.join("link")).unwrap();
@@ -1425,26 +1395,9 @@ mod tests {
     #[test]
     fn unreadable_untracked_files_do_not_block_status_or_refresh() {
         use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!("glog-unreadable-{}", std::process::id()));
-        std::fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::set_permissions(
-                    self.0.join("unreadable.txt"),
-                    std::fs::Permissions::from_mode(0o600),
-                );
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(root.clone());
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .args(["init", "-q"])
-            .status()
-            .unwrap()
-            .success());
+        let directory = TestDirectory::new();
+        let root = directory.path().to_path_buf();
+        succeed(git_command(&["init", "-q"]).current_dir(&root));
         let path = root.join("unreadable.txt");
         std::fs::write(&path, "contents\n").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -1492,26 +1445,9 @@ mod tests {
     #[test]
     fn refresh_keeps_errors_from_failed_actions() {
         use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!("glog-action-error-{}", std::process::id()));
-        std::fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::set_permissions(
-                    self.0.join("unreadable.txt"),
-                    std::fs::Permissions::from_mode(0o600),
-                );
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(root.clone());
-        assert!(Command::new("git")
-            .arg("-C")
-            .arg(&root)
-            .args(["init", "-q"])
-            .status()
-            .unwrap()
-            .success());
+        let directory = TestDirectory::new();
+        let root = directory.path().to_path_buf();
+        succeed(git_command(&["init", "-q"]).current_dir(&root));
         let path = root.join("unreadable.txt");
         std::fs::write(&path, "contents\n").unwrap();
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
@@ -1546,38 +1482,10 @@ mod tests {
 
     #[test]
     fn failed_submodule_refresh_keeps_nested_rows_usable() {
-        let root = std::env::temp_dir().join(format!(
-            "glog-failed-submodule-refresh-{}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(root.clone());
+        let directory = TestDirectory::new();
+        let root = directory.path().to_path_buf();
         let git = |at: &std::path::Path, args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(at)
-                .args([
-                    "-c",
-                    "user.name=Test",
-                    "-c",
-                    "user.email=test@example.com",
-                    "-c",
-                    "commit.gpgsign=false",
-                ])
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            succeed(git_command(args).current_dir(at));
         };
         git(&root, &["init", "-q"]);
         let module = root.join("module");
@@ -1633,36 +1541,10 @@ mod tests {
     }
     #[test]
     fn dirty_submodules_expand_live_status_and_keep_nested_folds() {
-        let root =
-            std::env::temp_dir().join(format!("glog-dirty-submodule-{}", std::process::id()));
-        std::fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(root.clone());
+        let directory = TestDirectory::new();
+        let root = directory.path().to_path_buf();
         let git = |at: &std::path::Path, args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(at)
-                .args([
-                    "-c",
-                    "user.name=Test",
-                    "-c",
-                    "user.email=test@example.com",
-                    "-c",
-                    "commit.gpgsign=false",
-                ])
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            succeed(git_command(args).current_dir(at));
         };
         git(&root, &["init", "-q"]);
         let module = root.join("module space");
@@ -1889,28 +1771,10 @@ mod tests {
 
     #[test]
     fn refresh_invalidates_patches_and_stats_when_attributes_change() {
-        let root =
-            std::env::temp_dir().join(format!("glog-status-attributes-{}", std::process::id()));
-        std::fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(root.clone());
+        let directory = TestDirectory::new();
+        let root = directory.path().to_path_buf();
         let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&root)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            succeed(git_command(args).current_dir(&root));
         };
         git(&["init", "-q"]);
         git(&["config", "user.name", "Test"]);
@@ -1963,27 +1827,10 @@ mod tests {
 
     #[test]
     fn refresh_reuses_unchanged_files_and_batches_statistics() {
-        let root = std::env::temp_dir().join(format!("glog-status-cache-{}", std::process::id()));
-        std::fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(root.clone());
+        let directory = TestDirectory::new();
+        let root = directory.path().to_path_buf();
         let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&root)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            succeed(git_command(args).current_dir(&root));
         };
         git(&["init", "-q"]);
         git(&["config", "user.name", "Test"]);
@@ -2111,34 +1958,10 @@ mod tests {
         use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
         use std::fs;
 
-        let root = std::env::temp_dir().join(format!(
-            "glog-status-stats-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap()
-                .as_nanos()
-        ));
-        fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(root.clone());
+        let directory = TestDirectory::new();
+        let root = directory.path().to_path_buf();
         let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&root)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            succeed(git_command(args).current_dir(&root));
         };
         git(&["init", "-q"]);
         git(&["config", "user.name", "Test"]);
@@ -2345,23 +2168,10 @@ mod tests {
 
     #[test]
     fn rename_statistics_and_patches_agree_despite_git_configuration() {
-        let root = std::env::temp_dir().join(format!("glog-status-renames-{}", std::process::id()));
-        std::fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(root.clone());
+        let directory = TestDirectory::new();
+        let root = directory.path().to_path_buf();
         let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&root)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{:?}", output);
+            succeed(git_command(args).current_dir(&root));
         };
         git(&["init", "-q"]);
         git(&["config", "user.name", "Test"]);
@@ -2428,24 +2238,10 @@ mod tests {
 
     #[test]
     fn staged_rename_keeps_unstaged_patches_separate_from_recreated_source() {
-        let root =
-            std::env::temp_dir().join(format!("glog-status-rename-source-{}", std::process::id()));
-        std::fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(root.clone());
+        let directory = TestDirectory::new();
+        let root = directory.path().to_path_buf();
         let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&root)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{output:?}");
+            succeed(git_command(args).current_dir(&root));
         };
         git(&["init", "-q"]);
         git(&["config", "user.name", "Test"]);
@@ -2502,23 +2298,10 @@ mod tests {
 
     #[test]
     fn copy_detection_settings_keep_status_entries_matched_to_their_patches() {
-        let root = std::env::temp_dir().join(format!("glog-status-copies-{}", std::process::id()));
-        std::fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(root.clone());
+        let directory = TestDirectory::new();
+        let root = directory.path().to_path_buf();
         let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&root)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{output:?}");
+            succeed(git_command(args).current_dir(&root));
         };
         git(&["init", "-q"]);
         git(&["config", "user.name", "Test"]);
@@ -2559,23 +2342,10 @@ mod tests {
 
     #[test]
     fn tracked_patches_use_delta_like_untracked_ones() {
-        let root = std::env::temp_dir().join(format!("glog-status-delta-{}", std::process::id()));
-        std::fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(root.clone());
+        let directory = TestDirectory::new();
+        let root = directory.path().to_path_buf();
         let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&root)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{output:?}");
+            let output = succeed(git_command(args).current_dir(&root));
             output.stdout
         };
         git(&["init", "-q"]);
@@ -2634,24 +2404,10 @@ mod tests {
     #[test]
     fn colliding_display_names_keep_distinct_status_contents_and_folds() {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
-        let root =
-            std::env::temp_dir().join(format!("glog-status-collisions-{}", std::process::id()));
-        std::fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(root.clone());
+        let directory = TestDirectory::new();
+        let root = directory.path().to_path_buf();
         let git = |args: &[&OsStr]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&root)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{output:?}");
+            let output = succeed(git_command(&[]).current_dir(&root).args(args));
             String::from_utf8(output.stdout).unwrap()
         };
         git(&["init".as_ref(), "-q".as_ref()]);
@@ -2728,24 +2484,10 @@ mod tests {
     #[test]
     fn non_utf8_filenames_do_not_break_the_status_view() {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
-        let root =
-            std::env::temp_dir().join(format!("glog-status-non-utf8-{}", std::process::id()));
-        std::fs::create_dir(&root).unwrap();
-        struct Cleanup(PathBuf);
-        impl Drop for Cleanup {
-            fn drop(&mut self) {
-                let _ = std::fs::remove_dir_all(&self.0);
-            }
-        }
-        let _cleanup = Cleanup(root.clone());
+        let directory = TestDirectory::new();
+        let root = directory.path().to_path_buf();
         let git = |args: &[&OsStr]| {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&root)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{:?}", output);
+            let output = succeed(git_command(&[]).current_dir(&root).args(args));
             String::from_utf8(output.stdout).unwrap()
         };
         git(&["init".as_ref(), "-q".as_ref()]);
@@ -2876,7 +2618,6 @@ mod tests {
     fn enter_opens_the_commit_a_rebase_stopped_at_in_show() {
         use crate::{
             app::{App, Mode},
-            git::tests::{git, CurrentDirGuard, TestDirectory},
             input,
         };
         use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -2894,12 +2635,7 @@ mod tests {
         std::fs::write("file", "main\n").unwrap();
         git(&["commit", "-qam", "change on main"]);
         git(&["checkout", "-q", "feature"]);
-        let rebase = Command::new("git")
-            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
-            .args(["rebase", "main"])
-            .output()
-            .unwrap();
-        assert!(!rebase.status.success());
+        fail(&mut git_command(&["rebase", "main"]));
 
         let view = StatusView::load().unwrap();
         assert!(view.rows[0].text.starts_with("  Stopped at "));

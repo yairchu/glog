@@ -468,17 +468,11 @@ fn abbreviate(root: &Path, hashes: &[&str]) -> HashMap<String, (String, String)>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::tests::{git, CurrentDirGuard, TestDirectory};
+    use crate::git::tests::{fail, git, git_command, CurrentDirGuard, TestDirectory};
 
     /// Run Git expecting it to stop, as on a conflict.
     fn stop(args: &[&str]) {
-        let output = std::process::Command::new("git")
-            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
-            .args(args)
-            .stdin(std::process::Stdio::null())
-            .output()
-            .unwrap();
-        assert!(!output.status.success(), "{output:?}");
+        fail(&mut git_command(args));
     }
 
     #[test]
@@ -603,8 +597,7 @@ mod tests {
         describe_operations(&[]);
         // Reftable keeps pseudo-refs such as CHERRY_PICK_HEAD out of files.
         // Git before 2.45 cannot create such repositories.
-        let supported = std::process::Command::new("git")
-            .args(["init", "-q", "--ref-format=reftable"])
+        let supported = git_command(&["init", "-q", "--ref-format=reftable"])
             .arg(TestDirectory::new().path())
             .output()
             .unwrap()

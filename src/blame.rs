@@ -1085,7 +1085,7 @@ mod tests {
     use super::*;
     use crate::{
         app::{App, History, Mode},
-        git::tests::{CurrentDirGuard, TestDirectory},
+        git::tests::{git_command, succeed, trimmed, CurrentDirGuard, TestDirectory},
         input,
     };
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -1096,21 +1096,13 @@ mod tests {
     }
 
     fn git(args: &[&str]) {
-        let output = Command::new("git")
-            .args([
-                "-c",
-                "user.name=Alice",
-                "-c",
-                "user.email=alice@example.com",
-                "-c",
-                "commit.gpgsign=false",
-            ])
-            .args(args)
-            .env("GIT_AUTHOR_NAME", "Alice")
-            .env("GIT_AUTHOR_EMAIL", "alice@example.com")
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
+        succeed(
+            git_command(args)
+                .env("GIT_AUTHOR_NAME", "Alice")
+                .env("GIT_AUTHOR_EMAIL", "alice@example.com")
+                .env("GIT_COMMITTER_NAME", "Alice")
+                .env("GIT_COMMITTER_EMAIL", "alice@example.com"),
+        );
     }
 
     #[test]
@@ -1120,15 +1112,13 @@ mod tests {
         git(&["init", "-q"]);
         fs::write("file.txt", "first\nsecond\n").unwrap();
         git(&["add", "."]);
-        let output = Command::new("git")
-            .args(["-c", "commit.gpgsign=false", "commit", "-qm", "add"])
-            .env("GIT_AUTHOR_NAME", "Margaret Hamilton")
-            .env("GIT_AUTHOR_EMAIL", "margaret@example.com")
-            .env("GIT_COMMITTER_NAME", "Margaret Hamilton")
-            .env("GIT_COMMITTER_EMAIL", "margaret@example.com")
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
+        succeed(
+            git_command(&["commit", "-qm", "add"])
+                .env("GIT_AUTHOR_NAME", "Margaret Hamilton")
+                .env("GIT_AUTHOR_EMAIL", "margaret@example.com")
+                .env("GIT_COMMITTER_NAME", "Margaret Hamilton")
+                .env("GIT_COMMITTER_EMAIL", "margaret@example.com"),
+        );
         let mut app = load_app(&["file.txt".into()]).unwrap();
         app.selected = 1;
         app.search = Some("hamilton".into());
@@ -1157,15 +1147,13 @@ mod tests {
         git(&["add", "."]);
         // Even with initials, the label is too wide for Blame's column.
         let author = "Maximilianusvonhabsburg Ferdinand";
-        let output = Command::new("git")
-            .args(["-c", "commit.gpgsign=false", "commit", "-qm", "add"])
-            .env("GIT_AUTHOR_NAME", author)
-            .env("GIT_AUTHOR_EMAIL", "max@example.com")
-            .env("GIT_COMMITTER_NAME", author)
-            .env("GIT_COMMITTER_EMAIL", "max@example.com")
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
+        succeed(
+            git_command(&["commit", "-qm", "add"])
+                .env("GIT_AUTHOR_NAME", author)
+                .env("GIT_AUTHOR_EMAIL", "max@example.com")
+                .env("GIT_COMMITTER_NAME", author)
+                .env("GIT_COMMITTER_EMAIL", "max@example.com"),
+        );
         let mut app = load_app(&["file.txt".into()]).unwrap();
         app.search = Some("g f.".into());
         app.next_match(false);
@@ -1349,11 +1337,11 @@ mod tests {
             crate::git::load_diff_app(&args).unwrap()
         };
         let short = |revision: &str| {
-            let output = Command::new("git")
-                .args(["rev-parse", "--short=7", revision])
-                .output()
-                .unwrap();
-            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+            trimmed(succeed(&mut git_command(&[
+                "rev-parse",
+                "--short=7",
+                revision,
+            ])))
         };
         let (base, head) = (short("HEAD^"), short("HEAD"));
         check(diff(&["--cached"]), "-c", &head, true);
@@ -1970,32 +1958,15 @@ mod tests {
         fs::write("file.txt", "a\nb\nc\n").unwrap();
         git(&["add", "."]);
         git(&["commit", "-qm", "base"]);
-        let hash = || {
-            String::from_utf8(
-                Command::new("git")
-                    .args(["rev-parse", "HEAD"])
-                    .output()
-                    .unwrap()
-                    .stdout,
-            )
-            .unwrap()
-            .trim()
-            .to_owned()
-        };
+        let hash = || trimmed(succeed(&mut git_command(&["rev-parse", "HEAD"])));
         let base = hash();
         fs::write("file.txt", "A\nb\nc\n").unwrap();
         git(&["commit", "-qam", "edit"]);
         let snapshot = hash();
-        let tree = String::from_utf8(
-            Command::new("git")
-                .args(["rev-parse", &format!("{base}^{{tree}}")])
-                .output()
-                .unwrap()
-                .stdout,
-        )
-        .unwrap()
-        .trim()
-        .to_owned();
+        let tree = trimmed(succeed(&mut git_command(&[
+            "rev-parse",
+            &format!("{base}^{{tree}}"),
+        ])));
         let object = format!(".git/objects/{}/{}", &tree[..2], &tree[2..]);
         let saved = ".git/saved-parent-tree";
         // Reading a blob must work without walking history at all.
@@ -2388,7 +2359,7 @@ mod tests {
             "data 6\nrename\nR \"old-\\377.txt\" new.txt\n\ndone\n",
         );
         assert!(crate::git::pipe_through_bytes(
-            Command::new("git").args(["fast-import", "--quiet"]),
+            &mut git_command(&["fast-import", "--quiet"]),
             history.as_bytes(),
         )
         .is_some());
@@ -2538,24 +2509,17 @@ mod tests {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         let git = |args: &[&str], date: &str| {
-            let output = std::process::Command::new("git")
-                .args([
-                    "-c",
-                    "user.name=Committer",
-                    "-c",
-                    "user.email=committer@example.com",
-                    "-c",
-                    "commit.gpgsign=false",
-                ])
-                .args(args)
-                .env("GIT_AUTHOR_NAME", "Alice")
-                .env("GIT_AUTHOR_EMAIL", "alice@example.com")
-                .env("GIT_AUTHOR_DATE", date)
-                .env("GIT_COMMITTER_DATE", date)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{output:?}");
+            succeed(
+                git_command(args)
+                    .env("GIT_AUTHOR_NAME", "Alice")
+                    .env("GIT_AUTHOR_EMAIL", "alice@example.com")
+                    .env("GIT_COMMITTER_NAME", "Committer")
+                    .env("GIT_COMMITTER_EMAIL", "committer@example.com")
+                    .env("GIT_AUTHOR_DATE", date)
+                    .env("GIT_COMMITTER_DATE", date),
+            );
         };
+
         let first = "2020-01-01T12:00:00+00:00";
         let second = "2020-02-01T12:00:00+00:00";
         git(&["init", "-q"], first);

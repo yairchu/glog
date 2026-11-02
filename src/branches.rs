@@ -809,7 +809,7 @@ mod tests {
     use super::*;
     use crate::{
         app::{History, Mode},
-        git::tests::{git, CurrentDirGuard, TestDirectory},
+        git::tests::{git, git_command, succeed, trimmed, CurrentDirGuard, TestDirectory},
         input,
     };
     use crossterm::event::{
@@ -1718,28 +1718,17 @@ mod tests {
 
     #[test]
     fn branch_update_dates_follow_ref_moves_and_the_newest_alias() {
-        use std::process::Command;
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         git(&["init", "-qb", "main"]);
         let dated = |args: &[&str], date: &str| {
-            let output = Command::new("git")
-                .args([
-                    "-c",
-                    "user.name=Test",
-                    "-c",
-                    "user.email=test@example.com",
-                    "-c",
-                    "commit.gpgsign=false",
-                ])
-                .args(args)
-                .env("GIT_AUTHOR_DATE", "2001-01-01T00:00:00+00:00")
-                .env("GIT_COMMITTER_DATE", date)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{output:?}");
-            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+            trimmed(succeed(
+                git_command(args)
+                    .env("GIT_AUTHOR_DATE", "2001-01-01T00:00:00+00:00")
+                    .env("GIT_COMMITTER_DATE", date),
+            ))
         };
+
         let tree = git(&["write-tree"]);
         let base = dated(
             &["commit-tree", &tree, "-m", "shared base"],

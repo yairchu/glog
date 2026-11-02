@@ -422,6 +422,7 @@ mod tests {
     use super::*;
     use crate::{
         app::{App, Mode},
+        git::tests::{git_command, succeed},
         ui,
     };
     use ratatui::{backend::TestBackend, Terminal};
@@ -445,17 +446,7 @@ mod tests {
             repo
         }
         fn git(&self, args: &[&str]) -> String {
-            let output = Command::new("git")
-                .arg("-C")
-                .arg(&self.0)
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            let output = succeed(git_command(&["-C"]).arg(&self.0).args(args));
             String::from_utf8(output.stdout).unwrap()
         }
         fn image(&self, path: &str, value: u8) -> Vec<u8> {
@@ -481,25 +472,22 @@ mod tests {
         let oid = origin.git(&["rev-parse", "HEAD:picture.png"]);
         let oid = oid.trim();
         let clone = Repo(origin.0.with_extension("clone"));
-        let output = Command::new("git")
-            // Other tests change the process-wide cwd and remove their repos.
-            // Keep clone and its subprocesses in this test's live repository.
-            .current_dir(&origin.0)
-            .args([
+        succeed(
+            git_command(&[
                 "clone",
                 "-q",
                 "--no-local",
                 "--no-checkout",
                 "--filter=blob:none",
             ])
+            // Other tests change the process-wide cwd and remove their repos.
+            // Keep clone and its subprocesses in this test's live repository.
+            .current_dir(&origin.0)
             .arg(&origin.0)
-            .arg(&clone.0)
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
+            .arg(&clone.0),
+        );
         let present = || {
-            Command::new("git")
-                .arg("-C")
+            git_command(&["-C"])
                 .arg(&clone.0)
                 .args(["cat-file", "-e", oid])
                 .env("GIT_NO_LAZY_FETCH", "1")
@@ -525,8 +513,7 @@ mod tests {
         repo.git(&["checkout", "-q", "-"]);
         let main = repo.image(path, 3);
         repo.git(&["commit", "-qam", "main"]);
-        let output = Command::new("git")
-            .arg("-C")
+        let output = git_command(&["-C"])
             .arg(&repo.0)
             .args(["merge", "-q", "side"])
             .output()

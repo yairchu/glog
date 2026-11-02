@@ -1,6 +1,4 @@
 //! Read-only browsing of saved stashes and their complete patches.
-#[cfg(test)]
-use std::process::Command;
 
 use ratatui::{
     style::{Color, Style},
@@ -315,7 +313,7 @@ mod tests {
     use super::*;
     use crate::{
         app::{History, Mode},
-        git::tests::{CurrentDirGuard, TestDirectory},
+        git::tests::{git_command, succeed, trimmed, CurrentDirGuard, TestDirectory},
         input, ui,
     };
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -323,24 +321,15 @@ mod tests {
     use std::fs;
 
     fn git(args: &[&str]) -> String {
-        let output = Command::new("git")
-            .args([
-                "-c",
-                "user.name=Alice",
-                "-c",
-                "user.email=alice@example.com",
-                "-c",
-                "commit.gpgsign=false",
-            ])
-            .args(args)
-            .env("GIT_AUTHOR_NAME", "Alice")
-            .env("GIT_AUTHOR_EMAIL", "alice@example.com")
-            .env("GIT_AUTHOR_DATE", "2020-01-01T12:00:00+00:00")
-            .env("GIT_COMMITTER_DATE", "2020-01-01T12:00:00+00:00")
-            .output()
-            .unwrap();
-        assert!(output.status.success(), "{output:?}");
-        String::from_utf8(output.stdout).unwrap().trim().to_owned()
+        trimmed(succeed(
+            git_command(args)
+                .env("GIT_AUTHOR_NAME", "Alice")
+                .env("GIT_AUTHOR_EMAIL", "alice@example.com")
+                .env("GIT_COMMITTER_NAME", "Alice")
+                .env("GIT_COMMITTER_EMAIL", "alice@example.com")
+                .env("GIT_AUTHOR_DATE", "2020-01-01T12:00:00+00:00")
+                .env("GIT_COMMITTER_DATE", "2020-01-01T12:00:00+00:00"),
+        ))
     }
 
     fn key(app: &mut App, code: KeyCode) {

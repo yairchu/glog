@@ -1979,10 +1979,6 @@ pub(crate) mod tests {
         }
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(output.status.success(), "{output:?}");
-        };
         git(&["init", "-q"]);
         assert!(github_repository().is_none());
         git(&[
@@ -2042,23 +2038,12 @@ pub(crate) mod tests {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         let git = |args: &[&str], date: &str| {
-            let output = Command::new("git")
-                .args([
-                    "-c",
-                    "user.name=Test",
-                    "-c",
-                    "user.email=test@example.com",
-                    "-c",
-                    "commit.gpgsign=false",
-                ])
-                .args(args)
-                .env("GIT_AUTHOR_DATE", "2001-01-01T00:00:00+00:00")
-                .env("GIT_AUTHOR_NAME", "Original author")
-                .env("GIT_COMMITTER_DATE", date)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{output:?}");
-            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+            trimmed(succeed(
+                git_command(args)
+                    .env("GIT_AUTHOR_DATE", "2001-01-01T00:00:00+00:00")
+                    .env("GIT_AUTHOR_NAME", "Original author")
+                    .env("GIT_COMMITTER_DATE", date),
+            ))
         };
         let first = "2020-01-01T10:00:00+03:00";
         let second = "2020-01-02T11:00:00+03:00";
@@ -2420,21 +2405,11 @@ pub(crate) mod tests {
 
         let original = git(&["rev-parse", "HEAD"]);
         // Stop after replaying the first commit, then abandon the operation.
-        let stopped = Command::new("git")
-            .args([
-                "-c",
-                "commit.gpgsign=false",
-                "rebase",
-                "--force-rebase",
-                "--exec",
-                "false",
-                "HEAD~2",
-            ])
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .unwrap();
-        assert!(!stopped.status.success(), "{stopped:?}");
+        fail(
+            git_command(&["rebase", "--force-rebase", "--exec", "false", "HEAD~2"])
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com"),
+        );
         assert!(load_reflog(&[]).unwrap()[0]
             .reflog()
             .unwrap()
@@ -2484,15 +2459,13 @@ pub(crate) mod tests {
         git(&["commit", "--amend", "--allow-empty", "-qm", "amended"]);
         // Capture the state Git leaves while the todo editor is open, before
         // the rebase logs its start, then make the editor fail to end it.
-        let failed = std::process::Command::new("git")
-            .args([
-                "-c",
-                "sequence.editor=cp -R .git/rebase-merge editing; false",
-            ])
-            .args(["rebase", "-qi", "HEAD~1"])
-            .output()
-            .unwrap();
-        assert!(!failed.status.success());
+        fail(&mut git_command(&[
+            "-c",
+            "sequence.editor=cp -R .git/rebase-merge editing; false",
+            "rebase",
+            "-qi",
+            "HEAD~1",
+        ]));
         std::fs::rename("editing", ".git/rebase-merge").unwrap();
 
         let app = App::new(load_reflog(&[]).unwrap());
@@ -2565,13 +2538,11 @@ pub(crate) mod tests {
         }
         // `git am` keeps its state in rebase-apply, like some rebases.
         fs::write("patch.mbox", patch).unwrap();
-        let stopped = Command::new("git")
-            .args(["am", "patch.mbox"])
-            .env("GIT_COMMITTER_NAME", "Test")
-            .env("GIT_COMMITTER_EMAIL", "test@example.com")
-            .output()
-            .unwrap();
-        assert!(!stopped.status.success(), "{stopped:?}");
+        fail(
+            git_command(&["am", "patch.mbox"])
+                .env("GIT_COMMITTER_NAME", "Test")
+                .env("GIT_COMMITTER_EMAIL", "test@example.com"),
+        );
         assert!(Path::new(&git(&["rev-parse", "--git-path", "rebase-apply"])).exists());
 
         let app = App::new(load_reflog(&[]).unwrap());
@@ -2716,27 +2687,6 @@ pub(crate) mod tests {
     fn merge_folds_keep_history_reached_through_filtered_out_parents() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .args([
-                    "-c",
-                    "user.name=Test",
-                    "-c",
-                    "user.email=test@example.com",
-                    "-c",
-                    "commit.gpgsign=false",
-                ])
-                .args(args)
-                .stdin(Stdio::null())
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            String::from_utf8(output.stdout).unwrap().trim().to_owned()
-        };
         git(&["init", "-q"]);
         let tree = git(&["mktree"]);
         let commit = |name: &str, parents: &[&str]| {
@@ -2793,27 +2743,6 @@ pub(crate) mod tests {
     fn filtered_out_side_parent_folds_only_on_request() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .args([
-                    "-c",
-                    "user.name=Test",
-                    "-c",
-                    "user.email=test@example.com",
-                    "-c",
-                    "commit.gpgsign=false",
-                ])
-                .args(args)
-                .stdin(Stdio::null())
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            String::from_utf8(output.stdout).unwrap().trim().to_owned()
-        };
         git(&["init", "-q"]);
         let tree = git(&["mktree"]);
         let commit = |name: &str, parents: &[&str]| {
@@ -2866,27 +2795,11 @@ pub(crate) mod tests {
         let _cwd = CurrentDirGuard::enter(directory.path());
         // Commit dates fix the order of rows Git may otherwise tie.
         let git_at = |args: &[&str], date: &str| {
-            let output = Command::new("git")
-                .args([
-                    "-c",
-                    "user.name=Test",
-                    "-c",
-                    "user.email=test@example.com",
-                    "-c",
-                    "commit.gpgsign=false",
-                ])
-                .args(args)
-                .env("GIT_AUTHOR_DATE", date)
-                .env("GIT_COMMITTER_DATE", date)
-                .stdin(Stdio::null())
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            String::from_utf8(output.stdout).unwrap().trim().to_owned()
+            trimmed(succeed(
+                git_command(args)
+                    .env("GIT_AUTHOR_DATE", date)
+                    .env("GIT_COMMITTER_DATE", date),
+            ))
         };
         let git = |args: &[&str]| git_at(args, "1700000000 +0000");
         git(&["init", "-q"]);
@@ -2936,28 +2849,7 @@ pub(crate) mod tests {
         let source = directory.path().join("source");
         let clone = directory.path().join("clone");
         fs::create_dir(&source).unwrap();
-        let git = |dir: &Path, args: &[&str]| {
-            let output = Command::new("git")
-                .current_dir(dir)
-                .args([
-                    "-c",
-                    "user.name=Test",
-                    "-c",
-                    "user.email=test@example.com",
-                    "-c",
-                    "commit.gpgsign=false",
-                ])
-                .args(args)
-                .stdin(Stdio::null())
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            String::from_utf8(output.stdout).unwrap().trim().to_owned()
-        };
+        let git = |dir: &Path, args: &[&str]| trimmed(succeed(git_command(args).current_dir(dir)));
         git(&source, &["init", "-q"]);
         let tree = git(&source, &["mktree"]);
         let commit = |name: &str, parents: &[&str]| {
@@ -3040,27 +2932,6 @@ pub(crate) mod tests {
         use ratatui::{backend::TestBackend, Terminal};
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .args([
-                    "-c",
-                    "user.name=Test",
-                    "-c",
-                    "user.email=test@example.com",
-                    "-c",
-                    "commit.gpgsign=false",
-                ])
-                .args(args)
-                .stdin(Stdio::null())
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            String::from_utf8(output.stdout).unwrap().trim().to_owned()
-        };
         git(&["init", "-q"]);
         let tree = git(&["mktree"]);
         let commit = |name: &str, parents: &[&str]| {
@@ -3314,11 +3185,7 @@ pub(crate) mod tests {
         let results = {
             let directory = TestDirectory::new();
             let _guard = CurrentDirGuard::enter(directory.path());
-            let git = |args: &[&str]| {
-                let output = Command::new("git").args(args).output().unwrap();
-                assert!(output.status.success(), "{:?}", output);
-                output.stdout
-            };
+            let git = |args: &[&str]| succeed(&mut git_command(args)).stdout;
             git(&["init", "-q"]);
             git(&["config", "user.name", "Test"]);
             git(&["config", "user.email", "test@example.com"]);
@@ -3328,7 +3195,7 @@ pub(crate) mod tests {
             // Build the index directly: these names need not be supported by
             // the host filesystem (notably on macOS).
             let blob = pipe_through_bytes(
-                Command::new("git").args(["hash-object", "-w", "--stdin"]),
+                &mut git_command(&["hash-object", "-w", "--stdin"]),
                 b"contents\n",
             )
             .unwrap();
@@ -3340,7 +3207,7 @@ pub(crate) mod tests {
                 index.push(0);
             }
             pipe_through_bytes(
-                Command::new("git").args(["update-index", "-z", "--index-info"]),
+                &mut git_command(&["update-index", "-z", "--index-info"]),
                 &index,
             )
             .unwrap();
@@ -3428,12 +3295,11 @@ pub(crate) mod tests {
         let index = directory.path().join("index");
         fs::create_dir(&work_tree).unwrap();
         let git = |index_file: Option<&Path>, args: &[&str]| {
-            let mut command = Command::new("git");
+            let mut command = git_command(&["--git-dir"]);
             // This test does not hold CURRENT_DIR_LOCK, so the inherited working
             // directory may belong to another test and be deleted mid-command.
             command
                 .current_dir(directory.path())
-                .arg("--git-dir")
                 .arg(&git_dir)
                 .arg("--work-tree")
                 .arg(&work_tree)
@@ -3441,12 +3307,7 @@ pub(crate) mod tests {
             if let Some(index_file) = index_file {
                 command.env("GIT_INDEX_FILE", index_file);
             }
-            let output = command.output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            succeed(&mut command);
         };
         git(None, &["init", "-q"]);
         git(None, &["config", "user.name", "Test"]);
@@ -3714,22 +3575,41 @@ pub(crate) mod tests {
         }
     }
 
-    /// Run Git in the current directory with a test identity, returning its output.
-    pub(crate) fn git(args: &[&str]) -> String {
-        let output = Command::new("git")
-            .args([
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "-c",
-                "commit.gpgsign=false",
-            ])
+    /// A Git command with a test identity and no signing, so tests do not
+    /// depend on the user's configuration. Environment variables such as
+    /// `GIT_AUTHOR_NAME` still override the identity.
+    pub(crate) fn git_command(args: &[&str]) -> Command {
+        let mut command = Command::new("git");
+        command
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+            .args(["-c", "commit.gpgsign=false", "-c", "tag.gpgsign=false"])
             .args(args)
-            .stdin(Stdio::null())
-            .output()
-            .unwrap();
+            .stdin(Stdio::null());
+        command
+    }
+
+    /// Run `command`, asserting that it succeeds.
+    pub(crate) fn succeed(command: &mut Command) -> std::process::Output {
+        let output = command.output().unwrap();
         assert!(output.status.success(), "{output:?}");
+        output
+    }
+
+    /// Run `command`, asserting that it fails, as when Git stops on a
+    /// conflict.
+    pub(crate) fn fail(command: &mut Command) -> std::process::Output {
+        let output = command.output().unwrap();
+        assert!(!output.status.success(), "{output:?}");
+        output
+    }
+
+    /// Run Git in the current directory with a test identity, returning its
+    /// trimmed output.
+    pub(crate) fn git(args: &[&str]) -> String {
+        trimmed(succeed(&mut git_command(args)))
+    }
+
+    pub(crate) fn trimmed(output: std::process::Output) -> String {
         String::from_utf8(output.stdout).unwrap().trim().to_owned()
     }
 
@@ -3740,7 +3620,11 @@ pub(crate) mod tests {
 
     impl CurrentDirGuard {
         pub(crate) fn enter(path: &Path) -> Self {
-            let lock = CURRENT_DIR_LOCK.lock().unwrap();
+            // A test that panicked while holding the lock has restored the
+            // directory on drop, so its failure need not fail others.
+            let lock = CURRENT_DIR_LOCK
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             let original = env::current_dir().unwrap();
             env::set_current_dir(path).unwrap();
             Self {
@@ -3795,12 +3679,7 @@ pub(crate) mod tests {
 
         // Verify that this setup really would refresh the index without the
         // protection, rather than passing because there was nothing to write.
-        let status = Command::new("git")
-            .args(["status", "--porcelain"])
-            .env("GIT_OPTIONAL_LOCKS", "1")
-            .output()
-            .unwrap();
-        assert!(status.status.success(), "{status:?}");
+        succeed(git_command(&["status", "--porcelain"]).env("GIT_OPTIONAL_LOCKS", "1"));
         assert_ne!(fs::read(&index).unwrap(), before);
     }
 
@@ -3810,11 +3689,7 @@ pub(crate) mod tests {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        assert!(Command::new("git")
-            .args(["init", "-q"])
-            .status()
-            .unwrap()
-            .success());
+        succeed(&mut git_command(&["init", "-q"]));
         let path = OsStr::from_bytes(b"caf\xe9.txt");
         if let Err(error) = fs::write(path, "first\n") {
             // Darwin EILSEQ: this filesystem rejects non-UTF-8 names.
@@ -3835,11 +3710,7 @@ pub(crate) mod tests {
         use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        assert!(Command::new("git")
-            .args(["init", "-q"])
-            .status()
-            .unwrap()
-            .success());
+        succeed(&mut git_command(&["init", "-q"]));
         for (name, contents) in [(b"a\xff.txt", "first\n"), (b"a\xfe.txt", "second\n")] {
             if let Err(error) = fs::write(OsStr::from_bytes(name), contents) {
                 // Darwin EILSEQ: this filesystem rejects non-UTF-8 names.
@@ -3873,12 +3744,7 @@ pub(crate) mod tests {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
         let git = |args: &[&str]| {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            let output = succeed(&mut git_command(args));
             String::from_utf8_lossy(&output.stdout).trim().to_owned()
         };
         git(&["init", "-q"]);
@@ -4004,22 +3870,6 @@ pub(crate) mod tests {
         let results = {
             let directory = TestDirectory::new();
             let _guard = CurrentDirGuard::enter(directory.path());
-            let git = |args: &[&str]| {
-                let output = Command::new("git")
-                    .args([
-                        "-c",
-                        "user.name=Test",
-                        "-c",
-                        "user.email=test@example.com",
-                        "-c",
-                        "commit.gpgsign=false",
-                    ])
-                    .args(args)
-                    .output()
-                    .unwrap();
-                assert!(output.status.success(), "{:?}", output);
-                String::from_utf8(output.stdout).unwrap().trim().to_owned()
-            };
             git(&["init", "-q"]);
             git(&["init", "-q", "module"]);
             let picture = |value| {
@@ -4091,10 +3941,6 @@ pub(crate) mod tests {
         let results = {
             let directory = TestDirectory::new();
             let _guard = CurrentDirGuard::enter(directory.path());
-            let git = |args: &[&str]| {
-                let output = Command::new("git").args(args).output().unwrap();
-                assert!(output.status.success(), "{:?}", output);
-            };
             git(&["init", "-q"]);
             git(&["config", "user.name", "Test"]);
             git(&["config", "user.email", "test@example.com"]);
@@ -4149,10 +3995,6 @@ pub(crate) mod tests {
         let (after, expected) = {
             let directory = TestDirectory::new();
             let _guard = CurrentDirGuard::enter(directory.path());
-            let git = |args: &[&str]| {
-                let output = Command::new("git").args(args).output().unwrap();
-                assert!(output.status.success(), "{:?}", output);
-            };
             git(&["init", "-q"]);
             git(&["config", "user.name", "Test"]);
             git(&["config", "user.email", "test@example.com"]);
@@ -4209,10 +4051,6 @@ pub(crate) mod tests {
         let (before, after, expanded, decorations, fingerprint_changed) = {
             let directory = TestDirectory::new();
             let _guard = CurrentDirGuard::enter(directory.path());
-            let git = |args: &[&str]| {
-                let output = Command::new("git").args(args).output().unwrap();
-                assert!(output.status.success(), "{:?}", output);
-            };
             git(&["init", "-q"]);
             git(&["init", "-q", "module"]);
             for root in [".", "module"] {
@@ -4278,14 +4116,6 @@ pub(crate) mod tests {
         let results = {
             let directory = TestDirectory::new();
             let _guard = CurrentDirGuard::enter(directory.path());
-            let git = |args: &[&str]| {
-                let output = Command::new("git").args(args).output().unwrap();
-                assert!(
-                    output.status.success(),
-                    "{}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            };
             git(&["init", "-q"]);
             git(&["config", "user.name", "Test"]);
             git(&["config", "user.email", "test@example.com"]);
@@ -4340,14 +4170,6 @@ pub(crate) mod tests {
         let mut app = {
             let directory = TestDirectory::new();
             let _guard = CurrentDirGuard::enter(directory.path());
-            let git = |args: &[&str]| {
-                let output = Command::new("git").args(args).output().unwrap();
-                assert!(
-                    output.status.success(),
-                    "{}",
-                    String::from_utf8_lossy(&output.stderr)
-                );
-            };
             git(&["init", "-q"]);
             git(&["config", "user.name", "Test"]);
             git(&["config", "user.email", "test@example.com"]);
@@ -4361,10 +4183,7 @@ pub(crate) mod tests {
             git(&["checkout", "-qb", "other", "HEAD~"]);
             fs::write("file.txt", "other\n").unwrap();
             git(&["commit", "-qam", "other"]);
-            let merge = Command::new("git")
-                .args(["merge", "side"])
-                .output()
-                .unwrap();
+            let merge = git_command(&["merge", "side"]).output().unwrap();
             assert_eq!(merge.status.code(), Some(1));
             fs::write("file.txt", "resolved\n").unwrap();
             git(&["add", "."]);
@@ -4396,14 +4215,6 @@ pub(crate) mod tests {
         use crate::app::Mode;
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
         git(&["init", "-q"]);
         git(&["config", "user.name", "Test"]);
         git(&["config", "user.email", "test@example.com"]);
@@ -4452,14 +4263,6 @@ pub(crate) mod tests {
 
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
         git(&["init", "-q"]);
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
@@ -4613,14 +4416,6 @@ pub(crate) mod tests {
         use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
         git(&["init", "-q"]);
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
@@ -4684,14 +4479,6 @@ pub(crate) mod tests {
         use ratatui::{backend::TestBackend, Terminal};
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
         git(&["init", "-q"]);
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
@@ -4737,11 +4524,7 @@ pub(crate) mod tests {
         for root in exact_repository_paths(directory.path()) {
             let (actual, expected) = {
                 let _guard = CurrentDirGuard::enter(&root);
-                assert!(Command::new("git")
-                    .args(["init", "-q"])
-                    .status()
-                    .unwrap()
-                    .success());
+                succeed(&mut git_command(&["init", "-q"]));
                 let setting = env::var_os("GLOG_IMAGES");
                 env::set_var("GLOG_IMAGES", "kitty");
                 let images = crate::images::Images::from_env();
@@ -4762,22 +4545,6 @@ pub(crate) mod tests {
         for root in exact_repository_paths(directory.path()) {
             let result = {
                 let _guard = CurrentDirGuard::enter(&root);
-                let git = |args: &[&str]| {
-                    let output = Command::new("git")
-                        .args([
-                            "-c",
-                            "user.name=Test",
-                            "-c",
-                            "user.email=test@example.com",
-                            "-c",
-                            "commit.gpgsign=false",
-                        ])
-                        .args(args)
-                        .output()
-                        .unwrap();
-                    assert!(output.status.success(), "{:?}", output);
-                    String::from_utf8(output.stdout).unwrap().trim().to_owned()
-                };
                 git(&["init", "-q"]);
                 git(&["init", "-q", "module"]);
                 fs::write("module/file.txt", "before\n").unwrap();
@@ -4835,11 +4602,7 @@ pub(crate) mod tests {
                 panic!("could not create repository fixture: {error}");
             }
             let _guard = CurrentDirGuard::enter(&root);
-            assert!(Command::new("git")
-                .args(["init", "-q"])
-                .status()
-                .unwrap()
-                .success());
+            succeed(&mut git_command(&["init", "-q"]));
             fs::write("new.txt", "contents\n").unwrap();
             let mut view = crate::status::StatusView::load()
                 .expect("Status must preserve the repository's exact path");
@@ -4855,16 +4618,7 @@ pub(crate) mod tests {
         use ratatui::{backend::TestBackend, Terminal};
         let directory = TestDirectory::new();
         let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .current_dir(directory.path())
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            succeed(git_command(args).current_dir(directory.path()));
         };
         git(&["init", "-q"]);
         git(&["config", "user.email", "test@example.com"]);
@@ -4944,26 +4698,8 @@ pub(crate) mod tests {
     fn log_grep_can_search_for_a_display_option() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        for args in [
-            vec!["init", "-q"],
-            vec![
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "commit",
-                "--allow-empty",
-                "-qm",
-                "Document --oneline usage",
-            ],
-        ] {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
+        git(&["init", "-q"]);
+        git(&["commit", "--allow-empty", "-qm", "Document --oneline usage"]);
         let (_, _, args) =
             crate::log_format::parse_args(&["--grep".into(), "--oneline".into()]).unwrap();
         let commits = load_log(&args).unwrap();
@@ -4975,14 +4711,6 @@ pub(crate) mod tests {
     fn ordinary_log_excludes_working_tree_entries_with_display_options() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
         git(&["init", "-q"]);
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
@@ -5036,14 +4764,6 @@ pub(crate) mod tests {
     fn show_pathspecs_filter_staged_unstaged_and_untracked_patches() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
         git(&["init", "-q"]);
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
@@ -5103,12 +4823,7 @@ pub(crate) mod tests {
     fn untracked_nested_repositories_report_why_they_have_no_patch() {
         let directory = TestDirectory::new();
         for repository in [directory.path().to_owned(), directory.path().join("nested")] {
-            let status = Command::new("git")
-                .args(["init", "-q"])
-                .arg(&repository)
-                .status()
-                .unwrap();
-            assert!(status.success());
+            succeed(git_command(&["init", "-q"]).arg(&repository));
         }
         fs::write(directory.path().join("nested/file.txt"), "nested\n").unwrap();
 
@@ -5121,16 +4836,7 @@ pub(crate) mod tests {
     fn unstaged_patches_label_untracked_files_relative_to_the_repository() {
         let directory = TestDirectory::new();
         let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .current_dir(directory.path())
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            succeed(git_command(args).current_dir(directory.path()));
         };
         git(&["init", "-q"]);
         git(&["config", "user.email", "test@example.com"]);
@@ -5165,14 +4871,6 @@ pub(crate) mod tests {
     fn show_paths_filter_history_and_do_not_skip_the_first_matching_commit() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git")
-                .args(["-c", "commit.gpgsign=false"])
-                .args(args)
-                .output()
-                .unwrap();
-            assert!(output.status.success(), "{output:?}");
-        };
         git(&["init", "-q"]);
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
@@ -5239,14 +4937,6 @@ pub(crate) mod tests {
     fn show_opens_exact_commit_and_loads_history_on_navigation() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
         git(&["init", "-q"]);
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
@@ -5344,14 +5034,6 @@ pub(crate) mod tests {
     fn search_selects_unloaded_untracked_files_without_revealing_placeholders() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
         git(&["init", "-q"]);
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
@@ -5389,14 +5071,6 @@ pub(crate) mod tests {
     fn diff_opens_requested_changes_standalone() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
         git(&["init", "-q"]);
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
@@ -5470,15 +5144,6 @@ pub(crate) mod tests {
     fn single_commit_diff_previews_recorded_images_after_worktree_edits() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-            String::from_utf8(output.stdout).unwrap().trim().to_owned()
-        };
         git(&["init", "-q"]);
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
@@ -5520,14 +5185,6 @@ pub(crate) mod tests {
     fn diff_compares_revisions_paths_and_image_sources() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
         let open = |args: &[&str]| {
             load_diff_app(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>()).unwrap()
         };
@@ -5680,14 +5337,6 @@ pub(crate) mod tests {
     fn merge_range_compares_as_a_combined_diff() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        let git = |args: &[&str]| {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        };
         git(&["init", "-q"]);
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
@@ -5713,12 +5362,7 @@ pub(crate) mod tests {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
         let git = |args: &[&str]| {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
+            let output = succeed(&mut git_command(args));
             String::from_utf8_lossy(&output.stdout).trim().to_owned()
         };
         git(&["init", "-q"]);
@@ -5741,30 +5385,15 @@ pub(crate) mod tests {
     fn loads_format_metadata_with_git_date_options() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        assert!(Command::new("git")
-            .args(["init", "-q"])
-            .status()
-            .unwrap()
-            .success());
-        let output = Command::new("git")
-            .args([
-                "-c",
-                "user.name=Alice",
-                "-c",
-                "user.email=alice@example.com",
-                "commit",
-                "--allow-empty",
-                "-qm",
-                "A subject",
-            ])
-            .env("GIT_AUTHOR_DATE", "2001-09-14T12:00:00+03:00")
-            .env("GIT_COMMITTER_DATE", "2001-09-14T12:00:00+03:00")
-            .output()
-            .unwrap();
-        assert!(
-            output.status.success(),
-            "{}",
-            String::from_utf8_lossy(&output.stderr)
+        succeed(&mut git_command(&["init", "-q"]));
+        succeed(
+            git_command(&["commit", "--allow-empty", "-qm", "A subject"])
+                .env("GIT_AUTHOR_NAME", "Alice")
+                .env("GIT_AUTHOR_EMAIL", "alice@example.com")
+                .env("GIT_COMMITTER_NAME", "Alice")
+                .env("GIT_COMMITTER_EMAIL", "alice@example.com")
+                .env("GIT_AUTHOR_DATE", "2001-09-14T12:00:00+03:00")
+                .env("GIT_COMMITTER_DATE", "2001-09-14T12:00:00+03:00"),
         );
         // When no setting is inherited, verify the fallback in two timezones
         // without changing the test process's environment.
@@ -5779,19 +5408,14 @@ pub(crate) mod tests {
                 .author_date
                 .clone()
         };
-        let configured_date = Command::new("git")
-            .args(["config", "--get", "log.date"])
+        let configured_date = git_command(&["config", "--get", "log.date"])
             .output()
             .unwrap();
         if configured_date.status.code() == Some(1) {
             assert_eq!(read_date(&[], "UTC0"), "2001-09-14 09:00");
             assert_eq!(read_date(&[], "EST5"), "2001-09-14 04:00");
         }
-        assert!(Command::new("git")
-            .args(["config", "log.date", "format:%Y/%m/%d"])
-            .status()
-            .unwrap()
-            .success());
+        succeed(&mut git_command(&["config", "log.date", "format:%Y/%m/%d"]));
         assert_eq!(read_date(&[], "UTC0"), "2001/09/14");
         assert_eq!(
             read_date(&["--date".into(), "short".into()], "UTC0"),
@@ -5822,31 +5446,13 @@ pub(crate) mod tests {
     fn multiline_dates_report_an_error_instead_of_hiding_commits() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        for args in [
-            vec!["init", "-q"],
-            vec![
-                "-c",
-                "user.name=Test",
-                "-c",
-                "user.email=test@example.com",
-                "commit",
-                "--allow-empty",
-                "-qm",
-                "Visible commit",
-            ],
-        ] {
-            let output = Command::new("git").args(args).output().unwrap();
-            assert!(output.status.success());
-        }
+        git(&["init", "-q"]);
+        git(&["commit", "--allow-empty", "-qm", "Visible commit"]);
 
         for date in ["format:%Y%n%m", "format:%Y\n%m", "format:%Y\r%m"] {
             let error = load_log(&[format!("--date={date}")]).unwrap_err();
             assert!(error.contains("one line"), "{error}");
-            assert!(Command::new("git")
-                .args(["config", "log.date", date])
-                .status()
-                .unwrap()
-                .success());
+            succeed(&mut git_command(&["config", "log.date", date]));
             for options in [vec![], vec!["--oneline".into()]] {
                 let (_, _, args) = crate::log_format::parse_args(&options).unwrap();
                 let error = load_log(&args).unwrap_err();
@@ -5981,20 +5587,18 @@ pub(crate) mod tests {
     fn loads_coauthor_trailers_without_turning_message_text_into_graph_rows() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        assert!(Command::new("git")
-            .args(["init", "-q"])
-            .status()
-            .unwrap()
-            .success());
+        succeed(&mut git_command(&["init", "-q"]));
         for message in [
             "Mentions only\n\nThis discusses Codex and Claude Code without crediting either.",
             "Collaborative change\n\nCo-authored-by: Codex <codex@openai.com>\nco-authored-by: Claude Code <noreply@anthropic.com>\nCo-authored-by: Bob <bob@example.com>\nCo-authored-by: Bob again <BOB@example.com>\nCo-authored-by: Alice <alice@example.com>\nReviewed-by: Other <other@example.com>",
         ] {
-            let output = Command::new("git").args([
-                "-c", "user.name=Alice", "-c", "user.email=alice@example.com",
-                "commit", "--allow-empty", "-qm", message,
-            ]).output().unwrap();
-            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            succeed(
+                git_command(&["commit", "--allow-empty", "-qm", message])
+                    .env("GIT_AUTHOR_NAME", "Alice")
+                    .env("GIT_AUTHOR_EMAIL", "alice@example.com")
+                    .env("GIT_COMMITTER_NAME", "Alice")
+                    .env("GIT_COMMITTER_EMAIL", "alice@example.com"),
+            );
         }
         let commits = load_log(&[]).unwrap();
         assert_eq!(commits.len(), 2);
@@ -6022,34 +5626,16 @@ pub(crate) mod tests {
     fn loads_log_for_a_path_without_a_separator() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
-        assert!(Command::new("git")
-            .args(["init", "-q"])
-            .status()
-            .unwrap()
-            .success());
+        succeed(&mut git_command(&["init", "-q"]));
         for name in ["a.txt", "b.txt"] {
             std::fs::write(name, name).unwrap();
-            assert!(Command::new("git")
-                .args(["add", name])
-                .status()
-                .unwrap()
-                .success());
-            let output = Command::new("git")
-                .args([
-                    "-c",
-                    "user.name=Alice",
-                    "-c",
-                    "user.email=alice@example.com",
-                    "commit",
-                    "-qm",
-                    name,
-                ])
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
+            succeed(&mut git_command(&["add", name]));
+            succeed(
+                git_command(&["commit", "-qm", name])
+                    .env("GIT_AUTHOR_NAME", "Alice")
+                    .env("GIT_AUTHOR_EMAIL", "alice@example.com")
+                    .env("GIT_COMMITTER_NAME", "Alice")
+                    .env("GIT_COMMITTER_EMAIL", "alice@example.com"),
             );
         }
         let commits = load_log(&["a.txt".into()]).unwrap();
@@ -6283,12 +5869,7 @@ pub(crate) mod tests {
     fn loads_log_and_show_from_a_repository() {
         let repository = TestDirectory::new();
         let git = |args: &[&str]| {
-            let status = Command::new("git")
-                .args(args)
-                .current_dir(repository.path())
-                .status()
-                .unwrap();
-            assert!(status.success());
+            succeed(git_command(args).current_dir(repository.path()));
         };
         git(&["init", "-q"]);
         git(&["config", "user.name", "Test"]);
