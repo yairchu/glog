@@ -2,7 +2,7 @@
 //! the state files `git status` reads to describe them.
 
 use ratatui::text::Span;
-use std::{cell::RefCell, collections::HashMap, fs, path::Path};
+use std::{collections::HashMap, fs, path::Path};
 
 /// What `git status` reports beyond the changed files.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
@@ -31,8 +31,21 @@ impl Text {
     fn push(&mut self, text: &str) {
         self.0.push((text.to_owned(), false));
     }
-    fn push_hash(&mut self, hash: String) {
-        self.0.push((hash, true));
+    fn push_hash(&mut self, hash: &str) {
+        self.0.push((hash.to_owned(), true));
+    }
+    fn hashes(&self) -> impl Iterator<Item = &str> {
+        self.0
+            .iter()
+            .filter(|(_, hash)| *hash)
+            .map(|(text, _)| text.as_str())
+    }
+    fn abbreviate(&mut self, short: impl Fn(&str) -> String) {
+        for (text, hash) in &mut self.0 {
+            if *hash {
+                *text = short(text);
+            }
+        }
     }
     pub fn spans(&self) -> Vec<Span<'static>> {
         self.0
@@ -79,36 +92,32 @@ enum Operation {
 /// when detached.
 pub fn load(root: &Path, detached: Option<&str>) -> Result<State, String> {
     let operations = operations(root)?;
-    // Describe once to learn which commits need abbreviating.
-    let hashes = RefCell::new(detached.map(str::to_owned).into_iter().collect::<Vec<_>>());
-    for operation in &operations {
-        describe(operation, &|hash| {
-            hashes.borrow_mut().push(hash.to_owned());
-            String::new()
-        });
-    }
     let commits: Vec<_> = operations.iter().flat_map(commits).collect();
-    hashes
-        .borrow_mut()
-        .extend(commits.iter().map(|&(_, hash)| hash.clone()));
-    let abbreviated = abbreviate(root, &hashes.into_inner());
+    // Describe with whole hashes, then abbreviate the ones the text shows.
+    let mut descriptions: Vec<_> = operations.iter().map(describe).collect();
+    let hashes: Vec<_> = detached
+        .into_iter()
+        .chain(descriptions.iter().flat_map(Text::hashes))
+        .chain(commits.iter().map(|(_, hash)| hash.as_str()))
+        .collect();
+    let abbreviated = abbreviate(root, &hashes);
     let short = |hash: &str| {
         abbreviated
             .get(hash)
             .map_or_else(|| hash.to_owned(), |(short, _)| short.clone())
     };
+    for description in &mut descriptions {
+        description.abbreviate(short);
+    }
     Ok(State {
         detached_at: detached.map(short),
-        operations: operations
-            .iter()
-            .map(|operation| describe(operation, &short))
-            .collect(),
+        operations: descriptions,
         commits: commits
             .into_iter()
             .map(|(verb, hash)| {
                 let mut label = Text::default();
                 label.push(&format!("{verb} "));
-                label.push_hash(short(hash));
+                label.push_hash(&short(hash));
                 if let Some((_, subject)) = abbreviated.get(hash) {
                     label.push(&format!(" {subject}"));
                 }
@@ -136,13 +145,12 @@ fn commits(operation: &Operation) -> Vec<(&'static str, &String)> {
     }
 }
 
-/// `operation` as `git status` would summarise it, with `short` abbreviating
-/// its commits.
-fn describe(operation: &Operation, short: &dyn Fn(&str) -> String) -> Text {
+/// `operation` as `git status` would summarise it, with whole hashes.
+fn describe(operation: &Operation) -> Text {
     let mut text = Text::default();
     let commit = |text: &mut Text, prefix: &str, hash: &str| {
         text.push(prefix);
-        text.push_hash(short(hash));
+        text.push_hash(hash);
     };
     match operation {
         Operation::Rebase {
@@ -319,13 +327,17 @@ fn is_hash(text: &str) -> bool {
 }
 
 /// Each commit hash's abbreviation as Git would show it, with its subject.
-/// These only add detail, so a failure leaves the hashes whole.
-fn abbreviate(root: &Path, hashes: &[String]) -> HashMap<String, (String, String)> {
+/// These only add detail, so hashes Git cannot show, or a failure, stay whole.
+fn abbreviate(root: &Path, hashes: &[&str]) -> HashMap<String, (String, String)> {
     if hashes.is_empty() {
         return HashMap::new();
     }
     let Ok(output) = crate::git::read_command_in(root)
         .args(["log", "--no-walk=unsorted", "--no-show-signature"])
+        // Skip missing objects, as in a shallow clone, and non-commits,
+        // without fetching what a partial clone omits for this detail.
+        .arg("--ignore-missing")
+        .env("GIT_NO_LAZY_FETCH", "1")
         .arg("--format=%H %h %s")
         .args(hashes)
         .arg("--")
@@ -399,6 +411,22 @@ mod tests {
         );
         assert_eq!(state.commits.len(), 1);
         assert_eq!(state.commits[0].hash, merging);
+    }
+
+    #[test]
+    fn abbreviates_the_commits_git_can_show_beside_missing_ones() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        let missing = "1".repeat(40);
+        let abbreviated = abbreviate(Path::new("."), &[&missing, &head]);
+        assert_eq!(
+            abbreviated.get(&head),
+            Some(&(git(&["rev-parse", "--short", "HEAD"]), "base".to_owned()))
+        );
+        assert!(!abbreviated.contains_key(&missing));
     }
 
     #[test]

@@ -202,7 +202,7 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
     Ok(snapshot)
 }
 
-fn load_snapshot(root: &std::path::Path) -> Result<Snapshot, String> {
+fn load_snapshot(root: &std::path::Path, operations: bool) -> Result<Snapshot, String> {
     let output = crate::git::read_command_in(root)
         .args([
             "-c",
@@ -220,16 +220,19 @@ fn load_snapshot(root: &std::path::Path) -> Result<Snapshot, String> {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
     let mut snapshot = parse(&output.stdout)?;
-    let detached = (snapshot.branch == "(detached)").then_some(snapshot.oid.as_str());
-    snapshot.state = crate::operation::load(root, detached)?;
+    if operations {
+        let detached = (snapshot.branch == "(detached)").then_some(snapshot.oid.as_str());
+        snapshot.state = crate::operation::load(root, detached)?;
+    }
     Ok(snapshot)
 }
 
 pub fn working_tree_summary() -> Result<WorkingTreeSummary, String> {
-    Ok(load_snapshot(&crate::git::repository_root()?)?.summary())
+    Ok(load_snapshot(&crate::git::repository_root()?, true)?.summary())
 }
 
-/// Open details for changed files, or history when the working tree is clean.
+/// Open details for changed files or operations in progress, otherwise
+/// history.
 pub fn load_app(args: &[String]) -> Result<crate::app::App, String> {
     if !args.is_empty() {
         return Err("usage: glog status".to_owned());
@@ -285,8 +288,9 @@ pub struct WorkingTreeSummary {
 }
 
 impl WorkingTreeSummary {
+    /// Whether nothing is changed or in progress.
     pub fn is_clean(&self) -> bool {
-        self.changed == 0 && self.untracked == 0
+        self.operations.is_empty() && self.changed == 0 && self.untracked == 0
     }
 }
 
@@ -350,7 +354,7 @@ fn untracked_stream_stats(mut reader: impl Read) -> io::Result<String> {
 #[derive(Clone, PartialEq, Eq)]
 enum RowKey {
     /// A commit an operation in progress is applying, opened with Enter.
-    Commit(String),
+    Commit(crate::operation::Commit),
     Group(Group),
     File(Key),
     Patch(Key, usize),
@@ -416,6 +420,9 @@ pub struct StatusView {
     // resolves. Errors from actions stay until the next action.
     refresh_failed: bool,
     unloaded: bool,
+    /// A submodule's view, nested in its parent's. Its commits would open
+    /// in the parent's Show, so it leaves out operations in progress.
+    nested: bool,
 }
 impl StatusView {
     pub fn editor_target(&self) -> Result<crate::editor::Target, String> {
@@ -458,6 +465,7 @@ impl StatusView {
             // Like Show, nested views open as summaries; files expand individually.
             show_stat: true,
             images_enabled: self.images_enabled,
+            nested: true,
             ..Self::default()
         };
         child.refresh()?;
@@ -777,7 +785,7 @@ impl StatusView {
         if self.root.as_os_str().is_empty() {
             self.root = crate::git::repository_root()?;
         }
-        let snapshot = load_snapshot(&self.root)?;
+        let snapshot = load_snapshot(&self.root, !self.nested)?;
         let attributes = self.attributes(&snapshot)?;
         let mut fingerprints = HashMap::new();
         let mut patches = HashMap::new();
@@ -860,10 +868,10 @@ impl StatusView {
         self.rows.clear();
         for commit in &self.snapshot.state.commits {
             self.rows.push(Row {
-                key: RowKey::Commit(commit.hash.clone()),
+                key: RowKey::Commit(commit.clone()),
                 preview: None,
                 text: format!("  {}", commit.label),
-                color: Some(Color::Reset),
+                color: None,
             });
         }
         for group in [
@@ -975,13 +983,7 @@ impl StatusView {
                         }
                     }
                     if let Some(child) = self.submodules.get(&entry.key) {
-                        // Commits open in this repository's Show, so leave
-                        // out those of a submodule's operations.
-                        for row in child
-                            .rows
-                            .iter()
-                            .filter(|row| !matches!(row.key, RowKey::Commit(_)))
-                        {
+                        for row in &child.rows {
                             self.rows.push(Row {
                                 key: RowKey::Nested(entry.key.clone(), Box::new(row.key.clone())),
                                 text: format!("    {}", row.text),
@@ -1134,7 +1136,7 @@ impl StatusView {
     /// The commit on the selected row, which Enter opens in Show.
     pub fn selected_commit(&self) -> Option<&str> {
         match &self.rows.get(self.cursor)?.key {
-            RowKey::Commit(hash) => Some(hash),
+            RowKey::Commit(commit) => Some(&commit.hash),
             _ => None,
         }
     }
@@ -1222,18 +1224,6 @@ impl StatusView {
         heading
     }
 
-    /// The commit an operation is applying, on a row listing it.
-    fn commit_on(&self, key: &RowKey) -> Option<&crate::operation::Commit> {
-        let RowKey::Commit(hash) = key else {
-            return None;
-        };
-        self.snapshot
-            .state
-            .commits
-            .iter()
-            .find(|commit| &commit.hash == hash)
-    }
-
     pub fn draw_with_images(
         &mut self,
         frame: &mut Frame,
@@ -1262,7 +1252,7 @@ impl StatusView {
             .enumerate()
         {
             let mut line = crate::ansi::normalized_line(&row.text);
-            if let Some(commit) = self.commit_on(&row.key) {
+            if let RowKey::Commit(commit) = &row.key {
                 line = Line::from([vec![Span::raw("  ")], commit.label.spans()].concat());
             } else if let Some(color) = row.color {
                 line = if row.key.is_file() {
@@ -1355,6 +1345,14 @@ mod tests {
             dirty.commits[dirty.selected].subject,
             "Working tree · Clean"
         );
+
+        // An operation in progress with no changed files still has details.
+        git(&["bisect", "start"]);
+        let bisecting = load_app(&[]).unwrap();
+        assert_eq!(bisecting.mode, Mode::Status);
+        assert!(bisecting.commits[0]
+            .subject
+            .starts_with("Working tree · Bisecting from "));
     }
 
     #[cfg(unix)]
