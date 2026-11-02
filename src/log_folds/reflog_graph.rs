@@ -808,7 +808,8 @@ mod tests {
         ]);
         let mut folds = LogFolds::default();
         folds.refresh(&commits).unwrap();
-        assert_eq!(plain(&folds, &commits), ["• "]);
+        // The collapsed header stands for the oldest visit, not a repeat.
+        assert_eq!(plain(&folds, &commits), ["○ "]);
         assert_eq!(folds.label(0), " · 1 earlier visit");
         folds.toggle(0, &commits).unwrap();
         assert_eq!(plain(&folds, &commits), ["• ", "○ "]);

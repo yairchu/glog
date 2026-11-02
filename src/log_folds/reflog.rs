@@ -306,6 +306,13 @@ impl Folds {
                 repeated[header] = None;
             }
         }
+        for (&header, visits) in &self.visits {
+            // A collapsed visit represents its oldest entry, which repeats a
+            // shown visit only if that one does.
+            if matches!(layout.folds[header], Fold::Folded(_)) {
+                repeated[header] = repeated[*visits.entries.last().unwrap()];
+            }
+        }
         layout.graphs = super::reflog_graph::draw(commits, &layout, &repeated);
         layout
     }
