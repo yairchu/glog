@@ -10,6 +10,26 @@ use super::{Fold, Layout};
 pub(super) struct Folds {
     groups: BTreeMap<usize, Group>,
     chains: Vec<Chain>,
+    visits: Vec<Visits>,
+    repeated: Vec<Option<usize>>,
+}
+
+struct Visits {
+    header: usize,
+    entries: Vec<usize>,
+    expanded: bool,
+}
+
+impl Visits {
+    fn rows<'a>(&'a self, groups: &'a BTreeMap<usize, Group>) -> impl Iterator<Item = usize> + 'a {
+        self.entries.iter().flat_map(|entry| {
+            groups
+                .get(entry)
+                .map_or(std::slice::from_ref(entry), |group| group.rows.as_slice())
+                .iter()
+                .copied()
+        })
+    }
 }
 
 #[derive(PartialEq, Eq)]
@@ -132,7 +152,72 @@ impl Folds {
                     .is_ok_and(|output| output.status.success())
             })
         });
-        Self { groups, chains }
+        let repeated = next_on_ref(commits)
+            .into_iter()
+            .enumerate()
+            .map(|(row, older)| older.filter(|&older| commits[row].hash == commits[older].hash))
+            .collect();
+        // Repeat folds may wrap an operation's header, but never split its
+        // internal steps into a separate visit group.
+        let mut in_operation = in_rebase.clone();
+        for group in groups.values() {
+            for &row in &group.rows[1..] {
+                in_operation[row] = true;
+            }
+        }
+        let mut pending: HashMap<&str, Vec<usize>> = HashMap::new();
+        let mut visits = Vec::new();
+        let finish = |rows: Vec<usize>, visits: &mut Vec<Visits>| {
+            if rows.len() > 1 {
+                let header = rows
+                    .iter()
+                    .copied()
+                    .find(|&row| {
+                        commits[row]
+                            .reflog()
+                            .is_some_and(|entry| commit_event(&entry.action).is_some())
+                    })
+                    .unwrap_or(rows[0]);
+                visits.push(Visits {
+                    header,
+                    entries: rows,
+                    expanded: false,
+                });
+            }
+        };
+        for (row, commit) in commits.iter().enumerate() {
+            let Some(entry) = commit.reflog() else {
+                continue;
+            };
+            let reference = entry.reference.as_str();
+            let stage = entry
+                .action
+                .split_once(": ")
+                .map_or(entry.action.as_str(), |(stage, _)| stage);
+            if in_operation[row] || rebase_stage(stage).is_some() || stage == "rebase" {
+                if let Some(rows) = pending.remove(reference) {
+                    finish(rows, &mut visits);
+                }
+                continue;
+            }
+            let rows = pending.entry(reference).or_default();
+            if rows
+                .last()
+                .is_some_and(|&previous| commits[previous].hash != commit.hash)
+            {
+                finish(std::mem::take(rows), &mut visits);
+            }
+            rows.push(row);
+        }
+        for rows in pending.into_values() {
+            finish(rows, &mut visits);
+        }
+        Self {
+            groups,
+            chains,
+            visits,
+            repeated,
+        }
     }
 
     pub(super) fn layout(&self, commits: &[Commit]) -> Layout {
@@ -171,15 +256,68 @@ impl Folds {
             }
             layout.folds[header] = Fold::Folded(hidden);
         }
-        layout.graphs = super::reflog_graph::draw(commits, &layout);
+        for visits in &self.visits {
+            let header = visits.header;
+            if visits.expanded {
+                layout.folds[header] = Fold::Foldable;
+            } else {
+                let mut hidden = 0;
+                for row in visits.rows(&self.groups).filter(|&row| row != header) {
+                    layout.visible[row] = false;
+                    layout.owners[row] = Some(header);
+                    hidden += 1;
+                }
+                layout.folds[header] = Fold::Folded(hidden);
+            }
+        }
+        let mut repeated = self.repeated.clone();
+        for group in self
+            .groups
+            .values()
+            .filter(|group| group.kind == Kind::Rebase)
+        {
+            let header = group.rows[0];
+            // A collapsed operation represents its resulting commit. Once
+            // expanded, its repeated finish/start events use bullets too.
+            if matches!(layout.folds[header], Fold::Folded(_)) {
+                repeated[header] = None;
+            }
+        }
+        layout.graphs = super::reflog_graph::draw(commits, &layout, &repeated);
         layout
     }
 
     pub(super) fn contains(&self, index: usize) -> bool {
         self.groups.values().any(|g| g.rows.contains(&index))
+            || self
+                .visits
+                .iter()
+                .any(|visits| visits.entries.contains(&index))
     }
 
     pub(super) fn toggle(&mut self, index: usize) {
+        if let Some(visits) = self.visits.iter_mut().find(|visits| {
+            visits.header == index
+                || (!self.groups.contains_key(&index) && visits.entries.contains(&index))
+        }) {
+            // A producing entry can represent visits above and versions below.
+            // Cycle both levels at their shared header, as for rebase chains.
+            if index == visits.header {
+                if !visits.expanded {
+                    visits.expanded = true;
+                } else if let Some(group) = self.groups.get_mut(&index).filter(|g| !g.expanded) {
+                    group.expanded = true;
+                } else {
+                    visits.expanded = false;
+                    if let Some(group) = self.groups.get_mut(&index) {
+                        group.expanded = false;
+                    }
+                }
+            } else {
+                visits.expanded = !visits.expanded;
+            }
+            return;
+        }
         if let Some(chain) = self.chains.iter_mut().find(|c| c.headers[0] == index) {
             let latest = self.groups.get_mut(&index).unwrap();
             // Parent and newest child share a header. Cycle through both
@@ -200,6 +338,11 @@ impl Folds {
     }
 
     pub(super) fn reveal(&mut self, index: usize) {
+        for visits in &mut self.visits {
+            if visits.header != index && visits.rows(&self.groups).any(|row| row == index) {
+                visits.expanded = true;
+            }
+        }
         for chain in &mut self.chains {
             if index != chain.headers[0]
                 && chain
@@ -220,6 +363,27 @@ impl Folds {
     }
 
     pub(super) fn label(&self, index: usize) -> String {
+        if let Some(visits) = self.visits.iter().find(|visits| visits.header == index) {
+            let mut label = self.group_label(index);
+            for (direction, count) in [
+                (
+                    "later",
+                    visits.entries.iter().filter(|&&row| row < index).count(),
+                ),
+                (
+                    "earlier",
+                    visits.entries.iter().filter(|&&row| row > index).count(),
+                ),
+            ] {
+                if count > 0 {
+                    label.push_str(&format!(
+                        " · {count} {direction} visit{}",
+                        if count == 1 { "" } else { "s" }
+                    ));
+                }
+            }
+            return label;
+        }
         if let Some(chain) = self.chains.iter().find(|c| c.headers[0] == index) {
             let mut label = format!(" · {} rebases", chain.headers.len());
             if chain.expanded {
@@ -231,6 +395,33 @@ impl Folds {
             }
             return label;
         }
+        self.group_label(index)
+    }
+
+    pub(super) fn expanded_marker(&self, index: usize) -> &'static str {
+        let Some(visits) = self.visits.iter().find(|visits| visits.header == index) else {
+            return "▼";
+        };
+        let mut above = false;
+        let mut below = false;
+        for &row in &visits.entries {
+            above |= row < index;
+            below |= row > index;
+        }
+        if let Some(group) = self.groups.get(&index).filter(|group| group.expanded) {
+            for &row in &group.rows {
+                above |= row < index;
+                below |= row > index;
+            }
+        }
+        match (above, below) {
+            (true, true) => "↕",
+            (true, false) => "▲",
+            _ => "▼",
+        }
+    }
+
+    fn group_label(&self, index: usize) -> String {
         let Some(group) = self.groups.get(&index).filter(|group| !group.expanded) else {
             return String::new();
         };
@@ -241,6 +432,17 @@ impl Folds {
         };
         format!(" · {count} {noun}{}", if count == 1 { "" } else { "s" })
     }
+}
+
+pub(super) fn next_on_ref(commits: &[Commit]) -> Vec<Option<usize>> {
+    let mut result = vec![None; commits.len()];
+    let mut next = HashMap::new();
+    for (row, commit) in commits.iter().enumerate().rev() {
+        if let Some(entry) = commit.reflog() {
+            result[row] = next.insert(entry.reference.as_str(), row);
+        }
+    }
+    result
 }
 
 /// Match only complete, successful operations adjacent on the same ref.
@@ -254,13 +456,7 @@ fn rebase_chains(
     groups: &BTreeMap<usize, Group>,
     are_ancestors: impl FnOnce(&[(&str, &str)]) -> Vec<bool>,
 ) -> Vec<Chain> {
-    let mut next_on_ref = vec![None; commits.len()];
-    let mut next = HashMap::new();
-    for (index, commit) in commits.iter().enumerate().rev() {
-        if let Some(Annotation::Reflog(entry)) = &commit.annotation {
-            next_on_ref[index] = next.insert(entry.reference.as_str(), index);
-        }
-    }
+    let next_on_ref = next_on_ref(commits);
     let branch = |header: usize| {
         let Some(Annotation::Reflog(entry)) = &commits[header].annotation else {
             return None;
@@ -419,10 +615,17 @@ mod tests {
         App::new(
             events
                 .iter()
-                .map(|(reference, action)| {
-                    // Repeated hashes and timestamps are normal in reflogs;
-                    // neither can identify an operation or one of its rows.
+                .enumerate()
+                .map(|(row, (reference, action))| {
+                    // Rebase stages deliberately repeat hashes and timestamps.
+                    // Give independent commits distinct hashes so they do not
+                    // accidentally become same-commit visit folds.
                     let mut commit = crate::log_format::tests::commit();
+                    if rebase_stage(action.split_once(": ").map_or(*action, |(stage, _)| stage))
+                        .is_none()
+                    {
+                        commit.hash = format!("{row:040x}");
+                    }
                     commit.graph = vec![String::new()];
                     commit.parents.clear();
                     commit.annotation = Some(Annotation::Reflog(ReflogEntry {

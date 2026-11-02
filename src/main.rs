@@ -261,11 +261,15 @@ clean working tree, and ○ for boundary commits. Merge commits stay filled.
 Reflog shows local ref updates with their update times; Enter opens the commit.
 Its graph keeps event order: ▲/▼ and sideways ◀/▶ nodes point from parents
 into commits. ◆ marks merges, and ○ marks checkout/reset visits. ● has no
-shown parent; ↕ has shown parents on both sides. Side-path arrowheads point into child commits.
+shown parent; ↕ has shown parents on both sides. • marks a repeated visit to
+the same commit. Side-path arrowheads point into child commits.
 Paths use the nearest parent visit on the same ref when available, and pass
 through folded steps without adding rows.
-Finished or aborted rebases and amend chains start folded in Reflog;
-z toggles a fold.
+Finished or aborted rebases, amend chains, and consecutive visits to the same
+commit start folded in Reflog, represented by the commit-producing entry when
+available. Fold controls follow the hash: ▶ is closed; ▲/▼/↕ show expanded
+entries above/below/both. z cycles visits, nested amend versions, then closed
+when they share a header. Search reveals hidden entries.
 Stash lists saved work; Enter opens its changes, including saved untracked files.
 Stash show opens a stash by index or reference (the latest by default).
 Blame shows which commit last changed each line; Enter opens it, p blames

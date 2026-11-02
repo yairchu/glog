@@ -2284,7 +2284,9 @@ pub(crate) mod tests {
                 .filter(|&index| app.log_folds.visible(index))
                 .collect::<Vec<_>>()
         };
-        let tail: Vec<_> = (6..app.commits.len()).collect();
+        let tail: Vec<_> = (6..app.commits.len())
+            .filter(|&row| app.log_folds.visible(row))
+            .collect();
         assert_eq!(shown(&app), [vec![0], tail.clone()].concat());
         assert_eq!(app.log_folds.label(0), " · 2 rebases");
         let mut terminal = Terminal::new(TestBackend::new(160, 15)).unwrap();
@@ -2610,6 +2612,55 @@ pub(crate) mod tests {
         let app = App::new(load_reflog(&[]).unwrap());
         assert_eq!(app.log_folds.marker(0), Some("▶"));
         assert_eq!(app.log_folds.label(0), " · 2 earlier versions");
+    }
+
+    #[test]
+    fn reflog_no_op_resets_fold_visits_around_an_amend_operation() {
+        use crate::app::{App, LogAction};
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        git(&["commit", "--allow-empty", "-qm", "original"]);
+        git(&["commit", "--allow-empty", "--amend", "-qm", "amended"]);
+        git(&["reset", "HEAD"]);
+        git(&["reset", "HEAD"]);
+        let mut app = App::new(load_reflog(&[]).unwrap());
+        assert_eq!(app.commits.len(), 5);
+        assert_eq!(app.commits[0].hash, app.commits[2].hash);
+        assert_eq!(
+            app.log_folds.label(2),
+            " · 1 earlier version · 2 later visits"
+        );
+        assert!([0, 1, 3].into_iter().all(|row| !app.log_folds.visible(row)));
+        assert_eq!(app.log_folds.shown_or_containing(3), 2);
+        assert_eq!(
+            crate::ansi::plain(&app.log_folds.display_graph(2, &app.commits[2])[0]),
+            "▲ "
+        );
+        app.apply_log_action(LogAction::Fold);
+        assert!(app.log_folds.visible(1));
+        assert!(app.log_folds.visible(2));
+        assert!(!app.log_folds.visible(3));
+        assert_eq!(
+            app.log_folds.label(2),
+            " · 1 earlier version · 2 later visits"
+        );
+        app.search = Some("original".into());
+        app.next_match(false);
+        assert_eq!(app.selected, 3);
+        assert!((0..5).all(|row| app.log_folds.visible(row)));
+        app.apply_log_action(LogAction::Fold);
+        assert_eq!(app.selected, 2);
+        assert!(!app.log_folds.visible(3));
+        app.selected = 2;
+        assert_eq!(app.log_folds.marker(2), Some("▲"));
+        app.apply_log_action(LogAction::Fold);
+        assert_eq!(app.log_folds.marker(2), Some("↕"));
+        app.apply_log_action(LogAction::Fold);
+        assert!([0, 1, 3].into_iter().all(|row| !app.log_folds.visible(row)));
+        assert_eq!(app.log_folds.shown_or_containing(3), 2);
     }
 
     #[test]

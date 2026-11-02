@@ -53,26 +53,61 @@ impl<'a> Occurrences<'a> {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct Edge {
-    child: usize,
-    parent: usize,
+enum Edge {
+    Parent { child: usize, parent: usize },
+    // A shared commit identity, not another parent/child relationship.
+    Visit { newer: usize, older: usize },
 }
 
 impl Edge {
-    fn start(self) -> usize {
-        self.child.min(self.parent)
+    fn ends(self) -> (usize, usize) {
+        match self {
+            Self::Parent { child, parent } => (child, parent),
+            Self::Visit { newer, older } => (newer, older),
+        }
     }
 
+    fn start(self) -> usize {
+        let (a, b) = self.ends();
+        a.min(b)
+    }
     fn end(self) -> usize {
-        self.child.max(self.parent)
+        let (a, b) = self.ends();
+        a.max(b)
+    }
+    fn child(self) -> Option<usize> {
+        match self {
+            Self::Parent { child, .. } => Some(child),
+            Self::Visit { .. } => None,
+        }
+    }
+    fn parent(self) -> Option<usize> {
+        match self {
+            Self::Parent { parent, .. } => Some(parent),
+            Self::Visit { .. } => None,
+        }
     }
 }
 
-fn edges(commits: &[Commit], visible: &[bool]) -> Vec<Edge> {
+fn edges(commits: &[Commit], visible: &[bool], repeated: &[Option<usize>]) -> Vec<Edge> {
     let occurrences = Occurrences::new(commits, visible);
     let by_hash: HashMap<_, _> = commits.iter().map(|c| (c.hash.as_str(), c)).collect();
     let mut result = Vec::new();
     for (child, commit) in commits.iter().enumerate().filter(|&(row, _)| visible[row]) {
+        let mut older = repeated[child];
+        while let Some(row) = older {
+            if visible[row] {
+                result.push(Edge::Visit {
+                    newer: child,
+                    older: row,
+                });
+                break;
+            }
+            older = repeated[row];
+        }
+        if older.is_some() {
+            continue;
+        }
         let mut pending: Vec<_> = commit.parents.iter().map(String::as_str).collect();
         let mut visited = HashSet::new();
         let mut parents = BTreeSet::new();
@@ -88,9 +123,13 @@ fn edges(commits: &[Commit], visible: &[bool]) -> Vec<Edge> {
                 pending.extend(hidden.parents.iter().map(String::as_str));
             }
         }
-        result.extend(parents.into_iter().map(|parent| Edge { child, parent }));
+        result.extend(
+            parents
+                .into_iter()
+                .map(|parent| Edge::Parent { child, parent }),
+        );
     }
-    result.sort_by_key(|edge| (edge.start(), edge.end(), edge.child));
+    result.sort_by_key(|edge| (edge.start(), edge.end(), edge.child()));
     result
 }
 
@@ -118,6 +157,7 @@ impl Arrow {
 
 #[derive(Clone, Copy)]
 enum Node {
+    Repeat,
     Visit,
     Merge,
     Up,
@@ -130,6 +170,7 @@ enum Node {
 impl Node {
     fn symbol(self, unicode: bool) -> char {
         let (filled, ascii) = match self {
+            Self::Repeat => ('•', '.'),
             Self::Visit => ('○', 'o'),
             Self::Merge => ('◆', 'M'),
             Self::Up => ('▲', '^'),
@@ -185,7 +226,10 @@ impl Cell {
 
 /// The arrows describe visible ancestry, not the direction of ref movement.
 /// A collapsed rebase finish represents the whole operation's new tip.
-fn node(commit: &Commit, directions: u8, paths: u8, fold: Fold) -> Node {
+fn node(commit: &Commit, directions: u8, paths: u8, fold: Fold, repeated: bool) -> Node {
+    if repeated {
+        return Node::Repeat;
+    }
     let visit = if let Some(Annotation::Reflog(entry)) = &commit.annotation {
         let action = entry.action.split_once(": ").map(|(action, _)| action);
         matches!(action, Some("checkout" | "reset" | "clone" | "branch"))
@@ -239,13 +283,15 @@ fn connect(line: &mut [Cell], node: usize, lane: usize, toward_node: bool) {
     }
 }
 
-pub(super) fn draw(commits: &[Commit], layout: &Layout) -> Drawing {
-    let edges = edges(commits, &layout.visible);
+pub(super) fn draw(commits: &[Commit], layout: &Layout, repeated: &[Option<usize>]) -> Drawing {
+    let edges = edges(commits, &layout.visible, repeated);
     let mut starts = vec![Vec::new(); commits.len()];
     let mut directions = vec![0; commits.len()];
     for edge in edges {
         starts[edge.start()].push(edge);
-        directions[edge.child] |= if edge.parent > edge.child { UP } else { DOWN };
+        if let Edge::Parent { child, parent } = edge {
+            directions[child] |= if parent > child { UP } else { DOWN };
+        }
     }
 
     // Sweep events in display order, treating an edge as an interval rather
@@ -279,11 +325,11 @@ pub(super) fn draw(commits: &[Commit], layout: &Layout) -> Drawing {
             // Children of the same displayed parent can branch from its
             // existing path. Never bundle reverse edges just because their
             // lower endpoint coincides: that endpoint may be a child.
-            let shared = (edge.child == row)
+            let shared = (edge.child() == Some(row))
                 .then(|| {
                     lanes
                         .iter()
-                        .position(|lane| lane.is_some_and(|open| open.parent == edge.parent))
+                        .position(|lane| lane.is_some_and(|open| open.parent() == edge.parent()))
                 })
                 .flatten();
             let lane = shared.unwrap_or_else(|| {
@@ -320,13 +366,14 @@ pub(super) fn draw(commits: &[Commit], layout: &Layout) -> Drawing {
             .map(|&lane| (lane, above[lane].unwrap()))
             .chain(outgoing)
         {
-            connect(&mut line, column, lane, edge.child == row);
+            connect(&mut line, column, lane, edge.child() == Some(row));
         }
         let node = node(
             commit,
             directions[row],
             line[2 * column].paths,
             layout.folds[row],
+            repeated[row].is_some(),
         );
         // A leaf branching sideways uses the arrowhead as its node. Keep
         // hollow visits and merge diamonds, with their separate arrowheads.
@@ -446,8 +493,8 @@ mod tests {
             ("a", &[], "HEAD", "commit (initial): a"),
         ]);
         assert_eq!(
-            edges(&commits, &[true; 4]),
-            [Edge {
+            edges(&commits, &[true; 4], &[None; 4]),
+            [Edge::Parent {
                 child: 0,
                 parent: 3
             }]
@@ -457,8 +504,8 @@ mod tests {
         assert_eq!(plain(&folds, &commits), ["▲ ", "│ ○ ", "│ ○ ", "● "]);
         // --all can still supply a parent absent from this ref's own log.
         assert_eq!(
-            edges(&commits[..3], &[true; 3]),
-            [Edge {
+            edges(&commits[..3], &[true; 3], &[None; 3]),
+            [Edge::Parent {
                 child: 0,
                 parent: 1
             }]
@@ -483,19 +530,19 @@ mod tests {
         folds.refresh(&commits).unwrap();
         assert_eq!(plain(&folds, &commits), ["▲ ", "○ "]);
         folds.toggle(0, &commits).unwrap();
-        assert_eq!(plain(&folds, &commits), ["○ ", "├─▶ ", "▲ ", "○ ", "○ "]);
+        assert_eq!(plain(&folds, &commits), ["• ", "▲ ", "▲ ", "• ", "○ "]);
         assert_eq!(
-            edges(&commits, &[true; 5]),
+            edges(&commits, &[true; 5], &[None; 5]),
             [
-                Edge {
+                Edge::Parent {
                     child: 0,
                     parent: 2
                 },
-                Edge {
+                Edge::Parent {
                     child: 1,
                     parent: 2
                 },
-                Edge {
+                Edge::Parent {
                     child: 2,
                     parent: 3
                 },
@@ -715,5 +762,98 @@ mod tests {
         assert!(rows
             .iter()
             .all(|row| ratatui::text::Span::raw(row).width() <= 6));
+    }
+
+    #[test]
+    fn repeated_visits_fold_over_amend_versions_and_expand_as_a_single_lane() {
+        let commits = events(&[
+            ("amended", &["base"], "HEAD", "reset: moving to HEAD"),
+            ("amended", &["base"], "HEAD", "reset: moving to amended"),
+            ("amended", &["base"], "HEAD", "commit (amend): latest"),
+            ("original", &["base"], "HEAD", "commit: original"),
+            ("base", &[], "HEAD", "commit (initial): base"),
+        ]);
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        assert_eq!(plain(&folds, &commits), ["▲ ", "● "]);
+        assert_eq!(folds.label(2), " · 1 earlier version · 2 later visits");
+        assert_eq!(folds.shown_or_containing(0), 2);
+        assert_eq!(folds.shown_or_containing(3), 2);
+        assert_eq!(folds.marker(2), Some("▶"));
+        folds.toggle(2, &commits).unwrap();
+        assert_eq!(plain(&folds, &commits), ["• ", "• ", "▲ ", "● "]);
+        assert_eq!(folds.marker(2), Some("▲"));
+        assert_eq!(folds.shown_or_containing(3), 2);
+        folds.toggle(2, &commits).unwrap();
+        assert_eq!(plain(&folds, &commits), ["• ", "• ", "▲ ", "├─▶ ", "● "]);
+        assert_eq!(folds.marker(2), Some("↕"));
+        assert_eq!(folds.label(2), " · 2 later visits");
+        folds.toggle(2, &commits).unwrap();
+        assert_eq!(plain(&folds, &commits), ["▲ ", "● "]);
+        folds.reveal(0, &commits);
+        assert_eq!(folds.marker(2), Some("▲"));
+        assert!(!folds.visible(3));
+        folds.reveal(3, &commits);
+        assert_eq!(plain(&folds, &commits), ["• ", "• ", "▲ ", "├─▶ ", "● "]);
+        assert_eq!(folds.marker(2), Some("↕"));
+        folds.ascii_graph = true;
+        assert_eq!(plain(&folds, &commits), [". ", ". ", "^ ", "+-> ", "* "]);
+    }
+
+    #[test]
+    fn truncated_repeat_runs_keep_all_available_visits() {
+        let commits = events(&[
+            ("a", &["missing"], "HEAD", "reset: moving to HEAD"),
+            ("a", &["missing"], "HEAD", "reset: moving to HEAD"),
+        ]);
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        assert_eq!(plain(&folds, &commits), ["• "]);
+        assert_eq!(folds.label(0), " · 1 earlier visit");
+        folds.toggle(0, &commits).unwrap();
+        assert_eq!(plain(&folds, &commits), ["• ", "○ "]);
+        assert_eq!(folds.marker(0), Some("▼"));
+    }
+
+    #[test]
+    fn repeat_folds_keep_interleaved_refs_independent() {
+        let commits = events(&[
+            ("a", &[], "HEAD", "reset: moving to HEAD"),
+            ("x", &[], "refs/heads/topic", "reset: moving to HEAD"),
+            ("a", &[], "HEAD", "reset: moving to HEAD"),
+            ("x", &[], "refs/heads/topic", "commit (initial): x"),
+            ("a", &[], "HEAD", "commit (initial): a"),
+        ]);
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        let shown = |folds: &LogFolds| {
+            (0..commits.len())
+                .filter(|&row| folds.visible(row))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(shown(&folds), [3, 4]);
+        assert_eq!(folds.label(4), " · 2 later visits");
+        assert_eq!(folds.label(3), " · 1 later visit");
+        folds.toggle(4, &commits).unwrap();
+        assert_eq!(shown(&folds), [0, 2, 3, 4]);
+        folds.toggle(3, &commits).unwrap();
+        assert_eq!(shown(&folds), [0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn ongoing_rebase_steps_do_not_gain_repeat_folds() {
+        let mut commits = events(&[
+            ("a", &["base"], "HEAD", "reset: moving to HEAD"),
+            ("a", &["base"], "HEAD", "commit (amend): current edit"),
+            ("base", &[], "HEAD", "rebase (start): checkout main"),
+        ]);
+        for commit in &mut commits {
+            if let Some(Annotation::Reflog(entry)) = &mut commit.annotation {
+                entry.rebasing = true;
+            }
+        }
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        assert!((0..commits.len()).all(|row| folds.visible(row) && folds.marker(row).is_none()));
     }
 }

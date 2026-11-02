@@ -263,7 +263,11 @@ impl LogFolds {
     pub fn marker(&self, index: usize) -> Option<&'static str> {
         match self.fold(index) {
             Fold::None => None,
-            Fold::Foldable => Some("▼"),
+            Fold::Foldable => Some(
+                self.reflog
+                    .as_ref()
+                    .map_or("▼", |folds| folds.expanded_marker(index)),
+            ),
             Fold::Folded(_) | Fold::Pending => Some("▶"),
         }
     }
