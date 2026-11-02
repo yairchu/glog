@@ -370,6 +370,45 @@ mod tests {
     }
 
     #[test]
+    fn detects_operations_in_a_git_directory_containing_a_newline() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        let metadata = directory.path().join("meta\nrepo");
+        git(&[
+            "init",
+            "-qb",
+            "main",
+            "--separate-git-dir",
+            metadata.to_str().unwrap(),
+            ".",
+        ]);
+        fs::write("file", "base\n").unwrap();
+        git(&["add", "file"]);
+        git(&["commit", "-qm", "base"]);
+        git(&["checkout", "-qb", "feature"]);
+        fs::write("file", "feature\n").unwrap();
+        git(&["commit", "-qam", "feature"]);
+        let merging = git(&["rev-parse", "HEAD"]);
+        let short = git(&["rev-parse", "--short", "HEAD"]);
+        git(&["checkout", "-q", "main"]);
+        fs::write("file", "main\n").unwrap();
+        git(&["commit", "-qam", "main"]);
+        stop(&["merge", "feature"]);
+
+        let state = load(directory.path(), None).unwrap();
+        assert_eq!(
+            state
+                .operations
+                .iter()
+                .map(Text::to_string)
+                .collect::<Vec<_>>(),
+            [format!("Merging {short}")]
+        );
+        assert_eq!(state.commits.len(), 1);
+        assert_eq!(state.commits[0].hash, merging);
+    }
+
+    #[test]
     fn describes_operations_from_real_git_state() {
         describe_operations(&[]);
         // Reftable keeps pseudo-refs such as CHERRY_PICK_HEAD out of files.

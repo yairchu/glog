@@ -2615,6 +2615,24 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn reflog_initial_selection_follows_a_folded_visit_to_its_header() {
+        use crate::app::{App, Mode};
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        git(&["reset", "HEAD"]);
+
+        let mut app = App::new(load_reflog(&[]).unwrap());
+        assert!(!app.log_folds.visible(0));
+        assert_eq!(app.selected, 1);
+        assert!(app.log_folds.visible(app.selected));
+        app.switch_mode();
+        assert_eq!(app.mode, Mode::Show);
+    }
+
+    #[test]
     fn reflog_no_op_resets_fold_visits_around_an_amend_operation() {
         use crate::app::{App, LogAction};
 
