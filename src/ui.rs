@@ -121,7 +121,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Show => draw_show(frame, app, chunks[1]),
     }
     let mut help = if app.mode == Mode::Status {
-        app.status_view.as_ref().and_then(|view| view.error.clone()).or_else(|| app.status.clone()).unwrap_or_else(|| "h help  q quit  ↑/k ↓/j  e edit  Enter/z fold  s summary  ←/→ commit  Shift-←/→ pan  Tab Log  Esc Log  Ctrl-L redraw · WATCH".to_owned())
+        app.status_view.as_ref().and_then(|view| view.error.clone()).or_else(|| app.status.clone()).unwrap_or_else(|| "h help  q quit  ↑/k ↓/j  e edit  Enter show/fold  s summary  ←/→ commit  Shift-←/→ pan  Tab Log  Esc Log  Ctrl-L redraw · WATCH".to_owned())
     } else if let Some(input) = &app.search_input {
         let prefix = if app.search_reverse { '?' } else { '/' };
         format!("{prefix}{input}█")
@@ -338,7 +338,7 @@ const HELP_ROWS: &[HelpRow] = &[
             Some("open commit / toggle section or file"),
             Some("open commit / toggle section or file"),
             Some("open stash / toggle section or file"),
-            Some("toggle section or file"),
+            Some("open commit (Status) / toggle section or file"),
             None,
             Some("open its Log up to the next shared node"),
         ],
@@ -347,7 +347,7 @@ const HELP_ROWS: &[HelpRow] = &[
         "z",
         [
             Some("fold merge (Log) / file (Show)"),
-            Some("fold rebase, rebase chain, or amend chain / file (Show)"),
+            Some("fold rebase, rebase chain, amend chain, or visits / file (Show)"),
             FILE_FOLD,
             FILE_FOLD,
             FILE_FOLD,
