@@ -292,7 +292,6 @@ pub fn is_click(event: &Event) -> bool {
     matches!(event, Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(_)))
 }
 
-/// The commit on the selected Status row, such as the one a rebase stopped at.
 fn show_adjacent(app: &mut App, delta: isize) {
     if app.move_selection(delta) {
         app.show_offset = 0;
