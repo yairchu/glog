@@ -1162,7 +1162,14 @@ fn comparison_sides(
     })
 }
 
+#[cfg(test)]
 pub fn watch_fingerprint() -> Result<u64, String> {
+    watch_fingerprint_in(&crate::operation::git_dir(&repository_root()?)?)
+}
+
+/// What watching the working tree reloads on, for the worktree whose Git
+/// directory is `git_dir`.
+pub fn watch_fingerprint_in(git_dir: &std::path::Path) -> Result<u64, String> {
     let mut fingerprint = DefaultHasher::new();
     hash_command(
         &mut fingerprint,
@@ -1182,7 +1189,7 @@ pub fn watch_fingerprint() -> Result<u64, String> {
     fingerprint.write_u64(refs_fingerprint_at(None)?);
     let root = repository_root()?;
     // Operations such as a rebase can change without changing any file.
-    std::hash::Hash::hash(&crate::operation::load(&root, None)?, &mut fingerprint);
+    crate::operation::fingerprint(&root, git_dir, &mut fingerprint);
     for path in untracked_paths(&[])? {
         fingerprint.write(path.as_os_str().as_encoded_bytes());
         let display = path.display();

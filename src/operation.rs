@@ -64,6 +64,7 @@ impl std::fmt::Display for Text {
     }
 }
 
+#[derive(Hash)]
 enum Operation {
     Rebase {
         branch: Option<String>,
@@ -91,7 +92,7 @@ enum Operation {
 /// The state of the worktree at `root`, whose HEAD is the commit `detached`
 /// when detached.
 pub fn load(root: &Path, detached: Option<&str>) -> Result<State, String> {
-    let operations = operations(root)?;
+    let operations = operations(root, &git_dir(root)?)?;
     let commits: Vec<_> = operations.iter().flat_map(commits).collect();
     // Describe with whole hashes, then abbreviate the ones the text shows.
     let mut descriptions: Vec<_> = operations.iter().map(describe).collect();
@@ -200,8 +201,16 @@ fn describe(operation: &Operation) -> Text {
     text
 }
 
-/// The operations in progress, in the order `load` describes them.
-fn operations(root: &Path) -> Result<Vec<Operation>, String> {
+/// Hash what `load` would describe for the worktree at `root`, whose Git
+/// directory is `git_dir`, without the extra Git processes describing takes.
+/// A failure hashes differently from any state, so recovering reloads.
+pub fn fingerprint(root: &Path, git_dir: &Path, state: &mut impl std::hash::Hasher) {
+    std::hash::Hash::hash(&operations(root, git_dir).ok(), state);
+}
+
+/// The Git directory of the worktree at `root`, which holds its operation
+/// files, including in linked worktrees.
+pub fn git_dir(root: &Path) -> Result<std::path::PathBuf, String> {
     let output = crate::git::read_command_in(root)
         .args(["rev-parse", "--absolute-git-dir"])
         .output()
@@ -212,10 +221,14 @@ fn operations(root: &Path) -> Result<Vec<Operation>, String> {
             &output.stderr,
         ));
     }
-    // All operation files belong to this worktree's Git directory, including
-    // in linked worktrees. Read one raw path: newlines can be part of its name.
-    let directory =
-        crate::git::raw_path(output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout));
+    // Read one raw path: newlines can be part of its name.
+    Ok(crate::git::raw_path(
+        output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout),
+    ))
+}
+
+/// The operations in progress, in the order `load` describes them.
+fn operations(root: &Path, directory: &Path) -> Result<Vec<Operation>, String> {
     let [rebase_merge, rebase_apply, merge_head, todo, bisect_log, bisect_start] = [
         "rebase-merge",
         "rebase-apply",
@@ -427,6 +440,27 @@ mod tests {
             Some(&(git(&["rev-parse", "--short", "HEAD"]), "base".to_owned()))
         );
         assert!(!abbreviated.contains_key(&missing));
+    }
+
+    #[test]
+    fn fingerprints_change_with_operations_alone() {
+        use std::hash::Hasher;
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        let root = Path::new(".");
+        let git_dir = git_dir(root).unwrap();
+        let hash = || {
+            let mut state = std::collections::hash_map::DefaultHasher::new();
+            fingerprint(root, &git_dir, &mut state);
+            state.finish()
+        };
+        let before = hash();
+        git(&["bisect", "start"]);
+        assert_ne!(hash(), before);
+        git(&["bisect", "reset"]);
+        assert_eq!(hash(), before);
     }
 
     #[test]

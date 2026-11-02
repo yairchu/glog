@@ -54,6 +54,8 @@ pub enum WatchSource {
         /// Asked of Git once watching needs it, so unwatched Logs start
         /// without the extra Git processes.
         working_tree: std::sync::OnceLock<bool>,
+        /// Resolved once, rather than on every poll.
+        git_dir: std::sync::OnceLock<std::path::PathBuf>,
     },
     Branches(Vec<String>),
     /// A branch's Log opened from a picker with these arguments.
@@ -92,22 +94,34 @@ impl WatchSource {
         Self::Log {
             args,
             working_tree: std::sync::OnceLock::new(),
+            git_dir: std::sync::OnceLock::new(),
         }
     }
 
     /// Take this before loading the view, so that a change during the load
     /// is reloaded on the first poll.
     pub fn snapshot(&self, repository: Option<&git::Repository>) -> WatchSnapshot {
-        if self.shows_working_tree(repository) {
-            git::watch_fingerprint()
-        } else {
-            git::refs_fingerprint_at(repository)
+        match self {
+            Self::Log { git_dir, .. } if self.shows_working_tree(repository) => {
+                let git_dir = match git_dir.get() {
+                    Some(git_dir) => git_dir,
+                    None => {
+                        let resolved = git::repository_root()
+                            .and_then(|root| crate::operation::git_dir(&root))?;
+                        git_dir.get_or_init(|| resolved)
+                    }
+                };
+                git::watch_fingerprint_in(git_dir)
+            }
+            _ => git::refs_fingerprint_at(repository),
         }
     }
 
     fn shows_working_tree(&self, repository: Option<&git::Repository>) -> bool {
         match self {
-            Self::Log { args, working_tree } if repository.is_none() => {
+            Self::Log {
+                args, working_tree, ..
+            } if repository.is_none() => {
                 *working_tree.get_or_init(|| git::log_shows_working_tree(args))
             }
             _ => false,
