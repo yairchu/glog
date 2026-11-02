@@ -1140,19 +1140,19 @@ impl StatusView {
             _ => None,
         }
     }
-    /// Select the clicked row, expanding it if folded. Returns the commit
-    /// on it, for opening in Show.
-    pub fn click(&mut self, y: u16) -> Option<&str> {
-        let relative = y.checked_sub(self.origin)?;
+    /// Select the clicked row, expanding it if folded. Commits open only
+    /// with Enter, so a click never leaves Status.
+    pub fn click(&mut self, y: u16) {
+        let Some(relative) = y.checked_sub(self.origin) else {
+            return;
+        };
         let index = self.offset + usize::from(relative);
-        if index >= self.rows.len() || usize::from(relative) >= self.height {
-            return None;
+        if index < self.rows.len() && usize::from(relative) < self.height {
+            self.cursor = index;
+            if self.folded(&self.rows[index].key) {
+                self.toggle();
+            }
         }
-        self.cursor = index;
-        if self.folded(&self.rows[index].key) {
-            self.toggle();
-        }
-        self.selected_commit()
     }
     /// Whether a row is a collapsed section or file that a click expands.
     fn folded(&self, key: &RowKey) -> bool {

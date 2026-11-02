@@ -215,11 +215,7 @@ fn apply(event: Event, app: &mut App) {
                 match mouse.kind {
                     MouseEventKind::ScrollUp => view.move_by(-3),
                     MouseEventKind::ScrollDown => view.move_by(3),
-                    MouseEventKind::Down(MouseButton::Left) => {
-                        if let Some(hash) = view.click(mouse.row).map(str::to_owned) {
-                            app.follow_reference(&hash);
-                        }
-                    }
+                    MouseEventKind::Down(MouseButton::Left) => view.click(mouse.row),
                     _ => {}
                 }
             }
