@@ -370,6 +370,7 @@ impl App {
         };
         if matches!(app.history, History::Reflog | History::Branches) {
             app.refresh_log_folds();
+            app.ensure_log_selection();
         }
         app
     }

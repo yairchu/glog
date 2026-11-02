@@ -194,17 +194,8 @@ fn describe(operation: &Operation, short: &dyn Fn(&str) -> String) -> Text {
 
 /// The operations in progress, in the order `load` describes them.
 fn operations(root: &Path) -> Result<Vec<Operation>, String> {
-    const NAMES: [&str; 6] = [
-        "rebase-merge",
-        "rebase-apply",
-        "MERGE_HEAD",
-        "sequencer/todo",
-        "BISECT_LOG",
-        "BISECT_START",
-    ];
     let output = crate::git::read_command_in(root)
-        .arg("rev-parse")
-        .args(NAMES.iter().flat_map(|name| ["--git-path", name]))
+        .args(["rev-parse", "--absolute-git-dir"])
         .output()
         .map_err(|error| error.to_string())?;
     if !output.status.success() {
@@ -213,17 +204,19 @@ fn operations(root: &Path) -> Result<Vec<Operation>, String> {
             &output.stderr,
         ));
     }
-    let paths: Vec<_> = output
-        .stdout
-        .split(|&byte| byte == b'\n')
-        .take(NAMES.len())
-        .map(|line| root.join(crate::git::raw_path(line)))
-        .collect();
-    let Ok([rebase_merge, rebase_apply, merge_head, todo, bisect_log, bisect_start]) =
-        <[_; NAMES.len()]>::try_from(paths)
-    else {
-        return Err("unexpected git rev-parse output".to_owned());
-    };
+    // All operation files belong to this worktree's Git directory, including
+    // in linked worktrees. Read one raw path: newlines can be part of its name.
+    let directory =
+        crate::git::raw_path(output.stdout.strip_suffix(b"\n").unwrap_or(&output.stdout));
+    let [rebase_merge, rebase_apply, merge_head, todo, bisect_log, bisect_start] = [
+        "rebase-merge",
+        "rebase-apply",
+        "MERGE_HEAD",
+        "sequencer/todo",
+        "BISECT_LOG",
+        "BISECT_START",
+    ]
+    .map(|name| directory.join(name));
     // Unlike MERGE_HEAD, these may be stored as refs rather than files.
     let [cherry_pick_head, revert_head, rebase_head] =
         resolve(root, ["CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"])?;
