@@ -68,7 +68,11 @@ impl std::fmt::Display for Text {
     }
 }
 
-#[derive(Hash)]
+/// The operations in progress, before describing them takes Git processes.
+#[derive(Clone, Default, PartialEq, Eq, Hash)]
+pub struct Operations(Vec<Operation>);
+
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum Operation {
     Rebase {
         branch: Option<String>,
@@ -94,13 +98,27 @@ enum Operation {
 }
 
 /// The state of the worktree at `root`, whose Git directory is `git_dir`
-/// and whose HEAD is the commit `detached` when detached. Operations only add
-/// detail to the changed files, so failing to read them, including without
-/// a Git directory, shows none rather than failing the view.
+/// and whose HEAD is the commit `detached` when detached.
 pub fn load(root: &Path, git_dir: Option<&Path>, detached: Option<&str>) -> State {
-    let operations = git_dir
-        .and_then(|directory| operations(root, directory).ok())
-        .unwrap_or_default();
+    describe_state(root, &in_progress(root, git_dir), detached)
+}
+
+/// The operations in progress in the worktree at `root`, whose Git directory
+/// is `git_dir`. Operations only add detail to the changed files, so failing
+/// to read them, including without a Git directory, shows none rather than
+/// failing the view.
+pub fn in_progress(root: &Path, git_dir: Option<&Path>) -> Operations {
+    Operations(
+        git_dir
+            .and_then(|directory| operations(root, directory).ok())
+            .unwrap_or_default(),
+    )
+}
+
+/// `operations` in the worktree at `root`, whose HEAD is the commit
+/// `detached` when detached, as Status shows them.
+pub fn describe_state(root: &Path, operations: &Operations, detached: Option<&str>) -> State {
+    let Operations(operations) = operations;
     let commits: Vec<_> = operations.iter().flat_map(commits).collect();
     // Describe with whole hashes, then abbreviate the ones the text shows.
     let mut descriptions: Vec<_> = operations.iter().map(describe).collect();
@@ -250,9 +268,11 @@ fn operations(root: &Path, directory: &Path) -> Result<Vec<Operation>, String> {
     let [merge_head, todo, bisect_log, bisect_start] =
         ["MERGE_HEAD", "sequencer/todo", "BISECT_LOG", "BISECT_START"]
             .map(|name| directory.join(name));
-    // Unlike MERGE_HEAD, these may be stored as refs rather than files.
-    let [cherry_pick_head, revert_head, rebase_head] =
-        resolve(root, ["CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"])?;
+    let [cherry_pick_head, revert_head, rebase_head] = pseudo_refs(
+        root,
+        directory,
+        ["CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"],
+    )?;
     let mut operations = Vec::new();
     let step = |state: &Path, interactive| {
         let (current, total) = match interactive {
@@ -393,6 +413,21 @@ pub fn rebase_logged() -> bool {
 }
 
 /// The commit each ref in `names` points to, if it exists.
+/// The commits of per-worktree refs such as REBASE_HEAD. Unlike MERGE_HEAD,
+/// they are stored in the ref backend, which is files in `directory` unless
+/// it keeps a reftable. Status reads them every second, so read files
+/// directly rather than running Git.
+fn pseudo_refs<const N: usize>(
+    root: &Path,
+    directory: &Path,
+    names: [&str; N],
+) -> Result<[Option<String>; N], String> {
+    if directory.join("reftable").is_dir() {
+        return resolve(root, names);
+    }
+    Ok(names.map(|name| read(&directory.join(name)).filter(|text| is_hash(text))))
+}
+
 fn resolve<const N: usize>(root: &Path, names: [&str; N]) -> Result<[Option<String>; N], String> {
     use std::io::Write;
     let mut child = crate::git::read_command_in(root)

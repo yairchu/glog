@@ -256,8 +256,11 @@ impl Snapshot {
     /// Add the operations in progress in the worktree at `root`, whose Git
     /// directory is `git_dir`.
     fn load_operations(&mut self, root: &std::path::Path, git_dir: Option<&std::path::Path>) {
-        let detached = (self.branch == "(detached)").then_some(self.oid.as_str());
-        self.state = crate::operation::load(root, git_dir, detached);
+        self.state = crate::operation::load(root, git_dir, self.detached());
+    }
+
+    fn detached(&self) -> Option<&str> {
+        (self.branch == "(detached)").then_some(self.oid.as_str())
     }
 
     fn summary(&self) -> WorkingTreeSummary {
@@ -431,6 +434,13 @@ pub struct StatusView {
     nested: bool,
     /// The Git directory holding `root`'s operations, once found.
     git_dir: Option<PathBuf>,
+    /// The last operations described, with the detached HEAD they were
+    /// described for, so unchanged ones need no Git processes to describe.
+    described: Option<(
+        crate::operation::Operations,
+        Option<String>,
+        crate::operation::State,
+    )>,
 }
 impl StatusView {
     pub fn editor_target(&self) -> Result<crate::editor::Target, String> {
@@ -799,7 +809,22 @@ impl StatusView {
             if self.git_dir.is_none() {
                 self.git_dir = crate::operation::git_dir(&self.root).ok();
             }
-            snapshot.load_operations(&self.root, self.git_dir.as_deref());
+            let operations = crate::operation::in_progress(&self.root, self.git_dir.as_deref());
+            let detached = snapshot.detached().map(str::to_owned);
+            snapshot.state = match &self.described {
+                Some((described, at, state)) if *described == operations && *at == detached => {
+                    state.clone()
+                }
+                _ => {
+                    let state = crate::operation::describe_state(
+                        &self.root,
+                        &operations,
+                        detached.as_deref(),
+                    );
+                    self.described = Some((operations, detached, state.clone()));
+                    state
+                }
+            };
         }
         let attributes = self.attributes(&snapshot)?;
         let mut fingerprints = HashMap::new();
