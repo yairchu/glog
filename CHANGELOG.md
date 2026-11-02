@@ -10,6 +10,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Show rebases, merges, cherry-picks, reverts, `git am` sessions and
   bisections in progress in the Status heading and the Working tree item,
   along with the commit a detached HEAD is at and when an upstream is gone.
+  Status lists the commit being applied, such as the one a rebase stopped at;
+  Enter opens it in Show.
 
 ### Changed
 

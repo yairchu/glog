@@ -73,6 +73,9 @@ fn apply(event: Event, app: &mut App) {
             match key.code {
                 KeyCode::Tab | KeyCode::Esc => app.switch_mode(),
                 KeyCode::Char('q') => app.quit = true,
+                KeyCode::Enter if selected_commit(app).is_some() => {
+                    app.follow_reference(&selected_commit(app).unwrap())
+                }
                 KeyCode::Char('h') => app.show_help = true,
                 KeyCode::Left if !key.modifiers.contains(KeyModifiers::SHIFT) => {
                     show_adjacent(app, -1)
@@ -212,7 +215,11 @@ fn apply(event: Event, app: &mut App) {
                 match mouse.kind {
                     MouseEventKind::ScrollUp => view.move_by(-3),
                     MouseEventKind::ScrollDown => view.move_by(3),
-                    MouseEventKind::Down(MouseButton::Left) => view.click(mouse.row),
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        if let Some(hash) = view.click(mouse.row).map(str::to_owned) {
+                            app.follow_reference(&hash);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -277,6 +284,14 @@ fn apply(event: Event, app: &mut App) {
 /// acting relative to the current state, as keys and the wheel do.
 pub fn is_click(event: &Event) -> bool {
     matches!(event, Event::Mouse(mouse) if matches!(mouse.kind, MouseEventKind::Down(_)))
+}
+
+/// The commit on the selected Status row, such as the one a rebase stopped at.
+fn selected_commit(app: &App) -> Option<String> {
+    app.status_view
+        .as_ref()?
+        .selected_commit()
+        .map(str::to_owned)
 }
 
 fn show_adjacent(app: &mut App, delta: isize) {

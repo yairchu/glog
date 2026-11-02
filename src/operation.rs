@@ -1,6 +1,7 @@
 //! Operations in progress in a worktree, such as a rebase or merge, read from
 //! the state files `git status` reads to describe them.
 
+use ratatui::text::Span;
 use std::{cell::RefCell, collections::HashMap, fs, path::Path};
 
 /// What `git status` reports beyond the changed files.
@@ -10,7 +11,44 @@ pub struct State {
     pub detached_at: Option<String>,
     /// Descriptions such as `Rebasing feature onto 1a2b3c4, 3/7`, the main
     /// operation first and a bisection last.
-    pub operations: Vec<String>,
+    pub operations: Vec<Text>,
+    /// The commits being applied, such as the one a rebase stopped at.
+    pub commits: Vec<Commit>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Commit {
+    pub hash: String,
+    /// Such as `Stopped at 1a2b3c4 Fix the layout`.
+    pub label: Text,
+}
+
+/// Text whose commit hashes are highlighted as in Log.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Text(Vec<(String, bool)>);
+
+impl Text {
+    fn push(&mut self, text: &str) {
+        self.0.push((text.to_owned(), false));
+    }
+    fn push_hash(&mut self, hash: String) {
+        self.0.push((hash, true));
+    }
+    pub fn spans(&self) -> Vec<Span<'static>> {
+        self.0
+            .iter()
+            .map(|(text, hash)| match hash {
+                true => crate::log_format::field_span(crate::log_format::Field::Hash, text.clone()),
+                false => Span::raw(text.clone()),
+            })
+            .collect()
+    }
+}
+
+impl std::fmt::Display for Text {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.iter().try_for_each(|(text, _)| f.write_str(text))
+    }
 }
 
 enum Operation {
@@ -18,6 +56,7 @@ enum Operation {
         branch: Option<String>,
         onto: Option<String>,
         step: Option<String>,
+        stopped: Option<String>,
     },
     Am {
         step: Option<String>,
@@ -48,49 +87,109 @@ pub fn load(root: &Path, detached: Option<&str>) -> Result<State, String> {
             String::new()
         });
     }
-    let short = abbreviate(root, &hashes.into_inner());
-    let short = |hash: &str| short.get(hash).cloned().unwrap_or_else(|| hash.to_owned());
+    let commits: Vec<_> = operations.iter().flat_map(commits).collect();
+    hashes
+        .borrow_mut()
+        .extend(commits.iter().map(|&(_, hash)| hash.clone()));
+    let abbreviated = abbreviate(root, &hashes.into_inner());
+    let short = |hash: &str| {
+        abbreviated
+            .get(hash)
+            .map_or_else(|| hash.to_owned(), |(short, _)| short.clone())
+    };
     Ok(State {
         detached_at: detached.map(short),
         operations: operations
             .iter()
             .map(|operation| describe(operation, &short))
             .collect(),
+        commits: commits
+            .into_iter()
+            .map(|(verb, hash)| {
+                let mut label = Text::default();
+                label.push(&format!("{verb} "));
+                label.push_hash(short(hash));
+                if let Some((_, subject)) = abbreviated.get(hash) {
+                    label.push(&format!(" {subject}"));
+                }
+                Commit {
+                    hash: hash.clone(),
+                    label,
+                }
+            })
+            .collect(),
     })
+}
+
+/// The commits `operation` is applying, each with what it is doing with it.
+fn commits(operation: &Operation) -> Vec<(&'static str, &String)> {
+    match operation {
+        Operation::Rebase { stopped, .. } => {
+            stopped.iter().map(|hash| ("Stopped at", hash)).collect()
+        }
+        Operation::Merge { heads } => heads.iter().map(|hash| ("Merging", hash)).collect(),
+        Operation::CherryPick { commit } => {
+            commit.iter().map(|hash| ("Cherry-picking", hash)).collect()
+        }
+        Operation::Revert { commit } => commit.iter().map(|hash| ("Reverting", hash)).collect(),
+        Operation::Am { .. } | Operation::Bisect { .. } => Vec::new(),
+    }
 }
 
 /// `operation` as `git status` would summarise it, with `short` abbreviating
 /// its commits.
-fn describe(operation: &Operation, short: &dyn Fn(&str) -> String) -> String {
-    let suffix = |prefix: &str, text: Option<String>| {
-        text.map_or(String::new(), |text| format!("{prefix}{text}"))
+fn describe(operation: &Operation, short: &dyn Fn(&str) -> String) -> Text {
+    let mut text = Text::default();
+    let commit = |text: &mut Text, prefix: &str, hash: &str| {
+        text.push(prefix);
+        text.push_hash(short(hash));
     };
     match operation {
-        Operation::Rebase { branch, onto, step } => format!(
-            "Rebasing{}{}{}",
-            suffix(" ", branch.clone()),
-            suffix(" onto ", onto.as_deref().map(short)),
-            suffix(", ", step.clone()),
-        ),
-        Operation::Am { step } => format!("Applying patches{}", suffix(", ", step.clone())),
+        Operation::Rebase {
+            branch, onto, step, ..
+        } => {
+            text.push("Rebasing");
+            if let Some(branch) = branch {
+                text.push(&format!(" {branch}"));
+            }
+            if let Some(onto) = onto {
+                commit(&mut text, " onto ", onto);
+            }
+            if let Some(step) = step {
+                text.push(&format!(", {step}"));
+            }
+        }
+        Operation::Am { step } => {
+            text.push("Applying patches");
+            if let Some(step) = step {
+                text.push(&format!(", {step}"));
+            }
+        }
         Operation::Merge { heads } => {
-            let heads: Vec<_> = heads.iter().map(|head| short(head)).collect();
-            format!("Merging {}", heads.join(", "))
+            for (index, head) in heads.iter().enumerate() {
+                commit(&mut text, if index == 0 { "Merging " } else { ", " }, head);
+            }
         }
-        Operation::CherryPick { commit } => {
-            format!(
-                "Cherry-picking{}",
-                suffix(" ", commit.as_deref().map(short))
-            )
+        Operation::CherryPick { commit: picked } => {
+            text.push("Cherry-picking");
+            if let Some(picked) = picked {
+                commit(&mut text, " ", picked);
+            }
         }
-        Operation::Revert { commit } => {
-            format!("Reverting{}", suffix(" ", commit.as_deref().map(short)))
+        Operation::Revert { commit: reverted } => {
+            text.push("Reverting");
+            if let Some(reverted) = reverted {
+                commit(&mut text, " ", reverted);
+            }
         }
         // Bisecting from a detached HEAD records its commit, otherwise the
         // branch name.
-        Operation::Bisect { start } if is_hash(start) => format!("Bisecting from {}", short(start)),
-        Operation::Bisect { start } => format!("Bisecting from {start}"),
+        Operation::Bisect { start } if is_hash(start) => {
+            commit(&mut text, "Bisecting from ", start)
+        }
+        Operation::Bisect { start } => text.push(&format!("Bisecting from {start}")),
     }
+    text
 }
 
 /// The operations in progress, in the order `load` describes them.
@@ -126,7 +225,8 @@ fn operations(root: &Path) -> Result<Vec<Operation>, String> {
         return Err("unexpected git rev-parse output".to_owned());
     };
     // Unlike MERGE_HEAD, these may be stored as refs rather than files.
-    let [cherry_pick_head, revert_head] = resolve(root, ["CHERRY_PICK_HEAD", "REVERT_HEAD"])?;
+    let [cherry_pick_head, revert_head, rebase_head] =
+        resolve(root, ["CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"])?;
     let mut operations = Vec::new();
     let step = |directory: &Path, current: &str, total: &str| {
         Some(format!(
@@ -140,6 +240,7 @@ fn operations(root: &Path) -> Result<Vec<Operation>, String> {
             .and_then(|name| name.strip_prefix("refs/heads/").map(str::to_owned)),
         onto: read(&directory.join("onto")),
         step,
+        stopped: rebase_head.clone(),
     };
     if rebase_merge.is_dir() {
         operations.push(rebase(&rebase_merge, step(&rebase_merge, "msgnum", "end")));
@@ -224,15 +325,15 @@ fn is_hash(text: &str) -> bool {
     text.len() >= 40 && text.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
-/// Each commit hash's abbreviation as Git would show it. Abbreviating only
-/// shortens the display, so a failure leaves the hashes whole.
-fn abbreviate(root: &Path, hashes: &[String]) -> HashMap<String, String> {
+/// Each commit hash's abbreviation as Git would show it, with its subject.
+/// These only add detail, so a failure leaves the hashes whole.
+fn abbreviate(root: &Path, hashes: &[String]) -> HashMap<String, (String, String)> {
     if hashes.is_empty() {
         return HashMap::new();
     }
     let Ok(output) = crate::git::read_command_in(root)
         .args(["log", "--no-walk=unsorted", "--no-show-signature"])
-        .arg("--format=%H %h")
+        .arg("--format=%H %h %s")
         .args(hashes)
         .arg("--")
         .output()
@@ -244,8 +345,11 @@ fn abbreviate(root: &Path, hashes: &[String]) -> HashMap<String, String> {
     }
     String::from_utf8_lossy(&output.stdout)
         .lines()
-        .filter_map(|line| line.split_once(' '))
-        .map(|(hash, short)| (hash.to_owned(), short.to_owned()))
+        .filter_map(|line| {
+            let (hash, rest) = line.split_once(' ')?;
+            let (short, subject) = rest.split_once(' ').unwrap_or((rest, ""));
+            Some((hash.to_owned(), (short.to_owned(), subject.to_owned())))
+        })
         .collect()
 }
 
@@ -286,7 +390,10 @@ mod tests {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         let root = Path::new(".");
-        let operations = || load(root, None).unwrap().operations;
+        let operations = || {
+            let operations = load(root, None).unwrap().operations;
+            operations.iter().map(Text::to_string).collect::<Vec<_>>()
+        };
         git(&[&["init", "-q", "-b", "main"], init].concat());
         fs::write("file", "base\n").unwrap();
         git(&["add", "file"]);
@@ -303,12 +410,19 @@ mod tests {
         git(&["checkout", "-q", "feature"]);
         stop(&["rebase", "main"]);
         let head = git(&["rev-parse", "HEAD"]);
+        let state = load(root, Some(&head)).unwrap();
+        assert_eq!(state.detached_at, Some(short("HEAD")));
         assert_eq!(
-            load(root, Some(&head)).unwrap(),
-            State {
-                detached_at: Some(short("HEAD")),
-                operations: vec![format!("Rebasing feature onto {}, 1/1", short("main"))],
-            }
+            operations(),
+            [format!("Rebasing feature onto {}, 1/1", short("main"))]
+        );
+        let [stopped] = &state.commits[..] else {
+            panic!("{state:?}");
+        };
+        assert_eq!(stopped.hash, git(&["rev-parse", "feature"]));
+        assert_eq!(
+            stopped.label.to_string(),
+            format!("Stopped at {} feature", short("feature"))
         );
         git(&["rebase", "--abort"]);
 

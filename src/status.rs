@@ -2,7 +2,7 @@ use crate::git::raw_path;
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
-    text::Line,
+    text::{Line, Span},
     widgets::{Block, Paragraph},
     Frame,
 };
@@ -265,7 +265,12 @@ impl Snapshot {
             .filter(|entry| entry.key.group == Group::Untracked)
             .count();
         WorkingTreeSummary {
-            operations: self.state.operations.clone(),
+            operations: self
+                .state
+                .operations
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
             changed,
             untracked,
         }
@@ -342,19 +347,10 @@ fn untracked_stream_stats(mut reader: impl Read) -> io::Result<String> {
     Ok(format!("+{lines} −0"))
 }
 
-fn visible(text: &str) -> String {
-    text.chars()
-        .flat_map(|ch| {
-            if ch.is_control() {
-                ch.escape_default().collect::<Vec<_>>()
-            } else {
-                vec![ch]
-            }
-        })
-        .collect()
-}
 #[derive(Clone, PartialEq, Eq)]
 enum RowKey {
+    /// A commit an operation in progress is applying, opened with Enter.
+    Commit(String),
     Group(Group),
     File(Key),
     Patch(Key, usize),
@@ -364,7 +360,7 @@ impl RowKey {
     fn outer_file(&self) -> Option<&Key> {
         match self {
             Self::File(key) | Self::Patch(key, _) | Self::Nested(key, _) => Some(key),
-            Self::Group(_) => None,
+            Self::Commit(_) | Self::Group(_) => None,
         }
     }
 
@@ -862,6 +858,14 @@ impl StatusView {
         let old = self.rows.get(self.cursor).cloned();
         let screen = self.cursor.saturating_sub(self.offset);
         self.rows.clear();
+        for commit in &self.snapshot.state.commits {
+            self.rows.push(Row {
+                key: RowKey::Commit(commit.hash.clone()),
+                preview: None,
+                text: format!("  {}", commit.label),
+                color: Some(Color::Reset),
+            });
+        }
         for group in [
             Group::Conflicts,
             Group::Staged,
@@ -971,7 +975,13 @@ impl StatusView {
                         }
                     }
                     if let Some(child) = self.submodules.get(&entry.key) {
-                        for row in &child.rows {
+                        // Commits open in this repository's Show, so leave
+                        // out those of a submodule's operations.
+                        for row in child
+                            .rows
+                            .iter()
+                            .filter(|row| !matches!(row.key, RowKey::Commit(_)))
+                        {
                             self.rows.push(Row {
                                 key: RowKey::Nested(entry.key.clone(), Box::new(row.key.clone())),
                                 text: format!("    {}", row.text),
@@ -1028,6 +1038,8 @@ impl StatusView {
             return;
         };
         match row.key.clone() {
+            // Enter opens the commit in Show instead.
+            RowKey::Commit(_) => {}
             RowKey::Nested(key, nested) => {
                 let child = self.submodules.get_mut(&key).unwrap();
                 if let Some(index) = child.rows.iter().position(|row| row.key == *nested) {
@@ -1119,16 +1131,26 @@ impl StatusView {
         self.error = None;
         self.rebuild();
     }
-    pub fn click(&mut self, y: u16) {
-        if let Some(relative) = y.checked_sub(self.origin) {
-            let index = self.offset + usize::from(relative);
-            if index < self.rows.len() && usize::from(relative) < self.height {
-                self.cursor = index;
-                if self.folded(&self.rows[index].key) {
-                    self.toggle();
-                }
-            }
+    /// The commit on the selected row, which Enter opens in Show.
+    pub fn selected_commit(&self) -> Option<&str> {
+        match &self.rows.get(self.cursor)?.key {
+            RowKey::Commit(hash) => Some(hash),
+            _ => None,
         }
+    }
+    /// Select the clicked row, expanding it if folded. Returns the commit
+    /// on it, for opening in Show.
+    pub fn click(&mut self, y: u16) -> Option<&str> {
+        let relative = y.checked_sub(self.origin)?;
+        let index = self.offset + usize::from(relative);
+        if index >= self.rows.len() || usize::from(relative) >= self.height {
+            return None;
+        }
+        self.cursor = index;
+        if self.folded(&self.rows[index].key) {
+            self.toggle();
+        }
+        self.selected_commit()
     }
     /// Whether a row is a collapsed section or file that a click expands.
     fn folded(&self, key: &RowKey) -> bool {
@@ -1137,7 +1159,7 @@ impl StatusView {
             RowKey::File(file) => !self.rows.iter().any(
                 |row| matches!(&row.key, RowKey::Patch(k, _) | RowKey::Nested(k, _) if k == file),
             ),
-            RowKey::Patch(_, _) => false,
+            RowKey::Commit(_) | RowKey::Patch(_, _) => false,
             RowKey::Nested(file, nested) => self
                 .submodules
                 .get(file)
@@ -1159,46 +1181,68 @@ impl StatusView {
         self.draw_with_images(frame, area, &mut crate::images::Images::default());
     }
 
+    /// The branch, its upstream and operations in progress, with commit
+    /// hashes highlighted as in Log.
+    fn heading(&self) -> Vec<Span<'static>> {
+        if self.unloaded {
+            return vec![Span::raw("Working tree status unavailable")];
+        }
+        let snapshot = &self.snapshot;
+        let mut heading = if snapshot.branch != "(detached)" {
+            vec![Span::raw(snapshot.branch.clone())]
+        } else if let Some(commit) = &snapshot.state.detached_at {
+            vec![
+                Span::raw("Detached HEAD at "),
+                crate::log_format::field_span(crate::log_format::Field::Hash, commit.clone()),
+            ]
+        } else {
+            vec![Span::raw("Detached HEAD")]
+        };
+        if snapshot.initial {
+            heading.push(Span::raw(" · No commits yet"));
+        }
+        if !snapshot.upstream.is_empty() {
+            // Git omits the counts when the upstream branch no longer exists.
+            let ahead_behind = match snapshot.ahead_behind.as_str() {
+                "" => "gone",
+                ahead_behind => ahead_behind,
+            };
+            heading.push(Span::raw(format!(
+                " → {} {ahead_behind}",
+                snapshot.upstream
+            )));
+        }
+        for operation in &snapshot.state.operations {
+            heading.push(Span::raw(" · "));
+            heading.extend(operation.spans());
+        }
+        if snapshot.entries.is_empty() {
+            heading.push(Span::raw(" · Working tree clean"));
+        }
+        heading
+    }
+
+    /// The commit an operation is applying, on a row listing it.
+    fn commit_on(&self, key: &RowKey) -> Option<&crate::operation::Commit> {
+        let RowKey::Commit(hash) = key else {
+            return None;
+        };
+        self.snapshot
+            .state
+            .commits
+            .iter()
+            .find(|commit| &commit.hash == hash)
+    }
+
     pub fn draw_with_images(
         &mut self,
         frame: &mut Frame,
         area: Rect,
         images: &mut crate::images::Images,
     ) {
-        let branch = if self.snapshot.branch == "(detached)" {
-            match &self.snapshot.state.detached_at {
-                Some(commit) => format!("Detached HEAD at {commit}"),
-                None => "Detached HEAD".to_owned(),
-            }
-        } else {
-            self.snapshot.branch.clone()
-        };
-        let mut heading = format!(
-            "{branch}{}",
-            if self.snapshot.initial {
-                " · No commits yet"
-            } else {
-                ""
-            }
-        );
-        if !self.snapshot.upstream.is_empty() {
-            // Git omits the counts when the upstream branch no longer exists.
-            let ahead_behind = match self.snapshot.ahead_behind.as_str() {
-                "" => "gone",
-                ahead_behind => ahead_behind,
-            };
-            heading.push_str(&format!(" → {} {ahead_behind}", self.snapshot.upstream));
-        }
-        for operation in &self.snapshot.state.operations {
-            heading.push_str(&format!(" · {operation}"));
-        }
-        if self.unloaded {
-            heading = "Working tree status unavailable".to_owned();
-        } else if self.snapshot.entries.is_empty() {
-            heading.push_str(" · Working tree clean");
-        }
         frame.render_widget(
-            Paragraph::new(visible(&heading)).style(Style::default().add_modifier(Modifier::BOLD)),
+            Paragraph::new(Line::from(crate::ansi::display_spans(self.heading())))
+                .style(Style::default().add_modifier(Modifier::BOLD)),
             Rect::new(area.x, area.y, area.width, area.height.min(1)),
         );
         self.origin = area.y.saturating_add(1);
@@ -1218,7 +1262,9 @@ impl StatusView {
             .enumerate()
         {
             let mut line = crate::ansi::normalized_line(&row.text);
-            if let Some(color) = row.color {
+            if let Some(commit) = self.commit_on(&row.key) {
+                line = Line::from([vec![Span::raw("  ")], commit.label.spans()].concat());
+            } else if let Some(color) = row.color {
                 line = if row.key.is_file() {
                     crate::ui::summary_line(&row.text)
                 } else {
@@ -2812,6 +2858,48 @@ mod tests {
         assert!(!view.rows.iter().any(|row| row.text == "reading"));
         view.click(row(&view, &RowKey::File(key.clone())));
         assert!(view.rows.iter().any(|row| row.text == "reading"));
+    }
+    #[test]
+    fn enter_opens_the_commit_a_rebase_stopped_at_in_show() {
+        use crate::{
+            app::{App, Mode},
+            git::tests::{git, CurrentDirGuard, TestDirectory},
+            input,
+        };
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q", "-b", "main"]);
+        std::fs::write("file", "base\n").unwrap();
+        git(&["add", "file"]);
+        git(&["commit", "-qm", "base"]);
+        git(&["checkout", "-qb", "feature"]);
+        std::fs::write("file", "feature\n").unwrap();
+        git(&["commit", "-qam", "change on feature"]);
+        let stopped = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "main"]);
+        std::fs::write("file", "main\n").unwrap();
+        git(&["commit", "-qam", "change on main"]);
+        git(&["checkout", "-q", "feature"]);
+        let rebase = Command::new("git")
+            .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
+            .args(["rebase", "main"])
+            .output()
+            .unwrap();
+        assert!(!rebase.status.success());
+
+        let view = StatusView::load().unwrap();
+        assert!(view.rows[0].text.starts_with("  Stopped at "));
+        assert!(view.rows[0].text.ends_with(" change on feature"));
+        let mut app = App::new(vec![crate::git::working_tree_commit(&view.summary())]);
+        app.status_view = Some(view);
+        app.mode = Mode::Status;
+        let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        input::handle(key(KeyCode::Enter), &mut app);
+        assert_eq!(app.mode, Mode::Show);
+        assert_eq!(app.commits[app.selected].hash, stopped);
+        input::handle(key(KeyCode::Backspace), &mut app);
+        assert_eq!(app.mode, Mode::Status);
     }
     #[test]
     fn working_tree_detail_keyboard_mouse_and_conflict_sections() {
