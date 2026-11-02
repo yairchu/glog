@@ -222,7 +222,7 @@ fn load_snapshot(root: &std::path::Path, operations: bool) -> Result<Snapshot, S
     let mut snapshot = parse(&output.stdout)?;
     if operations {
         let detached = (snapshot.branch == "(detached)").then_some(snapshot.oid.as_str());
-        snapshot.state = crate::operation::load(root, detached)?;
+        snapshot.state = crate::operation::load(root, detached);
     }
     Ok(snapshot)
 }

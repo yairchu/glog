@@ -90,9 +90,12 @@ enum Operation {
 }
 
 /// The state of the worktree at `root`, whose HEAD is the commit `detached`
-/// when detached.
-pub fn load(root: &Path, detached: Option<&str>) -> Result<State, String> {
-    let operations = operations(root, &git_dir(root)?)?;
+/// when detached. Operations only add detail to the changed files, so failing
+/// to read them shows none rather than failing the view.
+pub fn load(root: &Path, detached: Option<&str>) -> State {
+    let operations = git_dir(root)
+        .and_then(|directory| operations(root, &directory))
+        .unwrap_or_default();
     let commits: Vec<_> = operations.iter().flat_map(commits).collect();
     // Describe with whole hashes, then abbreviate the ones the text shows.
     let mut descriptions: Vec<_> = operations.iter().map(describe).collect();
@@ -110,7 +113,7 @@ pub fn load(root: &Path, detached: Option<&str>) -> Result<State, String> {
     for description in &mut descriptions {
         description.abbreviate(short);
     }
-    Ok(State {
+    State {
         detached_at: detached.map(short),
         operations: descriptions,
         commits: commits
@@ -128,7 +131,7 @@ pub fn load(root: &Path, detached: Option<&str>) -> Result<State, String> {
                 }
             })
             .collect(),
-    })
+    }
 }
 
 /// The commits `operation` is applying, each with what it is doing with it.
@@ -415,7 +418,7 @@ mod tests {
         git(&["commit", "-qam", "main"]);
         stop(&["merge", "feature"]);
 
-        let state = load(directory.path(), None).unwrap();
+        let state = load(directory.path(), None);
         assert_eq!(
             state
                 .operations
@@ -487,7 +490,7 @@ mod tests {
         let _cwd = CurrentDirGuard::enter(directory.path());
         let root = Path::new(".");
         let operations = || {
-            let operations = load(root, None).unwrap().operations;
+            let operations = load(root, None).operations;
             operations.iter().map(Text::to_string).collect::<Vec<_>>()
         };
         git(&[&["init", "-q", "-b", "main"], init].concat());
@@ -506,7 +509,7 @@ mod tests {
         git(&["checkout", "-q", "feature"]);
         stop(&["rebase", "main"]);
         let head = git(&["rev-parse", "HEAD"]);
-        let state = load(root, Some(&head)).unwrap();
+        let state = load(root, Some(&head));
         assert_eq!(state.detached_at, Some(short("HEAD")));
         assert_eq!(
             operations(),
