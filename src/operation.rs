@@ -387,6 +387,8 @@ mod tests {
         assert!(!output.status.success(), "{output:?}");
     }
 
+    // Windows file names cannot contain newlines.
+    #[cfg(not(windows))]
     #[test]
     fn detects_operations_in_a_git_directory_containing_a_newline() {
         let directory = TestDirectory::new();
