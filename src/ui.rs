@@ -188,33 +188,86 @@ enum HelpView {
     Branches,
 }
 
-/// A key and its description in the Log, Reflog, Blame, Stash, Detail, File,
-/// and Branches help screens, in that order; `None` omits the row. Rows without
-/// a key are shown verbatim.
-type HelpRow = (&'static str, [Option<&'static str>; 7]);
+/// A key's description in each help screen; `None` omits its row there.
+#[derive(Clone, Copy)]
+struct HelpTexts {
+    log: Option<&'static str>,
+    reflog: Option<&'static str>,
+    blame: Option<&'static str>,
+    stash: Option<&'static str>,
+    /// Show, Diff, or Status without a Log to return to.
+    detail: Option<&'static str>,
+    file: Option<&'static str>,
+    branches: Option<&'static str>,
+}
+
+impl HelpTexts {
+    fn get(self, view: HelpView) -> Option<&'static str> {
+        match view {
+            HelpView::Log => self.log,
+            HelpView::Reflog => self.reflog,
+            HelpView::Blame => self.blame,
+            HelpView::Stash => self.stash,
+            HelpView::Detail => self.detail,
+            HelpView::File => self.file,
+            HelpView::Branches => self.branches,
+        }
+    }
+}
+
+const NO_HELP: HelpTexts = HelpTexts {
+    log: None,
+    reflog: None,
+    blame: None,
+    stash: None,
+    detail: None,
+    file: None,
+    branches: None,
+};
+
+/// A key and its descriptions. Rows without a key are shown verbatim.
+type HelpRow = (&'static str, HelpTexts);
 
 const fn every(key: &'static str, text: &'static str) -> HelpRow {
-    (key, [Some(text); 7])
+    let text = Some(text);
+    (
+        key,
+        HelpTexts {
+            log: text,
+            reflog: text,
+            blame: text,
+            stash: text,
+            detail: text,
+            file: text,
+            branches: text,
+        },
+    )
 }
 
 const fn branches(key: &'static str, text: &'static str) -> HelpRow {
-    (key, [None, None, None, None, None, None, Some(text)])
+    (
+        key,
+        HelpTexts {
+            branches: Some(text),
+            ..NO_HELP
+        },
+    )
 }
 
 /// Detail actions are available in every session except the plain file view
 /// and Branches.
 const fn detail(key: &'static str, text: &'static str) -> HelpRow {
+    let text = Some(text);
     (
         key,
-        [
-            Some(text),
-            Some(text),
-            Some(text),
-            Some(text),
-            Some(text),
-            None,
-            None,
-        ],
+        HelpTexts {
+            log: text,
+            reflog: text,
+            blame: text,
+            stash: text,
+            detail: text,
+            ..NO_HELP
+        },
     )
 }
 
@@ -227,244 +280,190 @@ const HELP_ROWS: &[HelpRow] = &[
     every("", "Navigation"),
     (
         "↑/k, ↓/j",
-        [
-            Some("previous / next; move Show cursor"),
-            Some("previous / next; move Show cursor"),
-            Some("previous / next; move Show cursor"),
-            Some("previous / next; move Show cursor"),
-            Some("previous / next; move Show cursor"),
-            Some("previous / next line"),
-            Some("select a branch or shared ancestor"),
-        ],
+        HelpTexts {
+            log: Some("previous / next; move Show cursor"),
+            reflog: Some("previous / next; move Show cursor"),
+            blame: Some("previous / next; move Show cursor"),
+            stash: Some("previous / next; move Show cursor"),
+            detail: Some("previous / next; move Show cursor"),
+            file: Some("previous / next line"),
+            branches: Some("select a branch or shared ancestor"),
+        },
     ),
     every("Page Up/b", "page up"),
     every("Page Down/Space/f", "page down"),
     (
         "←/→",
-        [
-            Some("previous / next commit (Log/Show/Status)"),
-            Some("previous / next reflog entry"),
-            Some("previous / next commit chunk"),
-            Some("previous / next stash"),
-            None,
-            None,
-            None,
-        ],
+        HelpTexts {
+            log: Some("previous / next commit (Log/Show/Status)"),
+            reflog: Some("previous / next reflog entry"),
+            blame: Some("previous / next commit chunk"),
+            stash: Some("previous / next stash"),
+            ..NO_HELP
+        },
     ),
     detail("[, ]", "previous / next changed file (Show)"),
     (
         "Click link",
-        [
-            Some("follow a commit or open a link (Show)"),
-            Some("follow a commit or open a link (Show)"),
-            Some("follow a commit or open a link (Show)"),
+        HelpTexts {
+            log: Some("follow a commit or open a link (Show)"),
+            reflog: Some("follow a commit or open a link (Show)"),
+            blame: Some("follow a commit or open a link (Show)"),
             // Show links nothing in stash messages.
-            None,
-            Some("follow a commit or open a link (Show)"),
-            None,
-            None,
-        ],
+            stash: None,
+            detail: Some("follow a commit or open a link (Show)"),
+            ..NO_HELP
+        },
     ),
     every("g/<, G/>", "top / bottom (also Home/End)"),
     every("", ""),
     (
         "a/d/r/x/s",
-        [
-            Some("toggle author/date/refs/hash/subject (Log)"),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ],
+        HelpTexts {
+            log: Some("toggle author/date/refs/hash/subject (Log)"),
+            ..NO_HELP
+        },
     ),
     (
         "a/d/x",
-        [
-            None,
-            None,
-            Some("toggle author/date/hash"),
-            None,
-            None,
-            Some("show author/date/hash; enable line history"),
-            None,
-        ],
+        HelpTexts {
+            blame: Some("toggle author/date/hash"),
+            file: Some("show author/date/hash; enable line history"),
+            ..NO_HELP
+        },
     ),
     branches("d", "show / hide dates"),
     (
         "a/d",
-        [
-            None,
-            None,
-            None,
-            Some("toggle author/date (Stash)"),
-            None,
-            None,
-            None,
-        ],
+        HelpTexts {
+            stash: Some("toggle author/date (Stash)"),
+            ..NO_HELP
+        },
     ),
     (
         "",
-        [
-            Some(AUTHOR_BADGES),
-            None,
-            Some(AUTHOR_BADGES),
-            None,
-            None,
-            None,
-            None,
-        ],
+        HelpTexts {
+            log: Some(AUTHOR_BADGES),
+            blame: Some(AUTHOR_BADGES),
+            ..NO_HELP
+        },
     ),
     every("", "Views and search"),
     (
         "W",
-        [
-            Some("toggle watch (Log/Show)"),
-            None,
-            None,
-            None,
-            None,
-            None,
-            Some("toggle watch"),
-        ],
+        HelpTexts {
+            log: Some("toggle watch (Log/Show)"),
+            branches: Some("toggle watch"),
+            ..NO_HELP
+        },
     ),
     every("O", "open commit on GitHub (selected file/line in Show)"),
     detail("B", "blame selected line (Show)"),
     (
         "Enter",
-        [
-            Some("open commit / toggle section or file"),
-            Some("open commit / toggle section or file"),
-            Some("open commit / toggle section or file"),
-            Some("open stash / toggle section or file"),
-            Some("open commit (Status) / toggle section or file"),
-            None,
-            Some("open its Log up to the next shared node"),
-        ],
+        HelpTexts {
+            log: Some("open commit / toggle section or file"),
+            reflog: Some("open commit / toggle section or file"),
+            blame: Some("open commit / toggle section or file"),
+            stash: Some("open stash / toggle section or file"),
+            detail: Some("open commit (Status) / toggle section or file"),
+            branches: Some("open its Log up to the next shared node"),
+            ..NO_HELP
+        },
     ),
     (
         "z",
-        [
-            Some("fold merge (Log) / file (Show)"),
-            Some("fold rebase, rebase chain, amend chain, or visits / file (Show)"),
-            FILE_FOLD,
-            FILE_FOLD,
-            FILE_FOLD,
-            None,
-            None,
-        ],
+        HelpTexts {
+            log: Some("fold merge (Log) / file (Show)"),
+            reflog: Some("fold rebase, rebase chain, amend chain, or visits / file (Show)"),
+            blame: FILE_FOLD,
+            stash: FILE_FOLD,
+            detail: FILE_FOLD,
+            ..NO_HELP
+        },
     ),
     (
         "",
-        [
-            None,
-            Some("At a chain head: rebases / latest steps / folded chain"),
-            None,
-            None,
-            None,
-            None,
-            None,
-        ],
+        HelpTexts {
+            reflog: Some("At a chain head: rebases / latest steps / folded chain"),
+            ..NO_HELP
+        },
     ),
     (
         "m",
-        [
-            Some("expand / fold all merges (Log)"),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ],
+        HelpTexts {
+            log: Some("expand / fold all merges (Log)"),
+            ..NO_HELP
+        },
     ),
     (
         "t / T",
-        [
-            Some("hide selected type / clear filters (Log)"),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ],
+        HelpTexts {
+            log: Some("hide selected type / clear filters (Log)"),
+            ..NO_HELP
+        },
     ),
     (
         "M",
-        [
-            Some("hide / show merge commits (Log)"),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
-        ],
+        HelpTexts {
+            log: Some("hide / show merge commits (Log)"),
+            ..NO_HELP
+        },
     ),
     (
         "p",
-        [
-            None,
-            None,
-            Some("blame the file before this commit"),
-            None,
-            None,
-            None,
-            None,
-        ],
+        HelpTexts {
+            blame: Some("blame the file before this commit"),
+            ..NO_HELP
+        },
     ),
     (
         "Backspace",
-        [
+        HelpTexts {
             // A followed reference opens as a Log, whatever it was followed from.
-            Some("return after following a link or opening blame"),
-            Some("return after opening blame"),
-            Some("return to the previous blame or review"),
-            None,
-            Some("return after opening blame"),
-            Some("return to the previous blame, if any"),
-            Some("return here from a branch Log"),
-        ],
+            log: Some("return after following a link or opening blame"),
+            reflog: Some("return after opening blame"),
+            blame: Some("return to the previous blame or review"),
+            detail: Some("return after opening blame"),
+            file: Some("return to the previous blame, if any"),
+            branches: Some("return here from a branch Log"),
+            ..NO_HELP
+        },
     ),
     detail("L", "expand / fold all lockfiles (Show)"),
     detail("e", "open working file in editor (Show/Status)"),
     (
         "s",
-        [
-            FILE_SUMMARY,
-            Some("toggle file summary / patch (Show)"),
-            FILE_SUMMARY,
-            Some("toggle file summary / patch (Show)"),
-            FILE_SUMMARY,
-            None,
-            None,
-        ],
+        HelpTexts {
+            log: FILE_SUMMARY,
+            reflog: Some("toggle file summary / patch (Show)"),
+            blame: FILE_SUMMARY,
+            stash: Some("toggle file summary / patch (Show)"),
+            detail: FILE_SUMMARY,
+            ..NO_HELP
+        },
     ),
     (
         "Escape",
-        [
-            Some("return to Log / cancel"),
-            Some("return to Reflog / cancel"),
-            Some("return to Blame (Show) / previous blame or review / cancel"),
-            Some("return to Stash / cancel"),
-            None,
-            Some("close help / cancel search"),
-            Some("return here from a branch Log / cancel"),
-        ],
+        HelpTexts {
+            log: Some("return to Log / cancel"),
+            reflog: Some("return to Reflog / cancel"),
+            blame: Some("return to Blame (Show) / previous blame or review / cancel"),
+            stash: Some("return to Stash / cancel"),
+            file: Some("close help / cancel search"),
+            branches: Some("return here from a branch Log / cancel"),
+            ..NO_HELP
+        },
     ),
     (
         "Tab",
-        [
-            Some("switch Log / detail"),
-            Some("switch Reflog / Show"),
-            Some("switch Blame / detail"),
-            Some("switch Stash / Show"),
-            None,
-            None,
-            None,
-        ],
+        HelpTexts {
+            log: Some("switch Log / detail"),
+            reflog: Some("switch Reflog / Show"),
+            blame: Some("switch Blame / detail"),
+            stash: Some("switch Stash / Show"),
+            ..NO_HELP
+        },
     ),
     every("/, ?", "search forward / backward"),
     every("n, N", "repeat / reverse search"),
@@ -493,7 +492,7 @@ fn help_text(view: HelpView) -> String {
     HELP_ROWS
         .iter()
         .filter_map(|(key, texts)| {
-            let text = texts[view as usize]?;
+            let text = texts.get(view)?;
             Some(if key.is_empty() {
                 text.to_owned()
             } else {
