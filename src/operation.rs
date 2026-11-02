@@ -93,12 +93,13 @@ enum Operation {
     },
 }
 
-/// The state of the worktree at `root`, whose HEAD is the commit `detached`
-/// when detached. Operations only add detail to the changed files, so failing
-/// to read them shows none rather than failing the view.
-pub fn load(root: &Path, detached: Option<&str>) -> State {
-    let operations = git_dir(root)
-        .and_then(|directory| operations(root, &directory))
+/// The state of the worktree at `root`, whose Git directory is `git_dir`
+/// and whose HEAD is the commit `detached` when detached. Operations only add
+/// detail to the changed files, so failing to read them, including without
+/// a Git directory, shows none rather than failing the view.
+pub fn load(root: &Path, git_dir: Option<&Path>, detached: Option<&str>) -> State {
+    let operations = git_dir
+        .and_then(|directory| operations(root, directory).ok())
         .unwrap_or_default();
     let commits: Vec<_> = operations.iter().flat_map(commits).collect();
     // Describe with whole hashes, then abbreviate the ones the text shows.
@@ -543,7 +544,11 @@ mod tests {
         git(&["commit", "-qam", "main"]);
         stop(&["merge", "feature"]);
 
-        let state = load(directory.path(), None);
+        let state = load(
+            directory.path(),
+            git_dir(directory.path()).ok().as_deref(),
+            None,
+        );
         assert_eq!(
             state
                 .operations
@@ -615,7 +620,7 @@ mod tests {
         let _cwd = CurrentDirGuard::enter(directory.path());
         let root = Path::new(".");
         let operations = || {
-            let operations = load(root, None).operations;
+            let operations = load(root, git_dir(root).ok().as_deref(), None).operations;
             operations.iter().map(Text::to_string).collect::<Vec<_>>()
         };
         git(&[&["init", "-q", "-b", "main"], init].concat());
@@ -634,7 +639,7 @@ mod tests {
         git(&["checkout", "-q", "feature"]);
         stop(&["rebase", "main"]);
         let head = git(&["rev-parse", "HEAD"]);
-        let state = load(root, Some(&head));
+        let state = load(root, git_dir(root).ok().as_deref(), Some(&head));
         assert_eq!(state.detached_at, Some(short("HEAD")));
         assert_eq!(
             operations(),

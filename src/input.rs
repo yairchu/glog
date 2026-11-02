@@ -70,12 +70,22 @@ fn apply(event: Event, app: &mut App) {
             return;
         }
         if app.mode == Mode::Status {
+            // Commit rows open the commit; other rows fold below.
+            let commit = (key.code == KeyCode::Enter)
+                .then(|| {
+                    app.status_view
+                        .as_ref()?
+                        .selected_commit()
+                        .map(str::to_owned)
+                })
+                .flatten();
+            if let Some(commit) = commit {
+                app.follow_reference(&commit);
+                return;
+            }
             match key.code {
                 KeyCode::Tab | KeyCode::Esc => app.switch_mode(),
                 KeyCode::Char('q') => app.quit = true,
-                KeyCode::Enter if selected_commit(app).is_some() => {
-                    app.follow_reference(&selected_commit(app).unwrap())
-                }
                 KeyCode::Char('h') => app.show_help = true,
                 KeyCode::Left if !key.modifiers.contains(KeyModifiers::SHIFT) => {
                     show_adjacent(app, -1)
@@ -283,13 +293,6 @@ pub fn is_click(event: &Event) -> bool {
 }
 
 /// The commit on the selected Status row, such as the one a rebase stopped at.
-fn selected_commit(app: &App) -> Option<String> {
-    app.status_view
-        .as_ref()?
-        .selected_commit()
-        .map(str::to_owned)
-}
-
 fn show_adjacent(app: &mut App, delta: isize) {
     if app.move_selection(delta) {
         app.show_offset = 0;

@@ -202,7 +202,7 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
     Ok(snapshot)
 }
 
-fn load_snapshot(root: &std::path::Path, operations: bool) -> Result<Snapshot, String> {
+fn load_snapshot(root: &std::path::Path) -> Result<Snapshot, String> {
     let output = crate::git::read_command_in(root)
         .args([
             "-c",
@@ -219,16 +219,15 @@ fn load_snapshot(root: &std::path::Path, operations: bool) -> Result<Snapshot, S
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
-    let mut snapshot = parse(&output.stdout)?;
-    if operations {
-        let detached = (snapshot.branch == "(detached)").then_some(snapshot.oid.as_str());
-        snapshot.state = crate::operation::load(root, detached);
-    }
-    Ok(snapshot)
+    parse(&output.stdout)
 }
 
 pub fn working_tree_summary() -> Result<WorkingTreeSummary, String> {
-    Ok(load_snapshot(&crate::git::repository_root()?, true)?.summary())
+    let root = crate::git::repository_root()?;
+    let mut snapshot = load_snapshot(&root)?;
+    let git_dir = crate::operation::git_dir(&root).ok();
+    snapshot.load_operations(&root, git_dir.as_deref());
+    Ok(snapshot.summary())
 }
 
 /// Open details for changed files or operations in progress, otherwise
@@ -254,6 +253,13 @@ pub fn load_app(args: &[String]) -> Result<crate::app::App, String> {
 }
 
 impl Snapshot {
+    /// Add the operations in progress in the worktree at `root`, whose Git
+    /// directory is `git_dir`.
+    fn load_operations(&mut self, root: &std::path::Path, git_dir: Option<&std::path::Path>) {
+        let detached = (self.branch == "(detached)").then_some(self.oid.as_str());
+        self.state = crate::operation::load(root, git_dir, detached);
+    }
+
     fn summary(&self) -> WorkingTreeSummary {
         let changed = self
             .entries
@@ -423,6 +429,8 @@ pub struct StatusView {
     /// A submodule's view, nested in its parent's. Its commits would open
     /// in the parent's Show, so it leaves out operations in progress.
     nested: bool,
+    /// The Git directory holding `root`'s operations, once found.
+    git_dir: Option<PathBuf>,
 }
 impl StatusView {
     pub fn editor_target(&self) -> Result<crate::editor::Target, String> {
@@ -785,7 +793,14 @@ impl StatusView {
         if self.root.as_os_str().is_empty() {
             self.root = crate::git::repository_root()?;
         }
-        let snapshot = load_snapshot(&self.root, !self.nested)?;
+        let mut snapshot = load_snapshot(&self.root)?;
+        if !self.nested {
+            // Status refreshes every second, but the Git directory stays.
+            if self.git_dir.is_none() {
+                self.git_dir = crate::operation::git_dir(&self.root).ok();
+            }
+            snapshot.load_operations(&self.root, self.git_dir.as_deref());
+        }
         let attributes = self.attributes(&snapshot)?;
         let mut fingerprints = HashMap::new();
         let mut patches = HashMap::new();
