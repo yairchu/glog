@@ -239,14 +239,14 @@ pub fn load_app(args: &[String]) -> Result<crate::app::App, String> {
     }
     let view = StatusView::load()?;
     let summary = view.summary();
-    let clean = summary.is_clean();
+    let idle = summary.is_idle();
     let mut commits = vec![crate::git::working_tree_commit(&summary)];
-    if clean {
+    if idle {
         commits.extend(crate::git::load_log(&[])?);
     }
     let mut app = crate::app::App::new(commits);
     app.status_view = Some(view);
-    if !clean {
+    if !idle {
         app.mode = crate::app::Mode::Status;
         app.pending_history = Some(Vec::new());
     }
@@ -289,7 +289,7 @@ pub struct WorkingTreeSummary {
 
 impl WorkingTreeSummary {
     /// Whether nothing is changed or in progress.
-    pub fn is_clean(&self) -> bool {
+    pub fn is_idle(&self) -> bool {
         self.operations.is_empty() && self.changed == 0 && self.untracked == 0
     }
 }
@@ -303,7 +303,7 @@ impl std::fmt::Display for WorkingTreeSummary {
                 parts.push(format!("{count} {kind} file{suffix}"));
             }
         }
-        if self.is_clean() {
+        if self.is_idle() {
             parts.push("Clean".to_owned());
         }
         f.write_str(&parts.join(" · "))

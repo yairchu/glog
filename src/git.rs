@@ -695,7 +695,7 @@ pub fn working_tree_commit(summary: &crate::status::WorkingTreeSummary) -> Commi
         "worktree",
         &format!("Working tree · {summary}"),
     );
-    commit.graph_node = if summary.is_clean() { '.' } else { '*' };
+    commit.graph_node = if summary.is_idle() { '.' } else { '*' };
     commit.graph = vec![format!("{} ", commit.graph_node)];
     commit
 }
