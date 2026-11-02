@@ -1338,7 +1338,7 @@ impl Layout {
                 (index, rows)
             })
             .collect();
-        Drawing(std::rc::Rc::new(Plan {
+        Drawing::Plan(std::rc::Rc::new(Plan {
             visible: self.visible.clone(),
             trimmed: trimmed.to_vec(),
             nodes: commits.iter().map(|c| c.graph_node).collect(),
@@ -1360,13 +1360,25 @@ const BLOCK: usize = 64;
 /// took seconds in long histories, so only the lane assignment runs ahead,
 /// recording each row's height and a checkpoint per block of rows. A block's
 /// text is built when one of its rows is first displayed.
-#[derive(Clone, Default)]
-struct Drawing(std::rc::Rc<Plan>);
+#[derive(Clone)]
+enum Drawing {
+    Plan(std::rc::Rc<Plan>),
+    Reflog(std::rc::Rc<reflog_graph::Graph>),
+}
+
+impl Default for Drawing {
+    fn default() -> Self {
+        Self::Plan(Default::default())
+    }
+}
 
 impl Drawing {
     /// The rows drawn for a shown row.
     fn rows(&self, unicode: bool, index: usize) -> Option<&[String]> {
-        let plan = &self.0;
+        let plan = match self {
+            Self::Plan(plan) => plan,
+            Self::Reflog(graph) => return graph.rows(unicode, index),
+        };
         let lanes = plan.lanes(unicode);
         let block = lanes.blocks.get(index / BLOCK)?;
         block.get_or_init(|| plan.draw_block(lanes, index / BLOCK))[index % BLOCK].as_deref()
@@ -1374,8 +1386,20 @@ impl Drawing {
 
     /// The number of rows drawn for a shown row.
     fn height(&self, unicode: bool, index: usize) -> Option<usize> {
-        self.0.visible.get(index).filter(|&&visible| visible)?;
-        Some(self.0.lanes(unicode).heights[index])
+        let plan = match self {
+            Self::Plan(plan) => plan,
+            Self::Reflog(graph) => return graph.height(index),
+        };
+        plan.visible.get(index).filter(|&&visible| visible)?;
+        Some(plan.lanes(unicode).heights[index])
+    }
+
+    #[cfg(test)]
+    fn plan(&self) -> &Plan {
+        match self {
+            Self::Plan(plan) => plan,
+            Self::Reflog(_) => panic!("expected a Log graph"),
+        }
     }
 }
 
@@ -2135,7 +2159,7 @@ mod tests {
                 if fold_merge {
                     folds.toggle(0, &commits).unwrap();
                 }
-                let plan = &folds.shown_layout().graphs.0;
+                let plan = &folds.shown_layout().graphs.plan();
                 let mut state = State::default();
                 for (index, expected) in [0, 1, 0, 0, 3, 0, 0].into_iter().enumerate() {
                     if let Some(row) = plan.step(&mut state, index, true) {
@@ -2177,7 +2201,7 @@ mod tests {
         commits.push(commit("base", &[]));
         let mut folds = LogFolds::default();
         folds.refresh(&commits).unwrap();
-        let plan = &folds.shown_layout().graphs.0;
+        let plan = &folds.shown_layout().graphs.plan();
         let mut state = State::default();
         for tip in 0..tips {
             let row = plan.step(&mut state, tip, true).unwrap();
@@ -3314,7 +3338,7 @@ mod tests {
             .collect();
         let mut folds = LogFolds::default();
         folds.refresh(&commits).unwrap();
-        let plan = &folds.view.layout.graphs.0;
+        let plan = &folds.view.layout.graphs.plan();
         for unicode in [false, true] {
             let lanes = plan.lanes(unicode);
             assert_eq!(lanes.checkpoints.len(), 4);

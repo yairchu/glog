@@ -6,7 +6,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use crate::git::Commit;
 
-use super::{paint, Drawing, Fold, GraphRows, Layout, Plan, PALETTE};
+use super::{paint, Fold, GraphRows, Layout, BLOCK, PALETTE};
 
 #[derive(Default)]
 struct Occurrences<'a> {
@@ -221,13 +221,14 @@ impl Cell {
     }
 }
 
-/// The arrows describe visible ancestry, not the direction of ref movement.
-/// A collapsed rebase finish represents the whole operation's new tip.
-fn node(commit: &Commit, directions: u8, paths: u8, fold: Fold, repeated: bool) -> Node {
+/// The node a row's own event fixes, whatever its visible ancestry. The
+/// arrows describe visible ancestry, not the direction of ref movement. A
+/// collapsed rebase finish represents the whole operation's new tip.
+fn event_node(commit: &Commit, fold: Fold, repeated: bool) -> Option<Node> {
     if repeated {
-        return Node::Repeat;
+        return Some(Node::Repeat);
     }
-    let visit = if let Some(entry) = commit.reflog() {
+    let visit = commit.reflog().is_some_and(|entry| {
         let action = entry.action.split_once(": ").map(|(action, _)| action);
         matches!(action, Some("checkout" | "reset" | "clone" | "branch"))
             || action.is_some_and(|action| match super::rebase_stage(action) {
@@ -235,13 +236,19 @@ fn node(commit: &Commit, directions: u8, paths: u8, fold: Fold, repeated: bool) 
                 Some("start" | "abort" | "reset") => true,
                 _ => false,
             })
-    } else {
-        false
-    };
+    });
     if visit {
-        Node::Visit
+        Some(Node::Visit)
     } else if commit.parents.len() > 1 {
-        Node::Merge
+        Some(Node::Merge)
+    } else {
+        None
+    }
+}
+
+fn node(event: Option<Node>, directions: u8, paths: u8) -> Node {
+    if let Some(node) = event {
+        node
     } else if directions != 0 && paths == LEFT {
         Node::Side(Arrow::Right)
     } else if directions != 0 && paths == RIGHT {
@@ -280,27 +287,96 @@ fn connect(line: &mut [Cell], node: usize, lane: usize, toward_node: bool) {
     }
 }
 
-pub(super) fn draw(commits: &[Commit], layout: &Layout, repeated: &[Option<usize>]) -> Drawing {
-    let edges = edges(commits, &layout.visible, repeated);
-    let mut starts = vec![Vec::new(); commits.len()];
-    let mut directions = vec![0; commits.len()];
-    for edge in edges {
-        starts[edge.start()].push(edge);
-        if let Edge::Parent { child, parent } = edge {
-            directions[child] |= if parent > child { UP } else { DOWN };
+/// The open edges, by lane, between two rows.
+type Lanes = Vec<Option<Edge>>;
+
+/// How a shown event's line meets the lanes.
+struct Route {
+    column: usize,
+    above: Lanes,
+    incoming: Vec<usize>,
+    outgoing: Vec<(usize, Edge)>,
+}
+
+/// The Reflog graph, whose rows are drawn when first displayed. Drawing
+/// every row of a long reflog took noticeable time on each fold toggle, so
+/// only the lanes before each block of rows are found ahead. Every event
+/// takes exactly one line, so no other row height needs finding.
+pub(super) struct Graph {
+    visible: Vec<bool>,
+    starts: Vec<Vec<Edge>>,
+    directions: Vec<u8>,
+    events: Vec<Option<Node>>,
+    checkpoints: Vec<Lanes>,
+    blocks: Vec<std::cell::OnceCell<Vec<Option<GraphRows>>>>,
+}
+
+impl Graph {
+    pub(super) fn new(commits: &[Commit], layout: &Layout, repeated: &[Option<usize>]) -> Self {
+        let mut starts = vec![Vec::new(); commits.len()];
+        let mut directions = vec![0; commits.len()];
+        for edge in edges(commits, &layout.visible, repeated) {
+            starts[edge.start()].push(edge);
+            if let Edge::Parent { child, parent } = edge {
+                directions[child] |= if parent > child { UP } else { DOWN };
+            }
         }
+        let mut graph = Self {
+            visible: layout.visible.clone(),
+            starts,
+            directions,
+            events: commits
+                .iter()
+                .enumerate()
+                .map(|(row, commit)| event_node(commit, layout.folds[row], repeated[row].is_some()))
+                .collect(),
+            checkpoints: Vec::new(),
+            blocks: Vec::new(),
+        };
+        let mut lanes = Lanes::new();
+        for row in 0..commits.len() {
+            if row % BLOCK == 0 {
+                graph.checkpoints.push(lanes.clone());
+                graph.blocks.push(std::cell::OnceCell::new());
+            }
+            graph.advance(&mut lanes, row);
+        }
+        graph
     }
 
-    // Sweep events in display order, treating an edge as an interval rather
-    // than assuming its parent is older. Its endpoints retain their roles
-    // for the node arrows. Ordinary sequences stay in a single column.
-    let mut lanes: Vec<Option<Edge>> = Vec::new();
-    let mut fixed = HashMap::new();
-    for (row, commit) in commits
-        .iter()
-        .enumerate()
-        .filter(|&(row, _)| layout.visible[row])
-    {
+    /// The line drawn for a shown row.
+    pub(super) fn rows(&self, unicode: bool, row: usize) -> Option<&[String]> {
+        let block = self.blocks.get(row / BLOCK)?;
+        let rows = block.get_or_init(|| self.draw_block(row / BLOCK))[row % BLOCK].as_ref()?;
+        Some(rows.get(unicode))
+    }
+
+    pub(super) fn height(&self, row: usize) -> Option<usize> {
+        self.visible.get(row).filter(|&&visible| visible)?;
+        Some(1)
+    }
+
+    fn draw_block(&self, block: usize) -> Vec<Option<GraphRows>> {
+        let mut lanes = self.checkpoints[block].clone();
+        let start = block * BLOCK;
+        (start..self.visible.len().min(start + BLOCK))
+            .map(|row| {
+                let route = self.advance(&mut lanes, row)?;
+                Some(self.draw(row, &route, &lanes))
+            })
+            .collect()
+    }
+
+    /// Sweep events in display order, treating an edge as an interval rather
+    /// than assuming its parent is older. Its endpoints retain their roles
+    /// for the node arrows. Ordinary sequences stay in a single column.
+    fn advance(&self, lanes: &mut Lanes, row: usize) -> Option<Route> {
+        if !self.visible[row] {
+            return None;
+        }
+        while lanes.last() == Some(&None) {
+            lanes.pop();
+        }
         let incoming: Vec<_> = lanes
             .iter()
             .enumerate()
@@ -318,7 +394,7 @@ pub(super) fn draw(commits: &[Commit], layout: &Layout, repeated: &[Option<usize
         }
         lanes.resize(lanes.len().max(column + 1), None);
         let mut outgoing = Vec::new();
-        for &edge in &starts[row] {
+        for &edge in &self.starts[row] {
             // Children of the same displayed parent can branch from its
             // existing path. Never bundle reverse edges just because their
             // lower endpoint coincides: that endpoint may be a child.
@@ -345,6 +421,23 @@ pub(super) fn draw(commits: &[Commit], layout: &Layout, repeated: &[Option<usize
             }
             outgoing.push((lane, edge));
         }
+        Some(Route {
+            column,
+            above,
+            incoming,
+            outgoing,
+        })
+    }
+
+    /// The line of `row`, routed as `route`, with `lanes` open below it.
+    fn draw(&self, row: usize, route: &Route, lanes: &Lanes) -> GraphRows {
+        let Route {
+            column,
+            above,
+            incoming,
+            outgoing,
+        } = route;
+        let column = *column;
         let mut line = vec![Cell::default(); 2 * lanes.len().max(above.len()) - 1];
         for (lane, edge) in above.iter().enumerate() {
             if edge.is_some() {
@@ -361,16 +454,14 @@ pub(super) fn draw(commits: &[Commit], layout: &Layout, repeated: &[Option<usize
         for (lane, edge) in incoming
             .iter()
             .map(|&lane| (lane, above[lane].unwrap()))
-            .chain(outgoing)
+            .chain(outgoing.iter().copied())
         {
             connect(&mut line, column, lane, edge.child() == Some(row));
         }
         let node = node(
-            commit,
-            directions[row],
+            self.events[row],
+            self.directions[row],
             line[2 * column].paths,
-            layout.folds[row],
-            repeated[row].is_some(),
         );
         // A leaf branching sideways uses the arrowhead as its node. Keep
         // hollow visits and merge diamonds, with their separate arrowheads.
@@ -406,22 +497,11 @@ pub(super) fn draw(commits: &[Commit], layout: &Layout, repeated: &[Option<usize
             text.push(' ');
             vec![text]
         };
-        fixed.insert(
-            row,
-            GraphRows {
-                ascii: render(false),
-                unicode: render(true),
-            },
-        );
-        while lanes.last() == Some(&None) {
-            lanes.pop();
+        GraphRows {
+            ascii: render(false),
+            unicode: render(true),
         }
     }
-    Drawing(std::rc::Rc::new(Plan {
-        visible: layout.visible.clone(),
-        fixed,
-        ..Plan::default()
-    }))
 }
 
 #[cfg(test)]

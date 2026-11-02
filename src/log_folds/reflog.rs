@@ -313,7 +313,9 @@ impl Folds {
                 repeated[header] = repeated[*visits.entries.last().unwrap()];
             }
         }
-        layout.graphs = super::reflog_graph::draw(commits, &layout, &repeated);
+        layout.graphs = super::Drawing::Reflog(std::rc::Rc::new(super::reflog_graph::Graph::new(
+            commits, &layout, &repeated,
+        )));
         layout
     }
 
