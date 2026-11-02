@@ -5,6 +5,12 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Changed
+
+- Connect continuing graph lanes directly, with diagonals between adjacent
+  lanes and elbows through the gaps between farther ones, so forks can join
+  occupied lanes without a detour. Paths now cross at `┼` instead of `╪`.
+
 ## 0.7.1 - 2026-11-02
 
 ### Added

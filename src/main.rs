@@ -256,7 +256,7 @@ Watching preserves revision/path arguments; Logs that name no revision or path
 also include a Working tree item. W toggles watching in Log and Branches.
 Graphs use rounded paths, ● for commits, • for empty non-merge commits or a
 clean working tree, and ○ for boundary commits. Merge commits stay filled.
-╪ crosses paths without joining them.
+┼ crosses paths without joining them.
 Reflog shows local ref updates with their update times; Enter opens the commit.
 Finished or aborted rebases and amend chains start folded in Reflog;
 z toggles a fold.

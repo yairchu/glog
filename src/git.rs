@@ -3598,7 +3598,10 @@ pub(crate) mod tests {
                 .flat_map(|(i, c)| folds.display_graph(i, c))
                 .map(|row| crate::ansi::plain(row))
                 .collect();
-            assert!(!drawing.contains(['├', '┤', '╭', '╮', '─']), "{drawing}");
+            assert!(
+                !drawing.contains(['╱', '╲', '├', '┤', '╭', '╮', '╰', '╯', '─']),
+                "{drawing}"
+            );
             assert_eq!(folds.marker(merge), None);
             folds.toggle_merges(&commits).unwrap();
             assert!(!folds.visible(merge));

@@ -1751,45 +1751,12 @@ pub fn unicode_node(node: char) -> char {
     }
 }
 
-/// Route one connection per row. Occupied destinations move out of the way
-/// first, so unrelated routes never share a vertical track. A spare track
-/// breaks cycles such as two lanes exchanging places. Horizontal paths pass
-/// over vertical tracks with `╪`; only endpoints are actual junctions.
+/// Route one connection per row, crossing independent vertical tracks at `┼`.
+/// Lane starts and ends use rounded elbows. When both lanes continue, the
+/// connection leaves the source at the top of the row and enters the
+/// destination at the bottom: diagonally between adjacent lanes, otherwise
+/// through elbows in the gaps beside them.
 fn connected_transitions(edges: &[(usize, usize, &str)], width: usize) -> Vec<String> {
-    route(edges, width)
-        .into_iter()
-        .map(|cells| {
-            let row: String = cells
-                .iter()
-                .map(|&(directions, colour)| {
-                    let symbol = match directions {
-                        0 => return " ".to_owned(),
-                        3 => '│',
-                        12 => '─',
-                        9 => '╰',
-                        5 => '╯',
-                        10 => '╭',
-                        6 => '╮',
-                        11 => '├',
-                        7 => '┤',
-                        15 => '╪',
-                        _ => unreachable!("invalid graph connection {directions}"),
-                    };
-                    paint(symbol, colour)
-                })
-                .collect();
-            format!("{row} ")
-        })
-        .collect()
-}
-
-/// The rows of `connected_transitions`, each cell the directions it
-/// connects and its colour.
-fn route<'a>(edges: &[(usize, usize, &'a str)], width: usize) -> Vec<Vec<(u8, &'a str)>> {
-    const UP: u8 = 1;
-    const DOWN: u8 = 2;
-    const LEFT: u8 = 4;
-    const RIGHT: u8 = 8;
     let mut rows = Vec::new();
     route_moves(edges, width, |tracks, step| {
         let Move {
@@ -1799,46 +1766,74 @@ fn route<'a>(edges: &[(usize, usize, &'a str)], width: usize) -> Vec<Vec<(u8, &'
             continuing,
             occupant,
         } = step;
-        let size = width.max(1) * 2;
-        let size = size
+        let size = (width.max(1) * 2)
             .max(to + 2)
             .max(tracks.last_key_value().map_or(0, |(&column, _)| column + 2));
-        let mut cells = vec![(0, ""); size];
+        let mut cells = vec![(' ', ""); size];
         for (&column, routes) in tracks {
-            cells[column] = (UP | DOWN, routes[0].1);
+            cells[column] = ('│', routes[0].1);
         }
-        let (outgoing, incoming) = if from < to {
-            (RIGHT, LEFT)
+        cells[from] = continuing.map_or((' ', ""), |lane| ('│', lane));
+        cells[to] = occupant.map_or((' ', ""), |lane| ('│', lane));
+        let left = from.min(to);
+        let right = from.max(to);
+        if let Some((start, end)) = step.elbows() {
+            let (start_glyph, end_glyph) = if from < to {
+                ('╰', '╮')
+            } else {
+                ('╯', '╭')
+            };
+            cells[start] = (start_glyph, colour);
+            cells[end] = (end_glyph, colour);
+            for cell in &mut cells[left + 2..right - 1] {
+                *cell = if cell.0 == '│' {
+                    ('┼', cell.1)
+                } else {
+                    ('─', colour)
+                };
+            }
+        } else if continuing.is_some() && occupant.is_some() {
+            cells[left + 1] = (if from < to { '╲' } else { '╱' }, colour);
         } else {
-            (LEFT, RIGHT)
-        };
-        // A lane passing through a junction keeps its colour there, as it
-        // does where paths cross it, so vertical lines stay unbroken.
-        cells[from] = match continuing {
-            Some(lane) => (UP | DOWN | outgoing, lane),
-            None => (UP | outgoing, colour),
-        };
-        cells[to] = match occupant {
-            Some(lane) => (UP | DOWN | incoming, lane),
-            None => (DOWN | incoming, colour),
-        };
-        for cell in &mut cells[from.min(to) + 1..from.max(to)] {
-            cell.0 |= LEFT | RIGHT;
-            if cell.1.is_empty() {
-                cell.1 = colour;
+            // Round off lane starts and ends. When both lanes continue,
+            // the shapes above distinguish a top-of-row split from a
+            // bottom-of-row join.
+            cells[from] = match continuing {
+                Some(lane) => (if from < to { '├' } else { '┤' }, lane),
+                None => (if from < to { '╰' } else { '╯' }, colour),
+            };
+            cells[to] = match occupant {
+                Some(lane) => (if from < to { '┤' } else { '├' }, lane),
+                None => (if from < to { '╮' } else { '╭' }, colour),
+            };
+            for cell in &mut cells[left + 1..right] {
+                *cell = if cell.0 == '│' {
+                    ('┼', cell.1)
+                } else {
+                    ('─', colour)
+                };
             }
         }
         let used = cells
             .iter()
-            .rposition(|&(directions, _)| directions != 0)
+            .rposition(|&(symbol, _)| symbol != ' ')
             .map_or(0, |i| i + 1);
-        cells.truncate(used);
-        rows.push(cells);
+        let row: String = cells[..used]
+            .iter()
+            .map(|&(symbol, colour)| {
+                if symbol == ' ' {
+                    " ".to_owned()
+                } else {
+                    paint(symbol, colour)
+                }
+            })
+            .collect();
+        rows.push(format!("{row} "));
     });
     rows
 }
 
-/// The number of rows `route` draws, without drawing them.
+/// The number of rows `connected_transitions` draws, without drawing them.
 fn route_count(edges: &[(usize, usize, &str)], width: usize) -> usize {
     let mut rows = 0;
     route_moves(edges, width, |_, _| rows += 1);
@@ -1848,7 +1843,7 @@ fn route_count(edges: &[(usize, usize, &str)], width: usize) -> usize {
 /// Each track's routes: their target column and colour.
 type Tracks<'a> = std::collections::BTreeMap<usize, Vec<(usize, &'a str)>>;
 
-/// A connection `route` moves in one row.
+/// A connection the Unicode router moves in one row.
 struct Move<'a> {
     from: usize,
     to: usize,
@@ -1859,7 +1854,28 @@ struct Move<'a> {
     occupant: Option<&'a str>,
 }
 
-/// Visit the moves `route` draws, one per row, each with the tracks before it.
+impl Move<'_> {
+    /// The gap columns of the elbows that leave the source at the top of
+    /// the row and enter the destination at the bottom, used when both lanes
+    /// continue and a lane lies between them.
+    ///
+    /// An elbow leaving from the gap where the previous row's elbow entered
+    /// would read as one connection. That cannot happen: only a commit's own
+    /// lane forks, so consecutive elbows all leave the same lane, and their
+    /// gaps could only meet for adjacent lanes, which use diagonals instead.
+    fn elbows(&self) -> Option<(usize, usize)> {
+        let both_continue = self.continuing.is_some() && self.occupant.is_some();
+        (both_continue && self.from.abs_diff(self.to) > 2).then(|| {
+            if self.from < self.to {
+                (self.from + 1, self.to - 1)
+            } else {
+                (self.from - 1, self.to + 1)
+            }
+        })
+    }
+}
+
+/// Visit the Unicode moves, one per row, each with the tracks before it.
 fn route_moves<'a>(
     edges: &[(usize, usize, &'a str)],
     width: usize,
@@ -1899,14 +1915,6 @@ fn route_moves<'a>(
                 let spare = spare.max(tracks.last_key_value().map_or(0, |(&column, _)| column + 2));
                 (from, target, colour, spare)
             });
-        // A fork and a join in the same row would have downward paths at
-        // both endpoints, visually inventing a connection in the reverse
-        // direction. Split off this route before joining an occupied lane.
-        let to = if tracks.contains_key(&to) && tracks[&from].len() > 1 {
-            (width.max(1) * 2).max(tracks.last_key_value().map_or(0, |(&column, _)| column + 2))
-        } else {
-            to
-        };
         // Each track holds one route per target.
         let continuing = tracks[&from]
             .iter()
@@ -3068,20 +3076,108 @@ mod tests {
         );
         assert_eq!(
             plain(&connected_transitions(&[(0, 4, "31"), (2, 2, "32")], 3)),
-            ["╰─╪─╮ "]
+            ["╰─┼─╮ "]
         );
         assert_eq!(
             plain(&connected_transitions(&[(0, 2, "31"), (2, 0, "32")], 2)),
-            ["╰─╪─╮ ", "╭─╯ │ ", "│ ╭─╯ "]
+            ["╰─┼─╮ ", "╭─╯ │ ", "│ ╭─╯ "]
         );
-        // Both source lanes also continue straight: moving the fork to a
-        // temporary lane must leave the original connection intact.
+        // A fork can join an occupied destination in one row, without
+        // detouring past it. Include the two distances from the reported graph.
+        for (edges, width, expected) in [
+            (vec![(0, 0, "31"), (0, 2, "32"), (2, 2, "32")], 2, "│╲│ "),
+            (
+                vec![(0, 0, "31"), (0, 4, "33"), (2, 2, "32"), (4, 4, "33")],
+                3,
+                "│╰┼╮│ ",
+            ),
+            (
+                vec![(0, 0, "31"), (2, 2, "32"), (4, 4, "33"), (4, 0, "31")],
+                3,
+                "│╭┼╯│ ",
+            ),
+            (
+                vec![
+                    (0, 0, "31"),
+                    (0, 6, "34"),
+                    (2, 2, "32"),
+                    (4, 4, "33"),
+                    (6, 6, "34"),
+                ],
+                4,
+                "│╰┼─┼╮│ ",
+            ),
+        ] {
+            assert_eq!(plain(&connected_transitions(&edges, width)), [expected]);
+        }
+        for (edges, expected) in [
+            (vec![(0, 0, "31"), (2, 2, "32"), (4, 2, "33")], "│ ├─╯ "),
+            (vec![(0, 2, "31"), (2, 2, "32"), (4, 4, "33")], "╰─┤ │ "),
+            (vec![(0, 0, "31"), (2, 2, "32"), (4, 0, "33")], "├─┼─╯ "),
+        ] {
+            assert_eq!(plain(&connected_transitions(&edges, 3)), [expected]);
+        }
+        // The source can continue while the destination starts a new lane.
+        // This is the reported split around an intervening vertical track,
+        // rather than a whole-lane move.
+        assert_eq!(
+            plain(&connected_transitions(
+                &[
+                    (0, 0, "31"),
+                    (2, 2, "32"),
+                    (4, 4, "33"),
+                    (4, 8, "34"),
+                    (6, 6, "35")
+                ],
+                5,
+            )),
+            ["│ │ ├─┼─╮ "]
+        );
+        // Moving a whole lane to a new track needs rounded elbows too,
+        // including the reported move across an intervening vertical lane.
+        for (from, to, expected) in [
+            (4_usize, 8_usize, "│ │ ╰─┼─╮ "),
+            (8, 4, "│ │ ╭─┼─╯ "),
+            (4, 6, "│ │ ╰─╮ "),
+            (6, 4, "│ │ ╭─╯ "),
+        ] {
+            let mut edges = vec![(0, 0, "31"), (2, 2, "32"), (from, to, "33")];
+            if from.abs_diff(to) > 2 {
+                edges.push((6, 6, "34"));
+            }
+            assert_eq!(plain(&connected_transitions(&edges, 5)), [expected]);
+        }
+        // Cycles still need a temporary lane, including when both sources
+        // also continue straight.
         assert_eq!(
             plain(&connected_transitions(
                 &[(0, 0, "31"), (0, 2, "32"), (2, 2, "32"), (2, 0, "31")],
                 2
             )),
-            ["├─╪─╮ ", "│ ├─╪─╮ ", "│ ├─╯ │ ", "├─╪───╯ "]
+            ["├─┼─╮ ", "│╱│ │ ", "│ ├─╯ "]
+        );
+    }
+
+    #[test]
+    fn new_lane_beyond_an_existing_track_uses_a_rounded_split() {
+        let commits = vec![
+            commit("top", &["left", "middle", "split", "through"]),
+            commit("split", &["main", "side"]),
+            commit("through", &[]),
+            commit("main", &[]),
+            commit("side", &[]),
+            commit("middle", &[]),
+            commit("left", &[]),
+        ];
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        assert_eq!(
+            plain(folds.display_graph(1, &commits[1])).last().unwrap(),
+            "│ │ ● │ "
+        );
+        assert_eq!(
+            plain(folds.display_graph(2, &commits[2])),
+            ["│ │ ├─┼─╮ ", "│ │ │ ● │ "]
         );
     }
 
@@ -3141,33 +3237,53 @@ mod tests {
                     if !seen.insert((x, y, entry)) {
                         continue;
                     }
-                    let glyph = rows[y].get(x).copied().unwrap_or(' ');
-                    let (up, down, left, right) = match glyph {
-                        '│' => (true, true, false, false),
-                        '─' => (false, false, true, true),
-                        '╰' => (true, false, false, true),
-                        '╯' => (true, false, true, false),
-                        '╭' => (false, true, false, true),
-                        '╮' => (false, true, true, false),
-                        '├' => (true, true, false, true),
-                        '┤' => (true, true, true, false),
-                        '╪' => (true, true, true, true),
-                        _ => panic!("broken route in case {case}: {edges:?}, {rows:?}"),
-                    };
-                    assert!(match entry {
-                        'u' => up,
-                        'l' => left,
-                        'r' => right,
-                        _ => false,
-                    });
-                    if down && (glyph != '╪' || entry == 'u') {
-                        todo.push((x, y + 1, 'u'));
-                    }
-                    if left && entry != 'l' && (glyph != '╪' || entry == 'r') {
-                        todo.push((x - 1, y, 'r'));
-                    }
-                    if right && entry != 'r' && (glyph != '╪' || entry == 'l') {
-                        todo.push((x + 1, y, 'l'));
+                    let glyph = |x: usize| rows[y].get(x).copied().unwrap_or(' ');
+                    match entry {
+                        'u' => {
+                            // Diagonals depart from the lane's top boundary;
+                            // any vertical in that lane continues independently.
+                            if matches!(glyph(x), '│' | '┼' | '├' | '┤') {
+                                todo.push((x, y + 1, 'u'));
+                            }
+                            match glyph(x) {
+                                '╰' | '├' => todo.push((x + 1, y, 'l')),
+                                '╯' | '┤' => todo.push((x - 1, y, 'r')),
+                                _ => {}
+                            }
+                            // Lanes are even columns; gap elbows belong to
+                            // the lane they leave from.
+                            match glyph(x + 1) {
+                                '╲' => todo.push((x + 2, y + 1, 'u')),
+                                '╰' => todo.push((x + 2, y, 'l')),
+                                _ => {}
+                            }
+                            if x > 0 {
+                                match glyph(x - 1) {
+                                    '╱' => todo.push((x - 2, y + 1, 'u')),
+                                    '╯' => todo.push((x - 2, y, 'r')),
+                                    _ => {}
+                                }
+                            }
+                        }
+                        'l' => match glyph(x) {
+                            '─' | '┼' => todo.push((x + 1, y, 'l')),
+                            '╮' if x % 2 == 1 => todo.push((x + 1, y + 1, 'u')),
+                            '┤' | '╮' => todo.push((x, y + 1, 'u')),
+                            '╯' => {} // Following a join backwards ends at its source.
+                            _ => {
+                                panic!("broken rightward route in case {case}: {edges:?}, {rows:?}")
+                            }
+                        },
+                        'r' => match glyph(x) {
+                            '─' | '┼' => todo.push((x - 1, y, 'r')),
+                            '╭' if x % 2 == 1 => todo.push((x - 1, y + 1, 'u')),
+                            '├' | '╭' => todo.push((x, y + 1, 'u')),
+                            '╰' => {} // Following a join backwards ends at its source.
+                            _ => {
+                                panic!("broken leftward route in case {case}: {edges:?}, {rows:?}")
+                            }
+                        },
+                        _ => unreachable!(),
                     }
                 }
                 assert_eq!(actual, expected, "case {case}: {edges:?}, {rows:?}");
