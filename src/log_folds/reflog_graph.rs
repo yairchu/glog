@@ -105,6 +105,47 @@ enum Arrow {
     Right,
 }
 
+impl Arrow {
+    fn symbol(self, unicode: bool) -> char {
+        match (self, unicode) {
+            (Self::Left, true) => '◀',
+            (Self::Left, false) => '<',
+            (Self::Right, true) => '▶',
+            (Self::Right, false) => '>',
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Node {
+    Visit,
+    Merge,
+    Up,
+    Down,
+    Both,
+    Root,
+    Side(Arrow),
+}
+
+impl Node {
+    fn symbol(self, unicode: bool) -> char {
+        let (filled, ascii) = match self {
+            Self::Visit => ('○', 'o'),
+            Self::Merge => ('◆', 'M'),
+            Self::Up => ('▲', '^'),
+            Self::Down => ('▼', 'v'),
+            Self::Both => ('↕', '+'),
+            Self::Root => ('●', '*'),
+            Self::Side(arrow) => return arrow.symbol(unicode),
+        };
+        if unicode {
+            filled
+        } else {
+            ascii
+        }
+    }
+}
+
 #[derive(Clone, Default)]
 struct Cell {
     paths: u8,
@@ -115,12 +156,7 @@ struct Cell {
 impl Cell {
     fn symbol(&self, unicode: bool) -> char {
         if let Some(arrow) = self.arrow {
-            return match (arrow, unicode) {
-                (Arrow::Left, true) => '◀',
-                (Arrow::Left, false) => '<',
-                (Arrow::Right, true) => '▶',
-                (Arrow::Right, false) => '>',
-            };
+            return arrow.symbol(unicode);
         }
         if !unicode {
             return match self.paths {
@@ -149,7 +185,7 @@ impl Cell {
 
 /// The arrows describe visible ancestry, not the direction of ref movement.
 /// A collapsed rebase finish represents the whole operation's new tip.
-fn node(commit: &Commit, directions: u8, fold: Fold, unicode: bool) -> char {
+fn node(commit: &Commit, directions: u8, paths: u8, fold: Fold) -> Node {
     let visit = if let Some(Annotation::Reflog(entry)) = &commit.annotation {
         let action = entry.action.split_once(": ").map(|(action, _)| action);
         matches!(action, Some("checkout" | "reset" | "clone" | "branch"))
@@ -161,22 +197,21 @@ fn node(commit: &Commit, directions: u8, fold: Fold, unicode: bool) -> char {
     } else {
         false
     };
-    let (unicode_node, ascii_node) = if visit {
-        ('○', 'o')
+    if visit {
+        Node::Visit
     } else if commit.parents.len() > 1 {
-        ('◆', 'M')
+        Node::Merge
+    } else if directions != 0 && paths == LEFT {
+        Node::Side(Arrow::Right)
+    } else if directions != 0 && paths == RIGHT {
+        Node::Side(Arrow::Left)
     } else {
         match directions {
-            UP => ('▲', '^'),
-            DOWN => ('▼', 'v'),
-            3 => ('↕', '+'),
-            _ => ('●', '*'),
+            UP => Node::Up,
+            DOWN => Node::Down,
+            3 => Node::Both,
+            _ => Node::Root,
         }
-    };
-    if unicode {
-        unicode_node
-    } else {
-        ascii_node
     }
 }
 
@@ -241,17 +276,31 @@ pub(super) fn draw(commits: &[Commit], layout: &Layout) -> Drawing {
         lanes.resize(lanes.len().max(column + 1), None);
         let mut outgoing = Vec::new();
         for &edge in &starts[row] {
-            let lane = if lanes[column].is_none() {
-                column
-            } else {
-                lanes
-                    .iter()
-                    .position(Option::is_none)
-                    .unwrap_or(lanes.len())
-            };
+            // Children of the same displayed parent can branch from its
+            // existing path. Never bundle reverse edges just because their
+            // lower endpoint coincides: that endpoint may be a child.
+            let shared = (edge.child == row)
+                .then(|| {
+                    lanes
+                        .iter()
+                        .position(|lane| lane.is_some_and(|open| open.parent == edge.parent))
+                })
+                .flatten();
+            let lane = shared.unwrap_or_else(|| {
+                if lanes[column].is_none() {
+                    column
+                } else {
+                    lanes
+                        .iter()
+                        .position(Option::is_none)
+                        .unwrap_or(lanes.len())
+                }
+            });
             lanes.resize(lanes.len().max(lane + 1), None);
-            lanes[lane] = Some(edge);
-            outgoing.push(lane);
+            if shared.is_none() {
+                lanes[lane] = Some(edge);
+            }
+            outgoing.push((lane, edge));
         }
         let mut line = vec![Cell::default(); 2 * lanes.len().max(above.len()) - 1];
         for (lane, edge) in above.iter().enumerate() {
@@ -269,9 +318,24 @@ pub(super) fn draw(commits: &[Commit], layout: &Layout) -> Drawing {
         for (lane, edge) in incoming
             .iter()
             .map(|&lane| (lane, above[lane].unwrap()))
-            .chain(outgoing.iter().map(|&lane| (lane, lanes[lane].unwrap())))
+            .chain(outgoing)
         {
             connect(&mut line, column, lane, edge.child == row);
+        }
+        let node = node(
+            commit,
+            directions[row],
+            line[2 * column].paths,
+            layout.folds[row],
+        );
+        // A leaf branching sideways uses the arrowhead as its node. Keep
+        // hollow visits and merge diamonds, with their separate arrowheads.
+        if let Node::Side(arrow) = node {
+            let gap = match arrow {
+                Arrow::Right => 2 * column - 1,
+                Arrow::Left => 2 * column + 1,
+            };
+            line[gap].arrow = None;
         }
         // Keep the node, but trim ended lanes to its right. Reusing a lane
         // never shifts an unrelated continuing path across another event.
@@ -285,7 +349,7 @@ pub(super) fn draw(commits: &[Commit], layout: &Layout) -> Drawing {
             let mut text = String::new();
             for (at, cell) in line[..width].iter().enumerate() {
                 if at == 2 * column {
-                    text.push(node(commit, directions[row], layout.folds[row], unicode));
+                    text.push(node.symbol(unicode));
                 } else {
                     let symbol = cell.symbol(unicode);
                     if symbol == ' ' {
@@ -419,7 +483,7 @@ mod tests {
         folds.refresh(&commits).unwrap();
         assert_eq!(plain(&folds, &commits), ["▲ ", "○ "]);
         folds.toggle(0, &commits).unwrap();
-        assert_eq!(plain(&folds, &commits), ["○ ", "│ ▲ ", "▲─╯ ", "○ ", "○ "]);
+        assert_eq!(plain(&folds, &commits), ["○ ", "├─▶ ", "▲ ", "○ ", "○ "]);
         assert_eq!(
             edges(&commits, &[true; 5]),
             [
@@ -454,7 +518,7 @@ mod tests {
         folds.refresh(&commits).unwrap();
         let rows = plain(&folds, &commits);
         assert_eq!(rows.len(), 4);
-        assert_eq!(rows, ["◆◀╮ ", "▲ │ ", "│ ○ ", "●─╯ "]);
+        assert_eq!(rows, ["◆◀╮ ", "▲ │ ", "├▶○ ", "● "]);
     }
 
     #[test]
@@ -480,7 +544,7 @@ mod tests {
         folds.refresh(&commits).unwrap();
         assert_eq!(plain(&folds, &commits), ["▲ ", "● "]);
         folds.toggle(0, &commits).unwrap();
-        assert_eq!(plain(&folds, &commits), ["▲ ", "│ ▲ ", "●─╯ "]);
+        assert_eq!(plain(&folds, &commits), ["▲ ", "├─▶ ", "● "]);
     }
 
     #[test]
@@ -498,7 +562,7 @@ mod tests {
     }
 
     #[test]
-    fn converging_paths_cross_a_continuing_lane_on_the_parent_row() {
+    fn shared_parent_branches_cross_continuing_lanes_without_joining_them() {
         let commits = events(&[
             ("first", &["a"], "HEAD", "commit: first"),
             ("other", &["base"], "HEAD", "commit: other"),
@@ -510,7 +574,7 @@ mod tests {
         folds.refresh(&commits).unwrap();
         assert_eq!(
             plain(&folds, &commits),
-            ["▲ ", "│ ▲ ", "│ │ ▲ ", "●─┼─╯ ", "  ● "]
+            ["▲ ", "│ ▲ ", "├─┼─▶ ", "● │ ", "  ● "]
         );
     }
 
@@ -531,9 +595,9 @@ mod tests {
         ]);
         let mut folds = LogFolds::default();
         folds.refresh(&commits).unwrap();
-        assert_eq!(plain(&folds, &commits), ["○◀╮ ", "▼ │ ", "▲ │ ", "●─╯ "]);
+        assert_eq!(plain(&folds, &commits), ["○◀╮ ", "▼ │ ", "◀─┤ ", "  ● "]);
         folds.ascii_graph = true;
-        assert_eq!(plain(&folds, &commits), ["o<+ ", "v | ", "^ | ", "*-+ "]);
+        assert_eq!(plain(&folds, &commits), ["o<+ ", "v | ", "<-+ ", "  * "]);
     }
 
     #[test]
@@ -571,5 +635,85 @@ mod tests {
         assert_eq!(plain(&folds, &commits), ["● ", "│ ● ", "◆◀╯ "]);
         folds.ascii_graph = true;
         assert_eq!(plain(&folds, &commits), ["* ", "| * ", "M<+ "]);
+    }
+
+    #[test]
+    fn amend_siblings_share_a_spine_below_the_latest_versions_descendants() {
+        let commits = events(&[
+            ("descendant", &["latest"], "HEAD", "commit: descendant"),
+            ("latest", &["base"], "HEAD", "commit (amend): latest"),
+            ("older", &["base"], "HEAD", "commit (amend): older"),
+            ("oldest", &["base"], "HEAD", "commit (amend): oldest"),
+            ("original", &["base"], "HEAD", "commit: original"),
+            ("base", &["root"], "HEAD", "commit: base"),
+            ("root", &[], "HEAD", "commit (initial): root"),
+        ]);
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        assert_eq!(plain(&folds, &commits), ["▲ ", "▲ ", "▲ ", "● "]);
+        folds.toggle(1, &commits).unwrap();
+        assert_eq!(
+            plain(&folds, &commits),
+            ["▲ ", "▲ ", "├─▶ ", "├─▶ ", "├─▶ ", "▲ ", "● "]
+        );
+        folds.ascii_graph = true;
+        assert_eq!(
+            plain(&folds, &commits),
+            ["^ ", "^ ", "+-> ", "+-> ", "+-> ", "^ ", "* "]
+        );
+    }
+
+    #[test]
+    fn sibling_paths_are_shared_regardless_of_reflog_action() {
+        let commits = events(&[
+            ("first", &["base"], "HEAD", "commit: first"),
+            ("second", &["base"], "HEAD", "cherry-pick: second"),
+            ("third", &["base"], "HEAD", "revert: third"),
+            ("visit", &["base"], "HEAD", "checkout: moving to visit"),
+            ("base", &[], "HEAD", "commit (initial): base"),
+        ]);
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        assert_eq!(
+            plain(&folds, &commits),
+            ["▲ ", "├─▶ ", "├─▶ ", "├▶○ ", "● "]
+        );
+    }
+
+    #[test]
+    fn paths_to_different_visits_of_the_same_parent_stay_separate() {
+        let commits = events(&[
+            ("first", &["base"], "HEAD", "commit: first"),
+            ("second", &["base"], "refs/heads/topic", "commit: second"),
+            ("base", &[], "HEAD", "commit (initial): base"),
+            ("base", &[], "refs/heads/topic", "branch: Created from HEAD"),
+        ]);
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        assert_eq!(plain(&folds, &commits), ["▲ ", "│ ▲ ", "● │ ", "  ○ "]);
+    }
+
+    #[test]
+    fn merge_siblings_share_parent_paths_without_losing_their_diamonds() {
+        let commits = events(&[
+            ("first", &["left", "right"], "HEAD", "commit (merge): first"),
+            (
+                "second",
+                &["left", "right"],
+                "HEAD",
+                "commit (merge): second",
+            ),
+            ("third", &["left", "right"], "HEAD", "commit (merge): third"),
+            ("left", &[], "HEAD", "commit (initial): left"),
+            ("right", &[], "HEAD", "commit (initial): right"),
+        ]);
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        let rows = plain(&folds, &commits);
+        assert_eq!(rows.len(), 5);
+        assert!(rows[..3].iter().all(|row| row.contains('◆')));
+        assert!(rows
+            .iter()
+            .all(|row| ratatui::text::Span::raw(row).width() <= 6));
     }
 }

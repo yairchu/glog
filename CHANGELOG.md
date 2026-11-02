@@ -11,7 +11,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   from parents into commits, ◆ for merges, and hollow nodes for checkout/reset
   visits. Straight histories use a single column; forks and merges keep one
   line per entry. Folded rebases connect through their hidden steps; repeated
-  visits remain separate events.
+  visits remain separate events. Commits with a shared parent reuse its path,
+  keeping expanded amend chains and other sibling commits compact.
 
 - Show rebases, merges, cherry-picks, reverts, `git am` sessions and
   bisections in progress in the Status heading and the Working tree item,
