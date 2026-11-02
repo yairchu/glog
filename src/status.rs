@@ -397,6 +397,7 @@ impl RowKey {
 struct Row {
     preview: Option<crate::images::Row>,
     key: RowKey,
+    /// Empty for commit rows, which show their key's label instead.
     text: String,
     color: Option<Color>,
 }
@@ -910,7 +911,7 @@ impl StatusView {
             self.rows.push(Row {
                 key: RowKey::Commit(commit.clone()),
                 preview: None,
-                text: format!("  {}", commit.label),
+                text: String::new(),
                 color: None,
             });
         }
@@ -1291,17 +1292,18 @@ impl StatusView {
             .take(self.height)
             .enumerate()
         {
-            let mut line = crate::ansi::normalized_line(&row.text);
-            if let RowKey::Commit(commit) = &row.key {
-                line = Line::from([vec![Span::raw("  ")], commit.label.spans()].concat());
-            } else if let Some(color) = row.color {
-                line = if row.key.is_file() {
+            let mut line = match (&row.key, row.color) {
+                (RowKey::Commit(commit), _) => {
+                    Line::from([vec![Span::raw("  ")], commit.label.spans()].concat())
+                }
+                (key, Some(color)) => if key.is_file() {
                     crate::ui::summary_line(&row.text)
                 } else {
                     Line::raw(row.text.clone())
                 }
-                .style(Style::default().fg(color));
-            }
+                .style(Style::default().fg(color)),
+                (_, None) => crate::ansi::normalized_line(&row.text),
+            };
             if self.offset + screen == self.cursor {
                 line.style = line.style.bg(Color::DarkGray);
             }
@@ -2663,8 +2665,12 @@ mod tests {
         fail(&mut git_command(&["rebase", "main"]));
 
         let view = StatusView::load().unwrap();
-        assert!(view.rows[0].text.starts_with("  Stopped at "));
-        assert!(view.rows[0].text.ends_with(" change on feature"));
+        let RowKey::Commit(commit) = &view.rows[0].key else {
+            panic!("expected the stopped commit first");
+        };
+        let label = commit.label.to_string();
+        assert!(label.starts_with("Stopped at "), "{label}");
+        assert!(label.ends_with(" change on feature"), "{label}");
         let mut app = App::new(vec![crate::git::working_tree_commit(&view.summary())]);
         app.status_view = Some(view);
         app.mode = Mode::Status;
