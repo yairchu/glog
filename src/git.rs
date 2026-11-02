@@ -200,7 +200,6 @@ impl Commit {
         }
     }
 
-    #[cfg(test)]
     pub fn reflog(&self) -> Option<&ReflogEntry> {
         match &self.annotation {
             Some(Annotation::Reflog(entry)) => Some(entry),

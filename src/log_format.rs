@@ -4,10 +4,10 @@ use ratatui::{
 };
 use std::borrow::Cow;
 
-use crate::git::{Agent, Annotation, Collaborators, Commit, CommitKind, ReflogEntry};
+use crate::git::{Agent, Annotation, Collaborators, Commit, CommitKind};
 
 const MAX_AUTHOR_WIDTH: usize = 32;
-/// Names wider than this show later words as initials in the default Log.
+/// Names wider than this show later words as initials in Log/Reflog tables.
 const COMPACT_NAME_WIDTH: usize = 15;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -50,7 +50,7 @@ pub struct LogFormat {
     tabular: bool,
 }
 
-/// The default Log's date width, measured once per history. Graph/hash and
+/// The default Log/Reflog date width, measured once per history. Graph/hash and
 /// author widths follow the rows on screen, so each draw supplies them.
 #[derive(Clone, Copy)]
 pub struct DateColumn(usize);
@@ -60,8 +60,11 @@ impl DateColumn {
         Self(
             commits
                 .iter()
-                .filter(|c| c.kind == CommitKind::Revision && c.annotation.is_none())
-                .map(|commit| Span::raw(&commit.author_date).width())
+                .filter(|c| {
+                    c.kind == CommitKind::Revision
+                        && (c.annotation.is_none() || c.reflog().is_some())
+                })
+                .map(|commit| Span::raw(date(commit)).width())
                 .max()
                 .unwrap_or(0),
         )
@@ -72,6 +75,7 @@ impl DateColumn {
             hash,
             date: self.0,
             author,
+            hash_marker: None,
         }
     }
 }
@@ -86,15 +90,22 @@ pub fn author_column<'a>(commits: impl IntoIterator<Item = &'a Commit>) -> usize
         .min(MAX_AUTHOR_WIDTH)
 }
 
-/// Screen widths for one row of the default Log's metadata.
+/// Screen widths for one row of the default Log/Reflog metadata.
 #[derive(Clone, Copy)]
 pub struct Columns {
     hash: usize,
     date: usize,
     author: usize,
+    hash_marker: Option<&'static str>,
 }
 
 impl Columns {
+    /// Add a fold control to the hash cell, before its alignment padding.
+    pub fn with_hash_marker(mut self, marker: Option<&'static str>) -> Self {
+        self.hash_marker = marker;
+        self
+    }
+
     fn width(&self, field: Field) -> Option<usize> {
         match field {
             Field::Hash => Some(self.hash),
@@ -219,13 +230,12 @@ impl LogFormat {
 
     pub fn row(&self, commit: &Commit, columns: Option<&Columns>) -> Row {
         let spans = match &commit.annotation {
-            Some(Annotation::Reflog(entry)) => reflog_spans(commit, entry),
+            Some(Annotation::Reflog(_)) | None => return self.commit_row(commit, columns),
             Some(Annotation::Stash(entry)) => crate::stash::spans(commit, entry, self),
             Some(Annotation::Blame(line)) => {
                 return crate::blame::row(commit, line, line.starts_chunk, self);
             }
             Some(Annotation::Branch(node)) => crate::branches::spans(commit, node, self),
-            None => return self.commit_row(commit, columns),
         };
         Row {
             spans,
@@ -250,19 +260,21 @@ impl LogFormat {
         }
         let mut spans = Vec::new();
         let mut abbreviated = Vec::new();
+        let reflog = commit.reflog();
+        let author = author(commit);
         // Append badges once, after the last visible author name/email field.
         let last_author = self.parts.iter().rposition(|part| {
             part.enabled
                 && match part.token.as_str() {
-                    "an" => !commit.author.is_empty(),
+                    "an" => !author.is_empty(),
                     "ae" => !commit.author_email.is_empty(),
                     _ => false,
                 }
         });
         let displayed_author = if columns.is_some() {
-            author_label(&commit.author)
+            author_label(author)
         } else {
-            Cow::Borrowed(commit.author.as_str())
+            Cow::Borrowed(author)
         };
         for (index, part) in self
             .parts
@@ -273,17 +285,17 @@ impl LogFormat {
             let value: &str = match part.token.as_str() {
                 "h" => &commit.short_hash,
                 "H" => &commit.hash,
-                "ad" => &commit.author_date,
+                "ad" => date(commit),
                 "an" => &displayed_author,
                 "ae" => &commit.author_email,
-                "d" | "D" => commit.decorations.ansi(),
-                _ => &commit.subject,
+                "d" | "D" => match reflog {
+                    Some(entry) if entry.show_reference => &entry.reference,
+                    Some(_) => "",
+                    None => commit.decorations.ansi(),
+                },
+                _ => reflog.map_or(commit.subject.as_str(), |entry| &entry.action),
             };
-            let full = if part.token == "an" {
-                &commit.author
-            } else {
-                value
-            };
+            let full = if part.token == "an" { author } else { value };
             let width = columns.and_then(|columns| columns.width(part.field));
             if value.is_empty() && width.unwrap_or(0) == 0 {
                 continue;
@@ -293,12 +305,17 @@ impl LogFormat {
             } else {
                 value.to_owned()
             };
-            let badges = if Some(index) == last_author {
+            let badges = if Some(index) == last_author && reflog.is_none() {
                 coauthor_badge(&commit.collaborators)
             } else {
                 Vec::new()
             };
             let badge_width: usize = badges.iter().map(Span::width).sum();
+            let marker = columns
+                .and_then(|columns| columns.hash_marker)
+                .filter(|_| part.field == Field::Hash)
+                .map(hash_marker);
+            let decoration_width = badge_width + marker.as_ref().map_or(0, Span::width);
             let cell = match (part.field, width) {
                 (Field::Author, Some(width)) => {
                     Some(AuthorCell::new(full, &value, width, badge_width))
@@ -309,7 +326,7 @@ impl LogFormat {
                 Some(cell) => (cell.text.clone(), cell.padding),
                 None => {
                     let padding = width.map_or(0, |width| {
-                        width.saturating_sub(Span::raw(&value).width() + badge_width)
+                        width.saturating_sub(Span::raw(&value).width() + decoration_width)
                     });
                     (value, padding)
                 }
@@ -321,7 +338,11 @@ impl LogFormat {
                 text
             };
             if part.field == Field::Refs {
-                spans.extend(crate::ansi::parse_line(&text).spans);
+                if reflog.is_some() {
+                    spans.push(field_span(Field::Refs, text));
+                } else {
+                    spans.extend(crate::ansi::parse_line(&text).spans);
+                }
                 continue;
             }
             if let Some(cell) = &cell {
@@ -334,7 +355,16 @@ impl LogFormat {
                 abbreviated.extend(cell.abbreviated(end - value.len()));
             }
             let span = field_span(part.field, text);
-            if part.field == Field::Subject
+            if part.field == Field::Subject && reflog.is_some() {
+                let start = span.content.len() - value.len() - part.suffix.len();
+                if start > 0 {
+                    spans.push(Span::raw(span.content[..start].to_owned()));
+                }
+                spans.extend(reflog_action_spans(&value));
+                if !part.suffix.is_empty() {
+                    spans.push(Span::raw(part.suffix.clone()));
+                }
+            } else if part.field == Field::Subject
                 && crate::log_folds::commit_type_prefix(commit).is_some()
             {
                 // Preserve format literals and the subject's original spelling.
@@ -349,6 +379,7 @@ impl LogFormat {
             } else {
                 spans.push(span);
             }
+            spans.extend(marker);
             spans.extend(badges);
             if padding > 0 {
                 spans.push(Span::raw(" ".repeat(padding)));
@@ -370,6 +401,7 @@ impl LogFormat {
             hash: 0,
             date: 0,
             author: author_width(commit),
+            hash_marker: None,
         });
         let row = self.row(commit, columns.as_ref());
         row.text().to_lowercase().contains(query)
@@ -453,12 +485,26 @@ fn initial(word: &str) -> Option<String> {
     Some(format!("{first}."))
 }
 
+fn date(commit: &Commit) -> &str {
+    commit
+        .reflog()
+        .map_or(&commit.author_date, |entry| &entry.updated_at)
+}
+
+fn author(commit: &Commit) -> &str {
+    commit.reflog().map_or(&commit.author, |entry| &entry.actor)
+}
+
 fn author_width(commit: &Commit) -> usize {
-    let badges: usize = coauthor_badge(&commit.collaborators)
-        .iter()
-        .map(Span::width)
-        .sum();
-    Span::raw(author_label(&commit.author)).width() + badges
+    let badges: usize = if commit.reflog().is_none() {
+        coauthor_badge(&commit.collaborators)
+            .iter()
+            .map(Span::width)
+            .sum()
+    } else {
+        0
+    };
+    Span::raw(author_label(author(commit))).width() + badges
 }
 
 /// Shorten text to a display width, ending it with an ellipsis.
@@ -588,28 +634,14 @@ pub(crate) fn field_span(field: Field, text: String) -> Span<'static> {
     Span::styled(text, style)
 }
 
-fn reflog_spans(commit: &Commit, entry: &ReflogEntry) -> Vec<Span<'static>> {
-    let mut spans = vec![
-        Span::styled(
-            format!("{} ", commit.short_hash),
-            Style::default().fg(Color::Yellow),
-        ),
-        Span::styled(
-            format!("{} ", entry.updated_at),
-            Style::default().fg(Color::Gray),
-        ),
-        Span::styled(
-            format!("{} ", entry.actor),
-            Style::default().fg(Color::Cyan),
-        ),
-    ];
-    if entry.show_reference {
-        spans.push(Span::styled(
-            format!("({}) ", entry.reference),
-            Style::default().fg(Color::Green),
-        ));
-    }
-    if let Some((action, message)) = entry.action.split_once(": ") {
+/// The fold control follows its hash, before the column's alignment padding.
+pub(crate) fn hash_marker(marker: &str) -> Span<'static> {
+    field_span(Field::Hash, format!(" {marker}"))
+}
+
+fn reflog_action_spans(message: &str) -> Vec<Span<'static>> {
+    let mut spans = Vec::new();
+    if let Some((action, message)) = message.split_once(": ") {
         spans.push(Span::styled(
             format!("{action}:"),
             Style::default().fg(Color::Rgb(255, 165, 0)),
@@ -629,7 +661,7 @@ fn reflog_spans(commit: &Commit, entry: &ReflogEntry) -> Vec<Span<'static>> {
             spans.push(Span::raw(message.to_owned()));
         }
     } else {
-        spans.push(Span::raw(entry.action.clone()));
+        spans.push(Span::raw(message.to_owned()));
     }
     spans
 }
@@ -788,6 +820,7 @@ pub fn parse_args(args: &[String]) -> Result<(LogFormat, LogOptions, Vec<String>
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+    use crate::git::ReflogEntry;
 
     #[test]
     fn reflog_actions_and_subject_types_have_distinct_colors() {

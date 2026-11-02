@@ -705,14 +705,13 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             let mut deferred_metadata = false;
             let mut abbreviated = Vec::new();
             if !graph_only && part + 1 == graph_rows.len() {
-                if app.history == History::Reflog {
-                    line.spans.push(Span::styled(
-                        format!("{} ", app.log_folds.marker(index).unwrap_or(" ")),
-                        Style::default().fg(Color::Yellow),
-                    ));
-                } else if let Some(node) = commit.branch() {
+                if let Some(node) = commit.branch() {
                     line = node.style_graph(line, commit.graph_node, index == app.selected);
-                } else if let Some(marker) = app.log_folds.marker(index) {
+                } else if let Some(marker) = app
+                    .log_folds
+                    .marker(index)
+                    .filter(|_| commit.reflog().is_none())
+                {
                     // Git's graph and the ASCII fallback keep Git's node marker.
                     let nodes = [
                         commit.graph_node,
@@ -727,7 +726,8 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                     }
                 }
                 if date_column.is_some() && commit.kind == crate::git::CommitKind::Revision {
-                    metadata_rows.push((lines.len(), index));
+                    let marker = commit.reflog().and_then(|_| app.log_folds.marker(index));
+                    metadata_rows.push((lines.len(), index, marker));
                     deferred_metadata = true;
                 } else {
                     let start: usize = line.spans.iter().map(|span| span.content.len()).sum();
@@ -768,29 +768,35 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     if let Some(date_column) = date_column {
         let author = crate::log_format::author_column(
-            metadata_rows.iter().map(|&(_, index)| &app.commits[index]),
+            metadata_rows
+                .iter()
+                .map(|&(_, index, _)| &app.commits[index]),
         );
         let show_hash = app.log_format.shows(crate::log_format::Field::Hash);
         let width = metadata_rows
             .iter()
-            .map(|&(row, index)| {
+            .map(|&(row, index, marker)| {
                 lines[row].width()
                     + if show_hash {
                         Span::raw(&app.commits[index].short_hash).width()
+                            + marker
+                                .map_or(0, |marker| crate::log_format::hash_marker(marker).width())
                     } else {
                         0
                     }
             })
             .max()
             .unwrap_or(0);
-        for (row, index) in metadata_rows {
+        for (row, index, marker) in metadata_rows {
             let line = &mut lines[row];
             let hash_width = width.saturating_sub(line.width());
             if !show_hash && hash_width > 0 {
                 line.spans.push(Span::raw(" ".repeat(hash_width)));
             }
-            // The hash touches its own graph; all alignment padding follows it.
-            let columns = date_column.columns(hash_width, author);
+            // The hash touches its graph; any fold control precedes the padding.
+            let columns = date_column
+                .columns(hash_width, author)
+                .with_hash_marker(marker);
             let start: usize = line.spans.iter().map(|span| span.content.len()).sum();
             let row = app.log_format.row(&app.commits[index], Some(&columns));
             line.spans.extend(row.spans);
@@ -1895,6 +1901,202 @@ mod tests {
         longer.author_date = "2026-11-01 15:30 UTC".into();
         app.replace_commits(vec![longer]);
         assert_eq!(author_column(&mut app, &mut terminal), wide + 4);
+    }
+
+    fn reflog_event(hash: &str, date: &str, actor: &str, action: &str) -> Commit {
+        let mut commit = crate::log_format::tests::commit();
+        commit.hash = hash.into();
+        commit.short_hash = hash.into();
+        // Reflog must measure update metadata, rather than commit metadata.
+        commit.author = "Original author, not the ref updater".into();
+        commit.author_date = "Original commit date, not the ref update time".into();
+        commit.annotation = Some(crate::git::Annotation::Reflog(crate::git::ReflogEntry {
+            reference: "HEAD".into(),
+            show_reference: false,
+            rebasing: false,
+            updated_at: date.into(),
+            actor: actor.into(),
+            action: action.into(),
+        }));
+        commit
+    }
+
+    #[test]
+    fn reflog_columns_align_update_metadata_across_visible_graph_lanes() {
+        let mut commits = vec![
+            reflog_event("aaaaaaa", "Nov 1", "Al", "commit: event-0"),
+            reflog_event(
+                "bbbbbbbbb",
+                "2026-11-01 15:06:47",
+                "李 e\u{301}",
+                "commit: event-1",
+            ),
+            reflog_event(
+                "ccccccc",
+                "Nov 1",
+                "ExtremelyLongUnbrokenActorNameToExerciseTheLimit",
+                "commit: event-2",
+            ),
+            reflog_event(
+                "ddddddd",
+                "Nov 1",
+                "Margaret Hamilton",
+                "commit (initial): event-3",
+            ),
+        ];
+        commits[0].parents = vec![commits[2].hash.clone()];
+        commits[1].parents = vec![commits[2].hash.clone()];
+        commits[2].parents = vec![commits[3].hash.clone()];
+        let mut app = App::new(commits);
+        let mut terminal = Terminal::new(TestBackend::new(130, 4)).unwrap();
+        for (selected, author_width) in [(0, 4), (3, 32), (0, 4)] {
+            app.selected = selected;
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let mut date_head = None;
+            for (row, index) in app.visible_log_rows.iter().enumerate() {
+                let index = index.unwrap();
+                let commit = &app.commits[index];
+                let entry = commit.reflog().unwrap();
+                let y = app.log_row_origin + row as u16;
+                // Use cell coordinates so wide and combining characters do
+                // not accidentally count as extra author padding.
+                let column = |text: &str| {
+                    (0..130 - text.len() as u16)
+                        .find(|&x| {
+                            text.chars().enumerate().all(|(offset, ch)| {
+                                terminal.backend().buffer()[(x + offset as u16, y)].symbol()
+                                    == ch.to_string()
+                            })
+                        })
+                        .unwrap()
+                };
+                let date = column(&entry.updated_at);
+                assert_eq!(date, *date_head.get_or_insert(date));
+                let actor = date + 20; // The history-wide update date width is 19.
+                let action = column(entry.action.split_once(": ").unwrap().0);
+                assert_eq!(action, actor + author_width + 1);
+                assert_eq!(terminal.backend().buffer()[(date, y)].fg, Color::Gray);
+                assert_eq!(terminal.backend().buffer()[(actor, y)].fg, Color::Cyan);
+                assert_eq!(
+                    terminal.backend().buffer()[(action, y)].fg,
+                    Color::Rgb(255, 165, 0)
+                );
+                let graph_width = Span::raw(crate::ansi::plain(
+                    &app.log_folds.display_graph(index, commit)[0],
+                ))
+                .width();
+                assert_eq!(column(&commit.short_hash) as usize, graph_width);
+            }
+        }
+        // Replacing the history also invalidates Reflog's cached date width.
+        app.replace_commits(vec![reflog_event(
+            "eeeeeee",
+            "Nov 2",
+            "Al",
+            "commit: refreshed",
+        )]);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let y = app.log_row_origin;
+        let text: String = (0..130)
+            .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+            .collect();
+        assert!(text.contains("Nov 2 Al commit: refreshed"), "{text}");
+    }
+
+    #[test]
+    fn reflog_fold_controls_follow_hashes_before_column_padding() {
+        let mut commits = vec![
+            reflog_event(
+                "aaaaaaa",
+                "Nov 1",
+                "Margaret Hamilton",
+                "commit (amend): amended",
+            ),
+            reflog_event("bbbbbbbbb", "Nov 1", "Al", "commit: original"),
+            reflog_event("ccccccc", "Nov 1", "Al", "commit (initial): base"),
+        ];
+        commits[0].parents = vec![commits[2].hash.clone()];
+        commits[1].parents = vec![commits[2].hash.clone()];
+        let mut app = App::new(commits);
+        let mut terminal = Terminal::new(TestBackend::new(130, 6)).unwrap();
+        for (step, marker, date_column) in [(0, "▶", 12), (1, "▼", 14), (2, "▶", 12)] {
+            if step > 0 {
+                app.apply_log_action(LogAction::Fold);
+            }
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            for (row, index) in app.visible_log_rows.iter().enumerate() {
+                let index = index.unwrap();
+                let commit = &app.commits[index];
+                let graph = crate::ansi::plain(&app.log_folds.display_graph(index, commit)[0]);
+                let y = app.log_row_origin + row as u16;
+                let text: String = (0..130)
+                    .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                    .collect();
+                // No fold slot separates any hash from its graph. Only the
+                // fold header gets a marker, immediately after its hash.
+                let prefix = if index == 0 {
+                    format!("{graph}{} {marker}", commit.short_hash)
+                } else {
+                    format!("{graph}{} ", commit.short_hash)
+                };
+                assert!(text.starts_with(&prefix), "{text}");
+                let date = text.find("Nov 1").unwrap();
+                assert_eq!(Span::raw(&text[..date]).width(), date_column);
+                if index == 0 {
+                    let column = (Span::raw(&graph).width() + commit.short_hash.len() + 1) as u16;
+                    assert_eq!(terminal.backend().buffer()[(column, y)].symbol(), marker);
+                    assert_eq!(terminal.backend().buffer()[(column, y)].fg, Color::Yellow);
+                    if marker == "▶" {
+                        assert!(text.contains("· 1 earlier version"), "{text}");
+                    }
+                }
+            }
+        }
+        // Inserting the marker must also preserve shortened-actor search ranges.
+        app.search = Some("Hamilton".into());
+        app.search_match = Some((Mode::Log, 0));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let y = app.log_row_origin;
+        let text: String = (0..130)
+            .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+            .collect();
+        let actor = text.find("Margaret H.").unwrap();
+        let actor = Span::raw(&text[..actor]).width() as u16;
+        assert_eq!(terminal.backend().buffer()[(actor, y)].bg, Color::Yellow);
+    }
+
+    #[test]
+    fn reflog_search_reveals_and_highlights_a_shortened_actor_in_a_fold() {
+        let mut commits = vec![
+            reflog_event("aaaaaaa", "Nov 1", "Al", "commit (amend): amended"),
+            reflog_event("bbbbbbb", "Nov 1", "Margaret Hamilton", "commit: original"),
+            reflog_event("ccccccc", "Nov 1", "Al", "commit (initial): base"),
+        ];
+        commits[0].parents = vec![commits[2].hash.clone()];
+        commits[1].parents = vec![commits[2].hash.clone()];
+        let mut app = App::new(commits);
+        assert!(!app.log_folds.visible(1));
+        app.search_input = Some("Hamilton".into());
+        app.submit_search();
+        assert_eq!(app.selected, 1);
+        assert!(app.log_folds.visible(1));
+        let mut terminal = Terminal::new(TestBackend::new(130, 6)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let y = app.log_row_origin
+            + app
+                .visible_log_rows
+                .iter()
+                .position(|&row| row == Some(1))
+                .unwrap() as u16;
+        let text: String = (0..130)
+            .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+            .collect();
+        assert!(!text.contains("Hamilton"), "{text}");
+        let actor = text.find("Margaret H.").unwrap();
+        assert_eq!(
+            terminal.backend().buffer()[(actor as u16, y)].bg,
+            Color::Yellow
+        );
     }
 
     #[test]

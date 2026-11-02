@@ -21,6 +21,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Changed
 
+- Align Reflog's update-time and actor columns using the same table layout as
+  Log, including compact actor names and search of their full names.
+
 - Connect continuing graph lanes directly, with diagonals between adjacent
   lanes and elbows through the gaps between farther ones, so forks can join
   occupied lanes without a detour. Paths now cross at `┼` instead of `╪`.

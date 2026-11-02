@@ -938,10 +938,11 @@ impl App {
         Ok(true)
     }
 
-    /// The date width changes only when the Log's commits are replaced.
+    /// The date width changes only when the Log/Reflog history is replaced.
     /// Graph/hash and author widths follow the visible rows on each draw.
     pub fn log_date_column(&mut self) -> Option<crate::log_format::DateColumn> {
-        if self.history != History::Log || !self.log_format.is_tabular() {
+        if !matches!(self.history, History::Log | History::Reflog) || !self.log_format.is_tabular()
+        {
             return None;
         }
         Some(
