@@ -12,6 +12,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use crate::git::{self, Commit, CommitKind};
 
 mod reflog;
+mod reflog_graph;
 
 pub use reflog::rebase_stage;
 
@@ -242,9 +243,6 @@ impl LogFolds {
 
     /// The redrawn graph, or `None` where Git's graph is shown unchanged.
     fn drawing(&self, unicode: bool) -> Option<&Drawing> {
-        if self.reflog.is_some() {
-            return None;
-        }
         let layout = self.shown_layout();
         (unicode || !layout.git_ascii).then_some(&layout.graphs)
     }
@@ -292,7 +290,7 @@ impl LogFolds {
         {
             let folds = reflog::Folds::new(commits, self.repository.as_ref());
             self.view = View {
-                layout: folds.layout(commits.len()),
+                layout: folds.layout(commits),
                 ..View::default()
             };
             self.reflog = Some(folds);
@@ -349,7 +347,7 @@ impl LogFolds {
     pub fn toggle(&mut self, index: usize, commits: &[Commit]) -> Result<(), String> {
         if let Some(folds) = &mut self.reflog {
             folds.toggle(index);
-            self.view.layout = folds.layout(commits.len());
+            self.view.layout = folds.layout(commits);
             return Ok(());
         }
         let Some(commit) = commits.get(index).filter(|c| c.parents.len() > 1) else {
@@ -433,7 +431,7 @@ impl LogFolds {
     pub fn reveal(&mut self, index: usize, commits: &[Commit]) {
         if let Some(folds) = &mut self.reflog {
             folds.reveal(index);
-            self.view.layout = folds.layout(commits.len());
+            self.view.layout = folds.layout(commits);
             return;
         }
         if matches!(self.read, Read::Running(_)) {

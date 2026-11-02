@@ -259,6 +259,11 @@ Graphs use rounded paths, ● for commits, • for empty non-merge commits or a
 clean working tree, and ○ for boundary commits. Merge commits stay filled.
 ┼ crosses paths without joining them.
 Reflog shows local ref updates with their update times; Enter opens the commit.
+Its graph keeps event order: ▲/▼ point from parents into commits, ◆ marks
+merges, and ○ marks checkout/reset visits. ● has no shown parent; ↕ has
+shown parents on both sides. Side-path arrowheads point into child commits.
+Paths use the nearest parent visit on the same ref when available, and pass
+through folded steps without adding rows.
 Finished or aborted rebases and amend chains start folded in Reflog;
 z toggles a fold.
 Stash lists saved work; Enter opens its changes, including saved untracked files.

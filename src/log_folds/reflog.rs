@@ -135,7 +135,8 @@ impl Folds {
         Self { groups, chains }
     }
 
-    pub(super) fn layout(&self, rows: usize) -> Layout {
+    pub(super) fn layout(&self, commits: &[Commit]) -> Layout {
+        let rows = commits.len();
         let mut layout = Layout {
             visible: vec![true; rows],
             owners: vec![None; rows],
@@ -170,6 +171,7 @@ impl Folds {
             }
             layout.folds[header] = Fold::Folded(hidden);
         }
+        layout.graphs = super::reflog_graph::draw(commits, &layout);
         layout
     }
 
