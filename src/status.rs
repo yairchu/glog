@@ -360,6 +360,8 @@ fn untracked_stream_stats(mut reader: impl Read) -> io::Result<String> {
 
 #[derive(Clone, PartialEq, Eq)]
 enum RowKey {
+    /// The section holding the commits an operation in progress is applying.
+    Commits,
     /// A commit an operation in progress is applying, opened with Enter.
     Commit(crate::operation::Commit),
     Group(Group),
@@ -371,7 +373,7 @@ impl RowKey {
     fn outer_file(&self) -> Option<&Key> {
         match self {
             Self::File(key) | Self::Patch(key, _) | Self::Nested(key, _) => Some(key),
-            Self::Commit(_) | Self::Group(_) => None,
+            Self::Commits | Self::Commit(_) | Self::Group(_) => None,
         }
     }
 
@@ -406,6 +408,7 @@ pub struct StatusView {
     root: PathBuf,
     snapshot: Snapshot,
     collapsed: HashSet<Group>,
+    commits_collapsed: bool,
     patches: HashMap<Key, String>,
     fingerprints: HashMap<Key, u64>,
     #[cfg(test)]
@@ -905,7 +908,20 @@ impl StatusView {
         let old = self.rows.get(self.cursor).cloned();
         let screen = self.cursor.saturating_sub(self.offset);
         self.rows.clear();
-        for commit in &self.snapshot.state.commits {
+        let commits = &self.snapshot.state.commits;
+        if !commits.is_empty() {
+            self.rows.push(Row {
+                key: RowKey::Commits,
+                preview: None,
+                text: format!(
+                    "{} Commits ({})",
+                    if self.commits_collapsed { "▶" } else { "▼" },
+                    commits.len()
+                ),
+                color: Some(Color::Reset),
+            });
+        }
+        for commit in commits.iter().filter(|_| !self.commits_collapsed) {
             self.rows.push(Row {
                 key: RowKey::Commit(commit.clone()),
                 preview: None,
@@ -1081,6 +1097,7 @@ impl StatusView {
         match row.key.clone() {
             // Enter opens the commit in Show instead.
             RowKey::Commit(_) => {}
+            RowKey::Commits => self.commits_collapsed = !self.commits_collapsed,
             RowKey::Nested(key, nested) => {
                 let child = self.submodules.get_mut(&key).unwrap();
                 if let Some(index) = child.rows.iter().position(|row| row.key == *nested) {
@@ -1197,6 +1214,7 @@ impl StatusView {
     fn folded(&self, key: &RowKey) -> bool {
         match key {
             RowKey::Group(group) => self.collapsed.contains(group),
+            RowKey::Commits => self.commits_collapsed,
             RowKey::File(file) => !self.rows.iter().any(
                 |row| matches!(&row.key, RowKey::Patch(k, _) | RowKey::Nested(k, _) if k == file),
             ),
@@ -2663,8 +2681,10 @@ mod tests {
         fail(&mut git_command(&["rebase", "main"]));
 
         let view = StatusView::load().unwrap();
-        let RowKey::Commit(commit) = &view.rows[0].key else {
-            panic!("expected the stopped commit first");
+        // Enter on the first row folds a section rather than leaving Status.
+        assert!(view.rows[0].key == RowKey::Commits);
+        let RowKey::Commit(commit) = &view.rows[1].key else {
+            panic!("expected the stopped commit under the Commits section");
         };
         let label = commit.label.to_string();
         assert!(label.starts_with("Stopped at "), "{label}");
@@ -2673,6 +2693,15 @@ mod tests {
         app.status_view = Some(view);
         app.mode = Mode::Status;
         let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        input::handle(key(KeyCode::Enter), &mut app);
+        assert_eq!(app.mode, Mode::Status);
+        let view = app.status_view.as_ref().unwrap();
+        assert!(!view
+            .rows
+            .iter()
+            .any(|row| matches!(row.key, RowKey::Commit(_))));
+        input::handle(key(KeyCode::Enter), &mut app);
+        input::handle(key(KeyCode::Down), &mut app);
         input::handle(key(KeyCode::Enter), &mut app);
         assert_eq!(app.mode, Mode::Show);
         assert_eq!(app.commits[app.selected].hash, stopped);
