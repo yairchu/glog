@@ -104,13 +104,12 @@ pub fn load(root: &Path, git_dir: Option<&Path>, detached: Option<&str>) -> Stat
 }
 
 /// The operations in progress in the worktree at `root`, whose Git directory
-/// is `git_dir`. Operations only add detail to the changed files, so failing
-/// to read them, including without a Git directory, shows none rather than
-/// failing the view.
+/// is `git_dir`. Operations only add detail to the changed files, so without
+/// a Git directory, none show rather than failing the view.
 pub fn in_progress(root: &Path, git_dir: Option<&Path>) -> Operations {
     Operations(
         git_dir
-            .and_then(|directory| operations(root, directory).ok())
+            .map(|directory| operations(root, directory))
             .unwrap_or_default(),
     )
 }
@@ -229,9 +228,8 @@ fn describe(operation: &Operation) -> Text {
 
 /// Hash what `load` would describe for the worktree at `root`, whose Git
 /// directory is `git_dir`, without the extra Git processes describing takes.
-/// A failure hashes differently from any state, so recovering reloads.
 pub fn fingerprint(root: &Path, git_dir: &Path, state: &mut impl std::hash::Hasher) {
-    std::hash::Hash::hash(&operations(root, git_dir).ok(), state);
+    std::hash::Hash::hash(&operations(root, git_dir), state);
 }
 
 /// The Git directory of the worktree at `root`, which holds its operation
@@ -264,7 +262,7 @@ fn absolute_git_dir(mut command: std::process::Command) -> Result<PathBuf, Strin
 }
 
 /// The operations in progress, in the order `load` describes them.
-fn operations(root: &Path, directory: &Path) -> Result<Vec<Operation>, String> {
+fn operations(root: &Path, directory: &Path) -> Vec<Operation> {
     let [merge_head, todo, bisect_log, bisect_start] =
         ["MERGE_HEAD", "sequencer/todo", "BISECT_LOG", "BISECT_START"]
             .map(|name| directory.join(name));
@@ -272,7 +270,7 @@ fn operations(root: &Path, directory: &Path) -> Result<Vec<Operation>, String> {
         root,
         directory,
         ["CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"],
-    )?;
+    );
     let mut operations = Vec::new();
     let step = |state: &Path, interactive| {
         let (current, total) = match interactive {
@@ -322,7 +320,7 @@ fn operations(root: &Path, directory: &Path) -> Result<Vec<Operation>, String> {
             operations.push(Operation::Bisect { start });
         }
     }
-    Ok(operations)
+    operations
 }
 
 /// A cherry-pick or revert, stopped at a commit or between them.
@@ -416,16 +414,17 @@ pub fn rebase_logged() -> bool {
 /// The commits of per-worktree refs such as REBASE_HEAD. Unlike MERGE_HEAD,
 /// they are stored in the ref backend, which is files in `directory` unless
 /// it keeps a reftable. Status reads them every second, so read files
-/// directly rather than running Git.
+/// directly rather than running Git. Failing to read a reftable loses only
+/// these refs, not the operations read from other files.
 fn pseudo_refs<const N: usize>(
     root: &Path,
     directory: &Path,
     names: [&str; N],
-) -> Result<[Option<String>; N], String> {
+) -> [Option<String>; N] {
     if directory.join("reftable").is_dir() {
-        return resolve(root, names);
+        return resolve(root, names).unwrap_or_else(|_| names.map(|_| None));
     }
-    Ok(names.map(|name| read(&directory.join(name)).filter(|text| is_hash(text))))
+    names.map(|name| read(&directory.join(name)).filter(|text| is_hash(text)))
 }
 
 fn resolve<const N: usize>(root: &Path, names: [&str; N]) -> Result<[Option<String>; N], String> {
@@ -641,6 +640,35 @@ mod tests {
         if supported {
             describe_operations(&["--ref-format=reftable"]);
         }
+    }
+
+    #[test]
+    fn failing_to_read_reftable_pseudo_refs_keeps_other_operations() {
+        let directory = TestDirectory::new();
+        let repo = directory.path().join("repo");
+        // Git fails here, unable to find the repository.
+        let elsewhere = directory.path().join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        let created = git_command(&["init", "-q", "-b", "main", "--ref-format=reftable"])
+            .arg(&repo)
+            .output()
+            .unwrap();
+        // Git before 2.45 cannot create reftable repositories.
+        if !created.status.success() {
+            return;
+        }
+        let _cwd = CurrentDirGuard::enter(&repo);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        git(&["bisect", "start"]);
+        let git_dir = git_dir(&repo).unwrap();
+        let Operations(operations) = in_progress(&elsewhere, Some(&git_dir));
+        assert_eq!(
+            operations
+                .iter()
+                .map(|operation| describe(operation).to_string())
+                .collect::<Vec<_>>(),
+            ["Bisecting from main"]
+        );
     }
 
     fn describe_operations(init: &[&str]) {
