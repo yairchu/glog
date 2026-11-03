@@ -315,10 +315,16 @@ impl Graph {
     pub(super) fn new(commits: &[Commit], layout: &Layout, repeated: &[Option<usize>]) -> Self {
         let mut starts = vec![Vec::new(); commits.len()];
         let mut directions = vec![0; commits.len()];
+        // Mark repeats by the visits drawn: a repeat of only hidden rows
+        // shows its ancestry instead.
+        let mut repeats = vec![false; commits.len()];
         for edge in edges(commits, &layout.visible, repeated) {
             starts[edge.start()].push(edge);
-            if let Edge::Parent { child, parent } = edge {
-                directions[child] |= if parent > child { UP } else { DOWN };
+            match edge {
+                Edge::Parent { child, parent } => {
+                    directions[child] |= if parent > child { UP } else { DOWN };
+                }
+                Edge::Visit { newer, .. } => repeats[newer] = true,
             }
         }
         let mut graph = Self {
@@ -328,7 +334,7 @@ impl Graph {
             events: commits
                 .iter()
                 .enumerate()
-                .map(|(row, commit)| event_node(commit, layout.folds[row], repeated[row].is_some()))
+                .map(|(row, commit)| event_node(commit, layout.folds[row], repeats[row]))
                 .collect(),
             checkpoints: Vec::new(),
             blocks: Vec::new(),
@@ -762,6 +768,19 @@ mod tests {
         assert_eq!(plain(&folds, &commits), ["● ", "│ ● ", "◆◀╯ "]);
         folds.ascii_graph = true;
         assert_eq!(plain(&folds, &commits), ["* ", "| * ", "M<+ "]);
+    }
+
+    #[test]
+    fn folded_unchanged_amends_keep_their_ancestry_arrow() {
+        let commits = events(&[
+            ("same", &["base"], "HEAD", "commit (amend): same"),
+            ("same", &["base"], "HEAD", "commit: same"),
+            ("base", &[], "HEAD", "commit (initial): base"),
+        ]);
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        // The hidden version repeats the header, but no visible visit does.
+        assert_eq!(plain(&folds, &commits), ["▲ ", "● "]);
     }
 
     #[test]
