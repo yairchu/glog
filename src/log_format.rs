@@ -331,12 +331,20 @@ impl LogFormat {
                     (value, padding)
                 }
             };
-            let text = format!("{}{value}{}", part.prefix, part.suffix);
-            let text = if spans.is_empty() {
-                text.trim_start().to_owned()
-            } else {
-                text
-            };
+            // Trim the row's leading whitespace from each piece, so `value`
+            // and `suffix` stay what `text` holds.
+            let (mut prefix, mut value, mut suffix) =
+                (part.prefix.as_str(), value, part.suffix.as_str());
+            if spans.is_empty() {
+                prefix = prefix.trim_start();
+                if prefix.is_empty() {
+                    value = value.trim_start().to_owned();
+                    if value.is_empty() {
+                        suffix = suffix.trim_start();
+                    }
+                }
+            }
+            let text = format!("{prefix}{value}{suffix}");
             if part.field == Field::Refs {
                 if reflog.is_some() {
                     spans.push(field_span(Field::Refs, text));
@@ -351,24 +359,24 @@ impl LogFormat {
                     .map(|span: &Span| span.content.len())
                     .sum::<usize>()
                     + text.len()
-                    - part.suffix.len();
+                    - suffix.len();
                 abbreviated.extend(cell.abbreviated(end - value.len()));
             }
             let span = field_span(part.field, text);
             if part.field == Field::Subject && reflog.is_some() {
-                let start = span.content.len() - value.len() - part.suffix.len();
+                let start = span.content.len() - value.len() - suffix.len();
                 if start > 0 {
                     spans.push(Span::raw(span.content[..start].to_owned()));
                 }
                 spans.extend(reflog_action_spans(&value));
-                if !part.suffix.is_empty() {
-                    spans.push(Span::raw(part.suffix.clone()));
+                if !suffix.is_empty() {
+                    spans.push(Span::raw(suffix.to_owned()));
                 }
             } else if part.field == Field::Subject
                 && crate::log_folds::commit_type_prefix(commit).is_some()
             {
                 // Preserve format literals and the subject's original spelling.
-                let start = span.content.len() - value.len() - part.suffix.len();
+                let start = span.content.len() - value.len() - suffix.len();
                 spans.extend(
                     crate::ansi::style_ranges(
                         ratatui::text::Line::from(span),
@@ -976,6 +984,26 @@ pub(crate) mod tests {
                 })
                 .collect();
             assert_eq!(highlighted, targets, "{action}");
+        }
+    }
+
+    #[test]
+    fn leading_reflog_subjects_trim_leading_whitespace() {
+        let mut c = commit();
+        for (source, action, expected) in [
+            ("%s", "  checkout: moving", "checkout: moving"),
+            ("%s.", " ", "."),
+            (" %s", "\tcustom", "custom"),
+        ] {
+            c.annotation = Some(Annotation::Reflog(ReflogEntry {
+                reference: "HEAD".into(),
+                show_reference: false,
+                rebasing: false,
+                updated_at: "2026-10-12".into(),
+                actor: "Alice".into(),
+                action: action.into(),
+            }));
+            assert_eq!(LogFormat::parse(source).unwrap().text(&c), expected);
         }
     }
 
