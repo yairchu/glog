@@ -44,9 +44,32 @@ impl ColorMoved {
     }
 }
 
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct Options {
+    color_moved: Option<ColorMoved>,
+    color_moved_ws: Option<String>,
+}
+
+fn parse_whitespace(value: &str) -> Result<String, String> {
+    let mut indentation = false;
+    let mut ignore = false;
+    for mode in value.split(',') {
+        match mode {
+            "no" => {}
+            "ignore-space-at-eol" | "ignore-space-change" | "ignore-all-space" => ignore = true,
+            "allow-indentation-change" => indentation = true,
+            _ => return Err(format!("invalid --color-moved-ws mode {mode:?}; expected no, ignore-space-at-eol, ignore-space-change, ignore-all-space, or allow-indentation-change")),
+        }
+    }
+    if indentation && ignore {
+        return Err("--color-moved-ws: allow-indentation-change cannot be combined with other whitespace modes".into());
+    }
+    Ok(value.to_owned())
+}
+
 /// Consume session flags without consuming Git's patterns or literal pathspecs.
-pub fn parse_args(args: &[String]) -> Result<(Option<ColorMoved>, Vec<String>), String> {
-    let mut mode = None;
+pub fn parse_args(args: &[String]) -> Result<(Options, Vec<String>), String> {
+    let mut options = Options::default();
     let mut rest = Vec::new();
     let mut args = args.iter();
     while let Some(arg) = args.next() {
@@ -63,29 +86,33 @@ pub fn parse_args(args: &[String]) -> Result<(Option<ColorMoved>, Vec<String>), 
                 rest.push(value.clone());
             }
         } else if arg == "--color-moved" {
-            mode = Some(ColorMoved::Zebra);
+            options.color_moved = Some(ColorMoved::Zebra);
         } else if arg == "--no-color-moved" {
-            mode = Some(ColorMoved::No);
+            options.color_moved = Some(ColorMoved::No);
         } else if let Some(value) = arg.strip_prefix("--color-moved=") {
-            mode = Some(ColorMoved::parse(value)?);
+            options.color_moved = Some(ColorMoved::parse(value)?);
+        } else if arg == "--no-color-moved-ws" {
+            options.color_moved_ws = Some("no".into());
+        } else if let Some(value) = arg.strip_prefix("--color-moved-ws=") {
+            options.color_moved_ws = Some(parse_whitespace(value)?);
         } else {
             rest.push(arg.clone());
         }
     }
-    Ok((mode, rest))
+    Ok((options, rest))
 }
 
 // Fixed before starting background readers; all views share the CLI override.
-static SESSION_MODE: OnceLock<Option<ColorMoved>> = OnceLock::new();
+static SESSION_OPTIONS: OnceLock<Options> = OnceLock::new();
 
-pub fn initialize(mode: Option<ColorMoved>) {
-    SESSION_MODE
-        .set(mode)
+pub fn initialize(options: Options) {
+    SESSION_OPTIONS
+        .set(options)
         .expect("patch options initialized once");
 }
 
-/// Git keeps its own configured mode and whitespace policy. Only supply our
-/// default when colorMoved is absent, so explicit false/no remains effective.
+/// Retain Git's configured mode and whitespace policy unless overridden.
+/// Only supply our mode default when colorMoved is absent.
 pub fn apply(command: &mut Command, directory: Option<&Path>) {
     // Status and watch mode build a patch command per file on every refresh,
     // so read each repository's setting once per session.
@@ -96,17 +123,26 @@ pub fn apply(command: &mut Command, directory: Option<&Path>) {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
     };
-    let mode = SESSION_MODE.get().copied().flatten().or_else(|| {
-        let key = directory.map(Path::to_path_buf);
-        if let Some(&mode) = defaults().get(&key) {
-            return mode;
-        }
-        // Run Git without the lock so readers of other repositories don't
-        // wait on it. Concurrent first reads may both run it, harmlessly.
-        let mode = default_mode(directory);
-        *defaults().entry(key).or_insert(mode)
-    });
+    let mode = SESSION_OPTIONS
+        .get()
+        .and_then(|options| options.color_moved)
+        .or_else(|| {
+            let key = directory.map(Path::to_path_buf);
+            if let Some(&mode) = defaults().get(&key) {
+                return mode;
+            }
+            // Run Git without the lock so readers of other repositories don't
+            // wait on it. Concurrent first reads may both run it, harmlessly.
+            let mode = default_mode(directory);
+            *defaults().entry(key).or_insert(mode)
+        });
     apply_mode(command, mode);
+    if let Some(whitespace) = SESSION_OPTIONS
+        .get()
+        .and_then(|options| options.color_moved_ws.as_deref())
+    {
+        command.args(["-c", &format!("diff.colorMovedWS={whitespace}")]);
+    }
 }
 
 fn default_mode(directory: Option<&Path>) -> Option<ColorMoved> {
@@ -144,15 +180,21 @@ mod tests {
             "dimmed_zebra",
         ] {
             let (selected, rest) = parse(&[&format!("--color-moved={mode}"), "HEAD"]).unwrap();
-            assert_eq!(selected, Some(ColorMoved::parse(mode).unwrap()));
+            assert_eq!(selected.color_moved, Some(ColorMoved::parse(mode).unwrap()));
             assert_eq!(rest, ["HEAD"]);
         }
         assert_eq!(
-            parse(&["--color-moved", "--no-color-moved"]).unwrap().0,
+            parse(&["--color-moved", "--no-color-moved"])
+                .unwrap()
+                .0
+                .color_moved,
             Some(ColorMoved::No)
         );
         assert_eq!(
-            parse(&["--no-color-moved", "--color-moved"]).unwrap().0,
+            parse(&["--no-color-moved", "--color-moved"])
+                .unwrap()
+                .0
+                .color_moved,
             Some(ColorMoved::Zebra)
         );
         assert!(parse(&["--color-moved="]).is_err());
@@ -164,13 +206,81 @@ mod tests {
             vec!["--", "--color-moved", "--no-color-moved"],
         ] {
             let (mode, rest) = parse(&args).unwrap();
-            assert_eq!(mode, None);
+            assert_eq!(mode, Options::default());
             assert_eq!(rest, args);
         }
         let (mode, rest) = parse(&["--watch", "--no-color-moved", "--hide-types=test"]).unwrap();
-        assert_eq!(mode, Some(ColorMoved::No));
+        assert_eq!(mode.color_moved, Some(ColorMoved::No));
         let (_, options, _) = crate::log_format::parse_args(&rest).unwrap();
         assert!(options.watch);
+    }
+
+    #[test]
+    fn whitespace_flags_are_session_options() {
+        for flag in [
+            "--color-moved-ws=allow-indentation-change",
+            "--color-moved-ws=ignore-space-change,ignore-space-at-eol",
+            "--no-color-moved-ws",
+        ] {
+            let (options, rest) = parse_args(&[flag.into(), "HEAD".into()]).unwrap();
+            assert_eq!(
+                options.color_moved_ws.as_deref(),
+                Some(flag.strip_prefix("--color-moved-ws=").unwrap_or("no"))
+            );
+            assert_eq!(
+                rest,
+                ["HEAD"],
+                "{flag} must not reach the Show revision parser"
+            );
+        }
+    }
+
+    #[test]
+    fn whitespace_overrides_preserve_patterns_paths_and_git_modes() {
+        let parse =
+            |args: &[&str]| parse_args(&args.iter().map(|arg| (*arg).into()).collect::<Vec<_>>());
+        for args in [
+            vec!["--grep", "--color-moved-ws=allow-indentation-change"],
+            vec!["-S", "--no-color-moved-ws"],
+            vec![
+                "--",
+                "--color-moved-ws=allow-indentation-change",
+                "--no-color-moved-ws",
+            ],
+        ] {
+            let (options, rest) = parse(&args).unwrap();
+            assert_eq!(options, Options::default());
+            assert_eq!(rest, args);
+        }
+        for mode in [
+            "no",
+            "ignore-space-at-eol",
+            "ignore-space-change",
+            "ignore-all-space",
+            "allow-indentation-change",
+            "ignore-space-at-eol,ignore-space-change",
+        ] {
+            let (options, _) = parse(&[&format!("--color-moved-ws={mode}")]).unwrap();
+            assert_eq!(options.color_moved_ws.as_deref(), Some(mode));
+        }
+        let (options, _) = parse(&[
+            "--color-moved-ws=allow-indentation-change",
+            "--no-color-moved-ws",
+        ])
+        .unwrap();
+        assert_eq!(options.color_moved_ws.as_deref(), Some("no"));
+        let (options, _) = parse(&[
+            "--no-color-moved-ws",
+            "--color-moved-ws=allow-indentation-change",
+        ])
+        .unwrap();
+        assert_eq!(
+            options.color_moved_ws.as_deref(),
+            Some("allow-indentation-change")
+        );
+        for mode in ["", "unknown", "ignore-all-space,allow-indentation-change"] {
+            assert!(parse(&[&format!("--color-moved-ws={mode}")]).is_err());
+        }
     }
 
     fn patch(mode: Option<ColorMoved>, directory: Option<&Path>) -> String {
@@ -269,5 +379,46 @@ mod tests {
         let uncolored = crate::git::format_output(plain.into_bytes()).unwrap();
         assert_ne!(colored, uncolored);
         assert_eq!(crate::ansi::plain(&colored), crate::ansi::plain(&uncolored));
+
+        // The CLI whitespace policy must reach Show and patches opened from
+        // Log, not just Git's initial history traversal. Override repository
+        // config and check the real colors of moved, reindented blocks.
+        git(&["config", "diff.colorMovedWS", "no"]);
+        git(&["add", "file.rs"]);
+        git(&["commit", "-qm", "move and reindent"]);
+        let before = crate::git::load_show_app(&["HEAD".into()]).unwrap();
+        assert!(before.status.is_none(), "{:?}", before.status);
+        let (options, args) = parse_args(&[
+            "--color-moved-ws=allow-indentation-change".into(),
+            "HEAD".into(),
+        ])
+        .unwrap();
+        initialize(options);
+        let mut show = crate::git::load_show_app(&args).unwrap();
+        assert!(show.status.is_none(), "{:?}", show.status);
+        assert_ne!(before.show_text, show.show_text);
+        assert_eq!(
+            crate::ansi::plain(&before.show_text),
+            crate::ansi::plain(&show.show_text)
+        );
+        let expected = show.show_text.clone();
+        show.switch_mode();
+        show.switch_mode();
+        assert_eq!(show.show_text, expected);
+        let (_, _, args) = crate::log_format::parse_args(&args).unwrap();
+        let mut log = crate::app::App::new(crate::git::load_log(&args).unwrap());
+        log.switch_mode();
+        assert_eq!(log.show_text, expected);
+
+        // Session overrides also apply to patch readers in child repositories.
+        let output = crate::git::patch_command_in(&child)
+            .args(["config", "--get", "diff.colorMovedWS"])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap().trim(),
+            "allow-indentation-change"
+        );
     }
 }

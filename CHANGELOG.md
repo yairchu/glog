@@ -12,6 +12,12 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   inserted target hash to jump to it, revealing folded or filtered history,
   and press Backspace to return. Ambiguous and missing targets are labeled.
 
+### Fixed
+
+- Accept `--color-moved-ws=MODES` and `--no-color-moved-ws` consistently in
+  Show and other commands. Apply the whitespace policy to patches throughout
+  the session, including patches opened from Log.
+
 ## 0.7.2 - 2026-11-04
 
 ### Added

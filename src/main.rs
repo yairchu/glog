@@ -41,14 +41,14 @@ fn main() -> ExitCode {
         println!("{information}");
         return ExitCode::SUCCESS;
     }
-    let (color_moved, command_args) = match patch_options::parse_args(command_args) {
+    let (patch_settings, command_args) = match patch_options::parse_args(command_args) {
         Ok(options) => options,
         Err(error) => {
             eprintln!("glog: {error}");
             return ExitCode::FAILURE;
         }
     };
-    patch_options::initialize(color_moved);
+    patch_options::initialize(patch_settings);
     blame::initialize_date(&command_args);
     let command_args = command_args.as_slice();
     let (log_format, log_options, git_args) = match if command == Command::Log {
@@ -237,6 +237,12 @@ Options:
                 Modes: no, default, plain, blocks, zebra, dimmed-zebra
   --no-color-moved
                 Disable moved-code highlighting for this session
+  --color-moved-ws=MODES
+                Set moved-code whitespace matching for this session (comma-separated):
+                no, ignore-space-at-eol, ignore-space-change, ignore-all-space,
+                or allow-indentation-change (cannot combine with ignore modes)
+  --no-color-moved-ws
+                Match moved-code whitespace exactly for this session
   -h, --help    Print help
   -V, --version Print version
 
@@ -279,8 +285,9 @@ the file before it, and Backspace returns.
 Show opens HEAD or the specified commit, with history available via Tab.
 Breaking-change markers, section headings, and footer labels are emphasized.
 Patches highlight moved blocks using diff.colorMoved, or zebra if unset.
-Git's diff.colorMovedWS controls whitespace matching. Session color-moved
-flags override diff.colorMoved and apply across views, including watch mode.
+Git's diff.colorMovedWS controls whitespace matching unless --color-moved-ws
+or --no-color-moved-ws overrides it. Session moved-code options apply across
+views, including watch mode.
 Click underlined commit hashes in Show messages to follow them; Backspace returns.
 Hashes use lowercase hex: 7+ characters, or with a # prefix, 7+ or 4-5
 including a letter. On GitHub repositories, # plus 1-5 digits opens an issue
