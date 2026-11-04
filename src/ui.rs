@@ -653,6 +653,17 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     let mut lines = Vec::new();
     let date_column = app.log_date_column();
     let show_hash = app.log_format.shows(crate::log_format::Field::Hash);
+    let hash_style = |index: usize| {
+        if app.history == History::Reflog
+            && app.commits[index].hash == app.commits[app.selected].hash
+        {
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        }
+    };
     // Collect actual on-screen commit rows before measuring their combined
     // graph/hash column. Routing lines and off-screen history reserve no space.
     let mut metadata_rows = Vec::new();
@@ -748,7 +759,9 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                             blame.starts_chunk || lines.is_empty(),
                             &app.log_format,
                         ),
-                        None => app.log_format.row(commit, None),
+                        None => app
+                            .log_format
+                            .row_with_hash_style(commit, None, hash_style(index)),
                     };
                     line.spans.extend(row.spans);
                     abbreviated = shifted(row.abbreviated, start);
@@ -806,7 +819,11 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 .columns(hash_width, author)
                 .with_hash_marker(marker);
             let start: usize = line.spans.iter().map(|span| span.content.len()).sum();
-            let row = app.log_format.row(&app.commits[index], Some(&columns));
+            let row = app.log_format.row_with_hash_style(
+                &app.commits[index],
+                Some(&columns),
+                hash_style(index),
+            );
             line.spans.extend(row.spans);
             line.spans.push(Span::styled(
                 app.log_folds.label(index),

@@ -7,6 +7,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Highlight the selected Reflog commit and its other visible entries with
+  bold magenta hashes.
+
 - Show ancestry in Reflog using ▲/▼ nodes and side-path arrowheads pointing
   from parents into commits, ◆ for merges, and hollow nodes for checkout/reset
   visits. Straight histories use a single column; forks and merges keep one

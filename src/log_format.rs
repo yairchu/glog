@@ -229,8 +229,19 @@ impl LogFormat {
     }
 
     pub fn row(&self, commit: &Commit, columns: Option<&Columns>) -> Row {
+        self.row_with_hash_style(commit, columns, Style::default())
+    }
+
+    pub fn row_with_hash_style(
+        &self,
+        commit: &Commit,
+        columns: Option<&Columns>,
+        hash_style: Style,
+    ) -> Row {
         let spans = match &commit.annotation {
-            Some(Annotation::Reflog(_)) | None => return self.commit_row(commit, columns),
+            Some(Annotation::Reflog(_)) | None => {
+                return self.commit_row(commit, columns, hash_style)
+            }
             Some(Annotation::Stash(entry)) => crate::stash::spans(commit, entry, self),
             Some(Annotation::Blame(line)) => {
                 return crate::blame::row(commit, line, line.starts_chunk, self);
@@ -243,7 +254,7 @@ impl LogFormat {
         }
     }
 
-    fn commit_row(&self, commit: &Commit, columns: Option<&Columns>) -> Row {
+    fn commit_row(&self, commit: &Commit, columns: Option<&Columns>, hash_style: Style) -> Row {
         // Synthetic entries must remain identifiable even in author-only formats.
         if commit.kind != CommitKind::Revision {
             let spans = vec![
@@ -364,7 +375,10 @@ impl LogFormat {
                     - suffix.len();
                 abbreviated.extend(cell.abbreviated(end - value.len()));
             }
-            let span = field_span(part.field, text);
+            let mut span = field_span(part.field, text);
+            if part.field == Field::Hash {
+                span.style = span.style.patch(hash_style);
+            }
             if part.field == Field::Subject && reflog.is_some() {
                 let start = span.content.len() - value.len() - suffix.len();
                 if start > 0 {
