@@ -240,7 +240,7 @@ impl LogFormat {
     ) -> Row {
         let spans = match &commit.annotation {
             Some(Annotation::Reflog(_)) | None => {
-                return self.commit_row(commit, columns, hash_style)
+                return self.commit_row(commit, columns, hash_style, None)
             }
             Some(Annotation::Stash(entry)) => crate::stash::spans(commit, entry, self),
             Some(Annotation::Blame(line)) => {
@@ -251,10 +251,31 @@ impl LogFormat {
         Row {
             spans,
             abbreviated: Vec::new(),
+            links: Vec::new(),
         }
     }
 
-    fn commit_row(&self, commit: &Commit, columns: Option<&Columns>, hash_style: Style) -> Row {
+    pub fn row_with_fixup(
+        &self,
+        commit: &Commit,
+        columns: Option<&Columns>,
+        hash_style: Style,
+        fixup: Option<&crate::fixups::Label>,
+    ) -> Row {
+        if commit.annotation.is_none() {
+            self.commit_row(commit, columns, hash_style, fixup)
+        } else {
+            self.row_with_hash_style(commit, columns, hash_style)
+        }
+    }
+
+    fn commit_row(
+        &self,
+        commit: &Commit,
+        columns: Option<&Columns>,
+        hash_style: Style,
+        fixup: Option<&crate::fixups::Label>,
+    ) -> Row {
         // Synthetic entries must remain identifiable even in author-only formats.
         if commit.kind != CommitKind::Revision {
             let spans = vec![
@@ -267,10 +288,12 @@ impl LogFormat {
             return Row {
                 spans,
                 abbreviated: Vec::new(),
+                links: Vec::new(),
             };
         }
         let mut spans = Vec::new();
         let mut abbreviated = Vec::new();
+        let mut links = Vec::new();
         let reflog = commit.reflog();
         let author = author(commit);
         // Append badges once, after the last visible author name/email field.
@@ -379,7 +402,33 @@ impl LogFormat {
             if part.field == Field::Hash {
                 span.style = span.style.patch(hash_style);
             }
-            if part.field == Field::Subject && reflog.is_some() {
+            if let Some(fixup) = fixup.filter(|_| part.field == Field::Subject) {
+                let split = prefix.len() + fixup.prefix_len;
+                spans.push(Span::raw(span.content[..split].to_owned()));
+                spans.push(Span::styled("→ ", Style::default().fg(Color::Cyan)));
+                let start = spans.iter().map(|span| span.content.len()).sum::<usize>();
+                if let Some(target) = fixup.target {
+                    links.push((start..start + fixup.text.len(), target));
+                }
+                spans.push(Span::styled(
+                    fixup.text.clone(),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(if fixup.target.is_some() {
+                            ratatui::style::Modifier::UNDERLINED
+                        } else {
+                            ratatui::style::Modifier::empty()
+                        }),
+                ));
+                spans.push(Span::raw(" "));
+                spans.extend(
+                    crate::ansi::style_ranges(
+                        ratatui::text::Line::from(Span::raw(span.content[split..].to_owned())),
+                        crate::message_format::subject_ranges(&value[fixup.prefix_len..], 0),
+                    )
+                    .spans,
+                );
+            } else if part.field == Field::Subject && reflog.is_some() {
                 let start = span.content.len() - value.len() - suffix.len();
                 if start > 0 {
                     spans.push(Span::raw(span.content[..start].to_owned()));
@@ -409,7 +458,11 @@ impl LogFormat {
                 spans.push(Span::raw(" ".repeat(padding)));
             }
         }
-        Row { spans, abbreviated }
+        Row {
+            spans,
+            abbreviated,
+            links,
+        }
     }
 
     #[cfg(test)]
@@ -439,6 +492,8 @@ impl LogFormat {
 /// A Log row's spans, and the byte ranges in them of values shown shortened,
 /// with each text they stand for, which search matches.
 pub struct Row {
+    /// Byte ranges of inserted fixup target hashes and their Log row indices.
+    pub links: Vec<(std::ops::Range<usize>, usize)>,
     pub spans: Vec<Span<'static>>,
     pub abbreviated: Vec<(std::ops::Range<usize>, String)>,
 }

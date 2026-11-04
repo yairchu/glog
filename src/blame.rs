@@ -1077,7 +1077,11 @@ pub fn row(
         Style::default().fg(Color::DarkGray),
     ));
     spans.extend(line.code.iter().cloned());
-    crate::log_format::Row { spans, abbreviated }
+    crate::log_format::Row {
+        spans,
+        abbreviated,
+        links: Vec::new(),
+    }
 }
 
 #[cfg(test)]

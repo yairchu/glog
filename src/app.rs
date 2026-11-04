@@ -217,6 +217,13 @@ struct CachedShow {
     links: Option<HashMap<usize, Vec<crate::commit_links::Link>>>,
 }
 
+struct LogBookmark {
+    hash: String,
+    offset: usize,
+    hidden_types: std::collections::BTreeSet<String>,
+    hide_merges: bool,
+}
+
 pub struct App {
     pub images: crate::images::Images,
     pub status_view: Option<crate::status::StatusView>,
@@ -240,6 +247,8 @@ pub struct App {
     pub show_message_styles: HashMap<usize, crate::message_format::Ranges>,
     pub visible_show_links: Vec<(ratatui::layout::Rect, crate::commit_links::Target)>,
     reference_back: Option<Box<App>>,
+    log_back: Vec<LogBookmark>,
+    pub visible_log_links: Vec<(ratatui::layout::Rect, usize)>,
     /// Remotes rarely change during a session, so look up issue links once.
     github_repository: Option<Option<String>>,
     // Explicit repository for views reached across a submodule boundary.
@@ -334,6 +343,8 @@ impl App {
             show_message_styles: HashMap::new(),
             visible_show_links: Vec::new(),
             reference_back: None,
+            log_back: Vec::new(),
+            visible_log_links: Vec::new(),
             github_repository: None,
             repository: None,
             browser_results: Vec::new(),
@@ -2082,7 +2093,33 @@ impl App {
     }
 
     pub fn has_reference_back(&self) -> bool {
-        self.reference_back.is_some()
+        !self.log_back.is_empty() || self.reference_back.is_some()
+    }
+
+    /// Follow a fixup within this Log, opening any fold hiding its target.
+    pub fn follow_fixup(&mut self, index: usize) {
+        if self.history != History::Log || index >= self.commits.len() {
+            return;
+        }
+        self.log_back.push(LogBookmark {
+            hash: self.commits[self.selected].hash.clone(),
+            offset: self.log_offset,
+            hidden_types: self.log_folds.hidden_types.clone(),
+            hide_merges: self.log_folds.hide_merges,
+        });
+        if self.log_folds.filter_hidden(index, &self.commits[index]) {
+            if let Some(kind) = crate::log_folds::commit_type(&self.commits[index]) {
+                self.log_folds.hidden_types.remove(kind.as_ref());
+            }
+            if self.commits[index].parents.len() > 1 {
+                self.log_folds.hide_merges = false;
+            }
+            self.refresh_log_folds();
+        }
+        self.log_folds.reveal(index, &self.commits);
+        self.selected = index;
+        self.center_selection = true;
+        self.search_match = None;
     }
 
     pub fn follow_link(&mut self, target: &crate::commit_links::Target) {
@@ -2252,6 +2289,25 @@ impl App {
     }
 
     pub fn reference_back(&mut self) {
+        if let Some(bookmark) = self.log_back.pop() {
+            self.mode = Mode::Log;
+            self.log_folds.hidden_types = bookmark.hidden_types;
+            self.log_folds.hide_merges = bookmark.hide_merges;
+            self.refresh_log_folds();
+            if let Some(index) = self
+                .commits
+                .iter()
+                .position(|commit| commit.hash == bookmark.hash)
+            {
+                self.log_folds.reveal(index, &self.commits);
+                self.selected = index;
+            }
+            self.ensure_log_selection();
+            self.log_offset = bookmark.offset;
+            self.center_selection = false;
+            self.search_match = None;
+            return;
+        }
         if let Some(mut origin) = self.reference_back.take() {
             // Saved views discard their cache. Restore the displayed commit's
             // entry on return so switching tabs keeps its folds and viewport.

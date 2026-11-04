@@ -591,6 +591,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     let height = area.height as usize;
     app.log_row_origin = area.y;
     app.visible_log_rows.clear();
+    app.visible_log_links.clear();
     if app.commits.is_empty() {
         frame.render_widget(
             Paragraph::new("No commits matched the supplied arguments."),
@@ -650,6 +651,22 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             .log_offset
             .min(app.commits.len().saturating_sub(height.max(1)));
     }
+    let fixups = if app.history == History::Log {
+        crate::fixups::resolve(&app.commits)
+    } else {
+        vec![None; app.commits.len()]
+    };
+    let labels: Vec<_> = fixups
+        .iter()
+        .enumerate()
+        .map(|(index, target)| target.map(|target| target.label(&app.commits[index], &app.commits)))
+        .collect();
+    let selection = app.selected;
+    let related = |index: usize| {
+        fixups[selection] == Some(crate::fixups::Target::Commit(index))
+            || fixups[index] == Some(crate::fixups::Target::Commit(selection))
+    };
+    let mut log_links = Vec::new();
     let mut lines = Vec::new();
     let date_column = app.log_date_column();
     let show_hash = app.log_format.shows(crate::log_format::Field::Hash);
@@ -659,6 +676,10 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
         {
             Style::default()
                 .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD)
+        } else if related(index) {
+            Style::default()
+                .fg(Color::LightCyan)
                 .add_modifier(Modifier::BOLD)
         } else {
             Style::default()
@@ -759,10 +780,16 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                             blame.starts_chunk || lines.is_empty(),
                             &app.log_format,
                         ),
-                        None => app
-                            .log_format
-                            .row_with_hash_style(commit, None, hash_style(index)),
+                        None => app.log_format.row_with_fixup(
+                            commit,
+                            None,
+                            hash_style(index),
+                            labels[index].as_ref(),
+                        ),
                     };
+                    log_links.extend(row.links.into_iter().map(|(range, target)| {
+                        (lines.len(), range.start + start..range.end + start, target)
+                    }));
                     line.spans.extend(row.spans);
                     abbreviated = shifted(row.abbreviated, start);
                     line.spans.push(Span::styled(
@@ -819,21 +846,49 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 .columns(hash_width, author)
                 .with_hash_marker(marker);
             let start: usize = line.spans.iter().map(|span| span.content.len()).sum();
-            let row = app.log_format.row_with_hash_style(
+            let metadata = app.log_format.row_with_fixup(
                 &app.commits[index],
                 Some(&columns),
                 hash_style(index),
+                labels[index].as_ref(),
             );
-            line.spans.extend(row.spans);
+            log_links.extend(
+                metadata
+                    .links
+                    .into_iter()
+                    .map(|(range, target)| (row, range.start + start..range.end + start, target)),
+            );
+            line.spans.extend(metadata.spans);
             line.spans.push(Span::styled(
                 app.log_folds.label(index),
                 Style::default().fg(Color::Yellow),
             ));
             if let Some(query) = &app.search {
                 let current = app.search_match == Some((Mode::Log, index));
-                let abbreviated = shifted(row.abbreviated, start);
+                let abbreviated = shifted(metadata.abbreviated, start);
                 *line = highlight_row(std::mem::take(line), abbreviated, query, current);
             }
+        }
+    }
+    for (row, range, target) in log_links {
+        let text: String = lines[row]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        let x = Span::raw(&text[..range.start]).width();
+        let width = Span::raw(&text[range]).width();
+        let visible_width = width.min((area.width as usize).saturating_sub(x));
+        if visible_width > 0 {
+            app.visible_log_links.push((
+                Rect::new(
+                    area.x + x as u16,
+                    area.y + row as u16,
+                    visible_width as u16,
+                    1,
+                ),
+                target,
+            ));
         }
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
@@ -1800,6 +1855,196 @@ mod tests {
             graph: vec!["* ".to_owned(); graph_rows],
             first_parent_only: false,
             graph_node: '*',
+        }
+    }
+
+    #[test]
+    fn fixup_matching_rejects_ambiguous_newer_and_synthetic_targets() {
+        use crate::fixups::{resolve, Target};
+        let mut synthetic = commit("working", 1);
+        synthetic.kind = CommitKind::WorkingTree;
+        let commits = vec![
+            commit("fixup! duplicate", 1),
+            commit("duplicate", 1),
+            commit("duplicate", 1),
+            commit("newer", 1),
+            commit("fixup! newer", 1),
+            commit("squash! feat: 界", 1),
+            commit("amend! feat: 界", 1),
+            commit("feat: 界", 1),
+            commit("fixup! working", 1),
+            synthetic,
+        ];
+        let targets = resolve(&commits);
+        assert_eq!(targets[0], Some(Target::Ambiguous));
+        assert_eq!(targets[4], Some(Target::Missing));
+        assert_eq!(targets[5], Some(Target::Commit(7)));
+        assert_eq!(targets[6], Some(Target::Commit(7)));
+        assert_eq!(targets[8], Some(Target::Missing));
+        let mut app = App::new(commits);
+        app.log_format = crate::log_format::LogFormat::parse("%s").unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 14)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("fixup! → ambiguous duplicate"));
+        assert!(screen.contains("fixup! → missing newer"));
+        assert!(app.visible_log_links.iter().all(|(_, target)| *target == 7));
+    }
+
+    #[test]
+    fn fixup_links_follow_display_columns_and_restore_selection_and_filters() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        for format in [None, Some("界 %an (%s) %s")] {
+            for width in [30, 120] {
+                let mut fixup = commit("fixup! feat: café", 1);
+                fixup.short_hash = "1234567".into();
+                fixup.author = "界 Alice".into();
+                let mut target = commit("feat: café", 1);
+                target.short_hash = "abcdef0".into();
+                fixup.parents = vec![target.hash.clone()];
+                let mut app = App::new(vec![fixup, target]);
+                if let Some(format) = format {
+                    app.log_format = crate::log_format::LogFormat::parse(format).unwrap();
+                }
+                app.apply_log_action(LogAction::Type("feat".into()));
+                assert!(!app.log_folds.visible(1));
+                let mut terminal = Terminal::new(TestBackend::new(width, 8)).unwrap();
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                if app.visible_log_links.is_empty() {
+                    assert_eq!(width, 30); // Target hash was clipped entirely.
+                    continue;
+                }
+                for (rect, target) in &app.visible_log_links {
+                    assert_eq!(*target, 1);
+                    let visible: String = rect
+                        .positions()
+                        .map(|position| {
+                            let cell = &terminal.backend().buffer()[position];
+                            assert!(cell.modifier.contains(Modifier::UNDERLINED));
+                            cell.symbol().to_owned()
+                        })
+                        .collect();
+                    assert!("abcdef0".starts_with(&visible), "{visible}");
+                }
+                if width == 120 {
+                    let screen: String = terminal
+                        .backend()
+                        .buffer()
+                        .content
+                        .iter()
+                        .map(|cell| cell.symbol())
+                        .collect();
+                    assert!(screen.contains("fixup! → abcdef0 feat: café"));
+                }
+                let (rect, _) = app.visible_log_links[0];
+                handle(
+                    Event::Mouse(MouseEvent {
+                        kind: MouseEventKind::Down(MouseButton::Left),
+                        column: rect.x,
+                        row: rect.y,
+                        modifiers: KeyModifiers::NONE,
+                    }),
+                    &mut app,
+                );
+                assert_eq!(app.mode, Mode::Log);
+                assert_eq!(app.selected, 1);
+                assert!(app.log_folds.visible(1));
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                let source_row = app
+                    .visible_log_rows
+                    .iter()
+                    .position(|index| *index == Some(0))
+                    .unwrap();
+                assert_eq!(
+                    terminal.backend().buffer()[(0, app.log_row_origin + source_row as u16)].bg,
+                    Color::Reset
+                );
+                handle(
+                    Event::Key(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
+                    &mut app,
+                );
+                assert_eq!(app.selected, 0);
+                assert!(!app.log_folds.visible(1));
+                assert!(!app.has_reference_back());
+            }
+        }
+    }
+
+    #[test]
+    fn multiple_fixups_highlight_only_related_hashes_and_reveal_folded_targets() {
+        let mut fixup = commit("fixup! feat: side", 1);
+        let mut another = commit("fixup! feat: side", 1);
+        another.hash = "another".repeat(6);
+        let mut merge = commit("merge", 1);
+        let mut target = commit("feat: side", 1);
+        let mut main = commit("main", 1);
+        let base = commit("base", 1);
+        fixup.parents = vec![another.hash.clone()];
+        another.parents = vec![merge.hash.clone()];
+        merge.parents = vec![main.hash.clone(), target.hash.clone()];
+        target.parents = vec![base.hash.clone()];
+        main.parents = vec![base.hash.clone()];
+        let mut commits = vec![fixup, another, merge, target, main, base];
+        for (index, commit) in commits.iter_mut().enumerate() {
+            commit.short_hash = format!("{:07x}", index + 1);
+        }
+        let mut app = App::new(commits);
+        app.log_folds.start_collapsed = true;
+        app.refresh_log_folds();
+        assert!(!app.log_folds.visible(3));
+        app.follow_fixup(3);
+        assert!(app.log_folds.visible(3));
+        let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
+        for selection in [0, 1, 3] {
+            app.selected = selection;
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let mut checked_hashes = 0;
+            for (row, index) in app.visible_log_rows.iter().enumerate() {
+                let Some(index) = *index else { continue };
+                let y = app.log_row_origin + row as u16;
+                let selected = index == selection;
+                assert_eq!(
+                    buffer[(0, y)].bg,
+                    if selected {
+                        Color::DarkGray
+                    } else {
+                        Color::Reset
+                    }
+                );
+                assert_eq!(buffer[(0, y)].modifier.contains(Modifier::BOLD), selected);
+                let text: String = (0..120).map(|x| buffer[(x, y)].symbol()).collect();
+                // Routing rows carry graph edges without commit metadata.
+                let Some(start) = text.find(&app.commits[index].short_hash) else {
+                    continue;
+                };
+                checked_hashes += 1;
+                let x = Span::raw(&text[..start]).width() as u16;
+                let hash = &buffer[(x, y)];
+                let related = if selection == 3 {
+                    index < 2
+                } else {
+                    index == 3
+                };
+                assert_eq!(
+                    hash.fg,
+                    if related {
+                        Color::LightCyan
+                    } else {
+                        Color::Yellow
+                    }
+                );
+                assert_eq!(hash.modifier.contains(Modifier::BOLD), selected || related);
+            }
+            assert_eq!(checked_hashes, app.commits.len());
+            assert_eq!(app.visible_log_links.len(), 2);
+            assert!(app.visible_log_links.iter().all(|(_, target)| *target == 3));
         }
     }
 

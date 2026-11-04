@@ -252,6 +252,15 @@ fn apply(event: Event, app: &mut App) {
             MouseEventKind::Down(MouseButton::Left)
                 if app.mode == Mode::Log && mouse.row >= app.log_row_origin =>
             {
+                if let Some(target) = app
+                    .visible_log_links
+                    .iter()
+                    .find(|(rect, _)| rect.contains((mouse.column, mouse.row).into()))
+                    .map(|(_, target)| *target)
+                {
+                    app.follow_fixup(target);
+                    return;
+                }
                 let row = usize::from(mouse.row - app.log_row_origin);
                 if let Some(Some(selected)) = app.visible_log_rows.get(row).copied() {
                     if app.history == History::Branches {

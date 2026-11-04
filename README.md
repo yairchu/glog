@@ -512,6 +512,14 @@ editing and `↓` to move forward again. Moving past the newest search restores
 what you were typing. Search history is shared between Log and Show for the
 current session; only submitted, nonempty queries are saved.
 
+Log annotates `fixup!`, `squash!`, and `amend!` subjects with the target's hash
+when an older commit in the loaded history has an exact matching subject.
+Selecting either commit highlights the related hashes. Click the target hash to
+jump to it, opening folds and temporarily clearing filters that hide it;
+Backspace returns to the previous selection and restores those filters.
+Duplicate matching subjects are marked ambiguous; targets outside the loaded
+history are marked missing.
+
 The selected Log commit is the one displayed by Show. Show output is loaded lazily and a small cache keeps recently viewed patches.
 
 Show highlights the current patch row. Navigation and search move this cursor,

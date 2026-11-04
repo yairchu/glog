@@ -5,6 +5,7 @@ mod branches;
 mod commit_links;
 mod diff;
 mod editor;
+mod fixups;
 mod git;
 mod hunk;
 mod images;
