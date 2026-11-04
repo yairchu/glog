@@ -223,8 +223,8 @@ fn load_snapshot(root: &std::path::Path) -> Result<Snapshot, String> {
 }
 
 pub fn working_tree_summary(worktree: &crate::git::Worktree) -> Result<WorkingTreeSummary, String> {
-    let mut snapshot = load_snapshot(&worktree.root)?;
-    snapshot.load_operations(&worktree.root, Some(&worktree.git_dir));
+    let mut snapshot = load_snapshot(worktree.root())?;
+    snapshot.state = worktree.operations.state(snapshot.detached());
     Ok(snapshot.summary())
 }
 
@@ -251,12 +251,6 @@ pub fn load_app(args: &[String]) -> Result<crate::app::App, String> {
 }
 
 impl Snapshot {
-    /// Add the operations in progress in the worktree at `root`, whose Git
-    /// directory is `git_dir`.
-    fn load_operations(&mut self, root: &std::path::Path, git_dir: Option<&std::path::Path>) {
-        self.state = crate::operation::load(root, git_dir, self.detached());
-    }
-
     fn detached(&self) -> Option<&str> {
         (self.branch == "(detached)").then_some(self.oid.as_str())
     }
@@ -434,15 +428,8 @@ pub struct StatusView {
     /// A submodule's view, nested in its parent's. Its commits would open
     /// in the parent's Show, so it leaves out operations in progress.
     nested: bool,
-    /// The Git directory holding `root`'s operations, once found.
-    git_dir: Option<PathBuf>,
-    /// The last operations described, with the detached HEAD they were
-    /// described for, so unchanged ones need no Git processes to describe.
-    described: Option<(
-        crate::operation::Operations,
-        Option<String>,
-        crate::operation::State,
-    )>,
+    /// The operations in progress in `root`, once it is found.
+    operations: Option<crate::operation::Reader>,
 }
 impl StatusView {
     pub fn editor_target(&self) -> Result<crate::editor::Target, String> {
@@ -807,26 +794,11 @@ impl StatusView {
         }
         let mut snapshot = load_snapshot(&self.root)?;
         if !self.nested {
-            // Status refreshes every second, but the Git directory stays.
-            if self.git_dir.is_none() {
-                self.git_dir = crate::operation::git_dir(&self.root).ok();
-            }
-            let operations = crate::operation::in_progress(&self.root, self.git_dir.as_deref());
-            let detached = snapshot.detached().map(str::to_owned);
-            snapshot.state = match &self.described {
-                Some((described, at, state)) if *described == operations && *at == detached => {
-                    state.clone()
-                }
-                _ => {
-                    let state = crate::operation::describe_state(
-                        &self.root,
-                        &operations,
-                        detached.as_deref(),
-                    );
-                    self.described = Some((operations, detached, state.clone()));
-                    state
-                }
-            };
+            let root = &self.root;
+            snapshot.state = self
+                .operations
+                .get_or_insert_with(|| crate::operation::Reader::new(root.clone()))
+                .state(snapshot.detached());
         }
         let attributes = self.attributes(&snapshot)?;
         let mut fingerprints = HashMap::new();

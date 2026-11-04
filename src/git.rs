@@ -1170,9 +1170,9 @@ pub fn watch_fingerprint_in(worktree: &Worktree) -> Result<u64, String> {
         false,
     )?;
     fingerprint.write_u64(refs_fingerprint_at(None)?);
-    let Worktree { root, git_dir } = worktree;
+    let root = worktree.root();
     // Operations such as a rebase can change without changing any file.
-    crate::operation::fingerprint(root, git_dir, &mut fingerprint);
+    worktree.operations.fingerprint(&mut fingerprint);
     for path in untracked_paths(&[])? {
         fingerprint.write(path.as_os_str().as_encoded_bytes());
         let display = path.display();
@@ -1842,19 +1842,22 @@ const REPOSITORY_PATH_ENV: [&str; 8] = [
     "GIT_COMMON_DIR",
 ];
 
-/// The current worktree's root and the Git directory holding its operations,
-/// which stay the same while glog watches it.
+/// The current worktree, which stays the same while glog watches it, and
+/// its operations in progress.
 #[derive(Clone)]
 pub struct Worktree {
-    pub root: std::path::PathBuf,
-    pub git_dir: std::path::PathBuf,
+    pub operations: crate::operation::Reader,
 }
 
 impl Worktree {
     pub fn current() -> Result<Self, String> {
-        let root = repository_root()?;
-        let git_dir = crate::operation::git_dir(&root)?;
-        Ok(Self { root, git_dir })
+        Ok(Self {
+            operations: crate::operation::Reader::new(repository_root()?),
+        })
+    }
+
+    pub fn root(&self) -> &std::path::Path {
+        self.operations.root()
     }
 }
 

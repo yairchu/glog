@@ -6,6 +6,7 @@ use std::{
     collections::HashMap,
     fs,
     path::{Path, PathBuf},
+    sync::Mutex,
 };
 
 /// What `git status` reports beyond the changed files.
@@ -70,7 +71,7 @@ impl std::fmt::Display for Text {
 
 /// The operations in progress, before describing them takes Git processes.
 #[derive(Clone, Default, PartialEq, Eq, Hash)]
-pub struct Operations(Vec<Operation>);
+struct Operations(Vec<Operation>);
 
 #[derive(Clone, PartialEq, Eq, Hash)]
 enum Operation {
@@ -97,26 +98,121 @@ enum Operation {
     },
 }
 
-/// The state of the worktree at `root`, whose Git directory is `git_dir`
-/// and whose HEAD is the commit `detached` when detached.
-pub fn load(root: &Path, git_dir: Option<&Path>, detached: Option<&str>) -> State {
-    describe_state(root, &in_progress(root, git_dir), detached)
+/// Reads the operations in progress in one worktree. Status and watched
+/// Logs read them every second, so this keeps what takes Git processes to
+/// read or describe until the operations change.
+pub struct Reader {
+    root: PathBuf,
+    /// Boxed, as views hold readers they may never use.
+    cache: Box<Mutex<Cache>>,
 }
 
-/// The operations in progress in the worktree at `root`, whose Git directory
-/// is `git_dir`. Operations only add detail to the changed files, so without
-/// a Git directory, none show rather than failing the view.
-pub fn in_progress(root: &Path, git_dir: Option<&Path>) -> Operations {
-    Operations(
-        git_dir
-            .map(|directory| operations(root, directory))
-            .unwrap_or_default(),
-    )
+#[derive(Default)]
+struct Cache {
+    /// The Git directory holding the operations, once found.
+    git_dir: Option<PathBuf>,
+    /// A reftable's pseudo-refs, with the table list they were read from.
+    pseudo_refs: Option<(Vec<u8>, PseudoRefs)>,
+    /// The last operations described, with the detached HEAD they were
+    /// described for.
+    described: Option<(Operations, Option<String>, State)>,
 }
+
+type PseudoRefs = [Option<String>; 3];
+
+/// A clone starts with empty caches.
+impl Clone for Reader {
+    fn clone(&self) -> Self {
+        Self::new(self.root.clone())
+    }
+}
+
+impl Reader {
+    pub fn new(root: PathBuf) -> Self {
+        Self {
+            root,
+            cache: Box::default(),
+        }
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// The state of the worktree, whose HEAD is the commit `detached` when
+    /// detached.
+    pub fn state(&self, detached: Option<&str>) -> State {
+        let mut cache = self.lock();
+        let operations = self.operations(&mut cache);
+        if let Some((described, at, state)) = &cache.described {
+            if *described == operations && at.as_deref() == detached {
+                return state.clone();
+            }
+        }
+        let state = describe_state(&self.root, &operations, detached);
+        cache.described = Some((operations, detached.map(str::to_owned), state.clone()));
+        state
+    }
+
+    /// Hash what `state` would describe, without the Git processes
+    /// describing takes.
+    pub fn fingerprint(&self, state: &mut impl std::hash::Hasher) {
+        let mut cache = self.lock();
+        std::hash::Hash::hash(&self.operations(&mut cache), state);
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Cache> {
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Operations only add detail to the changed files, so without a Git
+    /// directory, none show rather than failing the view.
+    fn operations(&self, cache: &mut Cache) -> Operations {
+        if cache.git_dir.is_none() {
+            cache.git_dir = git_dir(&self.root).ok();
+        }
+        let Some(directory) = cache.git_dir.clone() else {
+            return Operations::default();
+        };
+        let pseudo_refs = self.pseudo_refs(&directory, &mut cache.pseudo_refs);
+        Operations(operations(&directory, pseudo_refs))
+    }
+
+    /// The commits of the per-worktree refs CHERRY_PICK_HEAD, REVERT_HEAD
+    /// and REBASE_HEAD. Unlike MERGE_HEAD, they are stored in the ref
+    /// backend, which is files in `directory` unless it keeps a reftable.
+    /// Reading a reftable takes Git, so its result is kept until its table
+    /// list changes. Failing to read it loses only these refs, not the
+    /// operations read from other files.
+    fn pseudo_refs(
+        &self,
+        directory: &Path,
+        cached: &mut Option<(Vec<u8>, PseudoRefs)>,
+    ) -> PseudoRefs {
+        let Ok(tables) = fs::read(directory.join("reftable/tables.list")) else {
+            *cached = None;
+            return PSEUDO_REFS
+                .map(|name| read(&directory.join(name)).filter(|text| is_hash(text)));
+        };
+        match cached {
+            Some((read, refs)) if *read == tables => refs.clone(),
+            _ => {
+                let refs = resolve(&self.root);
+                // Keep only successful reads, retrying failures.
+                *cached = refs.clone().ok().map(|refs| (tables, refs));
+                refs.unwrap_or_default()
+            }
+        }
+    }
+}
+
+const PSEUDO_REFS: [&str; 3] = ["CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"];
 
 /// `operations` in the worktree at `root`, whose HEAD is the commit
 /// `detached` when detached, as Status shows them.
-pub fn describe_state(root: &Path, operations: &Operations, detached: Option<&str>) -> State {
+fn describe_state(root: &Path, operations: &Operations, detached: Option<&str>) -> State {
     let Operations(operations) = operations;
     let commits: Vec<_> = operations.iter().flat_map(commits).collect();
     // Describe with whole hashes, then abbreviate the ones the text shows.
@@ -226,15 +322,9 @@ fn describe(operation: &Operation) -> Text {
     text
 }
 
-/// Hash what `load` would describe for the worktree at `root`, whose Git
-/// directory is `git_dir`, without the extra Git processes describing takes.
-pub fn fingerprint(root: &Path, git_dir: &Path, state: &mut impl std::hash::Hasher) {
-    std::hash::Hash::hash(&operations(root, git_dir), state);
-}
-
 /// The Git directory of the worktree at `root`, which holds its operation
 /// files, including in linked worktrees.
-pub fn git_dir(root: &Path) -> Result<PathBuf, String> {
+fn git_dir(root: &Path) -> Result<PathBuf, String> {
     absolute_git_dir(crate::git::read_command_in(root))
 }
 
@@ -261,16 +351,13 @@ fn absolute_git_dir(mut command: std::process::Command) -> Result<PathBuf, Strin
     ))
 }
 
-/// The operations in progress, in the order `load` describes them.
-fn operations(root: &Path, directory: &Path) -> Vec<Operation> {
+/// The operations in progress in the Git directory `directory`, whose
+/// `PSEUDO_REFS` point to `pseudo_refs`, in the order Status describes them.
+fn operations(directory: &Path, pseudo_refs: PseudoRefs) -> Vec<Operation> {
     let [merge_head, todo, bisect_log, bisect_start] =
         ["MERGE_HEAD", "sequencer/todo", "BISECT_LOG", "BISECT_START"]
             .map(|name| directory.join(name));
-    let [cherry_pick_head, revert_head, rebase_head] = pseudo_refs(
-        root,
-        directory,
-        ["CHERRY_PICK_HEAD", "REVERT_HEAD", "REBASE_HEAD"],
-    );
+    let [cherry_pick_head, revert_head, rebase_head] = pseudo_refs;
     let mut operations = Vec::new();
     let step = |state: &Path, interactive| {
         let (current, total) = match interactive {
@@ -410,50 +497,32 @@ pub fn rebase_logged() -> bool {
     }
 }
 
-/// The commit each ref in `names` points to, if it exists.
-/// The commits of per-worktree refs such as REBASE_HEAD. Unlike MERGE_HEAD,
-/// they are stored in the ref backend, which is files in `directory` unless
-/// it keeps a reftable. Status reads them every second, so read files
-/// directly rather than running Git. Failing to read a reftable loses only
-/// these refs, not the operations read from other files.
-fn pseudo_refs<const N: usize>(
-    root: &Path,
-    directory: &Path,
-    names: [&str; N],
-) -> [Option<String>; N] {
-    if directory.join("reftable").is_dir() {
-        return resolve(root, names).unwrap_or_else(|_| names.map(|_| None));
-    }
-    names.map(|name| read(&directory.join(name)).filter(|text| is_hash(text)))
-}
-
-fn resolve<const N: usize>(root: &Path, names: [&str; N]) -> Result<[Option<String>; N], String> {
-    use std::io::Write;
-    let mut child = crate::git::read_command_in(root)
-        .args(["cat-file", "--batch-check=%(objectname)"])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
-        .spawn()
-        .map_err(|error| error.to_string())?;
-    let mut stdin = child.stdin.take().unwrap();
-    stdin
-        .write_all(names.map(|name| format!("{name}\n")).concat().as_bytes())
-        .map_err(|error| error.to_string())?;
-    drop(stdin);
-    let output = child
-        .wait_with_output()
+/// `PSEUDO_REFS` as a reftable in the worktree at `root` stores them. Name
+/// them exactly, as resolving a revision would fall back to branches named
+/// like them. Git that can create a reftable lists them.
+fn resolve(root: &Path) -> Result<PseudoRefs, String> {
+    let output = crate::git::read_command_in(root)
+        .args([
+            "for-each-ref",
+            "--include-root-refs",
+            "--format=%(refname) %(objectname)",
+        ])
+        .args(PSEUDO_REFS)
+        .output()
         .map_err(|error| error.to_string())?;
     if !output.status.success() {
         return Err(crate::git::stderr_message(
-            "git cat-file failed",
+            "git for-each-ref failed",
             &output.stderr,
         ));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let mut lines = stdout.lines();
-    // Missing refs print `<name> missing` instead of a hash.
-    Ok(names.map(|_| lines.next().filter(|line| is_hash(line)).map(str::to_owned)))
+    let refs: HashMap<_, _> = stdout
+        .lines()
+        .filter_map(|line| line.split_once(' '))
+        .filter(|(_, hash)| is_hash(hash))
+        .collect();
+    Ok(PSEUDO_REFS.map(|name| refs.get(name).map(|hash| (*hash).to_owned())))
 }
 
 /// A state file's trimmed contents, or `None` when it is missing or empty.
@@ -572,11 +641,7 @@ mod tests {
         git(&["commit", "-qam", "main"]);
         stop(&["merge", "feature"]);
 
-        let state = load(
-            directory.path(),
-            git_dir(directory.path()).ok().as_deref(),
-            None,
-        );
+        let state = Reader::new(directory.path().to_owned()).state(None);
         assert_eq!(
             state
                 .operations
@@ -612,11 +677,10 @@ mod tests {
         let _cwd = CurrentDirGuard::enter(directory.path());
         git(&["init", "-q"]);
         git(&["commit", "--allow-empty", "-qm", "base"]);
-        let root = Path::new(".");
-        let git_dir = git_dir(root).unwrap();
+        let reader = Reader::new(".".into());
         let hash = || {
             let mut state = std::collections::hash_map::DefaultHasher::new();
-            fingerprint(root, &git_dir, &mut state);
+            reader.fingerprint(&mut state);
             state.finish()
         };
         let before = hash();
@@ -660,8 +724,10 @@ mod tests {
         let _cwd = CurrentDirGuard::enter(&repo);
         git(&["commit", "--allow-empty", "-qm", "base"]);
         git(&["bisect", "start"]);
-        let git_dir = git_dir(&repo).unwrap();
-        let Operations(operations) = in_progress(&elsewhere, Some(&git_dir));
+        let reader = Reader::new(elsewhere);
+        let mut cache = reader.lock();
+        cache.git_dir = Some(git_dir(&repo).unwrap());
+        let Operations(operations) = reader.operations(&mut cache);
         assert_eq!(
             operations
                 .iter()
@@ -674,9 +740,10 @@ mod tests {
     fn describe_operations(init: &[&str]) {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
-        let root = Path::new(".");
+        // One reader throughout, as Status reads every second.
+        let reader = Reader::new(".".into());
         let operations = || {
-            let operations = load(root, git_dir(root).ok().as_deref(), None).operations;
+            let operations = reader.state(None).operations;
             operations.iter().map(Text::to_string).collect::<Vec<_>>()
         };
         git(&[&["init", "-q", "-b", "main"], init].concat());
@@ -695,7 +762,7 @@ mod tests {
         git(&["checkout", "-q", "feature"]);
         stop(&["rebase", "main"]);
         let head = git(&["rev-parse", "HEAD"]);
-        let state = load(root, git_dir(root).ok().as_deref(), Some(&head));
+        let state = reader.state(Some(&head));
         assert_eq!(state.detached_at, Some(short("HEAD")));
         assert_eq!(
             operations(),
@@ -756,5 +823,13 @@ mod tests {
 
         git(&["bisect", "start"]);
         assert_eq!(operations(), ["Bisecting from main"]);
+        git(&["bisect", "reset"]);
+
+        // Branches named like pseudo-refs are not operations.
+        for name in PSEUDO_REFS {
+            git(&["branch", name]);
+        }
+        assert_eq!(operations(), Vec::<String>::new());
+        assert!(reader.state(None).commits.is_empty());
     }
 }
