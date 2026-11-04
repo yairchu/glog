@@ -305,6 +305,21 @@ impl LogFormat {
             } else {
                 value.to_owned()
             };
+            // Trim the row's leading whitespace from each piece before sizing
+            // the cell, so padding keeps the column's width and `value` and
+            // `suffix` stay what `text` holds.
+            let (mut prefix, mut value, mut suffix, mut full) =
+                (part.prefix.as_str(), value, part.suffix.as_str(), full);
+            if spans.is_empty() {
+                prefix = prefix.trim_start();
+                if prefix.is_empty() {
+                    value = value.trim_start().to_owned();
+                    full = full.trim_start();
+                    if value.is_empty() {
+                        suffix = suffix.trim_start();
+                    }
+                }
+            }
             let badges = if Some(index) == last_author && reflog.is_none() {
                 coauthor_badge(&commit.collaborators)
             } else {
@@ -331,19 +346,6 @@ impl LogFormat {
                     (value, padding)
                 }
             };
-            // Trim the row's leading whitespace from each piece, so `value`
-            // and `suffix` stay what `text` holds.
-            let (mut prefix, mut value, mut suffix) =
-                (part.prefix.as_str(), value, part.suffix.as_str());
-            if spans.is_empty() {
-                prefix = prefix.trim_start();
-                if prefix.is_empty() {
-                    value = value.trim_start().to_owned();
-                    if value.is_empty() {
-                        suffix = suffix.trim_start();
-                    }
-                }
-            }
             let text = format!("{prefix}{value}{suffix}");
             if part.field == Field::Refs {
                 if reflog.is_some() {
@@ -1319,6 +1321,27 @@ pub(crate) mod tests {
             .max()
             .unwrap_or(0);
         DateColumn::measure(commits).columns(hash, author_column(commits))
+    }
+
+    #[test]
+    fn trimming_a_leading_cell_keeps_later_columns_aligned() {
+        let commits: Vec<_> = [" 5 Nov", "15 Nov"]
+            .into_iter()
+            .map(|date| {
+                let mut commit = commit();
+                commit.author_date = date.into();
+                commit.decorations.clear();
+                commit
+            })
+            .collect();
+        let mut format = LogFormat::default();
+        format.toggle(Field::Hash);
+        let columns = all_columns(&commits);
+        let rows: Vec<_> = commits
+            .iter()
+            .map(|commit| format.row(commit, Some(&columns)).text())
+            .collect();
+        assert_eq!(rows, ["5 Nov  Alice A subject", "15 Nov Alice A subject"]);
     }
 
     #[test]
