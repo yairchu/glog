@@ -7,6 +7,7 @@ mod diff;
 mod editor;
 mod fixups;
 mod git;
+mod grep;
 mod hunk;
 mod images;
 mod input;
@@ -42,7 +43,13 @@ fn main() -> ExitCode {
         println!("{information}");
         return ExitCode::SUCCESS;
     }
-    let (patch_settings, command_args) = match patch_options::parse_args(command_args) {
+    // Grep patterns are data, including strings spelled like display flags.
+    let parsed_patch_options = if command == Command::Grep {
+        Ok((patch_options::Options::default(), command_args.to_vec()))
+    } else {
+        patch_options::parse_args(command_args)
+    };
+    let (patch_settings, command_args) = match parsed_patch_options {
         Ok(options) => options,
         Err(error) => {
             eprintln!("glog: {error}");
@@ -50,7 +57,11 @@ fn main() -> ExitCode {
         }
     };
     patch_options::initialize(patch_settings);
-    blame::initialize_date(&command_args);
+    blame::initialize_date(if command == Command::Grep {
+        &[]
+    } else {
+        &command_args
+    });
     let command_args = command_args.as_slice();
     let (log_format, log_options, git_args) = match if command == Command::Log {
         log_format::parse_args(command_args)
@@ -82,6 +93,7 @@ fn main() -> ExitCode {
         Command::Show => git::load_show_app(command_args),
         Command::Diff => git::load_diff_app(command_args),
         Command::RangeDiff => range_diff::load_app(command_args),
+        Command::Grep => grep::load_app(command_args),
         Command::Reflog => git::load_reflog(command_args).map(App::new),
         Command::Stash => stash::load_app(command_args),
         Command::Branch => match branches::load(command_args) {
@@ -107,7 +119,9 @@ fn main() -> ExitCode {
         }
     };
     let watch = watch || app.watch;
-    let items = if command == Command::RangeDiff {
+    let items = if command == Command::Grep {
+        app.grep_view.as_ref().map_or(0, grep::View::match_count)
+    } else if command == Command::RangeDiff {
         app.show_rows.len()
     } else {
         app.commits.len()
@@ -116,6 +130,7 @@ fn main() -> ExitCode {
         let message = match command {
             Command::Diff | Command::RangeDiff => "no changes",
             Command::Reflog => "no reflog entries matched",
+            Command::Grep => "no matches",
             Command::Blame => "the file is empty",
             _ if app.history == app::History::Blame => "the file is empty",
             Command::Stash => "no stashes matched",
@@ -183,6 +198,7 @@ enum Command {
     Show,
     Diff,
     RangeDiff,
+    Grep,
     Status,
 }
 
@@ -196,6 +212,7 @@ fn parse_command(args: &[String]) -> (Command, &[String]) {
         Some("show") => (Command::Show, &args[1..]),
         Some("diff") => (Command::Diff, &args[1..]),
         Some("range-diff") => (Command::RangeDiff, &args[1..]),
+        Some("grep") => (Command::Grep, &args[1..]),
         Some("log") => (Command::Log, &args[1..]),
         _ => (Command::Log, args),
     }
@@ -225,6 +242,7 @@ Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
        glog show REV:path
        glog diff [--cached] [--stat] [revision [revision]] [[--] pathspec...]
        glog range-diff [git range-diff arguments]
+       glog grep [matching options] [-e] pattern [revision...] [-- pathspec...]
        glog status
 
 Options:
@@ -292,6 +310,15 @@ Stash lists saved work; Enter opens its changes, including saved untracked files
 Stash show opens a stash by index or reference (the latest by default).
 Blame shows which commit last changed each line; Enter opens it, p blames
 the file before it, and Backspace returns.
+Grep searches tracked text files, --cached searches the index, and --untracked
+also searches untracked files. Accept matching options such as -i, -w, -F, -E,
+-e and -f, compound expressions, and commit revisions. Binary files are skipped.
+Results group by folder and file: Enter opens a match in Blame or toggles a
+group; z folds the current group or a match's file, and m folds/expands all.
+t hides the selected file extension; T clears filters. Click extension buttons
+to toggle filters. Left/right pan; / and ? search within results and reveal folds.
+Grep supplies the output layout; context, count, file-only, textconv, and
+submodule-recursion output modes are not supported.
 Range-diff compares two versions of a commit series using Git's colored output.
 Use glog range-diff OLD_BASE..OLD_TIP NEW_BASE..NEW_TIP, or Git's other forms
 and options. Scroll with the mouse wheel or paging keys; / and ? search.
@@ -559,6 +586,12 @@ mod tests {
                 vec!["old...new"],
             ),
             (vec!["log", "range-diff"], Command::Log, vec!["range-diff"]),
+            (
+                vec!["grep", "-i", "needle"],
+                Command::Grep,
+                vec!["-i", "needle"],
+            ),
+            (vec!["log", "grep"], Command::Log, vec!["grep"]),
         ] {
             let args: Vec<String> = args.into_iter().map(str::to_owned).collect();
             let (actual, rest) = parse_command(&args);

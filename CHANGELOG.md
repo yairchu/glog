@@ -7,6 +7,14 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Browse file matches with `glog grep`, including working-tree, staged, and
+  historical contents. Compact rows show each full path beside its first match,
+  with clickable folder components for folding. A visible path cursor selects
+  components containing multiple findings with left/right; right pans beyond
+  the last fold target. Components covering the same findings share one target.
+  Fold files and folders, filter by file extension,
+  and open matching lines in Blame with Backspace to return to the results.
+
 - Browse `git range-diff` comparisons with `glog range-diff`, preserving
   Git's colors with mouse-wheel scrolling, paging, and search.
 

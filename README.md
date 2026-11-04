@@ -52,7 +52,7 @@ completion adapter to take effect.
 ### Zsh completion
 
 The included completion adapter reuses Zsh's `git log` completer, including branches, tags, revisions, paths, and Git log options. Explicit `log`, `show`,
-`diff`, `range-diff`, `reflog`, `blame`, and `stash` commands select the corresponding Git completer. From a checkout, install it with:
+`diff`, `range-diff`, `grep`, `reflog`, `blame`, and `stash` commands select the corresponding Git completer. From a checkout, install it with:
 
 ```zsh
 mkdir -p ~/.cargo/share/zsh/site-functions
@@ -246,6 +246,29 @@ glog range-diff old-base..old-tip new-base..new-tip
 
 Scroll Git's colored comparison with the mouse wheel or paging keys, and
 search with `/` or `?`. Git's other range-diff forms and options work too.
+
+### Searching files
+
+Use `glog grep` to browse matching lines. The full path appears beside its
+first match, with later matches aligned below:
+
+```bash
+glog grep -i needle
+glog grep -F needle HEAD -- src/
+```
+
+Press `z` to fold a file or folder, or `m` to fold or expand all groups.
+Only path components containing multiple findings are fold targets.
+Components covering the same findings highlight together as one fold target. Use left/right to select
+a folder or filename, and `z` to fold it. At the last fold target, right pans the
+results; left pans back before moving to parent folders.
+Enter folds a selected folder or opens a matching line in Blame.
+Click a filename or a folder component in its path to fold it.
+Press `t` to hide that file's extension,
+`T` to clear filters, or click the extension buttons to toggle them.
+Backspace returns from Blame to the results.
+Use `--cached` to search staged contents or `--untracked` to include untracked
+files. `/` and `?` search within the results and reveal matches inside folds.
 
 ## Reflog
 

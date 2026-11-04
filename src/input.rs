@@ -49,6 +49,46 @@ fn apply(event: Event, app: &mut App) {
             }
             return;
         }
+        if app.mode == Mode::Grep {
+            match key.code {
+                KeyCode::Enter
+                    if app
+                        .grep_view
+                        .as_ref()
+                        .is_some_and(|view| view.folder_focused()) =>
+                {
+                    app.grep_action(crate::grep::Action::Fold)
+                }
+                KeyCode::Enter | KeyCode::Tab => app.open_grep_match(),
+                KeyCode::Char('z') => app.grep_action(crate::grep::Action::Fold),
+                KeyCode::Char('m') => app.grep_action(crate::grep::Action::FoldAll),
+                KeyCode::Char('t') => app.grep_action(crate::grep::Action::HideExtension),
+                KeyCode::Char('T') => app.grep_action(crate::grep::Action::Reset),
+                KeyCode::Esc => app.quit = true,
+                KeyCode::Left => {
+                    if let Some(view) = &mut app.grep_view {
+                        view.move_horizontal(false);
+                    }
+                }
+                KeyCode::Right => {
+                    if let Some(view) = &mut app.grep_view {
+                        view.move_horizontal(true);
+                    }
+                }
+                KeyCode::PageUp | KeyCode::Char('b') => {
+                    if let Some(view) = &mut app.grep_view {
+                        view.move_by(-(view.height.max(1) as isize));
+                    }
+                }
+                KeyCode::PageDown | KeyCode::Char(' ' | 'f') => {
+                    if let Some(view) = &mut app.grep_view {
+                        view.move_by(view.height.max(1) as isize);
+                    }
+                }
+                _ => pager_key(key.code, app),
+            }
+            return;
+        }
         if app.history == History::RangeDiff {
             if key.code == KeyCode::Esc {
                 app.quit = true;
@@ -136,7 +176,7 @@ fn apply(event: Event, app: &mut App) {
                     History::Blame => Field::ATTRIBUTION.contains(field),
                     History::Stash => matches!(field, Field::Author | Field::Date),
                     History::Branches => field == &Field::Date,
-                    History::Reflog | History::RangeDiff => false,
+                    History::Reflog | History::RangeDiff | History::Grep => false,
                 })
             }
             _ => None,
@@ -194,6 +234,26 @@ fn apply(event: Event, app: &mut App) {
             && ((app.log_tab_start..app.log_tab_end).contains(&mouse.column)
                 || (app.show_tab_start..app.show_tab_end).contains(&mouse.column));
         if app.search_input.is_some() || (app.show_help && !tab_click) {
+            return;
+        }
+        if app.mode == Mode::Grep {
+            let mut open = false;
+            if let Some(view) = &mut app.grep_view {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => view.move_by(-3),
+                    MouseEventKind::ScrollDown => view.move_by(3),
+                    MouseEventKind::Down(MouseButton::Left) => {
+                        open = view.click(mouse.column, mouse.row)
+                    }
+                    _ => {}
+                }
+            }
+            if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+                app.search_match = None;
+            }
+            if open {
+                app.open_grep_match();
+            }
             return;
         }
         if app.history == History::RangeDiff {

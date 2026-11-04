@@ -11,6 +11,7 @@ use crate::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Status,
+    Grep,
     Log,
     Show,
 }
@@ -43,6 +44,7 @@ pub enum History {
     Stash,
     Branches,
     RangeDiff,
+    Grep,
 }
 
 /// The command to repeat when this view watches its repository.
@@ -228,6 +230,7 @@ struct LogBookmark {
 pub struct App {
     pub images: crate::images::Images,
     pub status_view: Option<crate::status::StatusView>,
+    pub grep_view: Option<crate::grep::View>,
     pub commits: Vec<Commit>,
     pub history: History,
     pub pending_blame: Option<crate::blame::FileRevision>,
@@ -317,6 +320,7 @@ impl App {
         let mut app = Self {
             images: crate::images::Images::default(),
             status_view: None,
+            grep_view: None,
             history: match commits
                 .first()
                 .and_then(|commit| commit.annotation.as_ref())
@@ -493,7 +497,7 @@ impl App {
     }
 
     pub fn has_log_view(&self) -> bool {
-        self.history != History::RangeDiff
+        !matches!(self.history, History::RangeDiff | History::Grep)
             && !self.commits.get(self.selected).is_some_and(|commit| {
                 matches!(
                     commit.kind,
@@ -543,6 +547,12 @@ impl App {
     pub fn move_by(&mut self, delta: isize, page: usize) {
         match self.mode {
             Mode::Status => {}
+            Mode::Grep => {
+                let amount = if delta.abs() == 1 { 1 } else { page.max(1) } as isize;
+                if let Some(view) = &mut self.grep_view {
+                    view.move_by(if delta < 0 { -amount } else { amount });
+                }
+            }
             Mode::Log => {
                 if self.commits.is_empty() {
                     return;
@@ -1201,6 +1211,11 @@ impl App {
     pub fn top(&mut self) {
         match self.mode {
             Mode::Status => {}
+            Mode::Grep => {
+                if let Some(view) = &mut self.grep_view {
+                    view.top();
+                }
+            }
             Mode::Log => {
                 self.selected = (0..self.commits.len())
                     .find(|&i| self.log_folds.visible(i))
@@ -1215,6 +1230,11 @@ impl App {
     pub fn bottom(&mut self) {
         match self.mode {
             Mode::Status => {}
+            Mode::Grep => {
+                if let Some(view) = &mut self.grep_view {
+                    view.bottom();
+                }
+            }
             Mode::Log => {
                 self.selected = (0..self.commits.len())
                     .rev()
@@ -2129,6 +2149,23 @@ impl App {
         self.enter_followed(loaded);
     }
 
+    pub fn grep_action(&mut self, action: crate::grep::Action) {
+        if let Some(view) = &mut self.grep_view {
+            view.action(action);
+        }
+        self.search_match = None;
+        self.status = None;
+    }
+
+    pub fn open_grep_match(&mut self) {
+        let loaded = self.grep_view.as_ref().and_then(crate::grep::View::open);
+        if let Some(loaded) = loaded {
+            self.enter_followed(loaded);
+        } else {
+            self.grep_action(crate::grep::Action::Fold);
+        }
+    }
+
     pub fn has_branch_back(&self) -> bool {
         self.reference_back
             .as_ref()
@@ -2466,6 +2503,15 @@ impl App {
         };
         match self.mode {
             Mode::Status => {}
+            Mode::Grep => {
+                if let Some(view) = &mut self.grep_view {
+                    if view.find(&query, reverse) {
+                        self.search_match = Some((Mode::Grep, view.cursor));
+                        self.status = None;
+                        return;
+                    }
+                }
+            }
             Mode::Log => {
                 let in_columns = self.log_date_column().is_some();
                 let n = self.commits.len();

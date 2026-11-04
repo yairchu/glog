@@ -23,7 +23,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .split(frame.area());
     let has_log = app.has_log_view();
     let selected = match app.mode {
-        Mode::Log => 0,
+        Mode::Log | Mode::Grep => 0,
         Mode::Show => 1,
         Mode::Status => 1,
     };
@@ -47,6 +47,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         History::Stash => "Stash",
         History::Branches => "Branches",
         History::RangeDiff => "Range diff",
+        History::Grep => "Grep",
     };
     // File and Branches have no detail tab; branches open a separate Log.
     let labels: &[&str] = match (has_log, file_view || app.history == History::Branches) {
@@ -118,6 +119,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 view.draw_with_images(frame, chunks[1], &mut app.images);
             }
         }
+        Mode::Grep => {
+            if let Some(view) = &mut app.grep_view {
+                view.draw(
+                    frame,
+                    chunks[1],
+                    app.search.as_deref(),
+                    app.search_match
+                        .filter(|(mode, _)| *mode == Mode::Grep)
+                        .map(|(_, index)| index),
+                );
+            }
+        }
         Mode::Log => draw_log(frame, app, chunks[1]),
         Mode::Show => draw_show(frame, app, chunks[1]),
     }
@@ -128,6 +141,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         format!("{prefix}{input}█")
     } else if let Some(message) = app.message() {
         message.to_owned()
+    } else if app.mode == Mode::Grep {
+        "h help  q quit  ←/→ path/pan  Enter open/fold  z fold  m fold all  t hide extension  T reset  / ? search".to_owned()
     } else if app.history == History::RangeDiff {
         "h help  q quit  ↑/k ↓/j  wheel scroll  Space/b page  / ? search".to_owned()
     } else if app.history == History::Branches {
@@ -167,6 +182,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             frame,
             match app.history {
                 History::RangeDiff => HelpView::RangeDiff,
+                History::Grep => HelpView::Grep,
                 _ if !has_log => HelpView::Detail,
                 History::Log => HelpView::Log,
                 History::Reflog => HelpView::Reflog,
@@ -191,6 +207,7 @@ enum HelpView {
     File,
     Branches,
     RangeDiff,
+    Grep,
 }
 
 /// A key's description in each help screen; `None` omits its row there.
@@ -205,6 +222,7 @@ struct HelpTexts {
     file: Option<&'static str>,
     branches: Option<&'static str>,
     range_diff: Option<&'static str>,
+    grep: Option<&'static str>,
 }
 
 impl HelpTexts {
@@ -218,6 +236,7 @@ impl HelpTexts {
             HelpView::File => self.file,
             HelpView::Branches => self.branches,
             HelpView::RangeDiff => self.range_diff,
+            HelpView::Grep => self.grep,
         }
     }
 }
@@ -231,6 +250,7 @@ const NO_HELP: HelpTexts = HelpTexts {
     file: None,
     branches: None,
     range_diff: None,
+    grep: None,
 };
 
 /// A key and its descriptions. Rows without a key are shown verbatim.
@@ -249,6 +269,7 @@ const fn every(key: &'static str, text: &'static str) -> HelpRow {
             file: text,
             branches: text,
             range_diff: None,
+            grep: None,
         },
     )
 }
@@ -256,6 +277,7 @@ const fn every(key: &'static str, text: &'static str) -> HelpRow {
 const fn pager(key: &'static str, text: &'static str) -> HelpRow {
     let mut row = every(key, text);
     row.1.range_diff = Some(text);
+    row.1.grep = Some(text);
     row
 }
 
@@ -304,12 +326,14 @@ const HELP_ROWS: &[HelpRow] = &[
             file: Some("previous / next line"),
             branches: Some("select a branch or shared ancestor"),
             range_diff: Some("move cursor"),
+            grep: Some("previous / next result or group"),
         },
     ),
     (
         "Mouse wheel",
         HelpTexts {
             range_diff: Some("scroll up / down"),
+            grep: Some("scroll; click groups to fold, matches to select/open"),
             ..NO_HELP
         },
     ),
@@ -321,6 +345,7 @@ const HELP_ROWS: &[HelpRow] = &[
             log: Some("previous / next commit (Log/Show/Status)"),
             reflog: Some("previous / next reflog entry"),
             blame: Some("previous / next commit chunk"),
+            grep: Some("select fold target; at last target, → pans and ← pans back"),
             stash: Some("previous / next stash"),
             ..NO_HELP
         },
@@ -391,6 +416,7 @@ const HELP_ROWS: &[HelpRow] = &[
             stash: Some("open stash / toggle section or file"),
             detail: Some("open commit (Status) / toggle section or file"),
             branches: Some("open its Log up to the next shared node"),
+            grep: Some("open match in Blame / fold group"),
             ..NO_HELP
         },
     ),
@@ -399,6 +425,7 @@ const HELP_ROWS: &[HelpRow] = &[
         HelpTexts {
             log: Some("fold merge (Log) / file (Show)"),
             reflog: Some("fold rebase, rebase chain, amend chain, or visits / file (Show)"),
+            grep: Some("fold file or folder highlighted by the path cursor"),
             blame: FILE_FOLD,
             stash: FILE_FOLD,
             detail: FILE_FOLD,
@@ -416,6 +443,7 @@ const HELP_ROWS: &[HelpRow] = &[
         "m",
         HelpTexts {
             log: Some("expand / fold all merges (Log)"),
+            grep: Some("expand / fold all files and folders"),
             ..NO_HELP
         },
     ),
@@ -423,6 +451,7 @@ const HELP_ROWS: &[HelpRow] = &[
         "t / T",
         HelpTexts {
             log: Some("hide selected type / clear filters (Log)"),
+            grep: Some("hide selected extension / clear filters"),
             ..NO_HELP
         },
     ),
@@ -475,6 +504,7 @@ const HELP_ROWS: &[HelpRow] = &[
             stash: Some("return to Stash / cancel"),
             file: Some("close help / cancel search"),
             range_diff: Some("quit / cancel search"),
+            grep: Some("quit / cancel search"),
             branches: Some("return here from a branch Log / cancel"),
             ..NO_HELP
         },
@@ -486,6 +516,7 @@ const HELP_ROWS: &[HelpRow] = &[
             reflog: Some("switch Reflog / Show"),
             blame: Some("switch Blame / detail"),
             stash: Some("switch Stash / Show"),
+            grep: Some("open match in Blame / fold group"),
             ..NO_HELP
         },
     ),
@@ -1327,7 +1358,7 @@ fn highlight_row(
     highlight_matches(ansi::style_ranges(line, hidden_matches), query, current)
 }
 
-fn highlight_matches(line: Line<'static>, query: &str, current: bool) -> Line<'static> {
+pub(crate) fn highlight_matches(line: Line<'static>, query: &str, current: bool) -> Line<'static> {
     if query.is_empty() {
         return line;
     }
@@ -1377,6 +1408,27 @@ mod tests {
     use crate::input::handle;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn grep_help_describes_tree_folds_extension_filters_and_match_navigation() {
+        let help = help_text(HelpView::Grep);
+        for description in [
+            "fold file or folder",
+            "hide selected extension",
+            "open match in Blame",
+            "Mouse wheel",
+            "search forward",
+        ] {
+            assert!(help.contains(description), "{description}: {help}");
+        }
+        for description in [
+            "toggle watch",
+            "open commit on GitHub",
+            "hide selected type",
+        ] {
+            assert!(!help.contains(description), "{description}: {help}");
+        }
+    }
 
     #[test]
     fn range_diff_help_describes_paging_without_patch_actions() {

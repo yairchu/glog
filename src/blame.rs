@@ -507,6 +507,30 @@ pub struct BlameLine {
     pub previous: Option<(String, Vec<u8>)>,
 }
 
+/// Open the exact source side of a grep match, retaining raw path bytes.
+pub fn load_grep_file(
+    version: Version,
+    path: &[u8],
+    repository: git::Repository,
+    line: usize,
+) -> Result<crate::app::App, String> {
+    let date = date_at(Some(&repository))?;
+    let rows = blame_version(&version, path, &repository, &date, false)?;
+    if rows.is_empty() {
+        return Err("The matched file is empty".into());
+    }
+    let mut app = crate::app::App::new(rows);
+    app.set_repository(Some(repository));
+    app.selected = line.saturating_sub(1).min(app.commits.len() - 1);
+    app.center_selection = true;
+    app.context = format!(
+        "grep file {} -- {}",
+        version_label(&version),
+        crate::diff::display_path(path)
+    );
+    Ok(app)
+}
+
 /// The view for `glog blame` arguments.
 pub fn load_app(args: &[String]) -> Result<crate::app::App, String> {
     let (rows, selected) = load(args)?;
