@@ -15,6 +15,7 @@ mod log_format;
 mod message_format;
 mod operation;
 mod patch_options;
+mod range_diff;
 mod search_history;
 mod stash;
 mod status;
@@ -80,6 +81,7 @@ fn main() -> ExitCode {
         Command::Status => status::load_app(command_args),
         Command::Show => git::load_show_app(command_args),
         Command::Diff => git::load_diff_app(command_args),
+        Command::RangeDiff => range_diff::load_app(command_args),
         Command::Reflog => git::load_reflog(command_args).map(App::new),
         Command::Stash => stash::load_app(command_args),
         Command::Branch => match branches::load(command_args) {
@@ -105,9 +107,14 @@ fn main() -> ExitCode {
         }
     };
     let watch = watch || app.watch;
-    if command != Command::Status && !should_start_tui(watch, app.commits.len()) {
+    let items = if command == Command::RangeDiff {
+        app.show_rows.len()
+    } else {
+        app.commits.len()
+    };
+    if command != Command::Status && !should_start_tui(watch, items) {
         let message = match command {
-            Command::Diff => "no changes",
+            Command::Diff | Command::RangeDiff => "no changes",
             Command::Reflog => "no reflog entries matched",
             Command::Blame => "the file is empty",
             _ if app.history == app::History::Blame => "the file is empty",
@@ -175,6 +182,7 @@ enum Command {
     Branch,
     Show,
     Diff,
+    RangeDiff,
     Status,
 }
 
@@ -187,6 +195,7 @@ fn parse_command(args: &[String]) -> (Command, &[String]) {
         Some("status") => (Command::Status, &args[1..]),
         Some("show") => (Command::Show, &args[1..]),
         Some("diff") => (Command::Diff, &args[1..]),
+        Some("range-diff") => (Command::RangeDiff, &args[1..]),
         Some("log") => (Command::Log, &args[1..]),
         _ => (Command::Log, args),
     }
@@ -215,6 +224,7 @@ Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
        glog show [--stat] [commit] [-- pathspec...]
        glog show REV:path
        glog diff [--cached] [--stat] [revision [revision]] [[--] pathspec...]
+       glog range-diff [git range-diff arguments]
        glog status
 
 Options:
@@ -282,6 +292,9 @@ Stash lists saved work; Enter opens its changes, including saved untracked files
 Stash show opens a stash by index or reference (the latest by default).
 Blame shows which commit last changed each line; Enter opens it, p blames
 the file before it, and Backspace returns.
+Range-diff compares two versions of a commit series using Git's colored output.
+Use glog range-diff OLD_BASE..OLD_TIP NEW_BASE..NEW_TIP, or Git's other forms
+and options. Scroll with the mouse wheel or paging keys; / and ? search.
 Show opens HEAD or the specified commit, with history available via Tab.
 Breaking-change markers, section headings, and footer labels are emphasized.
 Patches highlight moved blocks using diff.colorMoved, or zebra if unset.
@@ -540,6 +553,12 @@ mod tests {
             (vec!["diff"], Command::Diff, vec![]),
             (vec!["diff", "--cached"], Command::Diff, vec!["--cached"]),
             (vec!["log", "diff"], Command::Log, vec!["diff"]),
+            (
+                vec!["range-diff", "old...new"],
+                Command::RangeDiff,
+                vec!["old...new"],
+            ),
+            (vec!["log", "range-diff"], Command::Log, vec!["range-diff"]),
         ] {
             let args: Vec<String> = args.into_iter().map(str::to_owned).collect();
             let (actual, rest) = parse_command(&args);

@@ -52,7 +52,7 @@ completion adapter to take effect.
 ### Zsh completion
 
 The included completion adapter reuses Zsh's `git log` completer, including branches, tags, revisions, paths, and Git log options. Explicit `log`, `show`,
-`diff`, `reflog`, `blame`, and `stash` commands select the corresponding Git completer. From a checkout, install it with:
+`diff`, `range-diff`, `reflog`, `blame`, and `stash` commands select the corresponding Git completer. From a checkout, install it with:
 
 ```zsh
 mkdir -p ~/.cargo/share/zsh/site-functions
@@ -234,6 +234,18 @@ glog --watch
 Press `W` in Log or Show to toggle watching during a session. Revision and
 path arguments are preserved when watching a scoped Log; Logs that name no
 revision or path also include the `Working tree` item.
+
+### Comparing versions of a branch
+
+Use `glog range-diff` to review how a commit series changed after a rebase
+or rewrite:
+
+```bash
+glog range-diff old-base..old-tip new-base..new-tip
+```
+
+Scroll Git's colored comparison with the mouse wheel or paging keys, and
+search with `/` or `?`. Git's other range-diff forms and options work too.
 
 ## Reflog
 

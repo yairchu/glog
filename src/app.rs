@@ -34,7 +34,7 @@ pub enum ShowScroll {
     PreserveCursorPosition(isize),
 }
 
-/// The rows behind the first tab.
+/// The kind of browsing session.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum History {
     Log,
@@ -42,6 +42,7 @@ pub enum History {
     Blame,
     Stash,
     Branches,
+    RangeDiff,
 }
 
 /// The command to repeat when this view watches its repository.
@@ -403,6 +404,16 @@ impl App {
         app
     }
 
+    /// Display range-diff as text, without interpreting its nested patches.
+    pub fn range_diff(text: String) -> Self {
+        let mut app = Self::new(Vec::new());
+        app.history = History::RangeDiff;
+        app.mode = Mode::Show;
+        app.show_text = text;
+        app.rebuild_show_rows();
+        app
+    }
+
     /// Blame without attribution columns is a plain file view: line history
     /// starts from a visible column.
     pub fn file_view(&self) -> bool {
@@ -482,12 +493,13 @@ impl App {
     }
 
     pub fn has_log_view(&self) -> bool {
-        !self.commits.get(self.selected).is_some_and(|commit| {
-            matches!(
-                commit.kind,
-                CommitKind::Comparison { .. } | CommitKind::Staged | CommitKind::Unstaged
-            )
-        })
+        self.history != History::RangeDiff
+            && !self.commits.get(self.selected).is_some_and(|commit| {
+                matches!(
+                    commit.kind,
+                    CommitKind::Comparison { .. } | CommitKind::Staged | CommitKind::Unstaged
+                )
+            })
     }
 
     pub fn switch_mode(&mut self) {
@@ -1280,6 +1292,10 @@ impl App {
     }
 
     fn reset_show_folds(&mut self) {
+        if self.history == History::RangeDiff {
+            self.rebuild_show_rows();
+            return;
+        }
         self.visible_show_links.clear();
         let message = self.commits.get(self.selected).filter(|commit| {
             commit.kind == CommitKind::Revision
@@ -1492,6 +1508,25 @@ impl App {
     }
 
     fn rebuild_show_rows(&mut self) {
+        if self.history == History::RangeDiff {
+            self.show_rows = self
+                .show_text
+                .lines()
+                .enumerate()
+                .map(|(source, text)| ShowRow {
+                    text: text.to_owned(),
+                    source,
+                    file: None,
+                    preview: None,
+                    folded: false,
+                    fold_separator: false,
+                    summary: false,
+                })
+                .collect();
+            self.show_cursor = self.show_cursor.min(self.show_rows.len().saturating_sub(1));
+            self.show_row_starts.clear();
+            return;
+        }
         self.show_rows_stat = self.show_stat;
         let lines: Vec<_> = self.show_text.lines().collect();
         let mut rows = Vec::new();
@@ -1783,6 +1818,14 @@ impl App {
     }
 
     fn searchable_show_lines(&self) -> Vec<(Vec<Vec<u8>>, usize, &str)> {
+        if self.history == History::RangeDiff {
+            return self
+                .show_text
+                .lines()
+                .enumerate()
+                .map(|(source, text)| (Vec::new(), source, text))
+                .collect();
+        }
         let mut result = Vec::new();
         let children: HashMap<_, _> = self
             .show_files

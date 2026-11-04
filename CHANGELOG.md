@@ -7,6 +7,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Browse `git range-diff` comparisons with `glog range-diff`, preserving
+  Git's colors with mouse-wheel scrolling, paging, and search.
+
 - Link `fixup!`, `squash!`, and `amend!` subjects to matching older commits
   in Log. Selecting either commit highlights the related hashes; click the
   inserted target hash to jump to it, revealing folded or filtered history,

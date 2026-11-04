@@ -46,6 +46,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         History::Blame => "Blame",
         History::Stash => "Stash",
         History::Branches => "Branches",
+        History::RangeDiff => "Range diff",
     };
     // File and Branches have no detail tab; branches open a separate Log.
     let labels: &[&str] = match (has_log, file_view || app.history == History::Branches) {
@@ -127,6 +128,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         format!("{prefix}{input}█")
     } else if let Some(message) = app.message() {
         message.to_owned()
+    } else if app.history == History::RangeDiff {
+        "h help  q quit  ↑/k ↓/j  wheel scroll  Space/b page  / ? search".to_owned()
     } else if app.history == History::Branches {
         "h help  q quit  ↑/k ↓/j  Enter/click branch log  d date  / ? search".to_owned()
     } else if app.mode == Mode::Log && app.history == History::Reflog {
@@ -163,6 +166,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         draw_help(
             frame,
             match app.history {
+                History::RangeDiff => HelpView::RangeDiff,
                 _ if !has_log => HelpView::Detail,
                 History::Log => HelpView::Log,
                 History::Reflog => HelpView::Reflog,
@@ -186,6 +190,7 @@ enum HelpView {
     Detail,
     File,
     Branches,
+    RangeDiff,
 }
 
 /// A key's description in each help screen; `None` omits its row there.
@@ -199,6 +204,7 @@ struct HelpTexts {
     detail: Option<&'static str>,
     file: Option<&'static str>,
     branches: Option<&'static str>,
+    range_diff: Option<&'static str>,
 }
 
 impl HelpTexts {
@@ -211,6 +217,7 @@ impl HelpTexts {
             HelpView::Detail => self.detail,
             HelpView::File => self.file,
             HelpView::Branches => self.branches,
+            HelpView::RangeDiff => self.range_diff,
         }
     }
 }
@@ -223,6 +230,7 @@ const NO_HELP: HelpTexts = HelpTexts {
     detail: None,
     file: None,
     branches: None,
+    range_diff: None,
 };
 
 /// A key and its descriptions. Rows without a key are shown verbatim.
@@ -240,8 +248,15 @@ const fn every(key: &'static str, text: &'static str) -> HelpRow {
             detail: text,
             file: text,
             branches: text,
+            range_diff: None,
         },
     )
+}
+
+const fn pager(key: &'static str, text: &'static str) -> HelpRow {
+    let mut row = every(key, text);
+    row.1.range_diff = Some(text);
+    row
 }
 
 const fn branches(key: &'static str, text: &'static str) -> HelpRow {
@@ -277,7 +292,7 @@ const FILE_FOLD: Option<&str> = Some("toggle current file fold (Show)");
 const FILE_SUMMARY: Option<&str> = Some("toggle file summary / patch (Show/Status)");
 
 const HELP_ROWS: &[HelpRow] = &[
-    every("", "Navigation"),
+    pager("", "Navigation"),
     (
         "↑/k, ↓/j",
         HelpTexts {
@@ -288,10 +303,18 @@ const HELP_ROWS: &[HelpRow] = &[
             detail: Some("previous / next; move Show cursor"),
             file: Some("previous / next line"),
             branches: Some("select a branch or shared ancestor"),
+            range_diff: Some("move cursor"),
         },
     ),
-    every("Page Up/b", "page up"),
-    every("Page Down/Space/f", "page down"),
+    (
+        "Mouse wheel",
+        HelpTexts {
+            range_diff: Some("scroll up / down"),
+            ..NO_HELP
+        },
+    ),
+    pager("Page Up/b", "page up"),
+    pager("Page Down/Space/f", "page down"),
     (
         "←/→",
         HelpTexts {
@@ -315,8 +338,8 @@ const HELP_ROWS: &[HelpRow] = &[
             ..NO_HELP
         },
     ),
-    every("g/<, G/>", "top / bottom (also Home/End)"),
-    every("", ""),
+    pager("g/<, G/>", "top / bottom (also Home/End)"),
+    pager("", ""),
     (
         "a/d/r/x/s",
         HelpTexts {
@@ -348,7 +371,7 @@ const HELP_ROWS: &[HelpRow] = &[
             ..NO_HELP
         },
     ),
-    every("", "Views and search"),
+    pager("", "Views and search"),
     (
         "W",
         HelpTexts {
@@ -451,6 +474,7 @@ const HELP_ROWS: &[HelpRow] = &[
             blame: Some("return to Blame (Show) / previous blame or review / cancel"),
             stash: Some("return to Stash / cancel"),
             file: Some("close help / cancel search"),
+            range_diff: Some("quit / cancel search"),
             branches: Some("return here from a branch Log / cancel"),
             ..NO_HELP
         },
@@ -465,12 +489,12 @@ const HELP_ROWS: &[HelpRow] = &[
             ..NO_HELP
         },
     ),
-    every("/, ?", "search forward / backward"),
-    every("n, N", "repeat / reverse search"),
-    every("Ctrl-L", "redraw the screen"),
-    every("", ""),
-    every("h", "close help"),
-    every("q", "quit (or close help)"),
+    pager("/, ?", "search forward / backward"),
+    pager("n, N", "repeat / reverse search"),
+    pager("Ctrl-L", "redraw the screen"),
+    pager("", ""),
+    pager("h", "close help"),
+    pager("q", "quit (or close help)"),
     branches("", ""),
     branches("", "  Refs use the same decorations as Log."),
     branches("", "  Branches at the same commit share a node."),
@@ -1353,6 +1377,17 @@ mod tests {
     use crate::input::handle;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn range_diff_help_describes_paging_without_patch_actions() {
+        let help = help_text(HelpView::RangeDiff);
+        for description in ["Mouse wheel", "page down", "search forward", "quit"] {
+            assert!(help.contains(description), "{description}: {help}");
+        }
+        for description in ["blame", "fold", "editor", "GitHub", "switch Log"] {
+            assert!(!help.contains(description), "{description}: {help}");
+        }
+    }
 
     #[test]
     fn file_help_explains_how_to_enable_line_history() {

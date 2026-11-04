@@ -49,6 +49,14 @@ fn apply(event: Event, app: &mut App) {
             }
             return;
         }
+        if app.history == History::RangeDiff {
+            if key.code == KeyCode::Esc {
+                app.quit = true;
+            } else {
+                pager_key(key.code, app);
+            }
+            return;
+        }
         if key.code == KeyCode::Char('O') {
             app.open_github_commit();
             return;
@@ -128,7 +136,7 @@ fn apply(event: Event, app: &mut App) {
                     History::Blame => Field::ATTRIBUTION.contains(field),
                     History::Stash => matches!(field, Field::Author | Field::Date),
                     History::Branches => field == &Field::Date,
-                    History::Reflog => false,
+                    History::Reflog | History::RangeDiff => false,
                 })
             }
             _ => None,
@@ -141,7 +149,6 @@ fn apply(event: Event, app: &mut App) {
             return;
         }
         match key.code {
-            KeyCode::Char('q') => app.quit = true,
             KeyCode::Tab => app.switch_mode(),
             KeyCode::Enter if app.history == History::Branches => app.open_branch(),
             KeyCode::Enter if app.mode == Mode::Log => app.switch_mode(),
@@ -173,30 +180,11 @@ fn apply(event: Event, app: &mut App) {
             // Leave a followed reference before exiting to the calling tool.
             KeyCode::Esc if app.exit_on_esc && app.has_reference_back() => app.reference_back(),
             KeyCode::Esc if app.exit_on_esc => app.quit = true,
-            KeyCode::Up | KeyCode::Char('k') => app.move_by(-1, 1),
-            KeyCode::Down | KeyCode::Char('j') => app.move_by(1, 1),
-            KeyCode::PageUp | KeyCode::Char('b') if app.mode == Mode::Show => {
-                app.scroll_show(-(app.visible_show_rows.max(1) as isize));
-            }
-            KeyCode::PageDown | KeyCode::Char(' ') | KeyCode::Char('f')
-                if app.mode == Mode::Show =>
-            {
-                app.scroll_show(app.visible_show_rows.max(1) as isize);
-            }
-            KeyCode::PageUp | KeyCode::Char('b') => app.move_by(-2, 20),
-            KeyCode::PageDown | KeyCode::Char(' ' | 'f') => app.move_by(2, 20),
             KeyCode::Left if app.mode == Mode::Show => show_adjacent(app, -1),
             KeyCode::Right if app.mode == Mode::Show => show_adjacent(app, 1),
             KeyCode::Left if !key.modifiers.contains(KeyModifiers::SHIFT) => app.move_adjacent(-1),
             KeyCode::Right if !key.modifiers.contains(KeyModifiers::SHIFT) => app.move_adjacent(1),
-            KeyCode::Char('g' | '<') | KeyCode::Home => app.top(),
-            KeyCode::Char('G' | '>') | KeyCode::End => app.bottom(),
-            KeyCode::Char('/') => app.begin_search(false),
-            KeyCode::Char('?') => app.begin_search(true),
-            KeyCode::Char('n') => app.repeat_search(false),
-            KeyCode::Char('N') => app.repeat_search(true),
-            KeyCode::Char('h') => app.show_help = true,
-            _ => {}
+            _ => pager_key(key.code, app),
         }
     } else if let Event::Mouse(mouse) = event {
         // The views behind the help overlay and search prompt ignore the
@@ -206,6 +194,20 @@ fn apply(event: Event, app: &mut App) {
             && ((app.log_tab_start..app.log_tab_end).contains(&mouse.column)
                 || (app.show_tab_start..app.show_tab_end).contains(&mouse.column));
         if app.search_input.is_some() || (app.show_help && !tab_click) {
+            return;
+        }
+        if app.history == History::RangeDiff {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => app.scroll_show(-3),
+                MouseEventKind::ScrollDown => app.scroll_show(3),
+                MouseEventKind::Down(MouseButton::Left)
+                    if mouse.row >= app.show_row_origin
+                        && usize::from(mouse.row - app.show_row_origin) < app.visible_show_rows =>
+                {
+                    app.click_show_row(usize::from(mouse.row - app.show_row_origin));
+                }
+                _ => {}
+            }
             return;
         }
         if app.mode == Mode::Log && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
@@ -292,6 +294,31 @@ fn apply(event: Event, app: &mut App) {
             }
             _ => {}
         }
+    }
+}
+
+/// Navigation shared by history, patches, and the range-diff text pager.
+fn pager_key(code: KeyCode, app: &mut App) {
+    match code {
+        KeyCode::Char('q') => app.quit = true,
+        KeyCode::Up | KeyCode::Char('k') => app.move_by(-1, 1),
+        KeyCode::Down | KeyCode::Char('j') => app.move_by(1, 1),
+        KeyCode::PageUp | KeyCode::Char('b') if app.mode == Mode::Show => {
+            app.scroll_show(-(app.visible_show_rows.max(1) as isize));
+        }
+        KeyCode::PageDown | KeyCode::Char(' ') | KeyCode::Char('f') if app.mode == Mode::Show => {
+            app.scroll_show(app.visible_show_rows.max(1) as isize);
+        }
+        KeyCode::PageUp | KeyCode::Char('b') => app.move_by(-2, 20),
+        KeyCode::PageDown | KeyCode::Char(' ' | 'f') => app.move_by(2, 20),
+        KeyCode::Char('g' | '<') | KeyCode::Home => app.top(),
+        KeyCode::Char('G' | '>') | KeyCode::End => app.bottom(),
+        KeyCode::Char('/') => app.begin_search(false),
+        KeyCode::Char('?') => app.begin_search(true),
+        KeyCode::Char('n') => app.repeat_search(false),
+        KeyCode::Char('N') => app.repeat_search(true),
+        KeyCode::Char('h') => app.show_help = true,
+        _ => {}
     }
 }
 
