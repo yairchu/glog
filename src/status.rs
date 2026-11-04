@@ -379,6 +379,15 @@ impl RowKey {
         }
     }
 
+    /// Whether `other` is the same row, possibly redrawn: a commit's label
+    /// can change between refreshes, such as when its abbreviation grows.
+    fn same_row(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Commit(left), Self::Commit(right)) => left.hash == right.hash,
+            _ => self == other,
+        }
+    }
+
     fn is_file(&self) -> bool {
         match self {
             Self::File(_) => true,
@@ -1047,7 +1056,7 @@ impl StatusView {
                             .position(|row| row.key == RowKey::File(key.clone()))
                     })
             } else {
-                self.rows.iter().position(|row| row.key == old.key)
+                self.rows.iter().position(|row| row.key.same_row(&old.key))
             }
         });
         self.cursor = position.unwrap_or(self.cursor.min(self.rows.len().saturating_sub(1)));
