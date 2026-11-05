@@ -257,18 +257,11 @@ glog grep -i needle
 glog grep -F needle HEAD -- src/
 ```
 
-Press `z` to fold a file or folder, or `m` to fold or expand all groups.
-Only path components containing multiple findings are fold targets.
-Components covering the same findings highlight together as one fold target. Use left/right to select
-a folder or filename, and `z` to fold it. At the last fold target, right pans the
-results; left pans back before moving to parent folders.
-Enter folds a selected folder or opens a matching line in Blame.
-Click a filename or a folder component in its path to fold it.
-Press `t` to hide that file's extension,
-`T` to clear filters, or click the extension buttons to toggle them.
-Backspace returns from Blame to the results.
-Use `--cached` to search staged contents or `--untracked` to include untracked
-files. `/` and `?` search within the results and reveal matches inside folds.
+Press `z` or click a path to fold the selected file or folder, and `m` to fold
+or expand all; Left/Right choose which folder in the path to fold. Enter opens
+a match in Blame, and Backspace returns to the results. Press `t` to hide the
+selected file's extension, `T` to clear filters, or click the extension
+buttons. `/` and `?` search within the results, including inside folds.
 
 ## Reflog
 
