@@ -5,6 +5,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+## 0.8.0 - 2026-11-05
+
 ### Added
 
 - Browse file matches with `glog grep`, including working-tree, staged, and
@@ -536,7 +538,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Initial release of the interactive `git log` and `git show` browser.
 
-[Unreleased]: https://github.com/yairchu/glog/compare/v0.7.2...HEAD
+[Unreleased]: https://github.com/yairchu/glog/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/yairchu/glog/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/yairchu/glog/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/yairchu/glog/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/yairchu/glog/compare/v0.6.1...v0.7.0
