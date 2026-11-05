@@ -553,8 +553,13 @@ impl App {
         match self.mode {
             Mode::Status => {}
             Mode::Grep => {
-                let amount = if delta.abs() == 1 { 1 } else { page.max(1) } as isize;
                 if let Some(view) = &mut self.grep_view {
+                    // Pages span the results area, which only the view knows.
+                    let amount = if delta.abs() == 1 {
+                        1
+                    } else {
+                        view.height.max(1)
+                    } as isize;
                     view.move_by(if delta < 0 { -amount } else { amount });
                 }
             }

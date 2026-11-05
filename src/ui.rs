@@ -46,8 +46,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         History::Blame => "Blame",
         History::Stash => "Stash",
         History::Branches => "Branches",
-        History::RangeDiff => "Range diff",
-        History::Grep => "Grep",
+        // These views have no tabs.
+        History::RangeDiff | History::Grep => "",
     };
     // File and Branches have no detail tab; branches open a separate Log.
     let labels: &[&str] = match (has_log, file_view || app.history == History::Branches) {

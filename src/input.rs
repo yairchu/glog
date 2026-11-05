@@ -74,16 +74,6 @@ fn apply(event: Event, app: &mut App) {
                         view.move_horizontal(true);
                     }
                 }
-                KeyCode::PageUp | KeyCode::Char('b') => {
-                    if let Some(view) = &mut app.grep_view {
-                        view.move_by(-(view.height.max(1) as isize));
-                    }
-                }
-                KeyCode::PageDown | KeyCode::Char(' ' | 'f') => {
-                    if let Some(view) = &mut app.grep_view {
-                        view.move_by(view.height.max(1) as isize);
-                    }
-                }
                 _ => pager_key(key.code, app),
             }
             return;
