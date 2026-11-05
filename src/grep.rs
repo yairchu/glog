@@ -434,16 +434,11 @@ impl View {
             // Expanded headers disappear; keep the cursor on the first
             // visible descendant, including any still-collapsed subgroup.
             if matches!(self.nodes[node].kind, Kind::File(_) | Kind::Directory(_)) {
-                if let Some(cursor) = self.rows.iter().position(|row| {
-                    let mut parent = self.nodes[row.node].parent;
-                    while let Some(candidate) = parent {
-                        if candidate == node {
-                            return true;
-                        }
-                        parent = self.nodes[candidate].parent;
-                    }
-                    false
-                }) {
+                if let Some(cursor) = self
+                    .rows
+                    .iter()
+                    .position(|row| row.node != node && self.within(row.node, node))
+                {
                     self.cursor = cursor;
                     return;
                 }
@@ -451,6 +446,17 @@ impl View {
             selected = self.nodes[node].parent;
         }
         self.cursor = self.cursor.min(self.rows.len().saturating_sub(1));
+    }
+    /// Whether `node` is `ancestor` or lies beneath it.
+    fn within(&self, node: usize, ancestor: usize) -> bool {
+        let mut current = Some(node);
+        while let Some(candidate) = current {
+            if candidate == ancestor {
+                return true;
+            }
+            current = self.nodes[candidate].parent;
+        }
+        false
     }
     fn foldable(&self, node: usize) -> bool {
         match self.nodes[node].kind {
@@ -696,22 +702,26 @@ impl View {
     }
     pub fn find(&mut self, query: &str, reverse: bool) -> bool {
         let rows = self.visible_rows(true);
-        let selected = self.rows.get(self.cursor).map(|row| {
-            if matches!(self.nodes[row.node].kind, Kind::File(_)) {
-                self.nodes[row.node].children[0]
-            } else {
-                row.node
-            }
-        });
-        let start = rows
-            .iter()
-            .position(|row| Some(row.node) == selected)
-            .unwrap_or(0);
-        for step in 1..=rows.len() {
+        // Expanded rows omit folder and file headers. A collapsed header sits
+        // just before its first descendant, so a forward search includes it.
+        let (start, past) = match self.rows.get(self.cursor) {
+            Some(selected) => match rows.iter().position(|row| row.node == selected.node) {
+                Some(start) => (start, 1),
+                None => (
+                    rows.iter()
+                        .position(|row| self.within(row.node, selected.node))
+                        .unwrap_or(0),
+                    0,
+                ),
+            },
+            None => (0, 0),
+        };
+        let n = rows.len();
+        for step in 0..n {
             let index = if reverse {
-                (start + rows.len() - step % rows.len()) % rows.len()
+                (start + n - 1 - step) % n
             } else {
-                (start + step) % rows.len()
+                (start + past + step) % n
             };
             let row = rows[index];
             if self.line(row).to_string().to_lowercase().contains(query) {
