@@ -782,7 +782,8 @@ mod tests {
         std::fs::write(
             &opener,
             r##"#!/bin/sh
-printf '%s\n' "$1" > "$GLOG_TEST_ISSUE_BROWSER_CAPTURE"
+printf '%s\n' "$1" > "$GLOG_TEST_ISSUE_BROWSER_CAPTURE.tmp"
+mv "$GLOG_TEST_ISSUE_BROWSER_CAPTURE.tmp" "$GLOG_TEST_ISSUE_BROWSER_CAPTURE"
 if [ "$GLOG_TEST_ISSUE_BROWSER_CHILD" != success ]; then
     sleep 0.1
     echo 'test browser failure' >&2
