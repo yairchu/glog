@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#101318">
   <title>glog — A terminal UI for Git</title>
-  <meta name="description" content="A terminal UI for git log/show/diff/status/reflog (strictly read-only).">
+  <meta name="description" content="A terminal UI for git log/show/diff/status/reflog/grep (strictly read-only).">
   <meta property="og:title" content="glog — A terminal UI for Git">
-  <meta property="og:description" content="A terminal UI for git log/show/diff/status/reflog (strictly read-only).">
+  <meta property="og:description" content="A terminal UI for git log/show/diff/status/reflog/grep (strictly read-only).">
   <meta property="og:type" content="website">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%23101318'/%3E%3Ctext x='16' y='46' font-family='monospace' font-size='48' fill='%23f0bd69'%3Eg%3C/text%3E%3C/svg%3E">
   <style>
@@ -124,6 +124,7 @@
         <li><code>diff</code><span aria-hidden="true"> •</span></li>
         <li><code>status</code><span aria-hidden="true"> •</span></li>
         <li><code>blame</code><span aria-hidden="true"> •</span></li>
+        <li><code>grep</code><span aria-hidden="true"> •</span></li>
         <li><code>stash&nbsp;list</code><span aria-hidden="true"> •</span></li>
         <li><code>branch</code><span aria-hidden="true"> •</span></li>
         <li><code>reflog</code></li>
@@ -163,6 +164,7 @@
         <li>View image files in diffs in supported terminals (<a href="https://sw.kovidgoyal.net/kitty/">Kitty</a> and <a href="https://ghostty.org">Ghostty</a>, <a href="https://cmux.com">cmux</a> and more).</li>
         <li>Highlight and filter <a href="https://www.conventionalcommits.org/">conventional commit</a> types.</li>
         <li>Explore line history with <code>glog blame FILE</code>: inspect commits, step back before a change, and follow renames.</li>
+        <li>Search files with <code>glog grep PATTERN</code>: fold results by file or folder, filter by extension, and open matching lines in Blame.</li>
         <li>Browse local branches and their shared ancestors with <code>glog branch</code>; select a branch to explore its commits.</li>
         <li>Browse ref updates with <code>glog reflog</code>, timestamped to the second.</li>
         <li>Read dates in your local time, like <code>2026-10-01 15:35</code>, instead of Git's verbose default.</li>
