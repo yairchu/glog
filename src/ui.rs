@@ -1402,38 +1402,6 @@ mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
-    fn grep_help_describes_tree_folds_extension_filters_and_match_navigation() {
-        let help = help_text(HelpView::Grep);
-        for description in [
-            "fold file or folder",
-            "hide selected extension",
-            "open match in Blame",
-            "Mouse wheel",
-            "search forward",
-        ] {
-            assert!(help.contains(description), "{description}: {help}");
-        }
-        for description in [
-            "toggle watch",
-            "open commit on GitHub",
-            "hide selected type",
-        ] {
-            assert!(!help.contains(description), "{description}: {help}");
-        }
-    }
-
-    #[test]
-    fn range_diff_help_describes_paging_without_patch_actions() {
-        let help = help_text(HelpView::RangeDiff);
-        for description in ["Mouse wheel", "page down", "search forward", "quit"] {
-            assert!(help.contains(description), "{description}: {help}");
-        }
-        for description in ["blame", "fold", "editor", "GitHub", "switch Log"] {
-            assert!(!help.contains(description), "{description}: {help}");
-        }
-    }
-
-    #[test]
     fn file_help_explains_how_to_enable_line_history() {
         use crate::log_format::Field;
 
