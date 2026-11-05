@@ -64,7 +64,6 @@ fn apply(event: Event, app: &mut App) {
                 KeyCode::Char('m') => app.grep_action(crate::grep::Action::FoldAll),
                 KeyCode::Char('t') => app.grep_action(crate::grep::Action::HideExtension),
                 KeyCode::Char('T') => app.grep_action(crate::grep::Action::Reset),
-                KeyCode::Esc => app.quit = true,
                 KeyCode::Left => {
                     if let Some(view) = &mut app.grep_view {
                         view.move_horizontal(false);
@@ -90,11 +89,7 @@ fn apply(event: Event, app: &mut App) {
             return;
         }
         if app.history == History::RangeDiff {
-            if key.code == KeyCode::Esc {
-                app.quit = true;
-            } else {
-                pager_key(key.code, app);
-            }
+            pager_key(key.code, app);
             return;
         }
         if key.code == KeyCode::Char('O') {

@@ -503,8 +503,8 @@ const HELP_ROWS: &[HelpRow] = &[
             blame: Some("return to Blame (Show) / previous blame or review / cancel"),
             stash: Some("return to Stash / cancel"),
             file: Some("close help / cancel search"),
-            range_diff: Some("quit / cancel search"),
-            grep: Some("quit / cancel search"),
+            range_diff: Some("close help / cancel search"),
+            grep: Some("close help / cancel search"),
             branches: Some("return here from a branch Log / cancel"),
             ..NO_HELP
         },
