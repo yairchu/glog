@@ -834,13 +834,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                             label(index).as_ref(),
                         ),
                     };
-                    log_links.extend(row.links.into_iter().map(|(range, target)| {
-                        let link = crate::app::LogLink {
-                            from: index,
-                            target,
-                        };
-                        (lines.len(), range.start + start..range.end + start, link)
-                    }));
+                    log_links.extend(placed_links(row.links, index, lines.len(), start));
                     line.spans.extend(row.spans);
                     stand_ins = row.stand_ins.shifted(start);
                     line.spans.push(Span::styled(
@@ -903,13 +897,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 hash_style(index),
                 label(index).as_ref(),
             );
-            log_links.extend(metadata.links.into_iter().map(|(range, target)| {
-                let link = crate::app::LogLink {
-                    from: index,
-                    target,
-                };
-                (row, range.start + start..range.end + start, link)
-            }));
+            log_links.extend(placed_links(metadata.links, index, row, start));
             line.spans.extend(metadata.spans);
             line.spans.push(Span::styled(
                 app.log_folds.label(index),
@@ -1379,6 +1367,20 @@ impl StandIns {
             .collect();
         highlight_matches(ansi::style_ranges(line, hidden_matches), query, current)
     }
+}
+
+/// The links of Log row `from`, drawn on screen line `line` after `start`
+/// bytes of other text.
+fn placed_links(
+    links: Vec<(std::ops::Range<usize>, usize)>,
+    from: usize,
+    line: usize,
+    start: usize,
+) -> impl Iterator<Item = (usize, std::ops::Range<usize>, crate::app::LogLink)> {
+    links.into_iter().map(move |(range, target)| {
+        let link = crate::app::LogLink { from, target };
+        (line, range.start + start..range.end + start, link)
+    })
 }
 
 pub(crate) fn highlight_matches(line: Line<'static>, query: &str, current: bool) -> Line<'static> {

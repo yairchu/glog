@@ -230,17 +230,19 @@ impl LogFormat {
 
     #[cfg(test)]
     pub fn row(&self, commit: &Commit, columns: Option<&Columns>) -> Row {
-        self.row_with_hash_style(commit, columns, Style::default())
+        self.row_with_fixup(commit, columns, Style::default(), None)
     }
 
-    pub fn row_with_hash_style(
+    pub fn row_with_fixup(
         &self,
         commit: &Commit,
         columns: Option<&Columns>,
         hash_style: Style,
+        fixup: Option<&crate::fixups::Label>,
     ) -> Row {
         let spans = match &commit.annotation {
-            Some(Annotation::Reflog(_)) | None => {
+            None => return self.commit_row(commit, columns, hash_style, fixup),
+            Some(Annotation::Reflog(_)) => {
                 return self.commit_row(commit, columns, hash_style, None)
             }
             Some(Annotation::Stash(entry)) => crate::stash::spans(commit, entry, self),
@@ -255,20 +257,6 @@ impl LogFormat {
             spans,
             stand_ins,
             links: Vec::new(),
-        }
-    }
-
-    pub fn row_with_fixup(
-        &self,
-        commit: &Commit,
-        columns: Option<&Columns>,
-        hash_style: Style,
-        fixup: Option<&crate::fixups::Label>,
-    ) -> Row {
-        if commit.annotation.is_none() {
-            self.commit_row(commit, columns, hash_style, fixup)
-        } else {
-            self.row_with_hash_style(commit, columns, hash_style)
         }
     }
 
