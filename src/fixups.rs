@@ -144,6 +144,7 @@ mod tests {
         commit("Add printer tests");
         let short = git(&["rev-parse", "--short=7", "HEAD~2"]);
         git(&["branch", "printer-branch", "HEAD~1"]);
+        git(&["tag", "-am", "release", "printer-tag", "HEAD~1"]);
         for subject in [
             "fixup! Add parser",
             &format!("fixup! {short}"),
@@ -152,6 +153,7 @@ mod tests {
             "fixup! Add printer",
             "fixup! Add print",
             "fixup! printer-branch",
+            "fixup! printer-tag",
             "fixup! deadbeef",
         ] {
             commit(subject);
@@ -178,6 +180,11 @@ mod tests {
             ("fixup! Add print", Some(Target::Ambiguous)),
             (
                 "fixup! printer-branch",
+                Some(Target::Commit(index("Add printer"))),
+            ),
+            // Autosquash peels an annotated tag to the commit it tags.
+            (
+                "fixup! printer-tag",
                 Some(Target::Commit(index("Add printer"))),
             ),
             ("fixup! deadbeef", Some(Target::Missing)),
