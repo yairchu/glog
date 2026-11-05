@@ -44,25 +44,13 @@ fn main() -> ExitCode {
         println!("{information}");
         return ExitCode::SUCCESS;
     }
-    // Grep patterns are data, including strings spelled like display flags.
-    let parsed_patch_options = if command == Command::Grep {
-        Ok((patch_options::Options::default(), command_args.to_vec()))
-    } else {
-        patch_options::parse_args(command_args)
-    };
-    let (patch_settings, command_args) = match parsed_patch_options {
-        Ok(options) => options,
+    let command_args = match initialize_session(command, command_args) {
+        Ok(args) => args,
         Err(error) => {
             eprintln!("glog: {error}");
             return ExitCode::FAILURE;
         }
     };
-    patch_options::initialize(patch_settings);
-    blame::initialize_date(if command == Command::Grep {
-        &[]
-    } else {
-        &command_args
-    });
     let command_args = command_args.as_slice();
     let (log_format, log_options, git_args) = match if command == Command::Log {
         log_format::parse_args(command_args)
@@ -120,26 +108,9 @@ fn main() -> ExitCode {
         }
     };
     let watch = watch || app.watch;
-    let items = if command == Command::Grep {
-        app.grep_view.as_ref().map_or(0, grep::View::match_count)
-    } else if command == Command::RangeDiff {
-        app.range_diff_view
-            .as_ref()
-            .map_or(0, range_diff::View::len)
-    } else {
-        app.commits.len()
-    };
-    if command != Command::Status && !should_start_tui(watch, items) {
-        let message = match command {
-            Command::Diff | Command::RangeDiff => "no changes",
-            Command::Reflog => "no reflog entries matched",
-            Command::Grep => "no matches",
-            Command::Blame => "the file is empty",
-            _ if app.history == app::History::Blame => "the file is empty",
-            Command::Stash => "no stashes matched",
-            _ => "no commits matched",
-        };
-        eprintln!("glog: {message}");
+    // Watching waits for content, as Status always does.
+    if !watch && app.is_empty() {
+        eprintln!("glog: {}", command.empty_message(app.history));
         return ExitCode::SUCCESS;
     }
 
@@ -203,6 +174,44 @@ enum Command {
     RangeDiff,
     Grep,
     Status,
+}
+
+impl Command {
+    /// Whether the arguments are search patterns, which go to Git whole,
+    /// even those spelled like display options.
+    fn takes_patterns(self) -> bool {
+        self == Command::Grep
+    }
+
+    /// Why the command has nothing to browse.
+    fn empty_message(self, history: app::History) -> &'static str {
+        use Command::*;
+        match self {
+            Diff | RangeDiff => "no changes",
+            Reflog => "no reflog entries matched",
+            Grep => "no matches",
+            Blame => "the file is empty",
+            Log | Show | Branch | Stash | Status if history == app::History::Blame => {
+                "the file is empty"
+            }
+            Stash => "no stashes matched",
+            Log | Show | Branch | Status => "no commits matched",
+        }
+    }
+}
+
+/// Apply the patch and date options a session shares, returning the
+/// arguments left for the command.
+fn initialize_session(command: Command, args: &[String]) -> Result<Vec<String>, String> {
+    if command.takes_patterns() {
+        patch_options::initialize(patch_options::Options::default());
+        blame::initialize_date(&[]);
+        return Ok(args.to_vec());
+    }
+    let (settings, args) = patch_options::parse_args(args)?;
+    patch_options::initialize(settings);
+    blame::initialize_date(&args);
+    Ok(args)
 }
 
 fn parse_command(args: &[String]) -> (Command, &[String]) {
@@ -472,10 +481,6 @@ fn handle_burst(
     Ok((changed, None))
 }
 
-fn should_start_tui(watch: bool, commit_count: usize) -> bool {
-    watch || commit_count > 0
-}
-
 struct TerminalGuard(bool);
 
 impl TerminalGuard {
@@ -707,13 +712,6 @@ mod tests {
         assert_eq!(app.mode, app::Mode::Log);
         app.apply_log_action(LogAction::Reset);
         assert_eq!(app.log_folds.hidden_count(), 0);
-    }
-
-    #[test]
-    fn empty_results_skip_tui_except_when_watching() {
-        assert!(!should_start_tui(false, 0));
-        assert!(should_start_tui(false, 1));
-        assert!(should_start_tui(true, 0));
     }
 
     #[test]

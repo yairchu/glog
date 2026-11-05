@@ -3,6 +3,8 @@ use ratatui::{layout::Rect, Frame};
 
 /// A view that `App` pages, searches, and draws without knowing its kind.
 pub trait PagerView {
+    /// Whether there is nothing to browse.
+    fn is_empty(&self) -> bool;
     /// The line that search matches and the help mark refer to.
     fn cursor(&self) -> usize;
     fn move_by(&mut self, delta: isize);

@@ -55,9 +55,6 @@ impl View {
             reveal: false,
         }
     }
-    pub fn len(&self) -> usize {
-        self.lines.len()
-    }
     fn last(&self) -> usize {
         self.lines.len().saturating_sub(1)
     }
@@ -92,6 +89,9 @@ impl View {
 }
 
 impl PagerView for View {
+    fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
     fn cursor(&self) -> usize {
         self.cursor
     }

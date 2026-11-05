@@ -844,6 +844,9 @@ impl View {
 }
 
 impl PagerView for View {
+    fn is_empty(&self) -> bool {
+        self.match_count() == 0
+    }
     fn cursor(&self) -> usize {
         self.cursor
     }

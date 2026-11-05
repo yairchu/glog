@@ -567,6 +567,14 @@ impl App {
         }
     }
 
+    /// Whether there is nothing to browse.
+    pub fn is_empty(&mut self) -> bool {
+        match self.pager_view() {
+            Some(view) => view.is_empty(),
+            None => self.commits.is_empty(),
+        }
+    }
+
     pub fn move_by(&mut self, delta: isize, page: usize) {
         match self.mode {
             Mode::Status => {}
