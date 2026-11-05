@@ -821,8 +821,7 @@ fn render_lines(
                 author_date: String::new(),
                 collaborators: Collaborators::default(),
                 graph: vec![String::new()],
-                first_parent_only: false,
-                log_reversed: false,
+                traversal: git::Traversal::default(),
                 graph_node: '*',
                 parents: Vec::new(),
             };

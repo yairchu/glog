@@ -546,7 +546,13 @@ impl LogFolds {
         let revisions: Vec<_> = commits
             .iter()
             .filter(|c| c.kind == CommitKind::Revision)
-            .map(|c| (c.hash.clone(), c.parents.clone(), c.first_parent_only))
+            .map(|c| {
+                (
+                    c.hash.clone(),
+                    c.parents.clone(),
+                    c.traversal.first_parent_only,
+                )
+            })
             .collect();
         if revisions != self.revisions {
             // A read whose revisions are still the oldest is extended once
@@ -921,7 +927,9 @@ impl Graph {
             }
         }
         let nodes = parents.len();
-        let first_parent_only = commits.iter().any(|commit| commit.first_parent_only);
+        let first_parent_only = commits
+            .iter()
+            .any(|commit| commit.traversal.first_parent_only);
         for (hash, links) in ancestry.into_iter().flatten() {
             let node = index[hash];
             if node >= rows {

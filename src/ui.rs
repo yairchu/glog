@@ -1932,8 +1932,7 @@ mod tests {
             collaborators: crate::git::Collaborators::default(),
             subject: subject.to_owned(),
             graph: vec!["* ".to_owned(); graph_rows],
-            first_parent_only: false,
-            log_reversed: false,
+            traversal: crate::git::Traversal::default(),
             graph_node: '*',
         }
     }

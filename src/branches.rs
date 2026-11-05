@@ -575,8 +575,7 @@ fn compact(
                     .iter()
                     .map(|&p| nodes[p].hash.clone())
                     .collect(),
-                first_parent_only: false,
-                log_reversed: false,
+                traversal: git::Traversal::default(),
                 diff_args: Vec::new(),
                 graph: vec!["* ".into()],
                 graph_node: '*',

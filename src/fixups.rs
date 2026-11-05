@@ -61,7 +61,7 @@ pub fn resolve(commits: &[Commit], repository: Option<&Repository>) -> Vec<Optio
         repository,
     );
     let named_by_revisions: HashSet<_> = revisions.values().map(String::as_str).collect();
-    let reversed = commits.iter().any(|commit| commit.log_reversed);
+    let reversed = commits.iter().any(|commit| commit.traversal.reversed);
     // Resolve oldest first, retaining display indices for links and selection.
     let older: Vec<_> = (0..commits.len())
         .map(|position| {

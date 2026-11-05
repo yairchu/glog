@@ -132,8 +132,7 @@ fn load_list(args: &[String]) -> Result<Vec<Commit>, String> {
                 collaborators: Collaborators::default(),
                 decorations: Default::default(),
                 graph: vec![String::new()],
-                first_parent_only: false,
-                log_reversed: false,
+                traversal: git::Traversal::default(),
                 graph_node: '*',
                 parents: Vec::new(),
             })

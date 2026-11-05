@@ -113,12 +113,19 @@ pub struct Commit {
     pub collaborators: Collaborators,
     pub graph: Vec<String>,
     pub parents: Vec<String>,
-    /// Graph traversal can follow only the first parent while retaining merge identity.
-    pub first_parent_only: bool,
-    /// Whether Log displays Git's traversal in reverse order.
-    pub log_reversed: bool,
+    /// How the Log that loaded this commit traversed history.
+    pub traversal: Traversal,
     /// Git's node marker, including comparison and excluded-boundary markers.
     pub graph_node: char,
+}
+
+/// Log-wide traversal options, which every commit of a Log shares.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Traversal {
+    /// Follow only the first parent while retaining merge identity.
+    pub first_parent_only: bool,
+    /// Display Git's traversal in reverse order.
+    pub reversed: bool,
 }
 
 /// Git's styled ref names, with a plain view for identity checks and search.
@@ -187,7 +194,7 @@ pub enum Annotation {
 
 impl Commit {
     pub fn graph_parents(&self) -> &[String] {
-        if self.first_parent_only {
+        if self.traversal.first_parent_only {
             &self.parents[..self.parents.len().min(1)]
         } else {
             &self.parents
@@ -490,8 +497,7 @@ pub fn load_log_at(
     };
     // Patterns and pathspecs can spell traversal flags. Git lets the last
     // first-parent option win, while each --reverse toggles the display order.
-    let mut first_parent_only = false;
-    let mut log_reversed = false;
+    let mut traversal = Traversal::default();
     let mut args = user_args.iter();
     while let Some(arg) = args.next() {
         if arg == "--" {
@@ -502,15 +508,14 @@ pub fn load_log_at(
             continue;
         }
         match arg.as_str() {
-            "--first-parent" => first_parent_only = true,
-            "--no-first-parent" => first_parent_only = false,
-            "--reverse" => log_reversed = !log_reversed,
+            "--first-parent" => traversal.first_parent_only = true,
+            "--no-first-parent" => traversal.first_parent_only = false,
+            "--reverse" => traversal.reversed = !traversal.reversed,
             _ => {}
         }
     }
     for commit in &mut commits {
-        commit.first_parent_only = first_parent_only;
-        commit.log_reversed = log_reversed;
+        commit.traversal = traversal;
     }
     empty_commits::mark(&mut commits, repository);
     Ok(commits)
@@ -589,7 +594,9 @@ pub fn log_ancestry_at(
         input.push_str(parent);
         input.push('\n');
     }
-    let first_parent = revisions.iter().any(|commit| commit.first_parent_only);
+    let first_parent = revisions
+        .iter()
+        .any(|commit| commit.traversal.first_parent_only);
     let mut command = read_command_at(repository);
     Box::new(move |cancel| {
         command
@@ -1322,8 +1329,7 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
                     parents: fields[7].split_whitespace().map(str::to_owned).collect(),
                     subject: fields[8].to_owned(),
                     graph: std::mem::take(&mut pending_graph),
-                    first_parent_only: false,
-                    log_reversed: false,
+                    traversal: Traversal::default(),
                     graph_node: crate::ansi::plain(&line[..marker])
                         .chars()
                         .find(|c| matches!(c, '*' | 'o' | '<' | '>' | '=' | '+'))
@@ -1370,8 +1376,7 @@ fn pseudo_commit(kind: CommitKind, short_hash: &str, subject: &str) -> Commit {
         collaborators: Collaborators::default(),
         subject: subject.to_owned(),
         graph: vec!["* ".to_owned()],
-        first_parent_only: false,
-        log_reversed: false,
+        traversal: Traversal::default(),
         graph_node: '*',
         parents: Vec::new(),
     }

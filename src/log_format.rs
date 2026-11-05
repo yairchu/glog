@@ -1280,8 +1280,7 @@ pub(crate) mod tests {
             author_date: "2026-09-14".into(),
             collaborators: crate::git::Collaborators::default(),
             graph: vec!["* ".into()],
-            first_parent_only: false,
-            log_reversed: false,
+            traversal: crate::git::Traversal::default(),
             graph_node: '*',
         }
     }
