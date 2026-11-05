@@ -2241,17 +2241,21 @@ impl App {
             shown_type: None,
             shown_merges: false,
         };
-        if self.log_folds.filter_hidden(index, &self.commits[index]) {
-            if let Some(kind) = crate::log_folds::commit_type(&self.commits[index]) {
-                if self.log_folds.hidden_types.remove(kind.as_ref()) {
-                    bookmark.shown_type = Some(kind.into_owned());
-                }
+        let target = &self.commits[index];
+        if self.log_folds.filter_hidden(index, target) {
+            let kind = crate::log_folds::commit_type(target);
+            let merge = target.parents.len() > 1;
+            let shown = self
+                .log_folds
+                .change_filters(&self.commits, |types, merges| {
+                    bookmark.shown_type = kind
+                        .filter(|kind| types.remove(kind.as_ref()))
+                        .map(std::borrow::Cow::into_owned);
+                    bookmark.shown_merges = merge && std::mem::take(merges);
+                });
+            if let Err(error) = shown {
+                self.status = Some(error);
             }
-            if self.commits[index].parents.len() > 1 && self.log_folds.hide_merges {
-                self.log_folds.hide_merges = false;
-                bookmark.shown_merges = true;
-            }
-            self.layout_log_folds();
         }
         self.log_back.push(bookmark);
         self.log_folds.reveal(index, &self.commits);
@@ -2430,11 +2434,16 @@ impl App {
         if let Some(bookmark) = self.log_back.pop() {
             self.mode = Mode::Log;
             // Hide only what following showed, keeping later filter changes.
-            let shown_type = bookmark.shown_type.is_some();
-            self.log_folds.hidden_types.extend(bookmark.shown_type);
-            self.log_folds.hide_merges |= bookmark.shown_merges;
-            if shown_type || bookmark.shown_merges {
-                self.layout_log_folds();
+            if bookmark.shown_type.is_some() || bookmark.shown_merges {
+                let hidden = self
+                    .log_folds
+                    .change_filters(&self.commits, |types, merges| {
+                        types.extend(bookmark.shown_type);
+                        *merges |= bookmark.shown_merges;
+                    });
+                if let Err(error) = hidden {
+                    self.status = Some(error);
+                }
             }
             if let Some(index) = self
                 .commits

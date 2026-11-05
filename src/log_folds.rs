@@ -667,22 +667,31 @@ impl LogFolds {
         let kind = kind
             .map(|kind| normalize_type(kind).ok_or_else(|| format!("invalid commit type {kind:?}")))
             .transpose()?;
-        self.prepare_request(commits);
-        if let Some(kind) = kind {
-            if !self.hidden_types.remove(kind.as_ref()) {
-                self.hidden_types.insert(kind.into_owned());
+        self.change_filters(commits, |types, merges| match kind {
+            Some(kind) => {
+                if !types.remove(kind.as_ref()) {
+                    types.insert(kind.into_owned());
+                }
             }
-        } else {
-            self.hidden_types.clear();
-            self.hide_merges = false;
-        }
-        self.relayout(commits);
-        self.status()
+            None => {
+                types.clear();
+                *merges = false;
+            }
+        })
     }
 
     pub fn toggle_merges(&mut self, commits: &[Commit]) -> Result<(), String> {
+        self.change_filters(commits, |_, merges| *merges = !*merges)
+    }
+
+    /// Change the hidden types and whether merges are hidden, as a request.
+    pub fn change_filters(
+        &mut self,
+        commits: &[Commit],
+        change: impl FnOnce(&mut BTreeSet<String>, &mut bool),
+    ) -> Result<(), String> {
         self.prepare_request(commits);
-        self.hide_merges = !self.hide_merges;
+        change(&mut self.hidden_types, &mut self.hide_merges);
         self.relayout(commits);
         self.status()
     }
