@@ -1338,6 +1338,12 @@ impl StandIns {
         self.0.push((range, text.into()));
     }
 
+    /// A text the row stands for without drawing any part of it, which search
+    /// matches but cannot mark.
+    pub fn push_undrawn(&mut self, text: impl Into<String>) {
+        self.push(0..0, text);
+    }
+
     pub fn append(&mut self, other: StandIns) {
         self.0.extend(other.0);
     }

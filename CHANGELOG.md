@@ -30,6 +30,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   Show and other commands. Apply the whitespace policy to patches throughout
   the session, including patches opened from Log.
 
+- Find Blame lines by the commit details their chunk's first line shows, such
+  as the author, rather than skipping lines that leave them blank.
+
+- Highlight a Log row's short hash when searching for more of its full hash.
+
 ## 0.7.2 - 2026-11-04
 
 ### Added

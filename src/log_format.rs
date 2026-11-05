@@ -249,9 +249,11 @@ impl LogFormat {
             }
             Some(Annotation::Branch(node)) => crate::branches::spans(commit, node, self),
         };
+        let mut stand_ins = crate::ui::StandIns::default();
+        stand_ins.push_undrawn(commit.hash.clone());
         Row {
             spans,
-            stand_ins: Default::default(),
+            stand_ins,
             links: Vec::new(),
         }
     }
@@ -295,6 +297,7 @@ impl LogFormat {
         let mut spans = Vec::new();
         let mut stand_ins = crate::ui::StandIns::default();
         let mut links = Vec::new();
+        let mut hash_drawn = false;
         let reflog = commit.reflog();
         let author = author(commit);
         // Append badges once, after the last visible author name/email field.
@@ -390,14 +393,24 @@ impl LogFormat {
                 }
                 continue;
             }
+            let value_start = spans
+                .iter()
+                .map(|span: &Span| span.content.len())
+                .sum::<usize>()
+                + text.len()
+                - suffix.len()
+                - value.len();
             if let Some(cell) = &cell {
-                let end = spans
-                    .iter()
-                    .map(|span: &Span| span.content.len())
-                    .sum::<usize>()
-                    + text.len()
-                    - suffix.len();
-                stand_ins.append(cell.stand_ins(end - value.len()));
+                stand_ins.append(cell.stand_ins(value_start));
+            }
+            match part.token.as_str() {
+                "h" => {
+                    let range = value_start..value_start + value.len();
+                    stand_ins.push(range, commit.hash.clone());
+                    hash_drawn = true;
+                }
+                "H" => hash_drawn = true,
+                _ => {}
             }
             let mut span = field_span(part.field, text);
             if part.field == Field::Hash {
@@ -463,6 +476,9 @@ impl LogFormat {
             if padding > 0 {
                 spans.push(Span::raw(" ".repeat(padding)));
             }
+        }
+        if !hash_drawn {
+            stand_ins.push_undrawn(commit.hash.clone());
         }
         Row {
             spans,

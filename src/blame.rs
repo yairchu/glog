@@ -1037,7 +1037,8 @@ fn badge_width(collaborators: &Collaborators) -> usize {
 
 /// Commit details, or blanks in their place, then the line itself. The Log
 /// format's field toggles choose which details are shown.
-/// A shortened author records the texts it stands for, which search matches.
+/// Shortened and blank details stand for their full texts, which search
+/// matches.
 pub fn row(
     commit: &Commit,
     line: &BlameLine,
@@ -1047,16 +1048,22 @@ pub fn row(
     let file = &line.file;
     let mut spans = Vec::new();
     let mut stand_ins = crate::ui::StandIns::default();
+    // Lines after a chunk's first leave its details blank, standing for them.
     let mut blank = 0;
+    let mut hidden = Vec::new();
     if format.shows(Field::Hash) {
         if details {
+            stand_ins.push(0..commit.short_hash.len(), commit.hash.clone());
             spans.push(Span::styled(
                 pad(&commit.short_hash, file.hash_width),
                 Style::default().fg(Color::Yellow),
             ));
         } else {
             blank += file.hash_width + 1;
+            hidden.push(commit.hash.clone());
         }
+    } else {
+        stand_ins.push_undrawn(commit.hash.clone());
     }
     if format.shows(Field::Date) {
         if details {
@@ -1066,18 +1073,19 @@ pub fn row(
             ));
         } else {
             blank += file.date_width + 1;
+            hidden.push(commit.author_date.clone());
         }
     }
     if format.shows(Field::Author) {
+        // Uncommitted lines keep their placeholder whole.
+        let label = if commit.kind == CommitKind::Revision {
+            crate::log_format::author_label(&commit.author)
+        } else {
+            commit.author.as_str().into()
+        };
         if details {
             let badge = crate::log_format::coauthor_badge(&commit.collaborators);
             let badge_width: usize = badge.iter().map(Span::width).sum();
-            // Uncommitted lines keep their placeholder whole.
-            let label = if commit.kind == CommitKind::Revision {
-                crate::log_format::author_label(&commit.author)
-            } else {
-                commit.author.as_str().into()
-            };
             let cell = crate::log_format::AuthorCell::new(
                 &commit.author,
                 &label,
@@ -1091,9 +1099,17 @@ pub fn row(
             spans.push(Span::raw(" ".repeat(cell.padding + 1)));
         } else {
             blank += file.author_width + 1;
+            hidden.push(commit.author.clone());
+            if label != commit.author {
+                hidden.push(label.into_owned());
+            }
         }
     }
     if blank > 0 {
+        let start: usize = spans.iter().map(|span| span.content.len()).sum();
+        for text in hidden {
+            stand_ins.push(start..start + blank, text);
+        }
         spans.push(Span::raw(" ".repeat(blank)));
     }
     spans.push(Span::styled(
@@ -1164,6 +1180,10 @@ mod tests {
         // The shortened name is marked whole, as its full text matches.
         assert_eq!(buffer[(x, y)].style(), buffer[(x + 10, y)].style());
         assert_ne!(buffer[(x, y)].bg, buffer[(x + 12, y)].bg);
+        // A chunk's later lines stand for the details they leave blank, which
+        // the top line shows when the chunk starts above the screen.
+        app.next_match(false);
+        assert_eq!(app.search_match, Some((Mode::Log, 1)));
     }
 
     #[test]

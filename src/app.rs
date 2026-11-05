@@ -2578,13 +2578,9 @@ impl App {
                     if self.log_folds.filter_hidden(i, c) {
                         continue;
                     }
-                    if c.hash.to_lowercase().contains(&query)
-                        || self.log_format.matches(
-                            c,
-                            self.fixup_label(i).as_ref(),
-                            &query,
-                            in_columns,
-                        )
+                    if self
+                        .log_format
+                        .matches(c, self.fixup_label(i).as_ref(), &query, in_columns)
                     {
                         self.log_folds.reveal(i, &self.commits);
                         self.selected = i;
@@ -2808,6 +2804,29 @@ mod tests {
                 }
             }
         }
+        // The short hash stands for the full one, so it is marked whole.
+        let mut app = App::new(vec![commit("first"), target]);
+        app.log_format = crate::log_format::LogFormat::parse("%h %s").unwrap();
+        app.search_input = Some(hash.to_owned());
+        app.submit_search();
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(40, 6)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let y = app.log_row_origin
+            + app
+                .visible_log_rows
+                .iter()
+                .position(|index| *index == Some(1))
+                .unwrap() as u16;
+        let marked: String = (0..40)
+            .map(|x| &buffer[(x, y)])
+            .filter(|cell| cell.bg == ratatui::style::Color::Yellow)
+            .map(|cell| cell.symbol())
+            .collect();
+        assert_eq!(marked, &hash[..7]);
     }
 
     #[test]
