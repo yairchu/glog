@@ -359,27 +359,15 @@ mod tests {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         fixture();
-        let expected = load_app(&args(&["base..before", "base..after"]))
-            .unwrap()
-            .show_text;
-        assert_eq!(
-            load_app(&args(&["base", "before", "after"]))
-                .unwrap()
-                .show_text,
-            expected
-        );
-        assert_eq!(
-            load_app(&args(&["before...after"])).unwrap().show_text,
-            expected
-        );
-        let plain = load_app(&args(&["--no-color", "base..before", "base..after"])).unwrap();
-        assert_eq!(plain.show_text, ansi::plain(&expected));
-        assert!(
-            load_app(&args(&["base..before", "base..after", "--", "absent"]))
-                .unwrap()
-                .show_text
-                .is_empty()
-        );
+        let lines = |values: &[&str]| view(&load_app(&args(values)).unwrap()).lines.clone();
+        let expected = lines(&["base..before", "base..after"]);
+        assert!(!expected.is_empty());
+        assert_eq!(lines(&["base", "before", "after"]), expected);
+        assert_eq!(lines(&["before...after"]), expected);
+        let plain: Vec<_> = expected.iter().map(|line| ansi::plain(line)).collect();
+        assert_ne!(plain, expected);
+        assert_eq!(lines(&["--no-color", "base..before", "base..after"]), plain);
+        assert!(lines(&["base..before", "base..after", "--", "absent"]).is_empty());
         assert!(load_app(&[]).is_err());
         assert!(load_app(&args(&["missing..before", "base..after"])).is_err());
     }
