@@ -112,16 +112,23 @@ fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>), String> {
     let mut output = Vec::new();
     let mut sources = vec![Source::Worktree];
     let mut pattern = false;
+    let mut options = true;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
-        if arg == "--" {
+        if arg == "--" && (options || pattern) {
             output.push(arg.clone());
-            output.extend(args.cloned());
-            break;
+            if pattern {
+                output.extend(args.cloned());
+                break;
+            }
+            // Before the positional pattern, -- ends options, but Git still
+            // accepts revisions and a later -- introducing literal pathspecs.
+            options = false;
+            continue;
         }
         let mut takes_value = false;
         let mut adds_pattern = false;
-        if arg.starts_with("--") {
+        if options && arg.starts_with("--") {
             let name = arg.split('=').next().unwrap();
             match name {
                 "--regexp" | "--file" => { adds_pattern = true; takes_value = !arg.contains('='); }
@@ -134,7 +141,7 @@ fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>), String> {
                 "--line-number" | "--null" | "--full-name" | "--color" | "--no-color" => {}
                 _ => return Err(format!("unsupported grep option {arg:?}; use matching options such as -i, -w, -F, -e, --cached, or --untracked; glog supplies the results layout")),
             }
-        } else if arg.starts_with('-') && arg != "-" {
+        } else if options && arg.starts_with('-') && arg != "-" {
             for (offset, flag) in arg[1..].char_indices() {
                 match flag {
                     'e' | 'f' | 'm' => {
@@ -146,7 +153,7 @@ fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>), String> {
                     _ => return Err(format!("unsupported grep option {arg:?}; glog displays matching lines in a file tree")),
                 }
             }
-        } else if arg == "(" || arg == ")" {
+        } else if options && (arg == "(" || arg == ")") {
             // Git's compound pattern expressions.
         } else if !pattern {
             pattern = true;
