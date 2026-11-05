@@ -545,7 +545,7 @@ when they name an older commit in the loaded history the way autosquash does:
 by its subject, a hash or other revision, or a subject prefix.
 Selecting either commit highlights the related hashes. Click the target hash to
 jump to it, opening folds and temporarily clearing filters that hide it;
-Backspace returns to the previous selection and restores those filters.
+Backspace returns to the fixup and restores those filters.
 Several matching commits are marked ambiguous; targets outside the loaded
 history are marked missing.
 
