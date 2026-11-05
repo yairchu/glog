@@ -706,24 +706,18 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             .log_offset
             .min(app.commits.len().saturating_sub(height.max(1)));
     }
-    let fixups = if app.history == History::Log {
-        crate::fixups::resolve(&app.commits)
-    } else {
-        vec![None; app.commits.len()]
-    };
-    let labels: Vec<_> = fixups
-        .iter()
-        .enumerate()
-        .map(|(index, target)| target.map(|target| target.label(&app.commits[index], &app.commits)))
-        .collect();
+    let date_column = app.log_date_column();
     let selection = app.selected;
+    let fixups = &app.fixups;
+    let fixup = |index: usize| fixups.get(index).copied().flatten();
+    let label =
+        |index: usize| fixup(index).map(|target| target.label(&app.commits[index], &app.commits));
     let related = |index: usize| {
-        fixups[selection] == Some(crate::fixups::Target::Commit(index))
-            || fixups[index] == Some(crate::fixups::Target::Commit(selection))
+        fixup(selection) == Some(crate::fixups::Target::Commit(index))
+            || fixup(index) == Some(crate::fixups::Target::Commit(selection))
     };
     let mut log_links = Vec::new();
     let mut lines = Vec::new();
-    let date_column = app.log_date_column();
     let show_hash = app.log_format.shows(crate::log_format::Field::Hash);
     let hash_style = |index: usize| {
         if app.history == History::Reflog
@@ -839,7 +833,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                             commit,
                             None,
                             hash_style(index),
-                            labels[index].as_ref(),
+                            label(index).as_ref(),
                         ),
                     };
                     log_links.extend(row.links.into_iter().map(|(range, target)| {
@@ -905,7 +899,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 &app.commits[index],
                 Some(&columns),
                 hash_style(index),
-                labels[index].as_ref(),
+                label(index).as_ref(),
             );
             log_links.extend(
                 metadata

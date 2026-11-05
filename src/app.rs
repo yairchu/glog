@@ -238,6 +238,8 @@ pub struct App {
     // Scroll the Log so the selection is centered on the next draw.
     pub center_selection: bool,
     pub log_folds: crate::log_folds::LogFolds,
+    /// Each Log commit's fixup target, resolved with its folds' layout.
+    pub fixups: Vec<Option<crate::fixups::Target>>,
     pub log_format: crate::log_format::LogFormat,
     log_date_column: Option<crate::log_format::DateColumn>,
     pub selected: usize,
@@ -336,6 +338,7 @@ impl App {
             blame_stack: Vec::new(),
             center_selection: false,
             log_folds: crate::log_folds::LogFolds::default(),
+            fixups: Vec::new(),
             log_format: crate::log_format::LogFormat::default(),
             log_date_column: None,
             selected: 0,
@@ -404,6 +407,8 @@ impl App {
         if matches!(app.history, History::Reflog | History::Branches) {
             app.refresh_log_folds();
             app.ensure_log_selection();
+        } else {
+            app.refresh_fixups();
         }
         app
     }
@@ -855,9 +860,19 @@ impl App {
 
     /// Lay out the Log's folds and filters, reporting only failures.
     pub fn refresh_log_folds(&mut self) {
+        self.refresh_fixups();
         if let Err(error) = self.log_folds.refresh(&self.commits) {
             self.status = Some(error);
         }
+    }
+
+    /// Resolve fixup targets once per history rather than on every redraw.
+    fn refresh_fixups(&mut self) {
+        self.fixups = if self.history == History::Log {
+            crate::fixups::resolve(&self.commits)
+        } else {
+            Vec::new()
+        };
     }
 
     /// Apply omitted history once its background read completes, returning

@@ -26,8 +26,7 @@ fn prefix(subject: &str) -> Option<&str> {
 /// even if one happens to be closer to the fixup in the display.
 pub fn resolve(commits: &[Commit]) -> Vec<Option<Target>> {
     let mut targets = vec![None; commits.len()];
-    // Track only subjects named by fixups: large histories should not allocate
-    // an index of every commit on each redraw.
+    // Track only subjects named by fixups, not an index of every commit.
     let mut subjects: HashMap<_, _> = commits
         .iter()
         .filter(|commit| commit.kind == CommitKind::Revision && commit.annotation.is_none())
