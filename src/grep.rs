@@ -81,6 +81,8 @@ pub struct View {
     counts: Vec<(usize, usize)>, // visible files and matches beneath each node
     collapsed: HashSet<usize>,
     hidden: BTreeSet<Vec<u8>>,
+    /// Files per extension, for the filter controls.
+    extensions: BTreeMap<Vec<u8>, usize>,
     pub cursor: usize,
     pub offset: usize,
     pub height: usize,
@@ -91,6 +93,24 @@ pub struct View {
     origin: u16,
     buttons: Vec<(Rect, Action)>,
     fold_buttons: Vec<(Rect, usize)>,
+}
+
+/// The spans of a row's line that show its path.
+struct PathLayout {
+    marker: usize,
+    /// Each component's span and node.
+    components: Vec<(usize, usize)>,
+}
+
+/// Where each span of a line starts, and where the last ends, in display
+/// columns and in bytes.
+fn span_offsets(line: &Line) -> Vec<(usize, usize)> {
+    let mut offsets = vec![(0, 0)];
+    for span in &line.spans {
+        let &(columns, bytes) = offsets.last().unwrap();
+        offsets.push((columns + span.width(), bytes + span.content.len()));
+    }
+    offsets
 }
 
 fn resolve(revision: &str, kind: &str) -> Option<String> {
@@ -309,10 +329,15 @@ impl View {
                 text: String::from_utf8_lossy(text).into_owned(),
             });
         }
+        let mut extensions = BTreeMap::new();
+        for file in &files {
+            *extensions.entry(file.extension.clone()).or_default() += 1;
+        }
         let mut view = Self {
             repository,
             sources,
             files,
+            extensions,
             nodes: Vec::new(),
             roots: Vec::new(),
             rows: Vec::new(),
@@ -645,17 +670,33 @@ impl View {
             self.horizontal = self.horizontal.saturating_sub(4);
         }
     }
-    fn path_spans(&self, row: Row, marker: &str, style: Style) -> Vec<Span<'static>> {
-        let mut spans = vec![Span::styled(marker.to_owned(), style)];
-        for (component, _) in self.fold_path_components(self.path_node(row).unwrap()) {
+    fn push_path(
+        &self,
+        spans: &mut Vec<Span<'static>>,
+        row: Row,
+        marker: &str,
+        style: Style,
+    ) -> PathLayout {
+        let mut layout = PathLayout {
+            marker: spans.len(),
+            components: Vec::new(),
+        };
+        spans.push(Span::styled(marker.to_owned(), style));
+        for (component, node) in self.fold_path_components(self.path_node(row).unwrap()) {
+            layout.components.push((spans.len(), node));
             spans.push(Span::styled(component, style));
         }
-        spans
+        layout
     }
     fn line(&self, row: Row) -> Line<'static> {
-        self.line_with_filename(row, false)
+        self.line_with_filename(row, false).0
     }
-    fn line_with_filename(&self, row: Row, force_filename: bool) -> Line<'static> {
+    /// A row's line, with where it shows path components, if it does.
+    fn line_with_filename(
+        &self,
+        row: Row,
+        force_filename: bool,
+    ) -> (Line<'static>, Option<PathLayout>) {
         let node = &self.nodes[row.node];
         let (files, matches) = self.counts[row.node];
         let file_count = format!("{files} {}", if files == 1 { "file" } else { "files" });
@@ -673,6 +714,7 @@ impl View {
             "  "
         };
         let mut spans = vec![Span::raw("  ".repeat(row.depth))];
+        let mut layout = None;
         match &node.kind {
             Kind::Source(source) => spans.push(Span::styled(
                 format!(
@@ -682,14 +724,20 @@ impl View {
                 Style::default().fg(Color::Cyan),
             )),
             Kind::Directory(_) => {
-                spans.extend(self.path_spans(row, marker, Style::default().fg(Color::Cyan)));
+                layout =
+                    Some(self.push_path(&mut spans, row, marker, Style::default().fg(Color::Cyan)));
                 spans.push(Span::styled(
                     format!(" ({file_count}, {match_count})"),
                     Style::default().fg(Color::Cyan),
                 ));
             }
             Kind::File(_) => {
-                spans.extend(self.path_spans(row, marker, Style::default().fg(Color::Yellow)));
+                layout = Some(self.push_path(
+                    &mut spans,
+                    row,
+                    marker,
+                    Style::default().fg(Color::Yellow),
+                ));
                 spans.push(Span::styled(
                     format!(" ({match_count})"),
                     Style::default().fg(Color::Yellow),
@@ -703,7 +751,12 @@ impl View {
                     } else {
                         "  "
                     };
-                    spans.extend(self.path_spans(row, marker, Style::default().fg(Color::Yellow)));
+                    layout = Some(self.push_path(
+                        &mut spans,
+                        row,
+                        marker,
+                        Style::default().fg(Color::Yellow),
+                    ));
                     spans.push(Span::styled(":", Style::default().fg(Color::Yellow)));
                 } else {
                     spans.push(Span::raw(" ".repeat(2 + Span::raw(&name).width() + 1)));
@@ -717,7 +770,7 @@ impl View {
                 spans.extend(ansi::normalized_line(&hit.text).spans);
             }
         }
-        Line::from(spans)
+        (Line::from(spans), layout)
     }
     pub fn find(&mut self, query: &str, reverse: bool) -> bool {
         let rows = self.visible_rows(true);
@@ -841,16 +894,12 @@ impl View {
     ) {
         self.buttons.clear();
         self.fold_buttons.clear();
-        let mut extensions = BTreeMap::<Vec<u8>, usize>::new();
-        for file in &self.files {
-            *extensions.entry(file.extension.clone()).or_default() += 1;
-        }
         let mut controls = vec![("[T all] ".to_owned(), Action::Reset, false)];
-        controls.extend(extensions.into_iter().map(|(ext, count)| {
+        controls.extend(self.extensions.iter().map(|(ext, &count)| {
             (
-                format!("[{} {count}] ", extension_label(&ext)),
+                format!("[{} {count}] ", extension_label(ext)),
                 Action::Extension(ext.clone()),
-                self.hidden.contains(&ext),
+                self.hidden.contains(ext),
             )
         }));
         let mut spans = Vec::new();
@@ -904,21 +953,24 @@ impl View {
             );
             return;
         }
-        if let Some(row) = self.rows.get(self.cursor) {
-            if let Some(node) = self.path_node(*row).filter(|_| self.reveal_path) {
-                let mut start = row.depth * 2 + 2;
-                for (component, node) in self.fold_path_components(node) {
-                    let end = start + Span::raw(component).width();
-                    if self.focused_path_node() == Some(node) {
-                        let width = usize::from(area.width).max(1);
-                        if start < self.horizontal || end - start >= width {
-                            self.horizontal = start;
-                        } else if end > self.horizontal + width {
-                            self.horizontal = end - width;
-                        }
-                        break;
-                    }
-                    start = end;
+        let focused = self.focused_path_node();
+        if let Some(&row) = self.rows.get(self.cursor).filter(|_| self.reveal_path) {
+            let (line, layout) = self.line_with_filename(row, true);
+            let offsets = span_offsets(&line);
+            let span = layout.and_then(|layout| {
+                let (span, _) = layout
+                    .components
+                    .into_iter()
+                    .find(|&(_, node)| Some(node) == focused)?;
+                Some(span)
+            });
+            if let Some(span) = span {
+                let (start, end) = (offsets[span].0, offsets[span + 1].0);
+                let width = usize::from(area.width).max(1);
+                if start < self.horizontal || end - start >= width {
+                    self.horizontal = start;
+                } else if end > self.horizontal + width {
+                    self.horizontal = end - width;
                 }
             }
         }
@@ -929,22 +981,17 @@ impl View {
             // Repeat the filename at the viewport edge when its first match
             // has scrolled away, so continuation lines keep their context.
             let force_filename = index == self.offset || index == self.cursor;
-            let mut line = self.line_with_filename(row, force_filename);
-            let path_node = match self.nodes[row.node].kind {
-                Kind::Match { hit, .. } if hit == 0 || force_filename => {
-                    self.nodes[row.node].parent
-                }
-                Kind::File(_) | Kind::Directory(_) => Some(row.node),
-                _ => None,
-            };
-            if let Some(path_node) = path_node {
-                let mut start = row.depth * 2;
-                for (component_index, (component, node)) in
-                    self.fold_path_components(path_node).into_iter().enumerate()
-                {
-                    let end = start
-                        + Span::raw(component).width()
-                        + if component_index == 0 { 2 } else { 0 };
+            let (mut line, layout) = self.line_with_filename(row, force_filename);
+            let offsets = span_offsets(&line);
+            let mut highlight = None;
+            if let Some(layout) = layout {
+                // The first component's button includes the fold marker.
+                let mut start = offsets[layout.marker].0;
+                for (span, node) in layout.components {
+                    if index == self.cursor && Some(node) == focused {
+                        highlight = Some(offsets[span].1..offsets[span + 1].1);
+                    }
+                    let end = offsets[span + 1].0;
                     let left = start.saturating_sub(self.horizontal);
                     let right = end.saturating_sub(self.horizontal).min(area.width as usize);
                     if right > left && self.foldable(node) {
@@ -964,29 +1011,17 @@ impl View {
             if let Some(query) = query {
                 line = crate::ui::highlight_matches(line, query, current == Some(index));
             }
-            if index == self.cursor {
-                if let Some(node) = self.path_node(row) {
-                    // Styling uses UTF-8 byte offsets, including the optional fold marker.
-                    let marker = if self.foldable(node) { "▼ " } else { "  " };
-                    let mut start = row.depth * 2 + marker.len();
-                    for (component, node) in self.fold_path_components(node) {
-                        let end = start + component.len();
-                        if self.focused_path_node() == Some(node) {
-                            line = ansi::style_ranges(
-                                line,
-                                std::iter::once((
-                                    start..end,
-                                    Style::default()
-                                        .fg(Color::Black)
-                                        .bg(Color::Cyan)
-                                        .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
-                                )),
-                            );
-                            break;
-                        }
-                        start = end;
-                    }
-                }
+            if let Some(range) = highlight {
+                line = ansi::style_ranges(
+                    line,
+                    std::iter::once((
+                        range,
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                    )),
+                );
             }
             if index == self.cursor {
                 line.style = Style::default()
