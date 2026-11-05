@@ -115,6 +115,8 @@ pub struct Commit {
     pub parents: Vec<String>,
     /// Graph traversal can follow only the first parent while retaining merge identity.
     pub first_parent_only: bool,
+    /// Whether Log displays Git's traversal in reverse order.
+    pub log_reversed: bool,
     /// Git's node marker, including comparison and excluded-boundary markers.
     pub graph_node: char,
 }
@@ -486,17 +488,29 @@ pub fn load_log_at(
     } else {
         parse_log(&String::from_utf8_lossy(&output.stdout))?
     };
-    // Options after -- are pathspecs. Git lets the last traversal option win.
-    let first_parent_only = user_args
-        .iter()
-        .take_while(|arg| arg.as_str() != "--")
-        .fold(false, |enabled, arg| match arg.as_str() {
-            "--first-parent" => true,
-            "--no-first-parent" => false,
-            _ => enabled,
-        });
+    // Patterns and pathspecs can spell traversal flags. Git lets the last
+    // first-parent option win, while each --reverse toggles the display order.
+    let mut first_parent_only = false;
+    let mut log_reversed = false;
+    let mut args = user_args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--" {
+            break;
+        }
+        if crate::log_format::takes_pattern(arg) {
+            args.next();
+            continue;
+        }
+        match arg.as_str() {
+            "--first-parent" => first_parent_only = true,
+            "--no-first-parent" => first_parent_only = false,
+            "--reverse" => log_reversed = !log_reversed,
+            _ => {}
+        }
+    }
     for commit in &mut commits {
         commit.first_parent_only = first_parent_only;
+        commit.log_reversed = log_reversed;
     }
     empty_commits::mark(&mut commits, repository);
     Ok(commits)
@@ -1279,6 +1293,7 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
                     subject: fields[8].to_owned(),
                     graph: std::mem::take(&mut pending_graph),
                     first_parent_only: false,
+                    log_reversed: false,
                     graph_node: crate::ansi::plain(&line[..marker])
                         .chars()
                         .find(|c| matches!(c, '*' | 'o' | '<' | '>' | '=' | '+'))
@@ -1326,6 +1341,7 @@ fn pseudo_commit(kind: CommitKind, short_hash: &str, subject: &str) -> Commit {
         subject: subject.to_owned(),
         graph: vec!["* ".to_owned()],
         first_parent_only: false,
+        log_reversed: false,
         graph_node: '*',
         parents: Vec::new(),
     }

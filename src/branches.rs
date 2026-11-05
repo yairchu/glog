@@ -576,6 +576,7 @@ fn compact(
                     .map(|&p| nodes[p].hash.clone())
                     .collect(),
                 first_parent_only: false,
+                log_reversed: false,
                 diff_args: Vec::new(),
                 graph: vec!["* ".into()],
                 graph_node: '*',

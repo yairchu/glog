@@ -1274,6 +1274,7 @@ pub(crate) mod tests {
             collaborators: crate::git::Collaborators::default(),
             graph: vec!["* ".into()],
             first_parent_only: false,
+            log_reversed: false,
             graph_node: '*',
         }
     }

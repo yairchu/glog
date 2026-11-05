@@ -1,4 +1,4 @@
-//! Subject-based relationships within the loaded, newest-first Log history.
+//! Subject-based relationships within the loaded Log history.
 use std::collections::HashMap;
 
 use crate::git::{Commit, CommitKind};
@@ -38,7 +38,15 @@ pub fn resolve(commits: &[Commit]) -> Vec<Option<Target>> {
     if subjects.is_empty() {
         return targets;
     }
-    for (index, commit) in commits.iter().enumerate().rev() {
+    let reversed = commits.iter().any(|commit| commit.log_reversed);
+    // Resolve oldest first, retaining display indices for links and selection.
+    for position in 0..commits.len() {
+        let index = if reversed {
+            position
+        } else {
+            commits.len() - 1 - position
+        };
+        let commit = &commits[index];
         if commit.kind != CommitKind::Revision || commit.annotation.is_some() {
             continue;
         }
@@ -98,9 +106,14 @@ mod tests {
         ] {
             git(&["commit", "--allow-empty", "-qm", subject]);
         }
-        for order in [None, Some("--reverse")] {
+        for options in [
+            vec![],
+            vec!["--reverse"],
+            vec!["--reverse", "--reverse"],
+            vec!["--grep", "--reverse", "--invert-grep"],
+        ] {
             let mut args = vec!["--no-graph".into()];
-            args.extend(order.map(str::to_owned));
+            args.extend(options.iter().map(|option| (*option).to_owned()));
             let commits = crate::git::load_log(&args).unwrap();
             let targets = resolve(&commits);
             let base = commits
@@ -116,7 +129,7 @@ mod tests {
                 };
                 assert_eq!(
                     targets[index], expected,
-                    "order={order:?}, subject={}",
+                    "options={options:?}, subject={}",
                     commit.subject
                 );
             }

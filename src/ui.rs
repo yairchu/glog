@@ -1941,6 +1941,7 @@ mod tests {
             subject: subject.to_owned(),
             graph: vec!["* ".to_owned(); graph_rows],
             first_parent_only: false,
+            log_reversed: false,
             graph_node: '*',
         }
     }
