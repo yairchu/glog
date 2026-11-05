@@ -221,34 +221,26 @@ fn apply(event: Event, app: &mut App) {
         if app.search_input.is_some() || (app.show_help && !tab_click) {
             return;
         }
-        if app.mode == Mode::Grep {
-            let mut open = false;
-            if let Some(view) = &mut app.grep_view {
-                match mouse.kind {
-                    MouseEventKind::ScrollUp => view.move_by(-3),
-                    MouseEventKind::ScrollDown => view.move_by(3),
-                    MouseEventKind::Down(MouseButton::Left) => {
-                        open = view.click(mouse.column, mouse.row)
+        if let Some(view) = app.pager_view() {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => view.wheel(-3),
+                MouseEventKind::ScrollDown => view.wheel(3),
+                MouseEventKind::Down(MouseButton::Left) if app.mode == Mode::Grep => {
+                    app.search_match = None;
+                    if app
+                        .grep_view
+                        .as_mut()
+                        .is_some_and(|view| view.click(mouse.column, mouse.row))
+                    {
+                        app.open_grep_match();
                     }
-                    _ => {}
                 }
-            }
-            if mouse.kind == MouseEventKind::Down(MouseButton::Left) {
-                app.search_match = None;
-            }
-            if open {
-                app.open_grep_match();
-            }
-            return;
-        }
-        if app.mode == Mode::RangeDiff {
-            if let Some(view) = &mut app.range_diff_view {
-                match mouse.kind {
-                    MouseEventKind::ScrollUp => view.scroll(-3),
-                    MouseEventKind::ScrollDown => view.scroll(3),
-                    MouseEventKind::Down(MouseButton::Left) => view.click(mouse.row),
-                    _ => {}
+                MouseEventKind::Down(MouseButton::Left) => {
+                    if let Some(view) = &mut app.range_diff_view {
+                        view.click(mouse.row);
+                    }
                 }
+                _ => {}
             }
             return;
         }

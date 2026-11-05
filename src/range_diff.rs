@@ -1,5 +1,5 @@
 //! Git's range-diff output is human-readable text, not a patch to parse.
-use crate::{ansi, app::App, git};
+use crate::{ansi, app::App, git, pager::PagerView};
 use ratatui::{
     layout::Rect,
     style::Color,
@@ -71,11 +71,15 @@ impl View {
         let total = self.starts.last().copied().unwrap_or(self.lines.len());
         total.saturating_sub(self.height.max(1))
     }
-    pub fn move_by(&mut self, delta: isize) {
-        self.cursor = self.cursor.saturating_add_signed(delta).min(self.last());
-        self.reveal = true;
+    pub fn click(&mut self, row: u16) {
+        if row < self.origin || usize::from(row - self.origin) >= self.height {
+            return;
+        }
+        let screen = self.offset + usize::from(row - self.origin);
+        if self.starts.last().is_some_and(|&total| screen < total) {
+            self.cursor = self.line_at(screen);
+        }
     }
-    /// Scroll the screen, keeping the cursor on it.
     pub fn scroll(&mut self, delta: isize) {
         self.offset = self
             .offset
@@ -85,20 +89,34 @@ impl View {
         let last = self.line_at(self.offset + self.height.max(1) - 1);
         self.cursor = self.cursor.clamp(first, last);
     }
-    pub fn page(&mut self, delta: isize) {
+}
+
+impl PagerView for View {
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+    fn wheel(&mut self, delta: isize) {
+        self.scroll(delta);
+    }
+    fn move_by(&mut self, delta: isize) {
+        self.cursor = self.cursor.saturating_add_signed(delta).min(self.last());
+        self.reveal = true;
+    }
+    /// Scroll the screen, keeping the cursor on it.
+    fn page(&mut self, delta: isize) {
         self.scroll(delta.signum() * self.height.max(1) as isize);
     }
-    pub fn top(&mut self) {
+    fn top(&mut self) {
         self.cursor = 0;
         self.offset = 0;
     }
-    pub fn bottom(&mut self) {
+    fn bottom(&mut self) {
         self.cursor = self.last();
         self.offset = self.max_offset();
         self.reveal = true;
     }
     /// Move the cursor to the next line containing the lowercase `query`.
-    pub fn find(&mut self, query: &str, reverse: bool) -> bool {
+    fn find(&mut self, query: &str, reverse: bool) -> bool {
         let n = self.lines.len();
         for step in 1..=n {
             let index = if reverse {
@@ -117,22 +135,7 @@ impl View {
         }
         false
     }
-    pub fn click(&mut self, row: u16) {
-        if row < self.origin || usize::from(row - self.origin) >= self.height {
-            return;
-        }
-        let screen = self.offset + usize::from(row - self.origin);
-        if self.starts.last().is_some_and(|&total| screen < total) {
-            self.cursor = self.line_at(screen);
-        }
-    }
-    pub fn draw(
-        &mut self,
-        frame: &mut Frame,
-        area: Rect,
-        query: Option<&str>,
-        current: Option<usize>,
-    ) {
+    fn draw(&mut self, frame: &mut Frame, area: Rect, query: Option<&str>, current: Option<usize>) {
         self.origin = area.y;
         self.height = usize::from(area.height);
         if self.width != area.width || self.starts.len() != self.lines.len() + 1 {

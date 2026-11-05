@@ -6,6 +6,7 @@ use std::{
 use crate::{
     diff::{self, FileSection},
     git::{self, Commit, CommitKind},
+    pager::PagerView,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -550,22 +551,20 @@ impl App {
         }
     }
 
+    /// The full-screen text view of the current mode, if it has one.
+    pub fn pager_view(&mut self) -> Option<&mut dyn PagerView> {
+        match self.mode {
+            Mode::Grep => self.grep_view.as_mut().map(|view| view as _),
+            Mode::RangeDiff => self.range_diff_view.as_mut().map(|view| view as _),
+            Mode::Log | Mode::Show | Mode::Status => None,
+        }
+    }
+
     pub fn move_by(&mut self, delta: isize, page: usize) {
         match self.mode {
             Mode::Status => {}
-            Mode::Grep => {
-                if let Some(view) = &mut self.grep_view {
-                    // Pages span the results area, which only the view knows.
-                    let amount = if delta.abs() == 1 {
-                        1
-                    } else {
-                        view.height.max(1)
-                    } as isize;
-                    view.move_by(if delta < 0 { -amount } else { amount });
-                }
-            }
-            Mode::RangeDiff => {
-                if let Some(view) = &mut self.range_diff_view {
+            Mode::Grep | Mode::RangeDiff => {
+                if let Some(view) = self.pager_view() {
                     if delta.abs() == 1 {
                         view.move_by(delta);
                     } else {
@@ -1251,13 +1250,8 @@ impl App {
     pub fn top(&mut self) {
         match self.mode {
             Mode::Status => {}
-            Mode::Grep => {
-                if let Some(view) = &mut self.grep_view {
-                    view.top();
-                }
-            }
-            Mode::RangeDiff => {
-                if let Some(view) = &mut self.range_diff_view {
+            Mode::Grep | Mode::RangeDiff => {
+                if let Some(view) = self.pager_view() {
                     view.top();
                 }
             }
@@ -1275,13 +1269,8 @@ impl App {
     pub fn bottom(&mut self) {
         match self.mode {
             Mode::Status => {}
-            Mode::Grep => {
-                if let Some(view) = &mut self.grep_view {
-                    view.bottom();
-                }
-            }
-            Mode::RangeDiff => {
-                if let Some(view) = &mut self.range_diff_view {
+            Mode::Grep | Mode::RangeDiff => {
+                if let Some(view) = self.pager_view() {
                     view.bottom();
                 }
             }
@@ -2530,19 +2519,11 @@ impl App {
         };
         match self.mode {
             Mode::Status => {}
-            Mode::Grep => {
-                if let Some(view) = &mut self.grep_view {
+            Mode::Grep | Mode::RangeDiff => {
+                let mode = self.mode;
+                if let Some(view) = self.pager_view() {
                     if view.find(&query, reverse) {
-                        self.search_match = Some((Mode::Grep, view.cursor));
-                        self.status = None;
-                        return;
-                    }
-                }
-            }
-            Mode::RangeDiff => {
-                if let Some(view) = &mut self.range_diff_view {
-                    if view.find(&query, reverse) {
-                        self.search_match = Some((Mode::RangeDiff, view.cursor));
+                        self.search_match = Some((mode, view.cursor()));
                         self.status = None;
                         return;
                     }

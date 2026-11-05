@@ -15,6 +15,7 @@ mod log_folds;
 mod log_format;
 mod message_format;
 mod operation;
+mod pager;
 mod patch_options;
 mod range_diff;
 mod search_history;

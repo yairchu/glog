@@ -3,6 +3,7 @@ use crate::{
     ansi,
     app::{App, History, Mode},
     git,
+    pager::PagerView,
 };
 use ratatui::{
     layout::Rect,
@@ -553,22 +554,6 @@ impl View {
         self.reveal_path = true;
         self.rebuild();
     }
-    pub fn move_by(&mut self, delta: isize) {
-        self.reveal_path = self.path_pan == 0;
-        self.cursor = self
-            .cursor
-            .saturating_add_signed(delta)
-            .min(self.rows.len().saturating_sub(1));
-    }
-    pub fn top(&mut self) {
-        self.reveal_path = self.path_pan == 0;
-        self.cursor = 0;
-        self.offset = 0;
-    }
-    pub fn bottom(&mut self) {
-        self.reveal_path = self.path_pan == 0;
-        self.cursor = self.rows.len().saturating_sub(1);
-    }
     fn filename(&self, file: usize) -> String {
         crate::diff::display_path(&self.files[file].path)
     }
@@ -772,49 +757,6 @@ impl View {
         }
         (Line::from(spans), layout)
     }
-    pub fn find(&mut self, query: &str, reverse: bool) -> bool {
-        let rows = self.visible_rows(true);
-        // Expanded rows omit folder and file headers. A collapsed header sits
-        // just before its first descendant, so a forward search includes it.
-        let (start, past) = match self.rows.get(self.cursor) {
-            Some(selected) => match rows.iter().position(|row| row.node == selected.node) {
-                Some(start) => (start, 1),
-                None => (
-                    rows.iter()
-                        .position(|row| self.within(row.node, selected.node))
-                        .unwrap_or(0),
-                    0,
-                ),
-            },
-            None => (0, 0),
-        };
-        let n = rows.len();
-        for step in 0..n {
-            let index = if reverse {
-                (start + n - 1 - step) % n
-            } else {
-                (start + past + step) % n
-            };
-            let row = rows[index];
-            if self.line(row).to_string().to_lowercase().contains(query) {
-                let mut parent = self.nodes[row.node].parent;
-                while let Some(node) = parent {
-                    self.collapsed.remove(&node);
-                    parent = self.nodes[node].parent;
-                }
-                self.rebuild();
-                self.cursor = self
-                    .rows
-                    .iter()
-                    .position(|candidate| candidate.node == row.node)
-                    .unwrap();
-                self.path_component = 0;
-                self.reveal_path = self.path_pan == 0;
-                return true;
-            }
-        }
-        false
-    }
     pub fn open(&self) -> Option<Result<App, String>> {
         let node = self.rows.get(self.cursor)?.node;
         let Kind::Match { file, hit } = self.nodes[node].kind else {
@@ -885,13 +827,79 @@ impl View {
         }
         open
     }
-    pub fn draw(
-        &mut self,
-        frame: &mut Frame,
-        area: Rect,
-        query: Option<&str>,
-        current: Option<usize>,
-    ) {
+}
+
+impl PagerView for View {
+    fn cursor(&self) -> usize {
+        self.cursor
+    }
+    fn page(&mut self, delta: isize) {
+        // Pages span the results area, which only the view knows.
+        self.move_by(delta.signum() * self.height.max(1) as isize);
+    }
+    fn wheel(&mut self, delta: isize) {
+        self.move_by(delta);
+    }
+    fn move_by(&mut self, delta: isize) {
+        self.reveal_path = self.path_pan == 0;
+        self.cursor = self
+            .cursor
+            .saturating_add_signed(delta)
+            .min(self.rows.len().saturating_sub(1));
+    }
+    fn top(&mut self) {
+        self.reveal_path = self.path_pan == 0;
+        self.cursor = 0;
+        self.offset = 0;
+    }
+    fn bottom(&mut self) {
+        self.reveal_path = self.path_pan == 0;
+        self.cursor = self.rows.len().saturating_sub(1);
+    }
+    fn find(&mut self, query: &str, reverse: bool) -> bool {
+        let rows = self.visible_rows(true);
+        // Expanded rows omit folder and file headers. A collapsed header sits
+        // just before its first descendant, so a forward search includes it.
+        let (start, past) = match self.rows.get(self.cursor) {
+            Some(selected) => match rows.iter().position(|row| row.node == selected.node) {
+                Some(start) => (start, 1),
+                None => (
+                    rows.iter()
+                        .position(|row| self.within(row.node, selected.node))
+                        .unwrap_or(0),
+                    0,
+                ),
+            },
+            None => (0, 0),
+        };
+        let n = rows.len();
+        for step in 0..n {
+            let index = if reverse {
+                (start + n - 1 - step) % n
+            } else {
+                (start + past + step) % n
+            };
+            let row = rows[index];
+            if self.line(row).to_string().to_lowercase().contains(query) {
+                let mut parent = self.nodes[row.node].parent;
+                while let Some(node) = parent {
+                    self.collapsed.remove(&node);
+                    parent = self.nodes[node].parent;
+                }
+                self.rebuild();
+                self.cursor = self
+                    .rows
+                    .iter()
+                    .position(|candidate| candidate.node == row.node)
+                    .unwrap();
+                self.path_component = 0;
+                self.reveal_path = self.path_pan == 0;
+                return true;
+            }
+        }
+        false
+    }
+    fn draw(&mut self, frame: &mut Frame, area: Rect, query: Option<&str>, current: Option<usize>) {
         self.buttons.clear();
         self.fold_buttons.clear();
         let mut controls = vec![("[T all] ".to_owned(), Action::Reset, false)];

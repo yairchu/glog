@@ -119,28 +119,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 view.draw_with_images(frame, chunks[1], &mut app.images);
             }
         }
-        Mode::Grep => {
-            if let Some(view) = &mut app.grep_view {
-                view.draw(
-                    frame,
-                    chunks[1],
-                    app.search.as_deref(),
-                    app.search_match
-                        .filter(|(mode, _)| *mode == Mode::Grep)
-                        .map(|(_, index)| index),
-                );
-            }
-        }
-        Mode::RangeDiff => {
-            if let Some(view) = &mut app.range_diff_view {
-                view.draw(
-                    frame,
-                    chunks[1],
-                    app.search.as_deref(),
-                    app.search_match
-                        .filter(|(mode, _)| *mode == Mode::RangeDiff)
-                        .map(|(_, index)| index),
-                );
+        Mode::Grep | Mode::RangeDiff => {
+            let current = app
+                .search_match
+                .filter(|(mode, _)| *mode == app.mode)
+                .map(|(_, index)| index);
+            let search = app.search.clone();
+            if let Some(view) = app.pager_view() {
+                view.draw(frame, chunks[1], search.as_deref(), current);
             }
         }
         Mode::Log => draw_log(frame, app, chunks[1]),
