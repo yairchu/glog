@@ -177,6 +177,12 @@ fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>), String> {
             continue;
         } else if resolve(arg, "tree").is_some() {
             return Err("grep file navigation requires a commit revision, rather than a standalone tree object".into());
+        } else {
+            // Like Git, the first non-revision starts the pathspecs, even
+            // where a later path shares a ref's name.
+            output.push(arg.clone());
+            output.extend(args.cloned());
+            break;
         }
         output.push(arg.clone());
         if takes_value {
@@ -1842,5 +1848,23 @@ mod tests {
             })
             .collect();
         assert_eq!(labels, ["HEAD, other"]);
+    }
+
+    #[test]
+    fn paths_after_the_first_pathspec_stay_paths_when_they_name_refs() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        for folder in ["src", "docs"] {
+            std::fs::create_dir(folder).unwrap();
+            std::fs::write(format!("{folder}/file.rs"), "needle\n").unwrap();
+        }
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        git(&["branch", "docs"]);
+        let app = load_app(&args(&["needle", "src", "docs"])).unwrap();
+        let view = app.grep_view.unwrap();
+        assert_eq!(view.match_count(), 2);
+        assert_eq!(view.sources.len(), 1);
     }
 }
