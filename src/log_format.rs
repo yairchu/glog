@@ -228,6 +228,7 @@ impl LogFormat {
         self.row(commit, None).spans
     }
 
+    #[cfg(test)]
     pub fn row(&self, commit: &Commit, columns: Option<&Columns>) -> Row {
         self.row_with_hash_style(commit, columns, Style::default())
     }
@@ -473,14 +474,20 @@ impl LogFormat {
     /// Whether a lowercase query matches the row's text, as laid out in
     /// columns or not, or the full values of any it shows shortened. Search
     /// leaves out the padding, which depends on the rows on screen.
-    pub fn matches(&self, commit: &Commit, query: &str, in_columns: bool) -> bool {
+    pub fn matches(
+        &self,
+        commit: &Commit,
+        fixup: Option<&crate::fixups::Label>,
+        query: &str,
+        in_columns: bool,
+    ) -> bool {
         let columns = in_columns.then(|| Columns {
             hash: 0,
             date: 0,
             author: author_width(commit),
             hash_marker: None,
         });
-        let row = self.row(commit, columns.as_ref());
+        let row = self.row_with_fixup(commit, columns.as_ref(), Style::default(), fixup);
         row.text().to_lowercase().contains(query)
             || row
                 .abbreviated

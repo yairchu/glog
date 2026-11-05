@@ -866,6 +866,11 @@ impl App {
         }
     }
 
+    pub fn fixup_label(&self, index: usize) -> Option<crate::fixups::Label> {
+        let target = self.fixups.get(index).copied().flatten()?;
+        Some(target.label(&self.commits[index], &self.commits))
+    }
+
     /// Resolve fixup targets once per history rather than on every redraw.
     fn refresh_fixups(&mut self) {
         self.fixups = if self.history == History::Log {
@@ -2545,7 +2550,12 @@ impl App {
                         continue;
                     }
                     if c.hash.to_lowercase().contains(&query)
-                        || self.log_format.matches(c, &query, in_columns)
+                        || self.log_format.matches(
+                            c,
+                            self.fixup_label(i).as_ref(),
+                            &query,
+                            in_columns,
+                        )
                     {
                         self.log_folds.reveal(i, &self.commits);
                         self.selected = i;
