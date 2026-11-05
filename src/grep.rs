@@ -642,12 +642,6 @@ impl View {
         let last = components.len().checked_sub(1)?;
         Some(components[last - self.path_component.min(last)])
     }
-    /// Enter opens a selected match and toggles any other row's group.
-    pub fn match_selected(&self) -> bool {
-        self.rows
-            .get(self.cursor)
-            .is_some_and(|row| matches!(self.nodes[row.node].kind, Kind::Match { .. }))
-    }
     pub fn move_horizontal(&mut self, right: bool) {
         if !right && self.path_pan > 0 {
             let step = self.path_pan.min(4);

@@ -51,27 +51,15 @@ fn apply(event: Event, app: &mut App) {
         }
         if app.mode == Mode::Grep {
             match key.code {
-                KeyCode::Enter
-                    if app
-                        .grep_view
-                        .as_ref()
-                        .is_some_and(|view| !view.match_selected()) =>
-                {
-                    app.grep_action(crate::grep::Action::Fold)
-                }
+                // Rows other than matches fold instead.
                 KeyCode::Enter | KeyCode::Tab => app.open_grep_match(),
                 KeyCode::Char('z') => app.grep_action(crate::grep::Action::Fold),
                 KeyCode::Char('m') => app.grep_action(crate::grep::Action::FoldAll),
                 KeyCode::Char('t') => app.grep_action(crate::grep::Action::HideExtension),
                 KeyCode::Char('T') => app.grep_action(crate::grep::Action::Reset),
-                KeyCode::Left => {
+                KeyCode::Left | KeyCode::Right => {
                     if let Some(view) = &mut app.grep_view {
-                        view.move_horizontal(false);
-                    }
-                }
-                KeyCode::Right => {
-                    if let Some(view) = &mut app.grep_view {
-                        view.move_horizontal(true);
+                        view.move_horizontal(key.code == KeyCode::Right);
                     }
                 }
                 _ => pager_key(key.code, app),
