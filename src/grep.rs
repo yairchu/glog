@@ -182,19 +182,23 @@ fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>), String> {
     // Like Git, the first argument naming no object starts the pathspecs,
     // even where a later path shares a ref's name.
     let revisions = rest.iter().take_while(|arg| *arg != "--");
+    let separated = rest.iter().any(|arg| arg == "--");
     let objects = git::resolve_objects(revisions.map(String::as_str), None);
     for (position, arg) in rest.iter().enumerate() {
-        let hash = match objects.get(arg.as_str()) {
-            Some(git::Object::Commit(hash)) => hash,
-            Some(git::Object::Other(kind)) => {
-                return Err(format!(
-                    "grep file navigation requires commit revisions, but {arg:?} names a {kind}"
-                ))
-            }
-            None => {
-                output.extend(rest[position..].iter().cloned());
-                break;
-            }
+        let object = objects.get(arg.as_str());
+        // Pass names Git rejects as ambiguous, whether between objects or,
+        // without a --, with a path, through for Git to report.
+        let kind = object
+            .and_then(|object| object.kind.as_deref())
+            .filter(|_| separated || std::fs::symlink_metadata(arg).is_err());
+        let Some(kind) = kind else {
+            output.extend(rest[position..].iter().cloned());
+            break;
+        };
+        let Some(hash) = object.and_then(|object| object.commit.as_ref()) else {
+            return Err(format!(
+                "grep file navigation requires commit revisions, but {arg:?} names a {kind}"
+            ));
         };
         // Git would repeat a commit's matches with the same prefix, so
         // revisions naming one commit share its source.
@@ -1910,5 +1914,39 @@ mod tests {
         let view = app.grep_view.unwrap();
         assert_eq!(view.match_count(), 2);
         assert_eq!(view.sources.len(), 1);
+    }
+
+    #[test]
+    fn names_git_finds_ambiguous_are_left_for_git_to_reject() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        std::fs::create_dir("docs").unwrap();
+        std::fs::write("docs/file.rs", "needle\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        git(&["branch", "docs"]);
+        assert!(load_app(&args(&["needle", "docs"])).is_err());
+        let app = load_app(&args(&["needle", "docs", "--"])).unwrap();
+        assert_eq!(app.grep_view.unwrap().sources.len(), 2);
+
+        // A commit and a blob whose hashes share the prefix 6fcd.
+        let commit = crate::git::tests::trimmed(crate::git::tests::succeed(
+            crate::git::tests::git_command(&[
+                "commit-tree",
+                "-m",
+                "one",
+                "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+            ])
+            .env("GIT_AUTHOR_DATE", "1700000000 +0000")
+            .env("GIT_COMMITTER_DATE", "1700000000 +0000"),
+        ));
+        assert_eq!(commit, "6fcd7e022d64ef730315723069433b15932358e0");
+        std::fs::write("blob", "99864\n").unwrap();
+        assert_eq!(
+            git(&["hash-object", "-w", "blob"]),
+            "6fcdc3c88b4b256c7cb2b32e840461ea4dfc5f8b"
+        );
+        assert!(load_app(&args(&["needle", "6fcd"])).is_err());
     }
 }
