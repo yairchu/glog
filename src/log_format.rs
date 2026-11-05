@@ -404,6 +404,8 @@ impl LogFormat {
                 span.style = span.style.patch(hash_style);
             }
             if let Some(fixup) = fixup.filter(|_| part.field == Field::Subject) {
+                let subject =
+                    spans.iter().map(|span| span.content.len()).sum::<usize>() + prefix.len();
                 let split = prefix.len() + fixup.prefix_len;
                 spans.push(Span::raw(span.content[..split].to_owned()));
                 spans.push(Span::styled("→ ", Style::default().fg(Color::Cyan)));
@@ -429,6 +431,9 @@ impl LogFormat {
                     )
                     .spans,
                 );
+                // The inserted target hash splits the subject as written.
+                let end = spans.iter().map(|span| span.content.len()).sum::<usize>();
+                stand_ins.push(subject..end - suffix.len(), value.clone());
             } else if part.field == Field::Subject && reflog.is_some() {
                 let start = span.content.len() - value.len() - suffix.len();
                 if start > 0 {
@@ -473,8 +478,7 @@ impl LogFormat {
 
     /// Whether a lowercase query matches the row's text, as laid out in
     /// columns or not, or the full values of any it shows shortened. Search
-    /// leaves out the padding, which depends on the rows on screen. A fixup
-    /// row matches both as shown, with its target's hash, and as written.
+    /// leaves out the padding, which depends on the rows on screen.
     pub fn matches(
         &self,
         commit: &Commit,
@@ -488,11 +492,8 @@ impl LogFormat {
             author: author_width(commit),
             hash_marker: None,
         });
-        let row_matches = |fixup| {
-            self.row_with_fixup(commit, columns.as_ref(), Style::default(), fixup)
-                .matches(query)
-        };
-        fixup.is_some_and(|fixup| row_matches(Some(fixup))) || row_matches(None)
+        self.row_with_fixup(commit, columns.as_ref(), Style::default(), fixup)
+            .matches(query)
     }
 }
 

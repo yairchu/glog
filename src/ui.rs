@@ -2102,6 +2102,20 @@ mod tests {
         }
         key(&mut app, KeyCode::Enter);
         assert_eq!(app.selected, 0, "the fixup's subject matches as written");
+        let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let y = app.log_row_origin
+            + app
+                .visible_log_rows
+                .iter()
+                .position(|index| *index == Some(0))
+                .unwrap() as u16;
+        let marked: String = (0..80)
+            .map(|x| &terminal.backend().buffer()[(x, y)])
+            .filter(|cell| cell.bg == Color::Yellow)
+            .map(|cell| cell.symbol())
+            .collect();
+        assert_eq!(marked, "fixup! → abcdef0 feat: side");
     }
 
     #[test]
