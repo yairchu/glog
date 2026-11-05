@@ -1969,7 +1969,7 @@ mod tests {
             commit("fixup! working", 1),
             synthetic,
         ];
-        let targets = resolve(&commits);
+        let targets = resolve(&commits, None);
         assert_eq!(targets[0], Some(Target::Ambiguous));
         assert_eq!(targets[4], Some(Target::Missing));
         assert_eq!(targets[5], Some(Target::Commit(7)));

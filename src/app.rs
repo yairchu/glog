@@ -890,7 +890,7 @@ impl App {
     /// Resolve fixup targets once per history rather than on every redraw.
     fn refresh_fixups(&mut self) {
         self.fixups = if self.history == History::Log {
-            crate::fixups::resolve(&self.commits)
+            crate::fixups::resolve(&self.commits, self.repository.as_ref())
         } else {
             Vec::new()
         };

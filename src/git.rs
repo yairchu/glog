@@ -852,6 +852,32 @@ fn github_repository_url(remote: &str) -> Option<String> {
     Some(format!("https://github.com/{owner}/{repo}"))
 }
 
+/// Map each name to the commit it names, as Git resolves a revision: an
+/// ambiguous abbreviation, or a name for another object type, names nothing.
+pub(crate) fn resolve_names<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    repository: Option<&Repository>,
+) -> std::collections::HashMap<&'a str, String> {
+    let names: Vec<_> = names.into_iter().collect();
+    if names.is_empty() {
+        return std::collections::HashMap::new();
+    }
+    let input: String = names.iter().map(|name| format!("{name}\n")).collect();
+    let output = pipe_through(
+        read_command_at(repository)
+            .args(["cat-file", "--batch-check=%(objectname) %(objecttype)"])
+            .env("GIT_NO_LAZY_FETCH", "1"),
+        input.as_bytes(),
+    )
+    .unwrap_or_default();
+    // Git answers each line in order; failures echo the name and a reason.
+    names
+        .into_iter()
+        .zip(output.lines())
+        .filter_map(|(name, line)| Some((name, line.strip_suffix(" commit")?.to_owned())))
+        .collect()
+}
+
 /// Map each abbreviated commit hash to its full hash. One Git process
 /// checks every hash, plus one per hash that a hex-like ref name shadows.
 pub(crate) fn resolve_commits<'a>(
