@@ -675,15 +675,23 @@ impl View {
         }
         layout
     }
+    #[cfg(test)]
     fn line(&self, row: Row) -> Line<'static> {
         self.line_with_filename(row, false).0
     }
-    /// A row's line, with where it shows path components, if it does.
+    /// Whether a lowercase query matches a row, including the path its hits
+    /// share, wherever the hit is drawn.
+    fn matches(&self, row: Row, query: &str) -> bool {
+        let (line, _, stand_ins) = self.line_with_filename(row, false);
+        stand_ins.matches(&line.to_string(), query)
+    }
+    /// A row's line, with where it shows path components, if it does, and
+    /// the path a hit leaves out.
     fn line_with_filename(
         &self,
         row: Row,
         force_filename: bool,
-    ) -> (Line<'static>, Option<PathLayout>) {
+    ) -> (Line<'static>, Option<PathLayout>, crate::ui::StandIns) {
         let node = &self.nodes[row.node];
         let (files, matches) = self.counts[row.node];
         let file_count = format!("{files} {}", if files == 1 { "file" } else { "files" });
@@ -702,6 +710,7 @@ impl View {
         };
         let mut spans = vec![Span::raw("  ".repeat(row.depth))];
         let mut layout = None;
+        let mut stand_ins = crate::ui::StandIns::default();
         match &node.kind {
             Kind::Source(source) => spans.push(Span::styled(
                 format!(
@@ -746,7 +755,10 @@ impl View {
                     ));
                     spans.push(Span::styled(":", Style::default().fg(Color::Yellow)));
                 } else {
-                    spans.push(Span::raw(" ".repeat(2 + Span::raw(&name).width() + 1)));
+                    let start = spans.iter().map(|span| span.content.len()).sum::<usize>();
+                    let blank = " ".repeat(2 + Span::raw(&name).width() + 1);
+                    stand_ins.push(start..start + blank.len(), format!("{name}:"));
+                    spans.push(Span::raw(blank));
                 }
                 let width = self.files[*file].number_width;
                 let hit = &self.files[*file].hits[*hit];
@@ -757,7 +769,7 @@ impl View {
                 spans.extend(ansi::normalized_line(&hit.text).spans);
             }
         }
-        (Line::from(spans), layout)
+        (Line::from(spans), layout, stand_ins)
     }
     pub fn open(&self) -> Option<Result<App, String>> {
         let node = self.rows.get(self.cursor)?.node;
@@ -882,7 +894,7 @@ impl PagerView for View {
                 (start + past + step) % n
             };
             let row = rows[index];
-            if self.line(row).to_string().to_lowercase().contains(query) {
+            if self.matches(row, query) {
                 let mut parent = self.nodes[row.node].parent;
                 while let Some(node) = parent {
                     self.collapsed.remove(&node);
@@ -965,7 +977,7 @@ impl PagerView for View {
         }
         let focused = self.focused_path_node();
         if let Some(&row) = self.rows.get(self.cursor).filter(|_| self.reveal_path) {
-            let (line, layout) = self.line_with_filename(row, true);
+            let (line, layout, _) = self.line_with_filename(row, true);
             let offsets = span_offsets(&line);
             let span = layout.and_then(|layout| {
                 let (span, _) = layout
@@ -991,7 +1003,7 @@ impl PagerView for View {
             // Repeat the filename at the viewport edge when its first match
             // has scrolled away, so continuation lines keep their context.
             let force_filename = index == self.offset || index == self.cursor;
-            let (mut line, layout) = self.line_with_filename(row, force_filename);
+            let (mut line, layout, stand_ins) = self.line_with_filename(row, force_filename);
             let offsets = span_offsets(&line);
             let mut highlight = None;
             if let Some(layout) = layout {
@@ -1019,7 +1031,7 @@ impl PagerView for View {
                 }
             }
             if let Some(query) = query {
-                line = crate::ui::highlight_matches(line, query, current == Some(index));
+                line = stand_ins.highlight(line, query, current == Some(index));
             }
             if let Some(range) = highlight {
                 line = ansi::style_ranges(
@@ -1873,6 +1885,24 @@ mod tests {
         select(&mut view, |kind| matches!(kind, Kind::File(1)));
         assert!(view.find("alpha", false));
         assert_eq!(found(&view), (1, 0), "forward into the file");
+    }
+
+    #[test]
+    fn searching_a_path_finds_every_hit_in_its_file() {
+        let directory = TestDirectory::new();
+        let mut view = View::parse(
+            git::Repository::checked_out(directory.path().to_owned()),
+            vec![Source::Worktree],
+            b"a.rs\x001\x00one\na.rs\x002\x00two\nb.rs\x001\x00three\n",
+        )
+        .unwrap();
+        let found = |view: &View| match view.nodes[view.rows[view.cursor].node].kind {
+            Kind::Match { file, hit } => (file, hit),
+            ref kind => panic!("{kind:?}"),
+        };
+        select(&mut view, |kind| matches!(kind, Kind::Match { hit: 0, .. }));
+        assert!(view.find("a.rs", false));
+        assert_eq!(found(&view), (0, 1), "the cursor row shows the path");
     }
 
     #[test]
