@@ -158,11 +158,22 @@ fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>), String> {
         } else if !pattern {
             pattern = true;
         } else if let Some(hash) = resolve(arg, "commit") {
-            output.push(hash.clone());
-            sources.push(Source::Revision {
-                label: arg.clone(),
-                hash,
+            // Git would repeat a commit's matches with the same prefix, so
+            // revisions naming one commit share its source.
+            let existing = sources.iter_mut().find_map(|source| match source {
+                Source::Revision { label, hash: found } if *found == hash => Some(label),
+                _ => None,
             });
+            if let Some(label) = existing {
+                label.push_str(", ");
+                label.push_str(arg);
+            } else {
+                output.push(hash.clone());
+                sources.push(Source::Revision {
+                    label: arg.clone(),
+                    hash,
+                });
+            }
             continue;
         } else if resolve(arg, "tree").is_some() {
             return Err("grep file navigation requires a commit revision, rather than a standalone tree object".into());
