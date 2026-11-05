@@ -78,7 +78,7 @@ fn apply(event: Event, app: &mut App) {
             }
             return;
         }
-        if app.history == History::RangeDiff {
+        if app.mode == Mode::RangeDiff {
             pager_key(key.code, app);
             return;
         }
@@ -241,17 +241,14 @@ fn apply(event: Event, app: &mut App) {
             }
             return;
         }
-        if app.history == History::RangeDiff {
-            match mouse.kind {
-                MouseEventKind::ScrollUp => app.scroll_show(-3),
-                MouseEventKind::ScrollDown => app.scroll_show(3),
-                MouseEventKind::Down(MouseButton::Left)
-                    if mouse.row >= app.show_row_origin
-                        && usize::from(mouse.row - app.show_row_origin) < app.visible_show_rows =>
-                {
-                    app.click_show_row(usize::from(mouse.row - app.show_row_origin));
+        if app.mode == Mode::RangeDiff {
+            if let Some(view) = &mut app.range_diff_view {
+                match mouse.kind {
+                    MouseEventKind::ScrollUp => view.scroll(-3),
+                    MouseEventKind::ScrollDown => view.scroll(3),
+                    MouseEventKind::Down(MouseButton::Left) => view.click(mouse.row),
+                    _ => {}
                 }
-                _ => {}
             }
             return;
         }

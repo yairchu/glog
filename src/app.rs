@@ -12,6 +12,7 @@ use crate::{
 pub enum Mode {
     Status,
     Grep,
+    RangeDiff,
     Log,
     Show,
 }
@@ -231,6 +232,7 @@ pub struct App {
     pub images: crate::images::Images,
     pub status_view: Option<crate::status::StatusView>,
     pub grep_view: Option<crate::grep::View>,
+    pub range_diff_view: Option<crate::range_diff::View>,
     pub commits: Vec<Commit>,
     pub history: History,
     pub pending_blame: Option<crate::blame::FileRevision>,
@@ -323,6 +325,7 @@ impl App {
             images: crate::images::Images::default(),
             status_view: None,
             grep_view: None,
+            range_diff_view: None,
             history: match commits
                 .first()
                 .and_then(|commit| commit.annotation.as_ref())
@@ -414,12 +417,11 @@ impl App {
     }
 
     /// Display range-diff as text, without interpreting its nested patches.
-    pub fn range_diff(text: String) -> Self {
+    pub fn range_diff(view: crate::range_diff::View) -> Self {
         let mut app = Self::new(Vec::new());
         app.history = History::RangeDiff;
-        app.mode = Mode::Show;
-        app.show_text = text;
-        app.rebuild_show_rows();
+        app.mode = Mode::RangeDiff;
+        app.range_diff_view = Some(view);
         app
     }
 
@@ -561,6 +563,15 @@ impl App {
                         view.height.max(1)
                     } as isize;
                     view.move_by(if delta < 0 { -amount } else { amount });
+                }
+            }
+            Mode::RangeDiff => {
+                if let Some(view) = &mut self.range_diff_view {
+                    if delta.abs() == 1 {
+                        view.move_by(delta);
+                    } else {
+                        view.page(delta);
+                    }
                 }
             }
             Mode::Log => {
@@ -1241,6 +1252,11 @@ impl App {
                     view.top();
                 }
             }
+            Mode::RangeDiff => {
+                if let Some(view) = &mut self.range_diff_view {
+                    view.top();
+                }
+            }
             Mode::Log => {
                 self.selected = (0..self.commits.len())
                     .find(|&i| self.log_folds.visible(i))
@@ -1257,6 +1273,11 @@ impl App {
             Mode::Status => {}
             Mode::Grep => {
                 if let Some(view) = &mut self.grep_view {
+                    view.bottom();
+                }
+            }
+            Mode::RangeDiff => {
+                if let Some(view) = &mut self.range_diff_view {
                     view.bottom();
                 }
             }
@@ -1337,10 +1358,6 @@ impl App {
     }
 
     fn reset_show_folds(&mut self) {
-        if self.history == History::RangeDiff {
-            self.rebuild_show_rows();
-            return;
-        }
         self.visible_show_links.clear();
         let message = self.commits.get(self.selected).filter(|commit| {
             commit.kind == CommitKind::Revision
@@ -1553,25 +1570,6 @@ impl App {
     }
 
     fn rebuild_show_rows(&mut self) {
-        if self.history == History::RangeDiff {
-            self.show_rows = self
-                .show_text
-                .lines()
-                .enumerate()
-                .map(|(source, text)| ShowRow {
-                    text: text.to_owned(),
-                    source,
-                    file: None,
-                    preview: None,
-                    folded: false,
-                    fold_separator: false,
-                    summary: false,
-                })
-                .collect();
-            self.show_cursor = self.show_cursor.min(self.show_rows.len().saturating_sub(1));
-            self.show_row_starts.clear();
-            return;
-        }
         self.show_rows_stat = self.show_stat;
         let lines: Vec<_> = self.show_text.lines().collect();
         let mut rows = Vec::new();
@@ -1863,14 +1861,6 @@ impl App {
     }
 
     fn searchable_show_lines(&self) -> Vec<(Vec<Vec<u8>>, usize, &str)> {
-        if self.history == History::RangeDiff {
-            return self
-                .show_text
-                .lines()
-                .enumerate()
-                .map(|(source, text)| (Vec::new(), source, text))
-                .collect();
-        }
         let mut result = Vec::new();
         let children: HashMap<_, _> = self
             .show_files
@@ -2532,6 +2522,15 @@ impl App {
                 if let Some(view) = &mut self.grep_view {
                     if view.find(&query, reverse) {
                         self.search_match = Some((Mode::Grep, view.cursor));
+                        self.status = None;
+                        return;
+                    }
+                }
+            }
+            Mode::RangeDiff => {
+                if let Some(view) = &mut self.range_diff_view {
+                    if view.find(&query, reverse) {
+                        self.search_match = Some((Mode::RangeDiff, view.cursor));
                         self.status = None;
                         return;
                     }

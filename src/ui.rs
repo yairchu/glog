@@ -23,7 +23,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .split(frame.area());
     let has_log = app.has_log_view();
     let selected = match app.mode {
-        Mode::Log | Mode::Grep => 0,
+        Mode::Log | Mode::Grep | Mode::RangeDiff => 0,
         Mode::Show => 1,
         Mode::Status => 1,
     };
@@ -131,6 +131,18 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 );
             }
         }
+        Mode::RangeDiff => {
+            if let Some(view) = &mut app.range_diff_view {
+                view.draw(
+                    frame,
+                    chunks[1],
+                    app.search.as_deref(),
+                    app.search_match
+                        .filter(|(mode, _)| *mode == Mode::RangeDiff)
+                        .map(|(_, index)| index),
+                );
+            }
+        }
         Mode::Log => draw_log(frame, app, chunks[1]),
         Mode::Show => draw_show(frame, app, chunks[1]),
     }
@@ -143,7 +155,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         message.to_owned()
     } else if app.mode == Mode::Grep {
         "h help  q quit  ←/→ path/pan  Enter open/fold  z fold  m fold all  t hide extension  T reset  / ? search".to_owned()
-    } else if app.history == History::RangeDiff {
+    } else if app.mode == Mode::RangeDiff {
         "h help  q quit  ↑/k ↓/j  wheel scroll  Space/b page  / ? search".to_owned()
     } else if app.history == History::Branches {
         "h help  q quit  ↑/k ↓/j  Enter/click branch log  d date  / ? search".to_owned()

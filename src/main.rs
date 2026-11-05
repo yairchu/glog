@@ -122,7 +122,9 @@ fn main() -> ExitCode {
     let items = if command == Command::Grep {
         app.grep_view.as_ref().map_or(0, grep::View::match_count)
     } else if command == Command::RangeDiff {
-        app.show_rows.len()
+        app.range_diff_view
+            .as_ref()
+            .map_or(0, range_diff::View::len)
     } else {
         app.commits.len()
     };
