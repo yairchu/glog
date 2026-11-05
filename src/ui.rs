@@ -2046,6 +2046,33 @@ mod tests {
     }
 
     #[test]
+    fn returning_from_a_clicked_fixup_link_selects_its_row() {
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut app = App::new(vec![
+            commit("fixup! feat: x", 1),
+            commit("test: y", 1),
+            commit("feat: x", 1),
+        ]);
+        app.refresh_log_folds();
+        app.selected = 1;
+        let mut terminal = Terminal::new(TestBackend::new(80, 8)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let (rect, _) = app.visible_log_links[0];
+        handle(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: rect.x,
+                row: rect.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut app,
+        );
+        assert_eq!(app.selected, 2);
+        app.reference_back();
+        assert_eq!(app.selected, 0);
+    }
+
+    #[test]
     fn returning_from_a_fixup_target_keeps_later_filter_changes() {
         let mut app = App::new(vec![
             commit("fixup! feat: x", 1),
