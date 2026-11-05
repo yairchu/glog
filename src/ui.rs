@@ -835,7 +835,11 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                         ),
                     };
                     log_links.extend(row.links.into_iter().map(|(range, target)| {
-                        (lines.len(), range.start + start..range.end + start, target)
+                        let link = crate::app::LogLink {
+                            from: index,
+                            target,
+                        };
+                        (lines.len(), range.start + start..range.end + start, link)
                     }));
                     line.spans.extend(row.spans);
                     stand_ins = row.stand_ins.shifted(start);
@@ -899,12 +903,13 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 hash_style(index),
                 label(index).as_ref(),
             );
-            log_links.extend(
-                metadata
-                    .links
-                    .into_iter()
-                    .map(|(range, target)| (row, range.start + start..range.end + start, target)),
-            );
+            log_links.extend(metadata.links.into_iter().map(|(range, target)| {
+                let link = crate::app::LogLink {
+                    from: index,
+                    target,
+                };
+                (row, range.start + start..range.end + start, link)
+            }));
             line.spans.extend(metadata.spans);
             line.spans.push(Span::styled(
                 app.log_folds.label(index),
@@ -917,7 +922,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
     }
-    for (row, range, target) in log_links {
+    for (row, range, link) in log_links {
         let text: String = lines[row]
             .spans
             .iter()
@@ -934,7 +939,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                     visible_width as u16,
                     1,
                 ),
-                target,
+                link,
             ));
         }
     }
@@ -1416,6 +1421,7 @@ fn match_style(current: bool) -> Style {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::LogLink;
     use crate::git::{Commit, CommitKind};
     use crate::input::handle;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
@@ -1962,7 +1968,10 @@ mod tests {
             .collect();
         assert!(screen.contains("fixup! → ambiguous duplicate"));
         assert!(screen.contains("fixup! → missing newer"));
-        assert!(app.visible_log_links.iter().all(|(_, target)| *target == 7));
+        assert!(app
+            .visible_log_links
+            .iter()
+            .all(|(_, link)| link.target == 7));
     }
 
     #[test]
@@ -1989,8 +1998,8 @@ mod tests {
                     assert_eq!(width, 30); // Target hash was clipped entirely.
                     continue;
                 }
-                for (rect, target) in &app.visible_log_links {
-                    assert_eq!(*target, 1);
+                for (rect, link) in &app.visible_log_links {
+                    assert_eq!(link.target, 1);
                     let visible: String = rect
                         .positions()
                         .map(|position| {
@@ -2080,7 +2089,7 @@ mod tests {
             commit("feat: x", 1),
         ]);
         app.refresh_log_folds();
-        app.follow_fixup(2);
+        app.follow_fixup(LogLink { from: 0, target: 2 });
         app.apply_log_action(LogAction::Type("test".into()));
         assert!(!app.log_folds.visible(1));
         app.reference_back();
@@ -2093,7 +2102,7 @@ mod tests {
         let mut app = App::new(vec![commit("fixup! feat: x", 1), commit("feat: x", 1)]);
         app.refresh_log_folds();
         app.apply_log_action(LogAction::Type("feat".into()));
-        app.follow_fixup(1);
+        app.follow_fixup(LogLink { from: 0, target: 1 });
         app.apply_log_action(LogAction::Reset);
         app.reference_back();
         assert!(app.log_folds.hidden_types.is_empty());
@@ -2167,7 +2176,7 @@ mod tests {
         app.log_folds.start_collapsed = true;
         app.refresh_log_folds();
         assert!(!app.log_folds.visible(3));
-        app.follow_fixup(3);
+        app.follow_fixup(LogLink { from: 0, target: 3 });
         assert!(app.log_folds.visible(3));
         let mut terminal = Terminal::new(TestBackend::new(120, 12)).unwrap();
         for selection in [0, 1, 3] {
@@ -2213,7 +2222,10 @@ mod tests {
             }
             assert_eq!(checked_hashes, app.commits.len());
             assert_eq!(app.visible_log_links.len(), 2);
-            assert!(app.visible_log_links.iter().all(|(_, target)| *target == 3));
+            assert!(app
+                .visible_log_links
+                .iter()
+                .all(|(_, link)| link.target == 3));
         }
     }
 

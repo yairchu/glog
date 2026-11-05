@@ -222,6 +222,13 @@ struct CachedShow {
     links: Option<HashMap<usize, Vec<crate::commit_links::Link>>>,
 }
 
+/// A fixup row's link to the commit it names, by Log row index.
+#[derive(Clone, Copy, Debug)]
+pub struct LogLink {
+    pub from: usize,
+    pub target: usize,
+}
+
 struct LogBookmark {
     hash: String,
     offset: usize,
@@ -258,7 +265,7 @@ pub struct App {
     pub visible_show_links: Vec<(ratatui::layout::Rect, crate::commit_links::Target)>,
     reference_back: Option<Box<App>>,
     log_back: Vec<LogBookmark>,
-    pub visible_log_links: Vec<(ratatui::layout::Rect, usize)>,
+    pub visible_log_links: Vec<(ratatui::layout::Rect, LogLink)>,
     /// Remotes rarely change during a session, so look up issue links once.
     github_repository: Option<Option<String>>,
     // Explicit repository for views reached across a submodule boundary.
@@ -2211,12 +2218,17 @@ impl App {
     }
 
     /// Follow a fixup within this Log, opening any fold hiding its target.
-    pub fn follow_fixup(&mut self, index: usize) {
-        if self.history != History::Log || index >= self.commits.len() {
+    /// Returning goes back to the fixup, whichever row was selected.
+    pub fn follow_fixup(&mut self, link: LogLink) {
+        let LogLink {
+            from,
+            target: index,
+        } = link;
+        if self.history != History::Log || from.max(index) >= self.commits.len() {
             return;
         }
         let mut bookmark = LogBookmark {
-            hash: self.commits[self.selected].hash.clone(),
+            hash: self.commits[from].hash.clone(),
             offset: self.log_offset,
             shown_type: None,
             shown_merges: false,
