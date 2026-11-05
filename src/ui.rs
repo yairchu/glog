@@ -2074,6 +2074,18 @@ mod tests {
     }
 
     #[test]
+    fn returning_from_a_fixup_target_keeps_filters_cleared_since() {
+        let mut app = App::new(vec![commit("fixup! feat: x", 1), commit("feat: x", 1)]);
+        app.refresh_log_folds();
+        app.apply_log_action(LogAction::Type("feat".into()));
+        app.follow_fixup(1);
+        app.apply_log_action(LogAction::Reset);
+        app.reference_back();
+        assert!(app.log_folds.hidden_types.is_empty());
+        assert!(app.log_folds.visible(1));
+    }
+
+    #[test]
     fn search_finds_fixup_target_hashes_it_highlights() {
         let fixup = commit("fixup! feat: side", 1);
         let mut target = commit("feat: side", 1);

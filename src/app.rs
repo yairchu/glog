@@ -795,8 +795,34 @@ impl App {
         }
     }
 
+    /// Apply a user's filter change. Returning from a fixup then leaves
+    /// alone any filter the user has changed since following it.
+    fn change_log_filter(
+        &mut self,
+        change: impl FnOnce(&mut crate::log_folds::LogFolds, &[Commit]) -> Result<(), String>,
+    ) {
+        let hidden_types = self.log_folds.hidden_types.clone();
+        let hide_merges = self.log_folds.hide_merges;
+        self.status = change(&mut self.log_folds, &self.commits).err();
+        for bookmark in &mut self.log_back {
+            if bookmark.shown_type.as_ref().is_some_and(|kind| {
+                hidden_types.contains(kind) != self.log_folds.hidden_types.contains(kind)
+            }) {
+                bookmark.shown_type = None;
+            }
+            bookmark.shown_merges &= hide_merges == self.log_folds.hide_merges;
+        }
+    }
+
     fn toggle_commit_type(&mut self, kind: Option<&str>) {
-        self.status = self.log_folds.toggle_type(kind, &self.commits).err();
+        self.change_log_filter(|folds, commits| folds.toggle_type(kind, commits));
+        if kind.is_none() {
+            // Clearing filters shows everything, including what following showed.
+            for bookmark in &mut self.log_back {
+                bookmark.shown_type = None;
+                bookmark.shown_merges = false;
+            }
+        }
         self.ensure_log_selection();
         self.log_offset = 0;
         self.search_match = None;
@@ -827,7 +853,7 @@ impl App {
     }
 
     fn toggle_merges(&mut self) {
-        self.status = self.log_folds.toggle_merges(&self.commits).err();
+        self.change_log_filter(|folds, commits| folds.toggle_merges(commits));
         self.ensure_log_selection();
         self.log_offset = 0;
         self.search_match = None;
