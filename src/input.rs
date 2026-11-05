@@ -55,7 +55,7 @@ fn apply(event: Event, app: &mut App) {
                     if app
                         .grep_view
                         .as_ref()
-                        .is_some_and(|view| view.folder_focused()) =>
+                        .is_some_and(|view| !view.match_selected()) =>
                 {
                     app.grep_action(crate::grep::Action::Fold)
                 }

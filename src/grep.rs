@@ -605,9 +605,11 @@ impl View {
         let last = components.len().checked_sub(1)?;
         Some(components[last - self.path_component.min(last)])
     }
-    pub fn folder_focused(&self) -> bool {
-        self.focused_path_node()
-            .is_some_and(|node| matches!(self.nodes[node].kind, Kind::Directory(_)))
+    /// Enter opens a selected match and toggles any other row's group.
+    pub fn match_selected(&self) -> bool {
+        self.rows
+            .get(self.cursor)
+            .is_some_and(|row| matches!(self.nodes[row.node].kind, Kind::Match { .. }))
     }
     pub fn move_horizontal(&mut self, right: bool) {
         if !right && self.path_pan > 0 {
@@ -1024,6 +1026,10 @@ mod tests {
     fn fixture(root: &std::path::Path) -> View {
         View::parse(git::Repository::checked_out(root.to_owned()), vec![Source::Worktree],
             b"src/a.rs\0\x31\0needle one\nsrc/a.rs\0\x32\0needle two\nsrc/b.md\0\x31\0needle three\ndocs/c.md\0\x31\0needle four\nplain\0\x31\0needle five\n").unwrap()
+    }
+    fn folder_focused(view: &View) -> bool {
+        view.focused_path_node()
+            .is_some_and(|node| matches!(view.nodes[node].kind, Kind::Directory(_)))
     }
     fn has_hit(view: &View, file: usize) -> bool {
         view.rows.iter().any(|row| matches!(view.nodes[row.node].kind, Kind::Match { file: found, .. } if found == file))
@@ -1489,10 +1495,7 @@ mod tests {
             })
             .collect();
         assert_eq!(highlighted, "docs/nested/index.html");
-        assert!(
-            !view.folder_focused(),
-            "Enter must still open the match for a group ending in a file"
-        );
+        assert!(!folder_focused(&view));
         view.move_horizontal(false);
         assert_eq!(view.focused_path_node(), Some(file));
         view.move_horizontal(true);
@@ -1564,15 +1567,14 @@ mod tests {
         for expected in [4, 0] {
             key(&mut app, KeyCode::Left);
             assert_eq!(app.grep_view.as_ref().unwrap().horizontal, expected);
-            assert!(!app.grep_view.as_ref().unwrap().folder_focused());
+            assert!(!folder_focused(app.grep_view.as_ref().unwrap()));
         }
         key(&mut app, KeyCode::Left);
-        assert!(app.grep_view.as_ref().unwrap().folder_focused());
+        assert!(folder_focused(app.grep_view.as_ref().unwrap()));
         key(&mut app, KeyCode::Right);
-        assert!(!app.grep_view.as_ref().unwrap().folder_focused());
+        assert!(!folder_focused(app.grep_view.as_ref().unwrap()));
         key(&mut app, KeyCode::Left);
-        key(&mut app, KeyCode::Enter);
-        assert_eq!(app.history, History::Grep);
+        key(&mut app, KeyCode::Char('z'));
         let view = app.grep_view.as_ref().unwrap();
         assert!(!has_hit(view, 0) && !has_hit(view, 1) && has_hit(view, 2));
         assert!(view
@@ -1738,6 +1740,49 @@ mod tests {
         let button = view.fold_buttons[0].0;
         assert!(view.click(button.right() + 3, button.y)); // First match's code opens it.
         assert!(has_hit(&view, 0));
+    }
+
+    #[test]
+    fn enter_opens_matches_and_folds_headers() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        std::fs::create_dir_all("docs/nested").unwrap();
+        std::fs::write("docs/nested/index.html", "needle\nneedle\n").unwrap();
+        std::fs::write("docs/notes.md", "needle\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        let mut app = load_app(&args(&["needle"])).unwrap();
+        let notes = |view: &View| {
+            view.files
+                .iter()
+                .position(|file| file.path == b"docs/notes.md")
+                .unwrap()
+        };
+        let view = app.grep_view.as_mut().unwrap();
+        let file = notes(view);
+        select(
+            view,
+            |kind| matches!(kind, Kind::Match { file: found, .. } if *found == file),
+        );
+        // Its folder is the only fold target, but Enter still opens the match.
+        assert!(view.focused_path_node().is_some());
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.history, History::Blame, "{:?}", app.status);
+        key(&mut app, KeyCode::Backspace);
+        assert_eq!(app.history, History::Grep);
+        key(&mut app, KeyCode::Char('z'));
+        let view = app.grep_view.as_ref().unwrap();
+        assert!(matches!(
+            view.nodes[view.rows[view.cursor].node].kind,
+            Kind::Directory(_)
+        ));
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.history, History::Grep);
+        assert!(
+            has_hit(app.grep_view.as_ref().unwrap(), file),
+            "Enter expands a header"
+        );
     }
 
     #[test]
