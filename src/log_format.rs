@@ -251,7 +251,7 @@ impl LogFormat {
         };
         Row {
             spans,
-            abbreviated: Vec::new(),
+            stand_ins: Default::default(),
             links: Vec::new(),
         }
     }
@@ -288,12 +288,12 @@ impl LogFormat {
             ];
             return Row {
                 spans,
-                abbreviated: Vec::new(),
+                stand_ins: Default::default(),
                 links: Vec::new(),
             };
         }
         let mut spans = Vec::new();
-        let mut abbreviated = Vec::new();
+        let mut stand_ins = crate::ui::StandIns::default();
         let mut links = Vec::new();
         let reflog = commit.reflog();
         let author = author(commit);
@@ -397,7 +397,7 @@ impl LogFormat {
                     .sum::<usize>()
                     + text.len()
                     - suffix.len();
-                abbreviated.extend(cell.abbreviated(end - value.len()));
+                stand_ins.append(cell.stand_ins(end - value.len()));
             }
             let mut span = field_span(part.field, text);
             if part.field == Field::Hash {
@@ -461,7 +461,7 @@ impl LogFormat {
         }
         Row {
             spans,
-            abbreviated,
+            stand_ins,
             links,
         }
     }
@@ -489,24 +489,20 @@ impl LogFormat {
             hash_marker: None,
         });
         let row_matches = |fixup| {
-            let row = self.row_with_fixup(commit, columns.as_ref(), Style::default(), fixup);
-            row.text().to_lowercase().contains(query)
-                || row
-                    .abbreviated
-                    .iter()
-                    .any(|(_, full)| full.to_lowercase().contains(query))
+            self.row_with_fixup(commit, columns.as_ref(), Style::default(), fixup)
+                .matches(query)
         };
         fixup.is_some_and(|fixup| row_matches(Some(fixup))) || row_matches(None)
     }
 }
 
-/// A Log row's spans, and the byte ranges in them of values shown shortened,
-/// with each text they stand for, which search matches.
+/// A Log row's spans, and the texts that values it shows shortened stand
+/// for, which search matches.
 pub struct Row {
     /// Byte ranges of inserted fixup target hashes and their Log row indices.
     pub links: Vec<(std::ops::Range<usize>, usize)>,
     pub spans: Vec<Span<'static>>,
-    pub abbreviated: Vec<(std::ops::Range<usize>, String)>,
+    pub stand_ins: crate::ui::StandIns,
 }
 
 impl Row {
@@ -515,6 +511,11 @@ impl Row {
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    /// Whether a lowercase query matches the row as drawn or what it stands for.
+    pub fn matches(&self, query: &str) -> bool {
+        self.stand_ins.matches(&self.text(), query)
     }
 }
 
@@ -648,14 +649,13 @@ impl AuthorCell {
         }
     }
 
-    /// The row's shortened ranges for this cell, drawn starting at byte
-    /// `start` of the row.
-    pub fn abbreviated(&self, start: usize) -> Vec<(std::ops::Range<usize>, String)> {
-        let range = start..start + self.text.len();
-        self.stands_for
-            .iter()
-            .map(|text| (range.clone(), text.clone()))
-            .collect()
+    /// What this cell stands for, drawn starting at byte `start` of a row.
+    pub fn stand_ins(&self, start: usize) -> crate::ui::StandIns {
+        let mut stand_ins = crate::ui::StandIns::default();
+        for text in &self.stands_for {
+            stand_ins.push(start..start + self.text.len(), text.clone());
+        }
+        stand_ins
     }
 }
 

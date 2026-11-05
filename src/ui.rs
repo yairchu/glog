@@ -782,7 +782,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             let mut line = ansi::parse_line(graph);
             let mut deferred_metadata = false;
-            let mut abbreviated = Vec::new();
+            let mut stand_ins = StandIns::default();
             if !graph_only && part + 1 == graph_rows.len() {
                 let deferred =
                     date_column.is_some() && commit.kind == crate::git::CommitKind::Revision;
@@ -838,7 +838,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                         (lines.len(), range.start + start..range.end + start, target)
                     }));
                     line.spans.extend(row.spans);
-                    abbreviated = shifted(row.abbreviated, start);
+                    stand_ins = row.stand_ins.shifted(start);
                     line.spans.push(Span::styled(
                         app.log_folds.label(index),
                         Style::default().fg(Color::Yellow),
@@ -847,7 +847,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             }
             if let Some(query) = app.search.as_ref().filter(|_| !deferred_metadata) {
                 let current = app.search_match == Some((Mode::Log, index));
-                line = highlight_row(line, abbreviated, query, current);
+                line = stand_ins.highlight(line, query, current);
             }
             if !graph_only && index == app.selected {
                 line.style = Style::default()
@@ -912,8 +912,8 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             ));
             if let Some(query) = &app.search {
                 let current = app.search_match == Some((Mode::Log, index));
-                let abbreviated = shifted(metadata.abbreviated, start);
-                *line = highlight_row(std::mem::take(line), abbreviated, query, current);
+                let stand_ins = metadata.stand_ins.shifted(start);
+                *line = stand_ins.highlight(std::mem::take(line), query, current);
             }
         }
     }
@@ -1322,32 +1322,52 @@ fn message_entry<'a, T>(
     entries.get(&row.source).filter(|_| row.file.is_none())
 }
 
-/// Byte ranges of a row's shortened values, moved past what precedes it.
-fn shifted(
-    abbreviated: Vec<(std::ops::Range<usize>, String)>,
-    start: usize,
-) -> Vec<(std::ops::Range<usize>, String)> {
-    abbreviated
-        .into_iter()
-        .map(|(range, full)| (start + range.start..start + range.end, full))
-        .collect()
-}
+/// Texts that byte ranges of a drawn row stand for without showing them
+/// whole, such as a full author name behind its initials. Search matches
+/// them as well as the drawn text.
+#[derive(Default)]
+pub(crate) struct StandIns(Vec<(std::ops::Range<usize>, String)>);
 
-/// Search matches full values. Mark a shortened value whole when its full
-/// text matches, as part may be hidden, then the visible matches.
-fn highlight_row(
-    line: Line<'static>,
-    abbreviated: Vec<(std::ops::Range<usize>, String)>,
-    query: &str,
-    current: bool,
-) -> Line<'static> {
-    let folded = query.to_lowercase();
-    let hidden_matches: Vec<_> = abbreviated
-        .into_iter()
-        .filter(|(_, full)| !query.is_empty() && full.to_lowercase().contains(&folded))
-        .map(|(range, _)| (range, match_style(current)))
-        .collect();
-    highlight_matches(ansi::style_ranges(line, hidden_matches), query, current)
+impl StandIns {
+    pub fn push(&mut self, range: std::ops::Range<usize>, text: impl Into<String>) {
+        self.0.push((range, text.into()));
+    }
+
+    pub fn append(&mut self, other: StandIns) {
+        self.0.extend(other.0);
+    }
+
+    /// The same texts, for a row drawn after `start` bytes of other text.
+    pub fn shifted(self, start: usize) -> Self {
+        Self(
+            self.0
+                .into_iter()
+                .map(|(range, text)| (start + range.start..start + range.end, text))
+                .collect(),
+        )
+    }
+
+    /// Whether a lowercase query matches the drawn text or a text it stands for.
+    pub fn matches(&self, drawn: &str, query: &str) -> bool {
+        drawn.to_lowercase().contains(query)
+            || self
+                .0
+                .iter()
+                .any(|(_, text)| text.to_lowercase().contains(query))
+    }
+
+    /// Mark a range whole when its text matches, as part may be hidden, then
+    /// the visible matches.
+    pub fn highlight(self, line: Line<'static>, query: &str, current: bool) -> Line<'static> {
+        let folded = query.to_lowercase();
+        let hidden_matches: Vec<_> = self
+            .0
+            .into_iter()
+            .filter(|(_, text)| !query.is_empty() && text.to_lowercase().contains(&folded))
+            .map(|(range, _)| (range, match_style(current)))
+            .collect();
+        highlight_matches(ansi::style_ranges(line, hidden_matches), query, current)
+    }
 }
 
 pub(crate) fn highlight_matches(line: Line<'static>, query: &str, current: bool) -> Line<'static> {

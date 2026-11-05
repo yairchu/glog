@@ -1046,7 +1046,7 @@ pub fn row(
 ) -> crate::log_format::Row {
     let file = &line.file;
     let mut spans = Vec::new();
-    let mut abbreviated = Vec::new();
+    let mut stand_ins = crate::ui::StandIns::default();
     let mut blank = 0;
     if format.shows(Field::Hash) {
         if details {
@@ -1085,7 +1085,7 @@ pub fn row(
                 badge_width,
             );
             let start: usize = spans.iter().map(|span: &Span| span.content.len()).sum();
-            abbreviated.extend(cell.abbreviated(start));
+            stand_ins.append(cell.stand_ins(start));
             spans.push(Span::styled(cell.text, Style::default().fg(Color::Cyan)));
             spans.extend(badge);
             spans.push(Span::raw(" ".repeat(cell.padding + 1)));
@@ -1103,7 +1103,7 @@ pub fn row(
     spans.extend(line.code.iter().cloned());
     crate::log_format::Row {
         spans,
-        abbreviated,
+        stand_ins,
         links: Vec::new(),
     }
 }
