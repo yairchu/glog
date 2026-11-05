@@ -1,5 +1,5 @@
 //! Subject-based relationships within the loaded Log history.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::git::{Commit, CommitKind};
 
@@ -22,49 +22,83 @@ fn prefix(subject: &str) -> Option<&str> {
         .find(|prefix| subject.starts_with(prefix))
 }
 
-/// Only older exact subjects qualify. Duplicate subjects remain ambiguous,
-/// even if one happens to be closer to the fixup in the display.
+/// What a fixup names, after the repeated prefixes autosquash also skips.
+fn named(subject: &str) -> Option<&str> {
+    let mut rest = &subject[prefix(subject)?.len()..];
+    loop {
+        rest = rest.trim_start();
+        match prefix(rest) {
+            Some(prefix) => rest = &rest[prefix.len()..],
+            None => return Some(rest),
+        }
+    }
+}
+
+fn eligible(commit: &Commit) -> bool {
+    commit.kind == CommitKind::Revision && commit.annotation.is_none()
+}
+
+/// Match the way `git rebase --autosquash` does, but against older commits
+/// only: an exact subject, else a commit hash, else a subject prefix. Where
+/// autosquash would pick one of several equal candidates, the target remains
+/// ambiguous, even if one happens to be closer to the fixup in the display.
 pub fn resolve(commits: &[Commit]) -> Vec<Option<Target>> {
     let mut targets = vec![None; commits.len()];
-    // Track only subjects named by fixups, not an index of every commit.
-    let mut subjects: HashMap<_, _> = commits
+    let named_by_fixups: HashSet<_> = commits
         .iter()
-        .filter(|commit| commit.kind == CommitKind::Revision && commit.annotation.is_none())
-        .filter_map(|commit| {
-            prefix(&commit.subject).map(|prefix| (&commit.subject[prefix.len()..], Target::Missing))
-        })
+        .filter(|commit| eligible(commit))
+        .filter_map(|commit| named(&commit.subject))
         .collect();
-    if subjects.is_empty() {
+    if named_by_fixups.is_empty() {
         return targets;
     }
     let reversed = commits.iter().any(|commit| commit.log_reversed);
     // Resolve oldest first, retaining display indices for links and selection.
-    for position in 0..commits.len() {
-        let index = if reversed {
-            position
-        } else {
-            commits.len() - 1 - position
-        };
-        let commit = &commits[index];
-        if commit.kind != CommitKind::Revision || commit.annotation.is_some() {
-            continue;
+    let older: Vec<_> = (0..commits.len())
+        .map(|position| {
+            if reversed {
+                position
+            } else {
+                commits.len() - 1 - position
+            }
+        })
+        .filter(|&index| eligible(&commits[index]))
+        .collect();
+    // Track only exact subjects named by fixups, not an index of every commit.
+    let mut subjects: HashMap<&str, Target> = HashMap::new();
+    for (position, &index) in older.iter().enumerate() {
+        let subject = commits[index].subject.as_str();
+        if let Some(name) = named(subject) {
+            targets[index] = Some(subjects.get(name).copied().unwrap_or_else(|| {
+                let older = older[..position].iter().copied();
+                let hash = !name.contains(' ')
+                    && name.len() >= 4
+                    && name.bytes().all(|byte| byte.is_ascii_hexdigit());
+                let by_hash = unique(older.clone().filter(|&older| {
+                    hash && commits[older].hash.starts_with(&name.to_ascii_lowercase())
+                }));
+                if by_hash != Target::Missing {
+                    return by_hash;
+                }
+                unique(older.filter(|&older| commits[older].subject.starts_with(name)))
+            }));
         }
-        if let Some(prefix) = prefix(&commit.subject) {
-            targets[index] = Some(
-                subjects
-                    .get(&commit.subject[prefix.len()..])
-                    .copied()
-                    .unwrap_or(Target::Missing),
-            );
-        }
-        if let Some(target) = subjects.get_mut(commit.subject.as_str()) {
-            *target = match target {
-                Target::Missing => Target::Commit(index),
-                Target::Commit(_) | Target::Ambiguous => Target::Ambiguous,
-            };
+        if named_by_fixups.contains(subject) {
+            subjects
+                .entry(subject)
+                .and_modify(|target| *target = Target::Ambiguous)
+                .or_insert(Target::Commit(index));
         }
     }
     targets
+}
+
+fn unique(mut candidates: impl Iterator<Item = usize>) -> Target {
+    match (candidates.next(), candidates.next()) {
+        (None, _) => Target::Missing,
+        (Some(index), None) => Target::Commit(index),
+        (Some(_), Some(_)) => Target::Ambiguous,
+    }
 }
 
 impl Target {
@@ -86,6 +120,53 @@ impl Target {
 mod tests {
     use super::*;
     use crate::git::tests::{git, CurrentDirGuard, TestDirectory};
+
+    #[test]
+    fn fixups_name_targets_by_hash_and_subject_prefix_like_autosquash() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let commit = |subject: &str| git(&["commit", "--allow-empty", "-qm", subject]);
+        commit("Add parser for X");
+        commit("Add printer");
+        commit("Add printer tests");
+        let short = git(&["rev-parse", "--short=7", "HEAD~2"]);
+        for subject in [
+            "fixup! Add parser",
+            &format!("fixup! {short}"),
+            &format!("squash! {}", short.to_uppercase()),
+            "fixup! fixup! Add parser for X",
+            "fixup! Add printer",
+            "fixup! Add print",
+            "fixup! deadbeef",
+        ] {
+            commit(subject);
+        }
+        let commits = crate::git::load_log(&["--no-graph".into()]).unwrap();
+        let targets = resolve(&commits);
+        let index = |subject: &str| {
+            commits
+                .iter()
+                .position(|commit| commit.subject == subject)
+                .unwrap()
+        };
+        let parser = Some(Target::Commit(index("Add parser for X")));
+        for (subject, expected) in [
+            ("fixup! Add parser", parser),
+            (&format!("fixup! {short}"), parser),
+            (&format!("squash! {}", short.to_uppercase()), parser),
+            ("fixup! fixup! Add parser for X", parser),
+            // An exact subject wins over longer subjects it prefixes.
+            (
+                "fixup! Add printer",
+                Some(Target::Commit(index("Add printer"))),
+            ),
+            ("fixup! Add print", Some(Target::Ambiguous)),
+            ("fixup! deadbeef", Some(Target::Missing)),
+        ] {
+            assert_eq!(targets[index(subject)], expected, "{subject}");
+        }
+    }
 
     #[test]
     fn reversed_history_keeps_fixup_targets_and_rejects_newer_or_ambiguous_subjects() {
