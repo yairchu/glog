@@ -147,7 +147,7 @@ fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>), String> {
                         takes_value = offset + flag.len_utf8() == arg.len() - 1;
                         break;
                     }
-                    'i' | 'w' | 'v' | 'E' | 'G' | 'P' | 'F' | 'I' | 'n' | 'H' | 'z' => {}
+                    'i' | 'w' | 'v' | 'E' | 'G' | 'P' | 'F' | 'I' | 'n' | 'H' | 'z' | 'r' => {}
                     _ => return Err(format!("unsupported grep option {arg:?}; glog displays matching lines in a file tree")),
                 }
             }
@@ -1417,6 +1417,7 @@ mod tests {
         git(&["config", "grep.column", "true"]);
         let load = |values: &[&str]| load_app(&args(values)).map(|app| app.grep_view.unwrap());
         assert_eq!(load(&["-i", "needle"]).unwrap().match_count(), 1);
+        assert_eq!(load(&["-ri", "needle"]).unwrap().match_count(), 1);
         assert_eq!(load(&["-e", "--no-color-moved"]).unwrap().match_count(), 1);
         assert!(matches!(
             load(&["-e", "--cached"]).unwrap().sources[0],
