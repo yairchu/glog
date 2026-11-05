@@ -473,7 +473,8 @@ impl LogFormat {
 
     /// Whether a lowercase query matches the row's text, as laid out in
     /// columns or not, or the full values of any it shows shortened. Search
-    /// leaves out the padding, which depends on the rows on screen.
+    /// leaves out the padding, which depends on the rows on screen. A fixup
+    /// row matches both as shown, with its target's hash, and as written.
     pub fn matches(
         &self,
         commit: &Commit,
@@ -487,12 +488,15 @@ impl LogFormat {
             author: author_width(commit),
             hash_marker: None,
         });
-        let row = self.row_with_fixup(commit, columns.as_ref(), Style::default(), fixup);
-        row.text().to_lowercase().contains(query)
-            || row
-                .abbreviated
-                .iter()
-                .any(|(_, full)| full.to_lowercase().contains(query))
+        let row_matches = |fixup| {
+            let row = self.row_with_fixup(commit, columns.as_ref(), Style::default(), fixup);
+            row.text().to_lowercase().contains(query)
+                || row
+                    .abbreviated
+                    .iter()
+                    .any(|(_, full)| full.to_lowercase().contains(query))
+        };
+        fixup.is_some_and(|fixup| row_matches(Some(fixup))) || row_matches(None)
     }
 }
 

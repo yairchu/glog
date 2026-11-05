@@ -2055,7 +2055,9 @@ mod tests {
 
     #[test]
     fn search_finds_fixup_target_hashes_it_highlights() {
-        let fixup = commit("fixup! feat: side", 1);
+        let mut fixup = commit("fixup! feat: side", 1);
+        fixup.hash = "1234567".repeat(6);
+        fixup.short_hash = "1234567".into();
         let mut target = commit("feat: side", 1);
         target.short_hash = "abcdef0".into();
         let mut app = App::new(vec![fixup, target]);
@@ -2070,6 +2072,16 @@ mod tests {
         assert_eq!(app.selected, 1);
         key(&mut app, KeyCode::Char('n'));
         assert_eq!(app.selected, 0, "the fixup row shows the target's hash");
+
+        // The inserted hash must not hide the fixup's own subject.
+        app.selected = 1;
+        app.search_match = None;
+        key(&mut app, KeyCode::Char('/'));
+        for c in "fixup! feat".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.selected, 0, "the fixup's subject matches as written");
     }
 
     #[test]
