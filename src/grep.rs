@@ -1289,7 +1289,10 @@ mod tests {
         mouse(&mut app, MouseEventKind::ScrollDown, 0, 3);
         assert_eq!(app.grep_view.as_ref().unwrap().cursor, cursor);
         key(&mut app, KeyCode::Esc);
+        assert!(!app.show_help);
         key(&mut app, KeyCode::Esc);
+        assert!(!app.quit, "Esc is not a quit key");
+        key(&mut app, KeyCode::Char('q'));
         assert!(app.quit);
     }
 
@@ -1714,5 +1717,64 @@ mod tests {
         let button = view.fold_buttons[0].0;
         assert!(view.click(button.right() + 3, button.y)); // First match's code opens it.
         assert!(has_hit(&view, 0));
+    }
+
+    #[test]
+    fn search_from_a_collapsed_group_starts_at_its_position() {
+        let directory = TestDirectory::new();
+        let mut view = View::parse(
+            git::Repository::checked_out(directory.path().to_owned()),
+            vec![Source::Worktree],
+            b"a.rs\x001\x00alpha\nsrc/x.rs\x001\x00alpha\nsrc/x.rs\x002\x00beta\nsrc/y.rs\x001\x00beta\nz.rs\x001\x00alpha\n",
+        )
+        .unwrap();
+        let found = |view: &View| match view.nodes[view.rows[view.cursor].node].kind {
+            Kind::Match { file, hit } => (file, hit),
+            ref kind => panic!("{kind:?}"),
+        };
+        let folder = view
+            .nodes
+            .iter()
+            .position(|node| matches!(&node.kind, Kind::Directory(name) if name == "src"))
+            .unwrap();
+        view.toggle_fold(folder);
+        view.rebuild();
+        select(&mut view, |kind| matches!(kind, Kind::Directory(_)));
+        assert!(view.find("alpha", true));
+        assert_eq!(found(&view), (0, 0), "backward from the folder");
+        view.collapsed.clear();
+        let file = view
+            .nodes
+            .iter()
+            .position(|node| matches!(node.kind, Kind::File(1)))
+            .unwrap();
+        view.toggle_fold(file);
+        view.rebuild();
+        select(&mut view, |kind| matches!(kind, Kind::File(1)));
+        assert!(view.find("alpha", false));
+        assert_eq!(found(&view), (1, 0), "forward into the file");
+    }
+
+    #[test]
+    fn revisions_naming_the_same_commit_share_one_source() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        std::fs::write("file.rs", "needle\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        git(&["branch", "other"]);
+        let app = load_app(&args(&["needle", "HEAD", "other"])).unwrap();
+        let view = app.grep_view.unwrap();
+        assert_eq!(view.match_count(), 1);
+        let labels: Vec<_> = view
+            .roots
+            .iter()
+            .map(|root| match view.nodes[*root].kind {
+                Kind::Source(source) => view.sources[source].label().to_owned(),
+                ref kind => panic!("{kind:?}"),
+            })
+            .collect();
+        assert_eq!(labels, ["HEAD, other"]);
     }
 }

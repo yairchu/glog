@@ -179,6 +179,8 @@ mod tests {
             key(KeyCode::Esc, &mut app);
             assert!(!app.show_help && !app.quit);
             key(KeyCode::Esc, &mut app);
+            assert!(!app.quit, "Esc is not a quit key");
+            key(KeyCode::Char('q'), &mut app);
             assert!(app.quit);
         }
     }

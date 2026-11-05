@@ -2065,6 +2065,24 @@ mod tests {
     }
 
     #[test]
+    fn search_finds_fixup_target_hashes_it_highlights() {
+        let fixup = commit("fixup! feat: side", 1);
+        let mut target = commit("feat: side", 1);
+        target.short_hash = "abcdef0".into();
+        let mut app = App::new(vec![fixup, target]);
+        let key =
+            |app: &mut App, code| handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), app);
+        key(&mut app, KeyCode::Char('/'));
+        for c in "abcdef0".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(app.selected, 1);
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.selected, 0, "the fixup row shows the target's hash");
+    }
+
+    #[test]
     fn multiple_fixups_highlight_only_related_hashes_and_reveal_folded_targets() {
         let mut fixup = commit("fixup! feat: side", 1);
         let mut another = commit("fixup! feat: side", 1);
