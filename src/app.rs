@@ -2569,17 +2569,11 @@ impl App {
             }
             Mode::Log => {
                 let in_columns = self.log_date_column().is_some();
-                let n = self.commits.len();
                 let start = self
                     .search_match
                     .filter(|(mode, _)| *mode == Mode::Log)
                     .map_or(self.selected, |(_, index)| index);
-                for step in 1..=n {
-                    let i = if reverse {
-                        (start + n - step % n) % n
-                    } else {
-                        (start + step) % n
-                    };
+                for i in crate::pager::search_order(self.commits.len(), start, reverse) {
                     let c = &self.commits[i];
                     if self.log_folds.filter_hidden(i, c) {
                         continue;
@@ -2602,7 +2596,6 @@ impl App {
             }
             Mode::Show => {
                 let lines = self.searchable_show_lines();
-                let n = lines.len();
                 let previous = self.search_match.filter(|(mode, _)| *mode == Mode::Show);
                 let (route, source) = previous
                     .and(self.show_search_location.clone())
@@ -2613,12 +2606,7 @@ impl App {
                     .iter()
                     .position(|(r, s, _)| *r == route && *s == source)
                     .unwrap_or(0);
-                let found = (1..=n).find_map(|step| {
-                    let i = if reverse {
-                        (start + n - step % n) % n
-                    } else {
-                        (start + step) % n
-                    };
+                let found = crate::pager::search_order(lines.len(), start, reverse).find_map(|i| {
                     crate::ansi::plain(lines[i].2)
                         .to_lowercase()
                         .contains(&query)

@@ -117,13 +117,7 @@ impl PagerView for View {
     }
     /// Move the cursor to the next line containing the lowercase `query`.
     fn find(&mut self, query: &str, reverse: bool) -> bool {
-        let n = self.lines.len();
-        for step in 1..=n {
-            let index = if reverse {
-                (self.cursor + n - step % n) % n
-            } else {
-                (self.cursor + step) % n
-            };
+        for index in crate::pager::search_order(self.lines.len(), self.cursor, reverse) {
             if ansi::plain(&self.lines[index])
                 .to_lowercase()
                 .contains(query)

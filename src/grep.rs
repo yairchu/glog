@@ -874,25 +874,26 @@ impl PagerView for View {
         let rows = self.visible_rows(true);
         // Expanded rows omit folder and file headers. A collapsed header sits
         // just before its first descendant, so a forward search includes it.
-        let (start, past) = match self.rows.get(self.cursor) {
+        let (start, on_row) = match self.rows.get(self.cursor) {
             Some(selected) => match rows.iter().position(|row| row.node == selected.node) {
-                Some(start) => (start, 1),
+                Some(start) => (start, true),
                 None => (
                     rows.iter()
                         .position(|row| self.within(row.node, selected.node))
                         .unwrap_or(0),
-                    0,
+                    false,
                 ),
             },
-            None => (0, 0),
+            None => (0, false),
         };
         let n = rows.len();
-        for step in 0..n {
-            let index = if reverse {
-                (start + n - 1 - step) % n
-            } else {
-                (start + past + step) % n
-            };
+        // Search forward from before a row as if from the one above it.
+        let start = if on_row || reverse || n == 0 {
+            start
+        } else {
+            (start + n - 1) % n
+        };
+        for index in crate::pager::search_order(n, start, reverse) {
             let row = rows[index];
             if self.matches(row, query) {
                 let mut parent = self.nodes[row.node].parent;

@@ -16,3 +16,15 @@ pub trait PagerView {
     fn find(&mut self, query: &str, reverse: bool) -> bool;
     fn draw(&mut self, frame: &mut Frame, area: Rect, query: Option<&str>, current: Option<usize>);
 }
+
+/// The indices of `n` lines in search order: those after `start`, or before
+/// it in reverse, wrapping around to end with `start` itself.
+pub fn search_order(n: usize, start: usize, reverse: bool) -> impl Iterator<Item = usize> {
+    (1..=n).map(move |step| {
+        if reverse {
+            (start + n - step) % n
+        } else {
+            (start + step) % n
+        }
+    })
+}
