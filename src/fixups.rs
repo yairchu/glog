@@ -155,6 +155,8 @@ mod tests {
             "fixup! printer-branch",
             "fixup! printer-tag",
             "fixup! deadbeef",
+            // Git exits on this name rather than answering it.
+            "fixup! HEAD@{999}",
         ] {
             commit(subject);
         }
@@ -188,6 +190,7 @@ mod tests {
                 Some(Target::Commit(index("Add printer"))),
             ),
             ("fixup! deadbeef", Some(Target::Missing)),
+            ("fixup! HEAD@{999}", Some(Target::Missing)),
         ] {
             assert_eq!(targets[index(subject)], expected, "{subject}");
         }

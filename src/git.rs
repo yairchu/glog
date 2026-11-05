@@ -872,7 +872,8 @@ pub(crate) struct Object {
 }
 
 /// Map each name to the object it names. Names that resolve to nothing are
-/// absent. One Git process checks every name.
+/// absent. One Git process checks every name, plus one after each name Git
+/// exits on rather than answering.
 pub(crate) fn resolve_objects<'a>(
     names: impl IntoIterator<Item = &'a str>,
     repository: Option<&Repository>,
@@ -888,17 +889,10 @@ pub(crate) fn resolve_objects<'a>(
     // Ask for each name both as given and peeled to a commit. Peeling cannot
     // be the only query: Git reads a suffix after `REV:path` as part of the
     // path, so a tree such as `HEAD:src` would seem to name nothing.
-    let input: String = names
+    let queries: Vec<_> = names
         .iter()
-        .map(|name| format!("{name}\n{name}^{{commit}}\n"))
+        .flat_map(|name| [name.to_string(), format!("{name}^{{commit}}")])
         .collect();
-    let output = pipe_through(
-        read_command_at(repository)
-            .args(["cat-file", "--batch-check=%(objectname) %(objecttype)"])
-            .env("GIT_NO_LAZY_FETCH", "1"),
-        input.as_bytes(),
-    )
-    .unwrap_or_default();
     // Git answers each line in order; failures echo the name and a reason,
     // such as `missing` or `ambiguous`, in place of an object type.
     let found = |line: &str| {
@@ -906,17 +900,57 @@ pub(crate) fn resolve_objects<'a>(
         matches!(kind, "commit" | "tree" | "blob" | "tag")
             .then(|| (hash.to_owned(), kind.to_owned()))
     };
-    let mut lines = output.lines();
+    let answers = batch_check(&queries, repository);
     names
         .into_iter()
-        .filter_map(|name| {
-            let kind = found(lines.next()?).map(|(_, kind)| kind);
-            let commit = found(lines.next()?)
+        .zip(answers.chunks(2))
+        .filter_map(|(name, answers)| {
+            let [given, peeled] = answers else {
+                return None;
+            };
+            let kind = given.as_deref().and_then(found).map(|(_, kind)| kind);
+            let commit = peeled
+                .as_deref()
+                .and_then(found)
                 .filter(|(_, kind)| kind == "commit")
                 .map(|(hash, _)| hash);
             (kind.is_some() || commit.is_some()).then_some((name, Object { kind, commit }))
         })
         .collect()
+}
+
+/// Git's `cat-file --batch-check` answer to each query, one line per query.
+/// Rather than answer some names, such as `HEAD@{99}`, Git exits; such a
+/// query gets no answer and checking resumes after it.
+fn batch_check(queries: &[String], repository: Option<&Repository>) -> Vec<Option<String>> {
+    let mut answers = Vec::with_capacity(queries.len());
+    while answers.len() < queries.len() {
+        let rest = &queries[answers.len()..];
+        let input: String = rest.iter().map(|query| format!("{query}\n")).collect();
+        let Some((output, success)) = pipe_through_with_status(
+            read_command_at(repository)
+                .args(["cat-file", "--batch-check=%(objectname) %(objecttype)"])
+                .env("GIT_NO_LAZY_FETCH", "1"),
+            input.as_bytes(),
+            &Cancel::default(),
+        ) else {
+            break;
+        };
+        let output = String::from_utf8_lossy(&output);
+        answers.extend(
+            output
+                .lines()
+                .take(rest.len())
+                .map(|line| Some(line.to_owned())),
+        );
+        if success {
+            break;
+        }
+        // Git exited at the first query it left unanswered.
+        answers.push(None);
+    }
+    answers.resize(queries.len(), None);
+    answers
 }
 
 /// Map each name to the commit it names, as autosquash resolves a revision:
@@ -942,23 +976,9 @@ pub(crate) fn resolve_commits<'a>(
     hashes.sort_unstable();
     hashes.dedup();
     let check = |objects: &[&str]| {
-        let input: String = objects
-            .iter()
-            .map(|object| format!("{object}^{{commit}}\n"))
-            .collect();
-        let output = pipe_through(
-            read_command_at(repository)
-                .args(["cat-file", "--batch-check=%(objectname)"])
-                .env("GIT_NO_LAZY_FETCH", "1"),
-            input.as_bytes(),
-        )
-        .unwrap_or_default();
-        // Git answers each line in order; failures echo the input and a reason.
-        objects
-            .iter()
-            .zip(output.lines())
-            .filter(|(_, line)| !line.contains(' '))
-            .map(|(object, line)| (object.to_string(), line.to_owned()))
+        resolve_names(objects.iter().copied(), repository)
+            .into_iter()
+            .map(|(object, full)| (object.to_owned(), full))
             .collect::<std::collections::HashMap<_, _>>()
     };
     if hashes.is_empty() {
@@ -2017,6 +2037,16 @@ fn pipe_through_cancellable(
     input: &[u8],
     cancel: &Cancel,
 ) -> Option<Vec<u8>> {
+    pipe_through_with_status(command, input, cancel)
+        .and_then(|(output, success)| success.then_some(output))
+}
+
+/// The output, even where the command failed, and whether it succeeded.
+fn pipe_through_with_status(
+    command: &mut Command,
+    input: &[u8],
+    cancel: &Cancel,
+) -> Option<(Vec<u8>, bool)> {
     let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -2032,7 +2062,11 @@ fn pipe_through_cancellable(
         let read = stdout.read_to_end(&mut output);
         let written = writer.join();
         let status = cancel.take()?.wait().ok()?;
-        (read.is_ok() && matches!(written, Ok(Ok(()))) && status.success()).then_some(output)
+        // A failing command may stop reading early, so only a successful one
+        // must have taken all the input.
+        let written = matches!(written, Ok(Ok(())));
+        read.is_ok()
+            .then_some((output, written && status.success()))
     })
 }
 
