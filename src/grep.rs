@@ -190,7 +190,7 @@ fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>), String> {
         // without a --, with a path, through for Git to report.
         let kind = object
             .and_then(|object| object.kind.as_deref())
-            .filter(|_| separated || std::fs::symlink_metadata(arg).is_err());
+            .filter(|_| separated || !names_path(arg));
         let Some(kind) = kind else {
             output.extend(rest[position..].iter().cloned());
             break;
@@ -218,6 +218,25 @@ fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>), String> {
         }
     }
     Ok((output, sources))
+}
+
+/// Whether `arg` names an existing path as Git checks it before calling a
+/// revision ambiguous: `:/` names a path from the top level, `:!` and `:^`
+/// a path to exclude, and either alone names every path.
+fn names_path(arg: &str) -> bool {
+    let path = if let Some(path) = arg.strip_prefix(":/") {
+        match git::repository_root() {
+            Ok(root) => root.join(path),
+            Err(_) => return false,
+        }
+    } else {
+        match arg.strip_prefix(":!").or_else(|| arg.strip_prefix(":^")) {
+            Some("") => return true,
+            Some(path) => path.into(),
+            None => arg.into(),
+        }
+    };
+    std::fs::symlink_metadata(path).is_ok()
 }
 
 pub fn load_app(args: &[String]) -> Result<App, String> {
@@ -1948,6 +1967,23 @@ mod tests {
         let view = app.grep_view.unwrap();
         assert_eq!(view.match_count(), 2);
         assert_eq!(view.sources.len(), 1);
+    }
+
+    #[test]
+    fn top_level_paths_git_finds_ambiguous_are_left_for_git_to_reject() {
+        let directory = TestDirectory::new();
+        let cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        std::fs::create_dir("docs").unwrap();
+        std::fs::write("docs/file.rs", "needle\n").unwrap();
+        git(&["add", "."]);
+        // `:/docs` names both this commit and the docs path, which Git
+        // rejects rather than glog calling it a commit.
+        git(&["commit", "-qm", "touch docs"]);
+        drop(cwd);
+        let _cwd = CurrentDirGuard::enter(&directory.path().join("docs"));
+        let error = load_app(&args(&["needle", ":/docs"])).err().unwrap();
+        assert!(error.contains("both revision and filename"), "{error}");
     }
 
     #[test]
