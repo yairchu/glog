@@ -1167,6 +1167,43 @@ mod tests {
         let nested = load_app(&args(&["needle", "--", "a.rs"])).unwrap();
         assert_eq!(nested.grep_view.unwrap().files[0].path, b"src/a.rs");
     }
+    #[test]
+    fn revisions_after_an_option_terminator_open_the_pinned_file() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        for pattern in ["needle", "--cached"] {
+            let before = format!("{pattern} before");
+            std::fs::write("file.rs", format!("{before}\n")).unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-qm", "before"]);
+            let original = git(&["rev-parse", "HEAD"]);
+            let mut app = load_app(&args(&["--", pattern, "HEAD", "--", "file.rs"])).unwrap();
+            assert_eq!(app.grep_view.as_ref().unwrap().match_count(), 1);
+            select(app.grep_view.as_mut().unwrap(), |kind| {
+                matches!(kind, Kind::Match { .. })
+            });
+            std::fs::write("file.rs", format!("{pattern} after\n")).unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-qm", "after"]);
+            app.open_grep_match();
+            assert_eq!(app.history, History::Blame, "{:?}", app.status);
+            assert_eq!(app.commits[app.selected].hash, original);
+            assert_eq!(
+                app.commits[app.selected]
+                    .blame()
+                    .unwrap()
+                    .code
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+                before
+            );
+            key(&mut app, KeyCode::Backspace);
+            assert_eq!(app.mode, Mode::Grep);
+        }
+    }
+
     fn mouse(app: &mut App, kind: MouseEventKind, x: u16, y: u16) {
         input::handle(
             Event::Mouse(MouseEvent {

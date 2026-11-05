@@ -74,3 +74,52 @@ impl Target {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::tests::{git, CurrentDirGuard, TestDirectory};
+
+    #[test]
+    fn reversed_history_keeps_fixup_targets_and_rejects_newer_or_ambiguous_subjects() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        for subject in [
+            "base",
+            "fixup! future",
+            "future",
+            "duplicate",
+            "duplicate",
+            "fixup! duplicate",
+            "fixup! base",
+            "squash! base",
+            "amend! base",
+        ] {
+            git(&["commit", "--allow-empty", "-qm", subject]);
+        }
+        for order in [None, Some("--reverse")] {
+            let mut args = vec!["--no-graph".into()];
+            args.extend(order.map(str::to_owned));
+            let commits = crate::git::load_log(&args).unwrap();
+            let targets = resolve(&commits);
+            let base = commits
+                .iter()
+                .position(|commit| commit.subject == "base")
+                .unwrap();
+            for (index, commit) in commits.iter().enumerate() {
+                let expected = match commit.subject.as_str() {
+                    "fixup! base" | "squash! base" | "amend! base" => Some(Target::Commit(base)),
+                    "fixup! future" => Some(Target::Missing),
+                    "fixup! duplicate" => Some(Target::Ambiguous),
+                    _ => None,
+                };
+                assert_eq!(
+                    targets[index], expected,
+                    "order={order:?}, subject={}",
+                    commit.subject
+                );
+            }
+        }
+    }
+}
