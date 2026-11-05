@@ -1220,7 +1220,7 @@ pub(crate) fn summary_line(text: &str) -> Line<'static> {
 
 // Render only on a search request, using the same word wrapping as the viewport.
 // Probe in small chunks so a long minified line does not allocate a huge buffer.
-fn wrapped_match_rows(
+pub(crate) fn wrapped_match_rows(
     line: &Line<'_>,
     query: &str,
     width: u16,
@@ -1249,6 +1249,7 @@ fn wrapped_match_rows(
     if !found {
         return None;
     }
+    marked.spans = ansi::display_spans(marked.spans);
     let paragraph = Paragraph::new(marked).wrap(Wrap { trim: false });
     let mut rows: Option<std::ops::Range<usize>> = None;
     for offset in (0..height.min(usize::from(u16::MAX) + 1)).step_by(64) {

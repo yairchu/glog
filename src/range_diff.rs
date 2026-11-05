@@ -39,7 +39,12 @@ pub struct View {
     pub offset: usize,
     height: usize,
     origin: u16,
-    reveal: bool,
+    reveal: Option<Reveal>,
+}
+
+enum Reveal {
+    Cursor,
+    Search,
 }
 
 impl View {
@@ -52,7 +57,7 @@ impl View {
             offset: 0,
             height: 0,
             origin: 0,
-            reveal: false,
+            reveal: None,
         }
     }
     fn last(&self) -> usize {
@@ -100,7 +105,7 @@ impl PagerView for View {
     }
     fn move_by(&mut self, delta: isize) {
         self.cursor = self.cursor.saturating_add_signed(delta).min(self.last());
-        self.reveal = true;
+        self.reveal = Some(Reveal::Cursor);
     }
     /// Scroll the screen, keeping the cursor on it.
     fn page(&mut self, delta: isize) {
@@ -113,7 +118,7 @@ impl PagerView for View {
     fn bottom(&mut self) {
         self.cursor = self.last();
         self.offset = self.max_offset();
-        self.reveal = true;
+        self.reveal = Some(Reveal::Cursor);
     }
     /// Move the cursor to the next line containing the lowercase `query`.
     fn find(&mut self, query: &str, reverse: bool) -> bool {
@@ -123,7 +128,7 @@ impl PagerView for View {
                 .contains(query)
             {
                 self.cursor = index;
-                self.reveal = true;
+                self.reveal = Some(Reveal::Search);
                 return true;
             }
         }
@@ -152,11 +157,27 @@ impl PagerView for View {
             .get(self.cursor + 1)
             .copied()
             .unwrap_or(cursor_start);
-        if std::mem::take(&mut self.reveal) {
-            if cursor_start < self.offset {
-                self.offset = cursor_start;
-            } else if cursor_end > self.offset + self.height {
-                self.offset = cursor_end.saturating_sub(self.height).min(cursor_start);
+        if let Some(reveal) = self.reveal.take() {
+            let matched = match reveal {
+                Reveal::Search => query.and_then(|query| {
+                    self.lines.get(self.cursor).and_then(|text| {
+                        crate::ui::wrapped_match_rows(
+                            &ansi::normalized_line(text),
+                            query,
+                            area.width,
+                            cursor_end - cursor_start,
+                        )
+                    })
+                }),
+                Reveal::Cursor => None,
+            };
+            let rows = matched.map_or(cursor_start..cursor_end, |rows| {
+                cursor_start + rows.start..cursor_start + rows.end
+            });
+            if rows.start < self.offset {
+                self.offset = rows.start;
+            } else if rows.end > self.offset + self.height {
+                self.offset = rows.end.saturating_sub(self.height).min(rows.start);
             }
         }
         self.offset = self.offset.min(self.max_offset());
@@ -260,6 +281,39 @@ mod tests {
             }),
             app,
         );
+    }
+
+    #[test]
+    fn search_reveals_wrapped_matches_and_keeps_manual_scrolling() {
+        for prefix in [
+            "prefix ".repeat(50),
+            "界".repeat(150),
+            "\tword ".repeat(50),
+            format!("\x1b[32m{}\x1b[0m", "x".repeat(1920)),
+        ] {
+            let mut app = App::range_diff(View::new(&format!("header\n{prefix}needle\nfooter")));
+            let mut terminal = Terminal::new(TestBackend::new(30, 8)).unwrap();
+            terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+            app.search = Some("needle".into());
+            app.repeat_search(false);
+            terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+            let visible: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(visible.contains("needle"), "match hidden for {prefix:?}");
+            let offset = view(&app).offset;
+            assert!(offset > 1);
+            app.repeat_search(true);
+            terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+            assert_eq!(view(&app).offset, offset);
+            mouse(MouseEventKind::ScrollUp, 3, &mut app);
+            terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+            assert_eq!(view(&app).offset, offset - 3);
+        }
     }
 
     #[test]
