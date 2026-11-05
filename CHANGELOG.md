@@ -35,6 +35,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Highlight a Log row's short hash when searching for more of its full hash.
 
+- Keep search highlighting from drawing a truncated author twice when the
+  query matches both its label and the full name.
+
 ## 0.7.2 - 2026-11-04
 
 ### Added

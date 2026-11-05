@@ -86,12 +86,14 @@ pub fn plain(input: &str) -> String {
         .collect()
 }
 
-/// Patch non-overlapping, ordered byte ranges while preserving existing ANSI styles.
+/// Patch byte ranges while preserving existing ANSI styles. Where ranges
+/// overlap, the earliest-starting one styles the shared bytes.
 pub fn style_ranges(
     mut line: Line<'static>,
     ranges: impl IntoIterator<Item = (std::ops::Range<usize>, Style)>,
 ) -> Line<'static> {
-    let ranges: Vec<_> = ranges.into_iter().collect();
+    let mut ranges: Vec<_> = ranges.into_iter().collect();
+    ranges.sort_by_key(|(range, _)| range.start);
     let mut spans = Vec::new();
     let mut offset = 0;
     for span in line.spans {
@@ -101,8 +103,11 @@ pub fn style_ranges(
             .iter()
             .filter(|(range, _)| range.start < end && range.end > offset)
         {
-            let start = range.start.max(offset) - offset;
+            let start = (range.start.max(offset) - offset).max(cursor);
             let stop = range.end.min(end) - offset;
+            if start >= stop {
+                continue;
+            }
             if cursor < start {
                 spans.push(Span::styled(
                     span.content[cursor..start].to_owned(),
@@ -229,6 +234,17 @@ mod tests {
             "aredz"
         );
         assert_eq!(line.spans[1].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn styles_overlapping_ranges_once() {
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let line = style_ranges(
+            Line::from("abcdef"),
+            [(2..4, bold), (1..3, bold), (2..4, bold)],
+        );
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "abcdef");
     }
 
     #[test]
