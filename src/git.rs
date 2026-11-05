@@ -852,8 +852,9 @@ fn github_repository_url(remote: &str) -> Option<String> {
     Some(format!("https://github.com/{owner}/{repo}"))
 }
 
-/// Map each name to the commit it names, as Git resolves a revision: an
-/// ambiguous abbreviation, or a name for another object type, names nothing.
+/// Map each name to the commit it names, as autosquash resolves a revision:
+/// tags peel to their commits, while an ambiguous abbreviation, or a name for
+/// another object type, names nothing.
 pub(crate) fn resolve_names<'a>(
     names: impl IntoIterator<Item = &'a str>,
     repository: Option<&Repository>,
@@ -862,7 +863,10 @@ pub(crate) fn resolve_names<'a>(
     if names.is_empty() {
         return std::collections::HashMap::new();
     }
-    let input: String = names.iter().map(|name| format!("{name}\n")).collect();
+    let input: String = names
+        .iter()
+        .map(|name| format!("{name}^{{commit}}\n"))
+        .collect();
     let output = pipe_through(
         read_command_at(repository)
             .args(["cat-file", "--batch-check=%(objectname) %(objecttype)"])
