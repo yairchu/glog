@@ -859,20 +859,36 @@ fn github_repository_url(remote: &str) -> Option<String> {
     Some(format!("https://github.com/{owner}/{repo}"))
 }
 
-/// Map each name to the commit it names, as autosquash resolves a revision:
-/// tags peel to their commits, while an ambiguous abbreviation, or a name for
-/// another object type, names nothing.
-pub(crate) fn resolve_names<'a>(
+/// What a revision name refers to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Object {
+    /// A commit, possibly reached by peeling tags.
+    Commit(String),
+    /// Another object type, such as the tree `HEAD:src` names.
+    Other(String),
+}
+
+/// Map each name to the object it names, peeling tags to their commits.
+/// Names that resolve to nothing, including ambiguous abbreviations, are
+/// absent. One Git process checks every name.
+pub(crate) fn resolve_objects<'a>(
     names: impl IntoIterator<Item = &'a str>,
     repository: Option<&Repository>,
-) -> std::collections::HashMap<&'a str, String> {
-    let names: Vec<_> = names.into_iter().collect();
+) -> std::collections::HashMap<&'a str, Object> {
+    // The batch protocol is line-based, so a name spanning lines names nothing.
+    let names: Vec<_> = names
+        .into_iter()
+        .filter(|name| !name.contains('\n'))
+        .collect();
     if names.is_empty() {
         return std::collections::HashMap::new();
     }
+    // Ask for each name both as given and peeled to a commit. Peeling cannot
+    // be the only query: Git reads a suffix after `REV:path` as part of the
+    // path, so a tree such as `HEAD:src` would seem to name nothing.
     let input: String = names
         .iter()
-        .map(|name| format!("{name}^{{commit}}\n"))
+        .map(|name| format!("{name}\n{name}^{{commit}}\n"))
         .collect();
     let output = pipe_through(
         read_command_at(repository)
@@ -881,11 +897,42 @@ pub(crate) fn resolve_names<'a>(
         input.as_bytes(),
     )
     .unwrap_or_default();
-    // Git answers each line in order; failures echo the name and a reason.
+    // Git answers each line in order; failures echo the name and a reason,
+    // such as `missing`, in place of an object type.
+    let found = |line: &str| {
+        let (hash, kind) = line.rsplit_once(' ')?;
+        matches!(kind, "commit" | "tree" | "blob" | "tag")
+            .then(|| (hash.to_owned(), kind.to_owned()))
+    };
+    let mut lines = output.lines();
     names
         .into_iter()
-        .zip(output.lines())
-        .filter_map(|(name, line)| Some((name, line.strip_suffix(" commit")?.to_owned())))
+        .filter_map(|name| {
+            let given = found(lines.next()?);
+            let peeled = found(lines.next()?);
+            let object = match (given, peeled) {
+                (_, Some((hash, kind))) if kind == "commit" => Object::Commit(hash),
+                (Some((_, kind)), _) => Object::Other(kind),
+                _ => return None,
+            };
+            Some((name, object))
+        })
+        .collect()
+}
+
+/// Map each name to the commit it names, as autosquash resolves a revision:
+/// tags peel to their commits, while an ambiguous abbreviation, or a name for
+/// another object type, names nothing.
+pub(crate) fn resolve_names<'a>(
+    names: impl IntoIterator<Item = &'a str>,
+    repository: Option<&Repository>,
+) -> std::collections::HashMap<&'a str, String> {
+    resolve_objects(names, repository)
+        .into_iter()
+        .filter_map(|(name, object)| match object {
+            Object::Commit(hash) => Some((name, hash)),
+            Object::Other(_) => None,
+        })
         .collect()
 }
 

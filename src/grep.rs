@@ -114,18 +114,6 @@ fn span_offsets(line: &Line) -> Vec<(usize, usize)> {
     offsets
 }
 
-fn resolve(revision: &str, kind: &str) -> Option<String> {
-    let output = git::read_command()
-        .args(["rev-parse", "--verify", "--quiet", "--end-of-options"])
-        .arg(format!("{revision}^{{{kind}}}"))
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
-}
-
 /// Keep matching options and patterns intact, but reserve the output layout
 /// for the tree. Pin commit revisions before grep so later ref moves cannot
 /// make a result open a different version of its file.
@@ -133,23 +121,12 @@ fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>), String> {
     let mut output = Vec::new();
     let mut sources = vec![Source::Worktree];
     let mut pattern = false;
-    let mut options = true;
-    let mut args = args.iter();
-    while let Some(arg) = args.next() {
-        if arg == "--" && (options || pattern) {
-            output.push(arg.clone());
-            if pattern {
-                output.extend(args.cloned());
-                break;
-            }
-            // Before the positional pattern, -- ends options, but Git still
-            // accepts revisions and a later -- introducing literal pathspecs.
-            options = false;
-            continue;
-        }
+    let mut index = 0;
+    // Like Git, stop reading options at the first non-option argument.
+    while let Some(arg) = args.get(index) {
         let mut takes_value = false;
         let mut adds_pattern = false;
-        if options && arg.starts_with("--") {
+        if arg.starts_with("--") && arg != "--" {
             let name = arg.split('=').next().unwrap();
             match name {
                 "--regexp" | "--file" => { adds_pattern = true; takes_value = !arg.contains('='); }
@@ -162,7 +139,7 @@ fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>), String> {
                 "--line-number" | "--null" | "--full-name" | "--color" | "--no-color" => {}
                 _ => return Err(format!("unsupported grep option {arg:?}; use matching options such as -i, -w, -F, -e, --cached, or --untracked; glog supplies the results layout")),
             }
-        } else if options && arg.starts_with('-') && arg != "-" {
+        } else if arg.starts_with('-') && arg != "-" && arg != "--" {
             for (offset, flag) in arg[1..].char_indices() {
                 match flag {
                     'e' | 'f' | 'm' => {
@@ -174,46 +151,67 @@ fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>), String> {
                     _ => return Err(format!("unsupported grep option {arg:?}; glog displays matching lines in a file tree")),
                 }
             }
-        } else if options && (arg == "(" || arg == ")") {
-            // Git's compound pattern expressions.
-        } else if !pattern {
-            pattern = true;
-        } else if let Some(hash) = resolve(arg, "commit") {
-            // Git would repeat a commit's matches with the same prefix, so
-            // revisions naming one commit share its source.
-            let existing = sources.iter_mut().find_map(|source| match source {
-                Source::Revision { label, hash: found } if *found == hash => Some(label),
-                _ => None,
-            });
-            if let Some(label) = existing {
-                label.push_str(", ");
-                label.push_str(arg);
-            } else {
-                output.push(hash.clone());
-                sources.push(Source::Revision {
-                    label: arg.clone(),
-                    hash,
-                });
-            }
-            continue;
-        } else if resolve(arg, "tree").is_some() {
-            return Err("grep file navigation requires a commit revision, rather than a standalone tree object".into());
-        } else {
-            // Like Git, the first non-revision starts the pathspecs, even
-            // where a later path shares a ref's name.
-            output.push(arg.clone());
-            output.extend(args.cloned());
+        } else if arg != "(" && arg != ")" {
+            // "(" and ")" group Git's compound pattern expressions.
             break;
         }
         output.push(arg.clone());
+        index += 1;
         if takes_value {
             output.push(
-                args.next()
+                args.get(index)
                     .ok_or_else(|| format!("{arg} requires a value"))?
                     .clone(),
             );
+            index += 1;
         }
         pattern |= adds_pattern;
+    }
+    let mut rest = &args[index..];
+    if !pattern {
+        // Before the positional pattern, -- only ends options.
+        if let Some((separator, after)) = rest.split_first().filter(|(arg, _)| *arg == "--") {
+            output.push(separator.clone());
+            rest = after;
+        }
+        if let Some((pattern, after)) = rest.split_first() {
+            output.push(pattern.clone());
+            rest = after;
+        }
+    }
+    // Like Git, the first argument naming no object starts the pathspecs,
+    // even where a later path shares a ref's name.
+    let revisions = rest.iter().take_while(|arg| *arg != "--");
+    let objects = git::resolve_objects(revisions.map(String::as_str), None);
+    for (position, arg) in rest.iter().enumerate() {
+        let hash = match objects.get(arg.as_str()) {
+            Some(git::Object::Commit(hash)) => hash,
+            Some(git::Object::Other(kind)) => {
+                return Err(format!(
+                    "grep file navigation requires commit revisions, but {arg:?} names a {kind}"
+                ))
+            }
+            None => {
+                output.extend(rest[position..].iter().cloned());
+                break;
+            }
+        };
+        // Git would repeat a commit's matches with the same prefix, so
+        // revisions naming one commit share its source.
+        let existing = sources.iter_mut().find_map(|source| match source {
+            Source::Revision { label, hash: found } if found == hash => Some(label),
+            _ => None,
+        });
+        if let Some(label) = existing {
+            label.push_str(", ");
+            label.push_str(arg);
+        } else {
+            output.push(hash.clone());
+            sources.push(Source::Revision {
+                label: arg.clone(),
+                hash: hash.clone(),
+            });
+        }
     }
     Ok((output, sources))
 }
@@ -1399,6 +1397,9 @@ mod tests {
         assert!(load(&["--count", "Needle"]).is_err());
         assert!(load(&["-e"]).is_err());
         assert!(load(&["Needle", "HEAD^{tree}"]).is_err());
+        // Git reads a suffix after REV:path as part of the path.
+        let error = load(&["Needle", "HEAD:"]).err().unwrap();
+        assert!(error.contains("names a tree"), "{error}");
     }
 
     #[cfg(unix)]
