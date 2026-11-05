@@ -224,8 +224,9 @@ struct CachedShow {
 struct LogBookmark {
     hash: String,
     offset: usize,
-    hidden_types: std::collections::BTreeSet<String>,
-    hide_merges: bool,
+    /// The filters following cleared, to hide again on return.
+    shown_type: Option<String>,
+    shown_merges: bool,
 }
 
 pub struct App {
@@ -410,8 +411,6 @@ impl App {
         if matches!(app.history, History::Reflog | History::Branches) {
             app.refresh_log_folds();
             app.ensure_log_selection();
-        } else {
-            app.refresh_fixups();
         }
         app
     }
@@ -874,9 +873,14 @@ impl App {
         self.search_match = None;
     }
 
-    /// Lay out the Log's folds and filters, reporting only failures.
+    /// Prepare the Log for newly loaded commits.
     pub fn refresh_log_folds(&mut self) {
         self.refresh_fixups();
+        self.layout_log_folds();
+    }
+
+    /// Lay out the Log's folds and filters, reporting only failures.
+    fn layout_log_folds(&mut self) {
         if let Err(error) = self.log_folds.refresh(&self.commits) {
             self.status = Some(error);
         }
@@ -2196,21 +2200,25 @@ impl App {
         if self.history != History::Log || index >= self.commits.len() {
             return;
         }
-        self.log_back.push(LogBookmark {
+        let mut bookmark = LogBookmark {
             hash: self.commits[self.selected].hash.clone(),
             offset: self.log_offset,
-            hidden_types: self.log_folds.hidden_types.clone(),
-            hide_merges: self.log_folds.hide_merges,
-        });
+            shown_type: None,
+            shown_merges: false,
+        };
         if self.log_folds.filter_hidden(index, &self.commits[index]) {
             if let Some(kind) = crate::log_folds::commit_type(&self.commits[index]) {
-                self.log_folds.hidden_types.remove(kind.as_ref());
+                if self.log_folds.hidden_types.remove(kind.as_ref()) {
+                    bookmark.shown_type = Some(kind.into_owned());
+                }
             }
-            if self.commits[index].parents.len() > 1 {
+            if self.commits[index].parents.len() > 1 && self.log_folds.hide_merges {
                 self.log_folds.hide_merges = false;
+                bookmark.shown_merges = true;
             }
-            self.refresh_log_folds();
+            self.layout_log_folds();
         }
+        self.log_back.push(bookmark);
         self.log_folds.reveal(index, &self.commits);
         self.selected = index;
         self.center_selection = true;
@@ -2386,9 +2394,13 @@ impl App {
     pub fn reference_back(&mut self) {
         if let Some(bookmark) = self.log_back.pop() {
             self.mode = Mode::Log;
-            self.log_folds.hidden_types = bookmark.hidden_types;
-            self.log_folds.hide_merges = bookmark.hide_merges;
-            self.refresh_log_folds();
+            // Hide only what following showed, keeping later filter changes.
+            let shown_type = bookmark.shown_type.is_some();
+            self.log_folds.hidden_types.extend(bookmark.shown_type);
+            self.log_folds.hide_merges |= bookmark.shown_merges;
+            if shown_type || bookmark.shown_merges {
+                self.layout_log_folds();
+            }
             if let Some(index) = self
                 .commits
                 .iter()

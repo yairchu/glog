@@ -1976,6 +1976,7 @@ mod tests {
         assert_eq!(targets[6], Some(Target::Commit(7)));
         assert_eq!(targets[8], Some(Target::Missing));
         let mut app = App::new(commits);
+        app.refresh_log_folds();
         app.log_format = crate::log_format::LogFormat::parse("%s").unwrap();
         let mut terminal = Terminal::new(TestBackend::new(80, 14)).unwrap();
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
@@ -2003,6 +2004,7 @@ mod tests {
                 target.short_hash = "abcdef0".into();
                 fixup.parents = vec![target.hash.clone()];
                 let mut app = App::new(vec![fixup, target]);
+                app.refresh_log_folds();
                 if let Some(format) = format {
                     app.log_format = crate::log_format::LogFormat::parse(format).unwrap();
                 }
@@ -2071,11 +2073,28 @@ mod tests {
     }
 
     #[test]
+    fn returning_from_a_fixup_target_keeps_later_filter_changes() {
+        let mut app = App::new(vec![
+            commit("fixup! feat: x", 1),
+            commit("test: y", 1),
+            commit("feat: x", 1),
+        ]);
+        app.refresh_log_folds();
+        app.follow_fixup(2);
+        app.apply_log_action(LogAction::Type("test".into()));
+        assert!(!app.log_folds.visible(1));
+        app.reference_back();
+        assert_eq!(app.selected, 0);
+        assert!(!app.log_folds.visible(1));
+    }
+
+    #[test]
     fn search_finds_fixup_target_hashes_it_highlights() {
         let fixup = commit("fixup! feat: side", 1);
         let mut target = commit("feat: side", 1);
         target.short_hash = "abcdef0".into();
         let mut app = App::new(vec![fixup, target]);
+        app.refresh_log_folds();
         let key =
             |app: &mut App, code| handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), app);
         key(&mut app, KeyCode::Char('/'));
