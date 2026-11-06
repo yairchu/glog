@@ -6,7 +6,8 @@ pub struct FileSection {
     pub end: usize,
     // Display text is separate from the lossless identity used for folds and I/O.
     pub path: String,
-    renamed_path: Option<String>,
+    // Rename or copy label, like `src/{old.rs => new.rs}`.
+    summary_label: Option<String>,
     pub path_bytes: Vec<u8>,
     // Include the stash layer so repeated paths have independent view state.
     pub key: Vec<u8>,
@@ -21,7 +22,7 @@ pub struct FileSection {
 
 impl FileSection {
     pub fn summary_path(&self) -> &str {
-        self.renamed_path.as_deref().unwrap_or(&self.path)
+        self.summary_label.as_deref().unwrap_or(&self.path)
     }
 }
 
@@ -61,9 +62,12 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                 .or_else(|| diff_path(&visible))
                 .unwrap_or_else(|| b"changed file".to_vec());
             let path = display_path(&path_bytes);
-            let renamed_path = visible
+            let summary_label = visible
                 .iter()
-                .find_map(|line| line.strip_prefix("rename from "))
+                .find_map(|line| {
+                    line.strip_prefix("rename from ")
+                        .or_else(|| line.strip_prefix("copy from "))
+                })
                 .and_then(unquote_path)
                 .map(|(old, _)| rename_path(&display_path(&old), &path));
             let mut key = path_bytes.clone();
@@ -112,7 +116,7 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                     .any(|line| line.starts_with("new file mode ")),
                 lazy_untracked_path,
                 path,
-                renamed_path,
+                summary_label,
                 path_bytes,
                 key,
                 stash_layer: section,
@@ -130,19 +134,21 @@ fn rename_path(old: &str, new: &str) -> String {
     }
     let old: Vec<_> = old.split('/').collect();
     let new: Vec<_> = new.split('/').collect();
+    let shorter = old.len().min(new.len());
+    // Like Git, only abbreviate whole directories: a shared prefix must end
+    // before a `/` in both paths, and a shared suffix must start after one.
+    // The two may meet, leaving one side of the arrow empty (`a/{ => b}/c`).
     let prefix = old
         .iter()
         .zip(&new)
-        .take(old.len().min(new.len()) - 1)
+        .take(shorter - 1)
         .take_while(|(a, b)| a == b)
         .count();
-    // Keep at least one component on each side of the arrow. Moving a file
-    // into a directory is `a => dir/a`, rather than `{ => dir}/a`.
-    let suffix = old[prefix..]
+    let suffix = old
         .iter()
         .rev()
-        .zip(new[prefix..].iter().rev())
-        .take(old.len().min(new.len()) - prefix - 1)
+        .zip(new.iter().rev())
+        .take(shorter - prefix.max(1))
         .take_while(|(a, b)| a == b)
         .count();
     let change = format!(
@@ -265,10 +271,10 @@ fn diff_path(lines: &[String]) -> Option<Vec<u8>> {
     }) {
         return unquote_path(path).map(|(path, _)| path);
     }
-    if let Some(path) = lines
-        .iter()
-        .find_map(|line| line.strip_prefix("rename to "))
-    {
+    if let Some(path) = lines.iter().find_map(|line| {
+        line.strip_prefix("rename to ")
+            .or_else(|| line.strip_prefix("copy to "))
+    }) {
         return unquote_path(path).map(|(path, _)| path);
     }
     let candidate = lines
@@ -293,7 +299,7 @@ fn diff_path(lines: &[String]) -> Option<Vec<u8>> {
             &header[header.len() - path.len() - 3..]
         } else {
             // Git does not quote spaces. Prefer the split with identical paths;
-            // renames have their own unambiguous "rename to" metadata above.
+            // renames and copies have their own unambiguous metadata above.
             let split = header
                 .match_indices(" b/")
                 .find(|(index, _)| {
@@ -527,6 +533,11 @@ mod tests {
         }
         let sections = file_sections("diff --git a/old name.png b/new name.png\nrename from old name.png\nrename to new name.png\n");
         assert_eq!(sections[0].path, "new name.png");
+        let sections = file_sections(
+            "diff --git a/a b/f b/c b/f\nsimilarity index 100%\ncopy from a b/f\ncopy to c b/f\n",
+        );
+        assert_eq!(sections[0].path, "c b/f");
+        assert_eq!(sections[0].summary_path(), "{a b => c b}/f");
     }
 
     #[test]

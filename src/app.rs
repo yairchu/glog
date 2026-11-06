@@ -3052,7 +3052,7 @@ mod tests {
     }
 
     #[test]
-    fn renamed_file_summaries_keep_both_paths_and_destination_identity() {
+    fn renamed_and_copied_file_summaries_keep_both_paths_and_destination_identity() {
         for (old, new, label) in [
             (
                 "bin/chopi-proxy.sh",
@@ -3064,6 +3064,9 @@ mod tests {
             ("old", "new", "old => new"),
             ("file", "dir/file", "file => dir/file"),
             ("dir/file", "file", "dir/file => file"),
+            ("a/c", "a/b/c", "a/{ => b}/c"),
+            ("x/y/f", "x/f", "x/{y => }/f"),
+            ("q/s", "q/r/s2", "q/{s => r/s2}"),
             ("old/a b.lock", "new/a b.lock", "{old => new}/a b.lock"),
             (
                 r#""old/a\377.lock""#,
@@ -3076,28 +3079,30 @@ mod tests {
                 r"{old => new}/a\t.lock",
             ),
         ] {
-            let mut app = App::new(Vec::new());
-            app.show_stat = true;
-            app.show_text = format!(
-                "diff --git a/old b/new\nsimilarity index 90%\nrename from {old}\nrename to {new}\n--- a/old\n+++ b/new\n@@ -1 +1 @@\n-before\n+after\n"
+            for operation in ["rename", "copy"] {
+                let mut app = App::new(Vec::new());
+                app.show_stat = true;
+                app.show_text = format!(
+                "diff --git a/old b/new\nsimilarity index 90%\n{operation} from {old}\n{operation} to {new}\n--- a/old\n+++ b/new\n@@ -1 +1 @@\n-before\n+after\n"
             );
-            app.ensure_show_rows();
-            assert_eq!(app.show_rows[0].text, format!("▶ {label} | +1 −1"));
-            let destination = diff::unquote_path(new).unwrap().0;
-            assert_eq!(app.show_files[0].path_bytes, destination);
-            assert_eq!(app.show_files[0].key, destination);
-            app.toggle_show_file();
-            assert_eq!(app.show_rows[0].text, format!("▼ {label} | +1 −1"));
-            assert!(app.show_rows.iter().any(|row| row.text == "+after"));
-            app.toggle_show_file();
-            assert_eq!(app.show_rows.len(), 1);
-            if app.show_files[0].lockfile {
-                app.show_stat = false;
-                app.rebuild_show_rows();
-                assert!(app
-                    .show_rows
-                    .iter()
-                    .any(|row| row.folded && row.text.contains(label)));
+                app.ensure_show_rows();
+                assert_eq!(app.show_rows[0].text, format!("▶ {label} | +1 −1"));
+                let destination = diff::unquote_path(new).unwrap().0;
+                assert_eq!(app.show_files[0].path_bytes, destination);
+                assert_eq!(app.show_files[0].key, destination);
+                app.toggle_show_file();
+                assert_eq!(app.show_rows[0].text, format!("▼ {label} | +1 −1"));
+                assert!(app.show_rows.iter().any(|row| row.text == "+after"));
+                app.toggle_show_file();
+                assert_eq!(app.show_rows.len(), 1);
+                if app.show_files[0].lockfile {
+                    app.show_stat = false;
+                    app.rebuild_show_rows();
+                    assert!(app
+                        .show_rows
+                        .iter()
+                        .any(|row| row.folded && row.text.contains(label)));
+                }
             }
         }
     }
