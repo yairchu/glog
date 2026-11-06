@@ -1647,7 +1647,7 @@ impl App {
                     text: format!(
                         "{} {} | {}",
                         if expanded { "▼" } else { "▶" },
-                        file.path,
+                        file.summary_path(),
                         detail
                     ),
                     source: file.start,
@@ -1684,7 +1684,7 @@ impl App {
                 rows.push(ShowRow {
                     text: format!(
                         "▶ {}{} ({}; Enter/z to expand)",
-                        file.path,
+                        file.summary_path(),
                         if file.lazy_untracked_path.is_some() {
                             String::new()
                         } else {
@@ -3049,6 +3049,57 @@ mod tests {
             .show_rows
             .iter()
             .any(|row| row.folded && row.text.contains("two.rs")));
+    }
+
+    #[test]
+    fn renamed_file_summaries_keep_both_paths_and_destination_identity() {
+        for (old, new, label) in [
+            (
+                "bin/chopi-proxy.sh",
+                ".internal/chopi-proxy.sh",
+                "{bin => .internal}/chopi-proxy.sh",
+            ),
+            ("src/old/file", "src/new/file", "src/{old => new}/file"),
+            ("src/old.rs", "src/new.rs", "src/{old.rs => new.rs}"),
+            ("old", "new", "old => new"),
+            ("file", "dir/file", "file => dir/file"),
+            ("dir/file", "file", "dir/file => file"),
+            ("old/a b.lock", "new/a b.lock", "{old => new}/a b.lock"),
+            (
+                r#""old/a\377.lock""#,
+                r#""new/a\377.lock""#,
+                r"{old => new}/a\377.lock",
+            ),
+            (
+                r#""old/a\t.lock""#,
+                r#""new/a\t.lock""#,
+                r"{old => new}/a\t.lock",
+            ),
+        ] {
+            let mut app = App::new(Vec::new());
+            app.show_stat = true;
+            app.show_text = format!(
+                "diff --git a/old b/new\nsimilarity index 90%\nrename from {old}\nrename to {new}\n--- a/old\n+++ b/new\n@@ -1 +1 @@\n-before\n+after\n"
+            );
+            app.ensure_show_rows();
+            assert_eq!(app.show_rows[0].text, format!("▶ {label} | +1 −1"));
+            let destination = diff::unquote_path(new).unwrap().0;
+            assert_eq!(app.show_files[0].path_bytes, destination);
+            assert_eq!(app.show_files[0].key, destination);
+            app.toggle_show_file();
+            assert_eq!(app.show_rows[0].text, format!("▼ {label} | +1 −1"));
+            assert!(app.show_rows.iter().any(|row| row.text == "+after"));
+            app.toggle_show_file();
+            assert_eq!(app.show_rows.len(), 1);
+            if app.show_files[0].lockfile {
+                app.show_stat = false;
+                app.rebuild_show_rows();
+                assert!(app
+                    .show_rows
+                    .iter()
+                    .any(|row| row.folded && row.text.contains(label)));
+            }
+        }
     }
 
     #[test]

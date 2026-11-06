@@ -5,6 +5,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Fixed
+
+- Show both old and new paths in renamed-file summaries, abbreviating shared
+  directories like Git's diffstat.
+
 ## 0.8.0 - 2026-11-05
 
 ### Added

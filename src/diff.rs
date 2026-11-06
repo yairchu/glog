@@ -6,6 +6,7 @@ pub struct FileSection {
     pub end: usize,
     // Display text is separate from the lossless identity used for folds and I/O.
     pub path: String,
+    renamed_path: Option<String>,
     pub path_bytes: Vec<u8>,
     // Include the stash layer so repeated paths have independent view state.
     pub key: Vec<u8>,
@@ -16,6 +17,12 @@ pub struct FileSection {
     pub lazy_untracked_path: Option<Vec<u8>>,
     pub additions: usize,
     pub deletions: usize,
+}
+
+impl FileSection {
+    pub fn summary_path(&self) -> &str {
+        self.renamed_path.as_deref().unwrap_or(&self.path)
+    }
 }
 
 pub fn file_sections(text: &str) -> Vec<FileSection> {
@@ -54,6 +61,11 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                 .or_else(|| diff_path(&visible))
                 .unwrap_or_else(|| b"changed file".to_vec());
             let path = display_path(&path_bytes);
+            let renamed_path = visible
+                .iter()
+                .find_map(|line| line.strip_prefix("rename from "))
+                .and_then(unquote_path)
+                .map(|(old, _)| rename_path(&display_path(&old), &path));
             let mut key = path_bytes.clone();
             for line in &lines[scanned..*start] {
                 if let Some(found) = stash_section(line) {
@@ -100,6 +112,7 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
                     .any(|line| line.starts_with("new file mode ")),
                 lazy_untracked_path,
                 path,
+                renamed_path,
                 path_bytes,
                 key,
                 stash_layer: section,
@@ -108,6 +121,43 @@ pub fn file_sections(text: &str) -> Vec<FileSection> {
             }
         })
         .collect()
+}
+
+/// Abbreviate shared directory components like Git's diffstat rename labels.
+fn rename_path(old: &str, new: &str) -> String {
+    if old == new {
+        return new.to_owned();
+    }
+    let old: Vec<_> = old.split('/').collect();
+    let new: Vec<_> = new.split('/').collect();
+    let prefix = old
+        .iter()
+        .zip(&new)
+        .take(old.len().min(new.len()) - 1)
+        .take_while(|(a, b)| a == b)
+        .count();
+    // Keep at least one component on each side of the arrow. Moving a file
+    // into a directory is `a => dir/a`, rather than `{ => dir}/a`.
+    let suffix = old[prefix..]
+        .iter()
+        .rev()
+        .zip(new[prefix..].iter().rev())
+        .take(old.len().min(new.len()) - prefix - 1)
+        .take_while(|(a, b)| a == b)
+        .count();
+    let change = format!(
+        "{} => {}",
+        old[prefix..old.len() - suffix].join("/"),
+        new[prefix..new.len() - suffix].join("/")
+    );
+    if prefix == 0 && suffix == 0 {
+        return change;
+    }
+    let mut parts = old[..prefix].to_vec();
+    let change = format!("{{{change}}}");
+    parts.push(&change);
+    parts.extend_from_slice(&old[old.len() - suffix..]);
+    parts.join("/")
 }
 
 /// The part of a stash that a section of its patch shows.
