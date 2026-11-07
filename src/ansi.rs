@@ -3,6 +3,45 @@ use ratatui::{
     text::{Line, Span},
 };
 
+/// Write styled text as ordinary lines, so it remains in terminal scrollback.
+pub fn write_lines(
+    mut output: impl std::io::Write,
+    lines: impl IntoIterator<Item = Line<'static>>,
+) -> std::io::Result<()> {
+    use crossterm::{
+        queue,
+        style::{Attribute, ContentStyle, PrintStyledContent},
+    };
+    for line in lines {
+        for span in display_spans(line.spans) {
+            let style = line.style.patch(span.style);
+            let mut content = ContentStyle {
+                foreground_color: style.fg.map(Into::into),
+                background_color: style.bg.map(Into::into),
+                ..ContentStyle::default()
+            };
+            for (modifier, attribute) in [
+                (Modifier::BOLD, Attribute::Bold),
+                (Modifier::DIM, Attribute::Dim),
+                (Modifier::ITALIC, Attribute::Italic),
+                (Modifier::UNDERLINED, Attribute::Underlined),
+                (Modifier::SLOW_BLINK, Attribute::SlowBlink),
+                (Modifier::RAPID_BLINK, Attribute::RapidBlink),
+                (Modifier::REVERSED, Attribute::Reverse),
+                (Modifier::HIDDEN, Attribute::Hidden),
+                (Modifier::CROSSED_OUT, Attribute::CrossedOut),
+            ] {
+                if style.add_modifier.contains(modifier) {
+                    content.attributes.set(attribute);
+                }
+            }
+            queue!(output, PrintStyledContent(content.apply(span.content)))?;
+        }
+        writeln!(output)?;
+    }
+    output.flush()
+}
+
 pub fn normalized_line(input: &str) -> Line<'static> {
     let parsed = parse_line(input);
     if parsed

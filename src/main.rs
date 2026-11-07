@@ -137,7 +137,14 @@ fn main() -> ExitCode {
     app.context = args.join(" ");
     let result = run(&mut terminal, &mut app);
     let _ = app.images.clear(&mut io::stdout());
-    let _ = guard.restore();
+    let result = result.and(guard.restore()).and_then(|()| {
+        if command == Command::Branch {
+            if let Some(picker) = app.branch_picker() {
+                ansi::write_lines(io::stdout().lock(), branches::summary(picker))?;
+            }
+        }
+        Ok(())
+    });
     if let Err(error) = result {
         eprintln!("glog: {error}");
         ExitCode::FAILURE
@@ -298,6 +305,7 @@ Merged tips do not cut off other Logs unless they are also a shared ancestor
 of open branches. Merged status uses the local branch named by origin/HEAD,
 falling back to main or master. With only the current branch (or no branches),
 print git branch output and exit, unless --watch keeps the picker open.
+On quitting, leave the branch graph in the terminal for reference and copying.
 Status opens the Working tree detail view in a watch session.
 Log shows committed history, loaded once unless --watch or W enables refresh.
 Watching preserves revision/path arguments; Logs that name no revision or path

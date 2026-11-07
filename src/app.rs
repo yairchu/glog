@@ -2221,6 +2221,15 @@ impl App {
             .is_some_and(|origin| origin.history == History::Branches)
     }
 
+    /// Retain the last picker snapshot even when quitting from a followed view.
+    pub fn branch_picker(&self) -> Option<&App> {
+        if self.history == History::Branches {
+            Some(self)
+        } else {
+            self.reference_back.as_deref().and_then(App::branch_picker)
+        }
+    }
+
     pub fn has_reference_back(&self) -> bool {
         !self.log_back.is_empty() || self.reference_back.is_some()
     }

@@ -88,6 +88,7 @@ their shared ancestors, alongside the remote default branch such as
 ancestor; Backspace or Escape returns to the graph.
 Use `glog branch --watch`, or press `W` in the picker, to refresh it as you
 clean up branches in another terminal. `W` toggles watching off again.
+After quitting, the full branch graph stays in the terminal so you can copy branch names.
 
 ### Folding merge histories
 

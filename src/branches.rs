@@ -47,6 +47,25 @@ pub enum Launch {
     Interactive(Box<App>),
 }
 
+/// The complete picker, without viewport clipping or transient cursor/search styles.
+pub fn summary(app: &App) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for (index, commit) in app.commits.iter().enumerate() {
+        let graph = app.log_folds.display_graph(index, commit);
+        for (part, row) in graph.iter().enumerate() {
+            let mut line = crate::ansi::parse_line(row);
+            if part + 1 == graph.len() {
+                if let Some(node) = commit.branch() {
+                    line = node.style_graph(line, commit.graph_node, false);
+                    line.spans.extend(spans(commit, node, &app.log_format));
+                }
+            }
+            lines.push(line);
+        }
+    }
+    lines
+}
+
 pub fn load(args: &[String]) -> Result<Launch, String> {
     let (watch, date) = parse_args(args)?;
     let source = crate::app::WatchSource::Branches(args.to_vec());
@@ -854,6 +873,54 @@ mod tests {
     }
 
     #[test]
+    fn exit_summary_keeps_the_full_graph_after_scrolling_and_searching() {
+        let long_name = format!("feature/{}", "long-name-".repeat(12));
+        let mut app = App::new(graph(
+            "a x\nb y\nx f\ny f\nf r\nr\n",
+            &[("a", &["main"]), ("b", &[&long_name])],
+        ));
+        let expected = summary(&app);
+        app.bottom();
+        app.search = Some("main".into());
+        let mut terminal = Terminal::new(TestBackend::new(30, 3)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        assert_eq!(summary(&app), expected);
+        assert!(expected.len() > app.visible_log_rows.len());
+        let mut output = Vec::new();
+        crate::ansi::write_lines(&mut output, summary(&app)).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        let plain = crate::ansi::plain(&output);
+        assert!(plain.contains(&long_name));
+        assert!(plain.contains("main"));
+        assert!(plain.contains("shared ancestor"));
+        assert_eq!(plain.lines().count(), expected.len());
+        let color = !crossterm::style::Colored::ansi_color_disabled_memoized();
+        for (actual, expected) in output.lines().zip(expected) {
+            let actual = crate::ansi::parse_line(actual);
+            // Check each character's style even if ANSI resets split spans.
+            let styled_chars = |line: Line<'static>| {
+                line.spans
+                    .into_iter()
+                    .flat_map(|span| {
+                        // Crossterm encodes named colors through the indexed palette.
+                        let foreground =
+                            span.style.fg.filter(|_| color).map(|fg| {
+                                crossterm::style::SetForegroundColor(fg.into()).to_string()
+                            });
+                        span.content
+                            .chars()
+                            .map(|ch| (ch, foreground.clone(), span.style.add_modifier))
+                            .collect::<Vec<_>>()
+                    })
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(styled_chars(actual), styled_chars(expected));
+        }
+    }
+
+    #[test]
     fn compact_graph_keeps_tip_ancestors_forks_and_aliases() {
         let stacked = graph(
             "c x\nx b\nb a\na r\nr\n",
@@ -1301,6 +1368,7 @@ mod tests {
         assert!(screen.contains("shared ancestor"));
         assert!(!screen.contains(" Show "));
         assert!(screen.contains(['╭', '╮', '├', '┤']));
+        let picker_summary = summary(&app);
         for hash in [&stacked, &main, &feature, &root] {
             app.selected = app
                 .commits
@@ -1314,9 +1382,11 @@ mod tests {
             assert_eq!(app.status, None);
             assert_eq!(app.commits.len(), 1);
             assert_eq!(&app.commits[0].hash, hash);
+            assert_eq!(summary(app.branch_picker().unwrap()), picker_summary);
             press(&mut app, KeyCode::Enter);
             assert_eq!(app.mode, Mode::Show);
             assert_eq!(app.status, None);
+            assert_eq!(summary(app.branch_picker().unwrap()), picker_summary);
             press(&mut app, KeyCode::Esc);
             assert_eq!(app.mode, Mode::Log);
             press(

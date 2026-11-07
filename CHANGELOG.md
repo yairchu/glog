@@ -5,6 +5,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Leave the full branch graph in the terminal after quitting `glog branch`,
+  so branch names remain available to copy while deciding what to merge or delete.
+
 ## 0.8.1 - 2026-11-07
 
 ### Fixed
