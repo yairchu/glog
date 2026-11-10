@@ -475,6 +475,29 @@ mod tests {
     }
 
     #[test]
+    fn capped_reflog_watch_keeps_same_second_visits() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        repository();
+        for _ in 0..3 {
+            reset_at(0);
+        }
+        for limit in [vec!["-n3"], vec!["-n", "3"], vec!["--max-count=3"]] {
+            let mut args = vec!["--watch".to_owned()];
+            args.extend(limit.into_iter().map(str::to_owned));
+            let mut app = crate::git::load_reflog_app(&args).unwrap();
+            app.selected = 1;
+            reset_at(0);
+            assert!(app.poll_watch());
+            assert_eq!(app.commits.len(), 3);
+            assert_eq!(
+                app.selected, 2,
+                "a new same-second visit must move the selected visit down: {args:?}"
+            );
+        }
+    }
+
+    #[test]
     fn reflog_watch_keeps_selection_when_an_older_repeated_visit_is_deleted() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
