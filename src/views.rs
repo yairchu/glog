@@ -340,6 +340,62 @@ mod tests {
             .starts_with("checkout:"));
     }
 
+    fn reset_at(second: u8) {
+        let status = crate::git::tests::git_command(&["reset", "--soft", "HEAD"])
+            .env(
+                "GIT_COMMITTER_DATE",
+                format!("2026-11-10T12:00:{second:02}+00:00"),
+            )
+            .status()
+            .unwrap();
+        assert!(status.success());
+    }
+
+    #[test]
+    fn capped_reflog_watch_keeps_the_selected_repeated_visit() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        repository();
+        for second in 0..3 {
+            reset_at(second);
+        }
+        // Display dates can coincide even when the underlying visits differ.
+        let mut app = crate::git::load_reflog_app(&[
+            "--watch".into(),
+            "-n3".into(),
+            "--date=format:%Y-%m-%d".into(),
+        ])
+        .unwrap();
+        app.selected = 1;
+        reset_at(3);
+        assert!(app.poll_watch());
+        assert_eq!(app.commits.len(), 3);
+        assert_eq!(
+            app.selected, 2,
+            "keep the visit still inside the count limit"
+        );
+    }
+
+    #[test]
+    fn reflog_watch_keeps_selection_when_an_older_repeated_visit_is_deleted() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        repository();
+        for second in 0..3 {
+            reset_at(second);
+        }
+        let mut app =
+            crate::git::load_reflog_app(&["--watch".into(), "--date=format:%Y-%m-%d".into()])
+                .unwrap();
+        app.selected = 1;
+        git(&["reflog", "delete", "HEAD@{2}"]);
+        assert!(app.poll_watch());
+        assert_eq!(
+            app.selected, 1,
+            "deleting an older visit leaves this visit in place"
+        );
+    }
+
     #[test]
     fn standalone_lists_watch_only_when_requested_and_keep_arguments() {
         let directory = TestDirectory::new();
