@@ -336,6 +336,9 @@ pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
     let mut raw = parse_reflog(&String::from_utf8_lossy(&raw_output.stdout), rebasing)?;
     // Number identical visits from the end of the full reflog. Numbering only
     // displayed rows changes a visit's identity when a count limit trims one.
+    // This keeps identities stable when visits are appended. Deleting an older
+    // identical same-second visit renumbers survivors; Git exposes no unique
+    // event ID to distinguish that deletion from removing a newer duplicate.
     let mut occurrences = std::collections::HashMap::new();
     for commit in raw.iter_mut().rev() {
         let Some(Annotation::Reflog(event)) = &mut commit.annotation else {

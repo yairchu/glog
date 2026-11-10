@@ -167,6 +167,8 @@ fn initialize_views(app: &mut App, command: Command, git_args: &[String]) {
         Command::Status => views::View::StatusLog,
         // A scoped Log cannot include the repository-wide working tree. Keep
         // it separately so Status and Log can open an unrestricted view.
+        // An unrestricted Log shares this slot even when initially unwatched:
+        // W adds the Working tree entry, which opens Status with Enter or Tab.
         Command::Log if git::log_shows_working_tree(git_args) => views::View::StatusLog,
         Command::Branch => views::View::Branches,
         Command::Stash => views::View::Stashes,
