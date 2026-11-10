@@ -246,6 +246,8 @@ pub struct ReflogEntry {
     pub updated_at: String,
     /// Raw reflog time, independent of relative or truncated display dates.
     pub timestamp: String,
+    /// Older identical events in the full reflog, before display count limits.
+    pub occurrence: usize,
     pub actor: String,
     pub action: String,
 }
@@ -307,7 +309,7 @@ pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
         command
     };
     let mut raw_command = command();
-    raw_command.arg("--date=raw");
+    raw_command.args(["--date=raw", "--max-count=-1"]);
     let output = command()
         .arg("--")
         .output()
@@ -331,10 +333,29 @@ pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
     if !raw_output.status.success() {
         return Err(stderr_message("git reflog failed", &raw_output.stderr));
     }
-    let raw = parse_reflog(&String::from_utf8_lossy(&raw_output.stdout), rebasing)?;
+    let mut raw = parse_reflog(&String::from_utf8_lossy(&raw_output.stdout), rebasing)?;
+    // Number identical visits from the end of the full reflog. Numbering only
+    // displayed rows changes a visit's identity when a count limit trims one.
+    let mut occurrences = std::collections::HashMap::new();
+    for commit in raw.iter_mut().rev() {
+        let Some(Annotation::Reflog(event)) = &mut commit.annotation else {
+            unreachable!("parsed reflog entry");
+        };
+        let occurrence = occurrences
+            .entry((
+                &commit.hash,
+                &event.reference,
+                &event.timestamp,
+                &event.actor,
+                &event.action,
+            ))
+            .or_insert(0);
+        event.occurrence = *occurrence;
+        *occurrence += 1;
+    }
     // Do not attach timestamps to unrelated rows if the reflog changed between
     // reads. Watch sessions retry this transient error automatically.
-    if commits.len() != raw.len()
+    if commits.len() > raw.len()
         || commits.iter().zip(&raw).any(|(display, raw)| {
             let display_event = display.reflog().expect("parsed reflog entry");
             let raw_event = raw.reflog().expect("parsed reflog entry");
@@ -350,7 +371,9 @@ pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
         let Some(Annotation::Reflog(event)) = &mut commit.annotation else {
             unreachable!("parsed reflog entry");
         };
-        event.timestamp = raw.reflog().expect("parsed reflog entry").timestamp.clone();
+        let raw_event = raw.reflog().expect("parsed reflog entry");
+        event.timestamp = raw_event.timestamp.clone();
+        event.occurrence = raw_event.occurrence;
     }
     Ok(commits)
 }
@@ -394,6 +417,7 @@ fn parse_reflog(output: &str, rebasing: bool) -> Result<Vec<Commit>, String> {
                 rebasing: rebasing && reference == "HEAD",
                 updated_at: date.into(),
                 timestamp: date.into(),
+                occurrence: 0,
                 actor: fields[5].into(),
                 action: fields[3].into(),
             }));

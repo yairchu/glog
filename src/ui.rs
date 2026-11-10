@@ -2427,6 +2427,7 @@ mod tests {
             show_reference: false,
             rebasing: false,
             timestamp: date.into(),
+            occurrence: 0,
             updated_at: date.into(),
             actor: actor.into(),
             action: action.into(),

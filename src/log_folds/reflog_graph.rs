@@ -531,6 +531,7 @@ mod tests {
                     show_reference: true,
                     rebasing: false,
                     timestamp: "2026-11-02".into(),
+                    occurrence: 0,
                     updated_at: "2026-11-02".into(),
                     actor: "Test".into(),
                     action: action.into(),

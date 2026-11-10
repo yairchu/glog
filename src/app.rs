@@ -1173,31 +1173,20 @@ impl App {
                     })
                 })
         });
-        // Raw timestamps keep visits stable when count limits or expiry remove
-        // older entries, even if display dates coincide or change relatively.
-        // Break ties between identical events in the same second from the end.
+        // Full-reflog occurrence numbers distinguish same-second visits even
+        // when count limits trim older identical events from the display.
         let reflog_selection = self.commits.get(self.selected).and_then(|selected| {
             let event = selected.reflog()?;
-            let same_event = |commit: &Commit| {
+            commits.iter().position(|commit| {
                 commit.hash == selected.hash
                     && commit.reflog().is_some_and(|other| {
                         other.reference == event.reference
                             && other.timestamp == event.timestamp
+                            && other.occurrence == event.occurrence
                             && other.actor == event.actor
                             && other.action == event.action
                     })
-            };
-            let occurrence = self.commits[self.selected + 1..]
-                .iter()
-                .filter(|commit| same_event(commit))
-                .count();
-            commits
-                .iter()
-                .enumerate()
-                .rev()
-                .filter(|(_, commit)| same_event(commit))
-                .nth(occurrence)
-                .map(|(index, _)| index)
+            })
         });
         let selected = self
             .commits
