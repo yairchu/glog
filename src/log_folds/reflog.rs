@@ -669,6 +669,7 @@ mod tests {
                         reference: (*reference).into(),
                         action: (*action).into(),
                         actor: "Test".into(),
+                        timestamp: "2026-10-20 12:00:00".into(),
                         updated_at: "2026-10-20 12:00:00".into(),
                         show_reference: true,
                         rebasing: rebasing && *reference == "HEAD",

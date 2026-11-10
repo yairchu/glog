@@ -1173,14 +1173,16 @@ impl App {
                     })
                 })
         });
-        // Match repeated reflog events from the oldest end. New visits to the
-        // same commit must not steal the selection, even with relative dates.
+        // Raw timestamps keep visits stable when count limits or expiry remove
+        // older entries, even if display dates coincide or change relatively.
+        // Break ties between identical events in the same second from the end.
         let reflog_selection = self.commits.get(self.selected).and_then(|selected| {
             let event = selected.reflog()?;
             let same_event = |commit: &Commit| {
                 commit.hash == selected.hash
                     && commit.reflog().is_some_and(|other| {
                         other.reference == event.reference
+                            && other.timestamp == event.timestamp
                             && other.actor == event.actor
                             && other.action == event.action
                     })

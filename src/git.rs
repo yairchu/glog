@@ -244,6 +244,8 @@ pub struct ReflogEntry {
     /// rebase start without an end was left by `git rebase --quit`.
     pub rebasing: bool,
     pub updated_at: String,
+    /// Raw reflog time, independent of relative or truncated display dates.
+    pub timestamp: String,
     pub actor: String,
     pub action: String,
 }
@@ -284,24 +286,29 @@ pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
             _ => return Err(format!("unsupported reflog argument {arg:?}; use glog reflog [--watch] [ref] [--all] [-n COUNT] [--date=STYLE]")),
         }
     }
-    let output = read_command()
-        .args(["--no-pager", "reflog", "show"])
-        // Reflog selectors need an explicit --date to show times, not indices.
-        .arg(format!(
-            "--date={}",
-            configured_log_date("format-local:%Y-%m-%d %H:%M:%S")?
-        ))
-        .env("LC_ALL", "C")
-        .args(options)
-        .args([
-            "--no-color",
-            "--no-patch",
-            "--no-show-signature",
-            "--no-notes",
-        ])
-        .arg("-z")
-        .arg("--format=%H%x00%h%x00%gD%x00%gs%x00%s%x00%gn%x00%P")
-        .args(reference)
+    let date = configured_log_date("format-local:%Y-%m-%d %H:%M:%S")?;
+    let command = || {
+        let mut command = read_command();
+        command
+            .args(["--no-pager", "reflog", "show"])
+            // Reflog selectors need an explicit --date to show times, not indices.
+            .arg(format!("--date={date}"))
+            .env("LC_ALL", "C")
+            .args(&options)
+            .args([
+                "--no-color",
+                "--no-patch",
+                "--no-show-signature",
+                "--no-notes",
+            ])
+            .arg("-z")
+            .arg("--format=%H%x00%h%x00%gD%x00%gs%x00%s%x00%gn%x00%P")
+            .args(&reference);
+        command
+    };
+    let mut raw_command = command();
+    raw_command.arg("--date=raw");
+    let output = command()
         .arg("--")
         .output()
         .map_err(|error| format!("could not run git reflog: {error}"))?;
@@ -312,10 +319,40 @@ pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
         }
         return Err(stderr_message("git reflog failed", &output.stderr));
     }
-    parse_reflog(
-        &String::from_utf8_lossy(&output.stdout),
-        crate::operation::rebase_logged(),
-    )
+    let rebasing = crate::operation::rebase_logged();
+    let mut commits = parse_reflog(&String::from_utf8_lossy(&output.stdout), rebasing)?;
+    if commits.is_empty() {
+        return Ok(commits);
+    }
+    let raw_output = raw_command
+        .arg("--")
+        .output()
+        .map_err(|error| format!("could not read reflog timestamps: {error}"))?;
+    if !raw_output.status.success() {
+        return Err(stderr_message("git reflog failed", &raw_output.stderr));
+    }
+    let raw = parse_reflog(&String::from_utf8_lossy(&raw_output.stdout), rebasing)?;
+    // Do not attach timestamps to unrelated rows if the reflog changed between
+    // reads. Watch sessions retry this transient error automatically.
+    if commits.len() != raw.len()
+        || commits.iter().zip(&raw).any(|(display, raw)| {
+            let display_event = display.reflog().expect("parsed reflog entry");
+            let raw_event = raw.reflog().expect("parsed reflog entry");
+            display.hash != raw.hash
+                || display_event.reference != raw_event.reference
+                || display_event.actor != raw_event.actor
+                || display_event.action != raw_event.action
+        })
+    {
+        return Err("reflog changed while loading; retry".into());
+    }
+    for (commit, raw) in commits.iter_mut().zip(raw) {
+        let Some(Annotation::Reflog(event)) = &mut commit.annotation else {
+            unreachable!("parsed reflog entry");
+        };
+        event.timestamp = raw.reflog().expect("parsed reflog entry").timestamp.clone();
+    }
+    Ok(commits)
 }
 
 fn parse_reflog(output: &str, rebasing: bool) -> Result<Vec<Commit>, String> {
@@ -356,6 +393,7 @@ fn parse_reflog(output: &str, rebasing: bool) -> Result<Vec<Commit>, String> {
                 show_reference,
                 rebasing: rebasing && reference == "HEAD",
                 updated_at: date.into(),
+                timestamp: date.into(),
                 actor: fields[5].into(),
                 action: fields[3].into(),
             }));
