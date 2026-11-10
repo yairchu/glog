@@ -8,7 +8,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 ### Added
 
 - Press `V` to switch between Status and Log, Branches, Stashes, and Reflog while
-  keeping each view's selection, scroll position, and followed references.
+  keeping each view's selection, scroll position, and followed references. Newly
+  opened views watch by default; `W` freezes or resumes each view.
+- Watch stash lists and reflogs with `--watch` or `W`, preserving the selected
+  stash or reflog visit as entries arrive or disappear.
 
 - Set terminal titles to identify the repository and browsing session, restoring
   the previous title on exit or while an external editor is open. Diff titles

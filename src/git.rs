@@ -248,6 +248,17 @@ pub struct ReflogEntry {
     pub action: String,
 }
 
+pub fn load_reflog_app(args: &[String]) -> Result<crate::app::App, String> {
+    let (watch, args) = crate::app::watch_args(args);
+    let source = crate::app::WatchSource::Reflog(args.clone());
+    let snapshot = watch.then(|| source.snapshot(None));
+    let mut app = crate::app::App::new(load_reflog(&args)?);
+    app.history = crate::app::History::Reflog;
+    app.watch = watch;
+    app.set_watch_source(source, snapshot);
+    Ok(app)
+}
+
 /// Read ref-update events, preserving repeated visits to the same commit.
 pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
     let mut options = Vec::new();
@@ -270,7 +281,7 @@ pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
             _ if !arg.starts_with('-') && !arg.contains("@{") && reference.is_none() => {
                 reference = Some(arg.clone());
             }
-            _ => return Err(format!("unsupported reflog argument {arg:?}; use glog reflog [ref] [--all] [-n COUNT] [--date=STYLE]")),
+            _ => return Err(format!("unsupported reflog argument {arg:?}; use glog reflog [--watch] [ref] [--all] [-n COUNT] [--date=STYLE]")),
         }
     }
     let output = read_command()
@@ -1358,6 +1369,26 @@ pub fn refs_fingerprint_at(repository: Option<&Repository>) -> Result<u64, Strin
     ] {
         hash_command_at(&mut fingerprint, &args, true, repository)?;
     }
+    Ok(fingerprint.finish())
+}
+
+/// Reflog edits can leave every ref unchanged (drop, expire, or reset to HEAD).
+/// Raw selectors include timestamps independently of the display date format.
+pub(crate) fn reflog_fingerprint() -> Result<u64, String> {
+    let mut fingerprint = DefaultHasher::new();
+    hash_command(
+        &mut fingerprint,
+        &[
+            "reflog",
+            "show",
+            "--all",
+            "--date=raw",
+            "--no-color",
+            "--format=%H %gD %gs %gn",
+        ],
+        true,
+    )?;
+    fingerprint.write_u8(u8::from(crate::operation::rebase_logged()));
     Ok(fingerprint.finish())
 }
 

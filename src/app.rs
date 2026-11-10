@@ -63,11 +63,31 @@ pub enum WatchSource {
         worktree: std::sync::OnceLock<git::Worktree>,
     },
     Branches(Vec<String>),
+    Stashes(Vec<String>),
+    Reflog(Vec<String>),
     /// A branch's Log opened from a picker with these arguments.
     BranchLog {
         picker: Vec<String>,
         branch: crate::branches::Branch,
     },
+}
+
+/// Consume glog's watch flag while retaining values belonging to Git options.
+pub(crate) fn watch_args(args: &[String]) -> (bool, Vec<String>) {
+    let mut watch = false;
+    let mut filtered = Vec::new();
+    let mut args = args.iter();
+    while let Some(arg) = args.next() {
+        if arg == "--watch" {
+            watch = true;
+        } else {
+            filtered.push(arg.clone());
+            if matches!(arg.as_str(), "--date" | "-n" | "--max-count") {
+                filtered.extend(args.next().cloned());
+            }
+        }
+    }
+    (watch, filtered)
 }
 
 /// A repository state, or why it could not be read.
@@ -110,6 +130,7 @@ impl WatchSource {
             Self::Log { worktree, .. } if self.shows_working_tree(repository) => {
                 git::watch_fingerprint_in(Self::worktree(worktree)?)
             }
+            Self::Stashes(_) | Self::Reflog(_) => git::reflog_fingerprint(),
             _ => git::refs_fingerprint_at(repository),
         }
     }
@@ -143,6 +164,8 @@ impl WatchSource {
             }
             Self::Log { args, .. } => git::load_log_at(args, repository)?,
             Self::Branches(args) => crate::branches::load_watched(args)?,
+            Self::Stashes(args) => crate::stash::load_app(args)?.commits,
+            Self::Reflog(args) => git::load_reflog(args)?,
             Self::BranchLog { picker, branch } => {
                 let rows = crate::branches::load_graph(picker)?;
                 let args = crate::branches::followed_log_args(&rows, branch)?;
@@ -1150,9 +1173,35 @@ impl App {
                     })
                 })
         });
+        // Match repeated reflog events from the oldest end. New visits to the
+        // same commit must not steal the selection, even with relative dates.
+        let reflog_selection = self.commits.get(self.selected).and_then(|selected| {
+            let event = selected.reflog()?;
+            let same_event = |commit: &Commit| {
+                commit.hash == selected.hash
+                    && commit.reflog().is_some_and(|other| {
+                        other.reference == event.reference
+                            && other.actor == event.actor
+                            && other.action == event.action
+                    })
+            };
+            let occurrence = self.commits[self.selected + 1..]
+                .iter()
+                .filter(|commit| same_event(commit))
+                .count();
+            commits
+                .iter()
+                .enumerate()
+                .rev()
+                .filter(|(_, commit)| same_event(commit))
+                .nth(occurrence)
+                .map(|(index, _)| index)
+        });
         let selected = self
             .commits
             .get(self.selected)
+            // A removed reflog event must not become another visit to its hash.
+            .filter(|commit| commit.reflog().is_none())
             .map(|commit| (commit.kind, commit.hash.clone()));
         // Commit contents are immutable, but the decorations in cached Show text
         // follow mutable refs. Invalidate affected views even while Log is open.
@@ -1168,7 +1217,7 @@ impl App {
         self.cache_order
             .retain(|hash| self.cache.contains_key(hash));
         self.commits = commits;
-        let preserved = moved_branch.or_else(|| {
+        let preserved = reflog_selection.or(moved_branch).or_else(|| {
             selected.and_then(|key| {
                 self.commits
                     .iter()

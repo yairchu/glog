@@ -447,6 +447,8 @@ const HELP_ROWS: &[HelpRow] = &[
         HelpTexts {
             log: Some("toggle watch (Log/Show)"),
             branches: Some("toggle watch"),
+            stash: Some("toggle watch"),
+            reflog: Some("toggle watch"),
             ..NO_HELP
         },
     ),

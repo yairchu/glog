@@ -99,11 +99,13 @@ pub fn load(args: &[String]) -> Result<Launch, String> {
 
 /// Internal view switching stays interactive even for a single branch.
 pub fn load_picker() -> Result<App, String> {
+    let source = crate::app::WatchSource::Branches(Vec::new());
+    let snapshot = source.snapshot(None);
     Ok(picker(
         rows(local_tips()?, None)?,
-        false,
-        crate::app::WatchSource::Branches(Vec::new()),
-        None,
+        true,
+        source,
+        Some(snapshot),
     ))
 }
 

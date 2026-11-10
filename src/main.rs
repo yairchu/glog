@@ -85,7 +85,7 @@ fn main() -> ExitCode {
         Command::Diff => git::load_diff_app(command_args),
         Command::RangeDiff => range_diff::load_app(command_args),
         Command::Grep => grep::load_app(command_args),
-        Command::Reflog => git::load_reflog(command_args).map(App::new),
+        Command::Reflog => git::load_reflog_app(command_args),
         Command::Stash => stash::load_app(command_args),
         Command::Branch => match branches::load(command_args) {
             Ok(branches::Launch::Print(text)) => {
@@ -278,9 +278,9 @@ Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
             [--exit-on-esc]
        glog [log] [git log arguments] [--] [pathspec...]
        glog branch [--watch] [--date=STYLE]
-       glog reflog [ref] [--all] [-n COUNT] [--date=STYLE]
+       glog reflog [--watch] [ref] [--all] [-n COUNT] [--date=STYLE]
        glog blame [-L LINE] [--date=STYLE] [revision] [--] file
-       glog stash [list [-n COUNT] [--date=STYLE]]
+       glog stash [list [--watch] [-n COUNT] [--date=STYLE]]
        glog stash show [--stat] [stash]
        glog show [--stat] [commit] [-- pathspec...]
        glog show REV:path
@@ -302,7 +302,7 @@ Options:
   --hide-types=TYPES
                 Hide comma-separated commit types (e.g. test,refactor,docs);
                 T clears filters
-  --watch       Refresh Log or Branches as the repository changes (W toggles)
+  --watch       Refresh Log, Branches, Stashes, or Reflog as they change (W toggles)
   --exit-on-esc Exit from the Log list with Escape (glog / glog log)
   --color-moved[=MODE]
                 Highlight moved code for this session (bare flag: zebra).
@@ -334,7 +334,7 @@ On quitting, leave the branch graph in the terminal for reference and copying.
 Status opens the Working tree detail view in a watch session.
 Log shows committed history, loaded once unless --watch or W enables refresh.
 Watching preserves revision/path arguments; Logs that name no revision or path
-also include a Working tree item. W toggles watching in Log and Branches.
+also include a Working tree item. W toggles watching in Log, Branches, Stashes, and Reflog.
 Graphs use rounded paths, ● for commits, • for empty non-merge commits or a
 clean working tree with nothing in progress, and ○ for boundary commits. Merge
 commits stay filled.
@@ -391,6 +391,7 @@ Log arguments are passed through to git log. Inside the TUI, press h for
 key help, Tab to switch between Log and its detail view, Ctrl-L to redraw the screen, and q
 or Ctrl-C to quit.
 Press V to switch between Status and Log, Branches, Stashes, and Reflog, keeping your place.
+Views opened through V watch by default; W freezes or resumes each view.
 Search history persists between sessions; use Up/Down at / or ? to recall it.
 GLOG_TITLE=0 disables terminal titles.
 GLOG_HISTFILE overrides the history path; set it to - to disable persistence.

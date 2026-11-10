@@ -53,12 +53,8 @@ impl View {
                 app
             }
             Self::Branches => crate::branches::load_picker()?,
-            Self::Stashes => crate::stash::load_app(&[])?,
-            Self::Reflog => {
-                let mut app = App::new(crate::git::load_reflog(&[])?);
-                app.history = crate::app::History::Reflog;
-                app
-            }
+            Self::Stashes => crate::stash::load_app(&["--watch".into()])?,
+            Self::Reflog => crate::git::load_reflog_app(&["--watch".into()])?,
             Self::Original => return Err("Original view is no longer available".into()),
         };
         app.context = match self {
@@ -130,7 +126,7 @@ mod tests {
         // Internal branch browsing must work even for a single current branch.
         switch(&mut app, View::Branches);
         assert_eq!(app.history, History::Branches);
-        assert!(!app.watch);
+        assert!(app.watch);
         let picker = crate::branches::summary(&app);
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.history, History::Log);
@@ -253,6 +249,124 @@ mod tests {
         press(&mut app, KeyCode::Char('V'));
         assert_eq!(app.search_input.as_deref(), Some("V"));
         assert_eq!(app.view_menu, None);
+    }
+
+    #[test]
+    fn menu_views_watch_changes_and_remember_when_frozen() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        repository();
+        let mut app = View::StatusLog.load().unwrap();
+        switch(&mut app, View::Branches);
+        assert!(app.watch);
+        git(&["branch", "feature"]);
+        assert!(app.poll_watch());
+        assert!(crate::branches::summary(&app)
+            .iter()
+            .any(|line| line.to_string().contains("feature")));
+        press(&mut app, KeyCode::Char('W'));
+        assert!(!app.watch);
+        switch(&mut app, View::Stashes);
+        assert!(app.watch);
+        assert!(app.commits.is_empty());
+        for content in ["first\n", "second\n", "third\n"] {
+            fs::write("file.txt", content).unwrap();
+            git(&["stash", "push", "-qm", content.trim()]);
+            assert!(app.poll_watch());
+        }
+        app.selected = 1;
+        let selected = app.commits[1].hash.clone();
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.mode, Mode::Show);
+        app.show_cursor = 2;
+        // Drop the oldest stash: refs/stash remains on the same commit.
+        git(&["stash", "drop", "-q", "stash@{2}"]);
+        assert!(app.poll_watch());
+        assert_eq!(app.commits.len(), 2);
+        assert_eq!(app.commits[app.selected].hash, selected);
+        assert_eq!(app.show_cursor, 2);
+        fs::write("file.txt", "fourth\n").unwrap();
+        git(&["stash", "push", "-qm", "fourth"]);
+        assert!(app.poll_watch());
+        assert_eq!(app.selected, 2);
+        assert_eq!(app.commits[app.selected].hash, selected);
+        assert_eq!(
+            app.commits[app.selected].show_cache_key(),
+            format!("{selected} stash@{{2}}")
+        );
+        press(&mut app, KeyCode::Char('W'));
+        switch(&mut app, View::Reflog);
+        assert!(app.watch);
+        press(&mut app, KeyCode::Char('W'));
+        switch(&mut app, View::Branches);
+        assert!(!app.watch);
+        switch(&mut app, View::Stashes);
+        assert!(!app.watch);
+        switch(&mut app, View::Reflog);
+        assert!(!app.watch);
+    }
+
+    #[test]
+    fn reflog_watch_preserves_repeated_visits_without_moving_refs() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        repository();
+        git(&["reset", "--soft", "HEAD"]);
+        git(&["reset", "--soft", "HEAD"]);
+        let mut app = crate::git::load_reflog_app(&["--watch".into()]).unwrap();
+        app.selected = 1;
+        let old_len = app.commits.len();
+        git(&["reset", "--soft", "HEAD"]);
+        assert!(app.poll_watch());
+        assert_eq!(app.commits.len(), old_len + 1);
+        assert_eq!(app.selected, 2);
+        assert!(!app.poll_watch());
+        // Deleting an entry also leaves HEAD and all branch refs unchanged.
+        git(&["reflog", "delete", "HEAD@{0}"]);
+        assert!(app.poll_watch());
+        assert_eq!(app.selected, 1);
+        assert_eq!(app.commits.len(), old_len);
+        // Removing the selected visit leaves a visible event selected.
+        git(&["checkout", "-qb", "feature"]);
+        assert!(app.poll_watch());
+        app.selected = 0;
+        git(&["reflog", "delete", "HEAD@{0}"]);
+        assert!(app.poll_watch());
+        assert!(app.log_folds.visible(app.selected));
+        assert!(!app.commits[app.selected]
+            .reflog()
+            .unwrap()
+            .action
+            .starts_with("checkout:"));
+    }
+
+    #[test]
+    fn standalone_lists_watch_only_when_requested_and_keep_arguments() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        repository();
+        for watched in [false, true] {
+            let mut args = vec!["-n".into(), "1".into(), "--date=iso-strict".into()];
+            if watched {
+                args.push("--watch".into());
+            }
+            let mut app = crate::git::load_reflog_app(&args).unwrap();
+            assert_eq!(app.watch, watched);
+            assert!(app.watch_source.is_some());
+            git(&["reset", "--soft", "HEAD"]);
+            assert_eq!(app.poll_watch(), watched);
+            assert_eq!(app.commits.len(), 1);
+            args.insert(0, "list".into());
+            let mut app = crate::stash::load_app(&args).unwrap();
+            assert_eq!(app.watch, watched);
+            assert!(app.watch_source.is_some());
+            fs::write("file.txt", "stash\n").unwrap();
+            git(&["stash", "push", "-qm", "stash"]);
+            assert_eq!(app.poll_watch(), watched);
+            assert!(app.commits.len() <= 1);
+        }
+        assert!(crate::stash::load_app(&["show".into(), "--watch".into()]).is_err());
+        assert!(crate::git::load_reflog_app(&["--date".into(), "--watch".into()]).is_err());
     }
 
     #[test]

@@ -12,7 +12,8 @@ use crate::{
     log_format::{Field, LogFormat},
 };
 
-const USAGE: &str = "use glog stash [list [-n COUNT] [--date=STYLE] | show [--stat] [stash]]";
+const USAGE: &str =
+    "use glog stash [list [--watch] [-n COUNT] [--date=STYLE] | show [--stat] [stash]]";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StashEntry {
@@ -22,12 +23,20 @@ pub struct StashEntry {
 }
 
 pub fn load_app(args: &[String]) -> Result<App, String> {
-    match args.first().map(String::as_str) {
-        None => load_list(&[]).map(into_app),
-        Some("list") => load_list(&args[1..]).map(into_app),
-        Some("show") => load_show(&args[1..]),
-        _ => Err(USAGE.into()),
+    if args.first().is_some_and(|arg| arg == "show") {
+        return load_show(&args[1..]);
     }
+    let (watch, args) = crate::app::watch_args(args);
+    let source = crate::app::WatchSource::Stashes(args.clone());
+    let snapshot = watch.then(|| source.snapshot(None));
+    let mut app = match args.first().map(String::as_str) {
+        None => into_app(load_list(&[])?),
+        Some("list") => into_app(load_list(&args[1..])?),
+        _ => return Err(USAGE.into()),
+    };
+    app.watch = watch;
+    app.set_watch_source(source, snapshot);
+    Ok(app)
 }
 
 fn into_app(mut rows: Vec<Commit>) -> App {
