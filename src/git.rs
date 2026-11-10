@@ -5356,7 +5356,7 @@ pub(crate) mod tests {
             app.bottom();
             assert_eq!(app.terminal_title(root), expected);
             app.follow_reference("HEAD");
-            assert_eq!(app.terminal_title(root), "Log (repo)");
+            assert_eq!(app.terminal_title(root), "Log HEAD (repo)");
             app.reference_back();
             assert_eq!(app.terminal_title(root), expected);
         }
