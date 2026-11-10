@@ -112,6 +112,29 @@ mod tests {
     }
 
     #[test]
+    fn switching_to_clean_status_log_resolves_autosquash_links() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        repository();
+        git(&["commit", "--allow-empty", "-qm", "fixup! base"]);
+        let mut app = View::Branches.load().unwrap();
+        app.views.active = View::Branches;
+
+        switch(&mut app, View::StatusLog);
+        assert_eq!(app.mode, Mode::Log);
+        // An unchanged watch snapshot must not be needed to initialize links.
+        assert!(!app.poll_watch());
+        let fixup = app
+            .commits
+            .iter()
+            .position(|commit| commit.subject == "fixup! base")
+            .unwrap();
+        let label = app.fixup_label(fixup).expect("fixup target link");
+        let target = label.target.expect("resolved target");
+        assert_eq!(app.commits[target].subject, "base");
+    }
+
+    #[test]
     fn switching_to_status_log_opens_log_when_clean() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
