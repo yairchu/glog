@@ -110,7 +110,7 @@ fn main() -> ExitCode {
         }
     };
     let watch = watch || app.watch;
-    initialize_views(&mut app, command);
+    initialize_views(&mut app, command, &git_args);
     // Watching waits for content, as Status always does.
     if !watch && app.is_empty() {
         eprintln!("glog: {}", command.empty_message(app.history));
@@ -162,14 +162,18 @@ fn main() -> ExitCode {
     }
 }
 
-fn initialize_views(app: &mut App, command: Command) {
+fn initialize_views(app: &mut App, command: Command, git_args: &[String]) {
     app.views.active = match command {
-        Command::Status | Command::Log => views::View::StatusLog,
+        Command::Status => views::View::StatusLog,
+        // A scoped Log cannot include the repository-wide working tree. Keep
+        // it separately so Status and Log can open an unrestricted view.
+        Command::Log if git::log_shows_working_tree(git_args) => views::View::StatusLog,
         Command::Branch => views::View::Branches,
         Command::Stash => views::View::Stashes,
         Command::Reflog => views::View::Reflog,
         _ => {
             app.views.original_label = Some(match command {
+                Command::Log => "Log",
                 Command::Show => "Show",
                 Command::Diff => "Diff",
                 Command::Blame => "Blame",

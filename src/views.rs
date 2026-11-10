@@ -132,7 +132,7 @@ mod tests {
                 let source = WatchSource::log(args.clone());
                 let snapshot = watch.then(|| source.snapshot(None));
                 let mut app = App::new(source.load(None).unwrap());
-                crate::initialize_views(&mut app, crate::Command::Log);
+                crate::initialize_views(&mut app, crate::Command::Log, &args);
                 crate::initialize_log_filters(&mut app, crate::log_format::LogOptions::default());
                 app.set_watch_source(source, snapshot);
                 app.watch = watch;

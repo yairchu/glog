@@ -9,7 +9,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Press `V` to switch between Status and Log, Branches, Stashes, and Reflog while
   keeping each view's selection, scroll position, and followed references. Newly
-  opened views watch by default; `W` freezes or resumes each view.
+  opened views watch by default; `W` freezes or resumes each view. Logs scoped
+  by revision or path remain available as a separate Log view.
 - Watch stash lists and reflogs with `--watch` or `W`, preserving the selected
   stash or reflog visit as entries arrive or disappear.
 
