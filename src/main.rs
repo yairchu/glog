@@ -110,23 +110,7 @@ fn main() -> ExitCode {
         }
     };
     let watch = watch || app.watch;
-    app.views.active = match command {
-        Command::Status | Command::Log => views::View::StatusLog,
-        Command::Branch => views::View::Branches,
-        Command::Stash => views::View::Stashes,
-        Command::Reflog => views::View::Reflog,
-        _ => {
-            app.views.original_label = Some(match command {
-                Command::Show => "Show",
-                Command::Diff => "Diff",
-                Command::Blame => "Blame",
-                Command::RangeDiff => "Range diff",
-                Command::Grep => "Grep",
-                _ => unreachable!(),
-            });
-            views::View::Original
-        }
-    };
+    initialize_views(&mut app, command);
     // Watching waits for content, as Status always does.
     if !watch && app.is_empty() {
         eprintln!("glog: {}", command.empty_message(app.history));
@@ -176,6 +160,26 @@ fn main() -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+fn initialize_views(app: &mut App, command: Command) {
+    app.views.active = match command {
+        Command::Status | Command::Log => views::View::StatusLog,
+        Command::Branch => views::View::Branches,
+        Command::Stash => views::View::Stashes,
+        Command::Reflog => views::View::Reflog,
+        _ => {
+            app.views.original_label = Some(match command {
+                Command::Show => "Show",
+                Command::Diff => "Diff",
+                Command::Blame => "Blame",
+                Command::RangeDiff => "Range diff",
+                Command::Grep => "Grep",
+                _ => unreachable!(),
+            });
+            views::View::Original
+        }
+    };
 }
 
 fn initialize_log_filters(app: &mut App, options: log_format::LogOptions) {

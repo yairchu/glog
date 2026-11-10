@@ -113,6 +113,67 @@ mod tests {
     }
 
     #[test]
+    fn scoped_logs_can_open_status_and_restore_the_original_query() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        repository();
+        fs::write("other.txt", "other\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "unrelated"]);
+        fs::write("file.txt", "dirty\n").unwrap();
+
+        for args in [
+            vec!["HEAD~"],
+            vec!["--", "file.txt"],
+            vec!["HEAD", "--", "file.txt"],
+        ] {
+            let args: Vec<String> = args.into_iter().map(str::to_owned).collect();
+            for watch in [false, true] {
+                let source = WatchSource::log(args.clone());
+                let snapshot = watch.then(|| source.snapshot(None));
+                let mut app = App::new(source.load(None).unwrap());
+                crate::initialize_views(&mut app, crate::Command::Log);
+                crate::initialize_log_filters(&mut app, crate::log_format::LogOptions::default());
+                app.set_watch_source(source, snapshot);
+                app.watch = watch;
+                app.context = format!("log {}", args.join(" "));
+                app.log_offset = 2;
+                let original_context = app.context.clone();
+                let original_hashes: Vec<_> = app
+                    .commits
+                    .iter()
+                    .map(|commit| commit.hash.clone())
+                    .collect();
+
+                switch(&mut app, View::StatusLog);
+                assert_eq!(app.mode, Mode::Status, "{args:?}, watch={watch}");
+                assert!(app.watch);
+                assert!(app.status_view.is_some());
+                press(&mut app, KeyCode::Tab);
+                assert_eq!(app.commits[0].kind, crate::git::CommitKind::WorkingTree);
+                assert!(app
+                    .commits
+                    .iter()
+                    .any(|commit| commit.subject == "unrelated"));
+
+                switch(&mut app, View::Original);
+                assert_eq!(app.mode, Mode::Log);
+                assert_eq!(app.watch, watch);
+                assert_eq!(app.context, original_context);
+                assert_eq!(app.log_offset, 2);
+                assert_eq!(
+                    app.commits
+                        .iter()
+                        .map(|commit| &commit.hash)
+                        .collect::<Vec<_>>(),
+                    original_hashes.iter().collect::<Vec<_>>()
+                );
+                assert_eq!(app.views.label(View::Original), "Log");
+            }
+        }
+    }
+
+    #[test]
     fn switching_to_clean_status_log_resolves_autosquash_links() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
