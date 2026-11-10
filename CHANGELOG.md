@@ -16,7 +16,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Fixed
 
-- Include the total files changed, insertions, and deletions in file summary mode.
+- Include the total files changed, insertions, and deletions in file summary mode,
+  counting each file once across stash layers.
 
 ## 0.8.1 - 2026-11-07
 

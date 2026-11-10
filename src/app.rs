@@ -1790,7 +1790,13 @@ impl App {
             });
         }
         if self.show_stat && !self.show_files.is_empty() {
-            let count = self.show_files.len();
+            // A stash can contain the same path in multiple independent layers.
+            let count = self
+                .show_files
+                .iter()
+                .map(|file| file.path_bytes.as_slice())
+                .collect::<HashSet<_>>()
+                .len();
             let additions: usize = self.show_files.iter().map(|file| file.additions).sum();
             let deletions: usize = self.show_files.iter().map(|file| file.deletions).sum();
             let mut text = format!(" {count} file{} changed", if count == 1 { "" } else { "s" });
