@@ -1,7 +1,7 @@
 //! Session-level views keep their own navigation and followed-reference stacks.
 use std::collections::HashMap;
 
-use crate::app::{App, Mode, WatchSource};
+use crate::app::{App, WatchSource};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) enum View {
@@ -47,7 +47,6 @@ impl View {
                 let source = WatchSource::log(Vec::new());
                 let snapshot = source.snapshot(None);
                 let mut app = crate::status::load_app(&[])?;
-                app.mode = Mode::Status;
                 app.watch = true;
                 app.set_watch_source(source, Some(snapshot));
                 app
@@ -73,7 +72,7 @@ impl View {
 mod tests {
     use super::*;
     use crate::{
-        app::History,
+        app::{History, Mode},
         git::tests::{git, CurrentDirGuard, TestDirectory},
         input, ui,
     };
@@ -110,6 +109,20 @@ mod tests {
         fs::write("file.txt", "base\n").unwrap();
         git(&["add", "."]);
         git(&["commit", "-qm", "base"]);
+    }
+
+    #[test]
+    fn switching_to_status_log_opens_log_when_clean() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        repository();
+        let mut app = View::Branches.load().unwrap();
+        app.views.active = View::Branches;
+
+        switch(&mut app, View::StatusLog);
+        assert_eq!(app.mode, Mode::Log);
+        assert!(app.watch);
+        assert_eq!(app.commits[app.selected].subject, "Working tree · Clean");
     }
 
     #[test]
