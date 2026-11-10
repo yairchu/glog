@@ -5,6 +5,12 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Fixed
+
+- Follow moved code to its original location when opening a Blame line's parent,
+  including moves across files and indentation changes. Keep the corresponding
+  line selected, and use the usual diff mapping when the origin is ambiguous.
+
 ## 0.9.0 - 2026-11-10
 
 ### Added

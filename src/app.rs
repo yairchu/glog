@@ -781,23 +781,15 @@ impl App {
             self.status = Some("This line is not committed yet".into());
             return;
         }
-        let Some((parent, path)) = &line.previous else {
-            self.status = Some(format!(
-                "{} added this file; nothing earlier to blame",
-                commit.short_hash
-            ));
-            return;
-        };
-        let context = format!(
-            "blame {} -- {}",
-            &parent[..commit.short_hash.len().min(parent.len())],
-            diff::display_path(path)
-        );
         match crate::blame::load_parent(commit, line) {
-            Ok((commits, _)) if commits.is_empty() => {
+            Ok(parent) if parent.commits.is_empty() => {
                 self.status = Some("The file was empty before this commit".into());
             }
-            Ok((commits, selected)) => {
+            Ok(crate::blame::ParentBlame {
+                commits,
+                selected,
+                context,
+            }) => {
                 // Keep the selection at the same height on screen.
                 let screen_row = self.selected.saturating_sub(self.log_offset);
                 self.blame_stack.push(BlameFrame {

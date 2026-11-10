@@ -22,6 +22,8 @@ use crate::{
     log_format::{pad, Field, LogFormat},
 };
 
+mod moves;
+
 const UNCOMMITTED_AUTHOR: &str = "Not committed yet";
 const MAX_AUTHOR_WIDTH: usize = 20;
 const USAGE: &str = "use glog blame [-L LINE] [--date=STYLE] [revision] [--] file";
@@ -611,11 +613,35 @@ fn parse_line(value: &str) -> Result<usize, String> {
         .ok_or_else(|| format!("-L takes a line number, not {value:?}"))
 }
 
-/// Blame the file as it was before the commit that last changed `line`,
-/// selecting the parent's version of that line, or the line before where the
-/// commit added it.
-pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<(Vec<Commit>, usize), String> {
-    let (parent, path) = line.previous.as_ref().ok_or("nothing earlier to blame")?;
+pub struct ParentBlame {
+    pub commits: Vec<Commit>,
+    pub selected: usize,
+    pub context: String,
+}
+
+/// Blame before the commit that last changed `line`, following moved code to
+/// its origin or mapping edits and insertions through the same-file diff.
+pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<ParentBlame, String> {
+    let no_history = || {
+        format!(
+            "{} added this file; nothing earlier to blame",
+            commit.short_hash
+        )
+    };
+    let (parent, path) = match &line.previous {
+        Some((parent, path)) => (parent.as_str(), path.as_slice()),
+        None => (
+            commit.parents.first().ok_or_else(no_history)?.as_str(),
+            line.source_path.as_slice(),
+        ),
+    };
+    if let Some((path, number)) = moves::origin(commit, line, parent)? {
+        return load_parent_file(commit, line, parent, &path, number);
+    }
+    // A new file can contain moved code, but has no same-file fallback.
+    if line.previous.is_none() {
+        return Err(no_history());
+    }
     let output = git::read_command_at(Some(&line.file.repository))
         .env("LC_ALL", "C")
         .args([
@@ -639,7 +665,17 @@ pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<(Vec<Commit>, us
         return Err(git::stderr_message("git diff failed", &output.stderr));
     }
     let number = parent_line(&String::from_utf8_lossy(&output.stdout), line.source_number);
-    let rows = blame_with_textconv(
+    load_parent_file(commit, line, parent, path, number)
+}
+
+fn load_parent_file(
+    commit: &Commit,
+    line: &BlameLine,
+    parent: &str,
+    path: &[u8],
+    number: usize,
+) -> Result<ParentBlame, String> {
+    let commits = blame_with_textconv(
         Some(parent),
         path,
         Some(&line.file.repository),
@@ -647,8 +683,18 @@ pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<(Vec<Commit>, us
         line.file.textconv,
         None,
     )?;
-    let selected = number.saturating_sub(1).min(rows.len().saturating_sub(1));
-    Ok((rows, selected))
+    let selected = number
+        .saturating_sub(1)
+        .min(commits.len().saturating_sub(1));
+    Ok(ParentBlame {
+        commits,
+        selected,
+        context: format!(
+            "blame {} -- {}",
+            &parent[..commit.short_hash.len().min(parent.len())],
+            crate::diff::display_path(path)
+        ),
+    })
 }
 
 /// Build a revision:path argument without converting path bytes to text.
@@ -826,6 +872,7 @@ fn render_lines(
                 parents: Vec::new(),
             };
             if let Some(details) = details.get(&line.hash) {
+                commit.parents = details.parents.clone();
                 commit.short_hash = details.short_hash.clone();
                 commit.author = details.author.clone();
                 commit.author_email = details.author_email.clone();
@@ -938,6 +985,7 @@ fn parse_porcelain(output: &str) -> Result<Vec<PorcelainLine>, String> {
 }
 
 struct Details {
+    parents: Vec<String>,
     short_hash: String,
     author: String,
     author_email: String,
@@ -967,7 +1015,7 @@ fn commit_details(
             .env("LC_ALL", "C")
             .args(["log", "--no-walk=unsorted", "--stdin", "--no-show-signature"])
             .arg(format!("--date={date}"))
-            .arg("--format=%x1e%H%x1f%h%x1f%an%x1f%ae%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)"),
+            .arg("--format=%x1e%H%x1f%h%x1f%an%x1f%ae%x1f%ad%x1f%P%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)"),
         input.as_bytes(),
     )
     .ok_or("could not read the blamed commits")?;
@@ -976,7 +1024,7 @@ fn commit_details(
         .skip(1)
         .map(|record| {
             let fields: Vec<_> = record.trim_end_matches('\n').split('\x1f').collect();
-            let [hash, short_hash, author, email, date, trailers] = fields[..] else {
+            let [hash, short_hash, author, email, date, parents, trailers] = fields[..] else {
                 return Err("invalid Git log output".to_owned());
             };
             if date.chars().any(char::is_control) {
@@ -985,6 +1033,7 @@ fn commit_details(
             Ok((
                 hash.to_owned(),
                 Details {
+                    parents: parents.split_whitespace().map(str::to_owned).collect(),
                     short_hash: short_hash.to_owned(),
                     author: author.to_owned(),
                     author_email: email.to_owned(),
@@ -2449,6 +2498,87 @@ mod tests {
     }
 
     #[test]
+    fn blame_parent_follows_a_moved_block_and_restores_the_cursor() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let moved = "begin_moved_block();\nselected_moved_line();\nend_moved_block();\n";
+        let stationary: String = (0..20)
+            .map(|n| format!("stationary_line_{n}();\n"))
+            .collect();
+        fs::write("file.txt", format!("{moved}{stationary}")).unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        fs::write("file.txt", format!("{stationary}{moved}")).unwrap();
+        git(&["commit", "-qam", "move block"]);
+
+        let (rows, _) = load(&["file.txt".into()]).unwrap();
+        let mut app = App::new(rows);
+        app.selected = 21;
+        assert_eq!(
+            code(app.commits[21].blame().unwrap()),
+            "selected_moved_line();"
+        );
+        app.blame_parent();
+        assert_eq!(app.status, None);
+        assert_eq!(app.selected, 1);
+        assert_eq!(
+            code(app.commits[1].blame().unwrap()),
+            "selected_moved_line();"
+        );
+        app.blame_back();
+        assert_eq!(app.selected, 21);
+    }
+
+    #[test]
+    fn blame_parent_follows_code_moved_into_existing_and_new_files() {
+        for new_file in [false, true] {
+            let directory = TestDirectory::new();
+            let _cwd = CurrentDirGuard::enter(directory.path());
+            git(&["init", "-q"]);
+            let moved = "begin_moved_block();\nselected_moved_line();\nend_moved_block();\n";
+            fs::write(
+                "source\tfile.txt",
+                format!("source_header\n{moved}source_footer\n"),
+            )
+            .unwrap();
+            if !new_file {
+                fs::write("target.txt", "target_header\ntarget_footer\n").unwrap();
+            }
+            git(&["add", "."]);
+            git(&["commit", "-qm", "base"]);
+            fs::write("source\tfile.txt", "source_header\nsource_footer\n").unwrap();
+            fs::write(
+                "target.txt",
+                format!("target_header\n{moved}target_footer\n"),
+            )
+            .unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-qm", "move across files"]);
+            fs::create_dir("sub").unwrap();
+            std::env::set_current_dir("sub").unwrap();
+
+            let (rows, _) = load(&["../target.txt".into()]).unwrap();
+            let mut app = App::new(rows);
+            app.selected = 2;
+            app.blame_parent();
+            assert_eq!(app.status, None, "new file: {new_file}");
+            assert_eq!(app.selected, 2);
+            let line = app.commits[app.selected].blame().unwrap();
+            assert_eq!(line.source_path, b"source\tfile.txt");
+            assert!(
+                app.context.ends_with(" -- source\\tfile.txt"),
+                "{}",
+                app.context
+            );
+            assert_eq!(code(line), "selected_moved_line();");
+            app.blame_back();
+            assert_eq!(app.selected, 2);
+            assert_eq!(app.commits[2].blame().unwrap().source_path, b"target.txt");
+        }
+    }
+
+    #[test]
     fn blame_parent_maps_lines_through_the_blamed_text_conversion() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
@@ -2466,7 +2596,11 @@ mod tests {
         let (rows, _) = load(&["file.txt".into()]).unwrap();
         let commit = &rows[2];
         assert_eq!(code(commit.blame().unwrap()), "C");
-        let (parent, selected) = load_parent(commit, commit.blame().unwrap()).unwrap();
+        let ParentBlame {
+            commits: parent,
+            selected,
+            ..
+        } = load_parent(commit, commit.blame().unwrap()).unwrap();
         assert_eq!(code(parent[selected].blame().unwrap()), "c");
     }
 
@@ -2484,7 +2618,11 @@ mod tests {
 
         let (rows, _) = load(&["file.txt".into()]).unwrap();
         let commit = &rows[3];
-        let (parent, selected) = load_parent(commit, commit.blame().unwrap()).unwrap();
+        let ParentBlame {
+            commits: parent,
+            selected,
+            ..
+        } = load_parent(commit, commit.blame().unwrap()).unwrap();
         assert_eq!(selected, 3);
         assert_eq!(code(parent[selected].blame().unwrap()), "d");
     }
