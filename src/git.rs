@@ -831,6 +831,7 @@ pub fn load_show_app_with(
     )?;
     let mut app = crate::app::App::new(commits);
     app.set_repository(repository.cloned());
+    app.title_revision = revisions.first().map(|revision| revision.to_string());
     app.show_stat = stat;
     app.show_paths = args.get(separator + 1..).unwrap_or_default().to_vec();
     let mut history = if revisions.is_empty() {
@@ -5203,6 +5204,8 @@ pub(crate) mod tests {
 
         let mut app = load_show_app(&[]).unwrap();
         assert_eq!(app.mode, crate::app::Mode::Show);
+        let title_repository = std::path::Path::new("/work/repo");
+        assert_eq!(app.terminal_title(title_repository), "Log (repo)");
         assert_eq!(app.commits.len(), 1);
         assert_eq!(app.commits[0].subject, "second");
         assert!(app.show_text.contains("second.txt"));
@@ -5221,10 +5224,12 @@ pub(crate) mod tests {
 
         // A path absent from the selected commit must not select an ancestor.
         let mut app = load_show_app(&["HEAD".into(), "--".into(), "first.txt".into()]).unwrap();
+        assert_eq!(app.terminal_title(title_repository), "Log HEAD (repo)");
         assert_eq!(app.commits[0].subject, "second");
         assert!(!app.show_text.contains("second.txt"));
         app.switch_mode();
         assert_eq!(app.mode, crate::app::Mode::Log);
+        assert_eq!(app.terminal_title(title_repository), "Log HEAD (repo)");
         assert_eq!(app.commits.len(), 1);
         assert_eq!(app.selected, 0);
         assert_eq!(app.commits[0].subject, "first");
@@ -5266,8 +5271,11 @@ pub(crate) mod tests {
         assert!(!summary_path.show_stat);
         assert!(!summary_path.show_rows.iter().any(|row| row.summary));
 
-        let app = load_show_app(&["first-tag".into()]).unwrap();
+        let mut app = load_show_app(&["first-tag".into()]).unwrap();
         assert_eq!(app.commits[0].subject, "first");
+        assert_eq!(app.terminal_title(title_repository), "Log first-tag (repo)");
+        app.switch_mode();
+        assert_eq!(app.terminal_title(title_repository), "Log first-tag (repo)");
         for args in [
             vec!["missing"],
             vec!["HEAD", "HEAD~1"],
