@@ -1159,6 +1159,12 @@ pub fn load_diff_app(args: &[String]) -> Result<crate::app::App, String> {
     app.show_stat = stat;
     app.show_paths = paths;
     app.diff_sides = Some(sides.map(|(old, new)| crate::blame::PatchSides::Pair { old, new }));
+    app.title_command = Some(
+        std::iter::once("Diff")
+            .chain(args.iter().map(String::as_str))
+            .collect::<Vec<_>>()
+            .join(" "),
+    );
     if !app.commits.is_empty() {
         app.mode = crate::app::Mode::Show;
         app.show_text = text;

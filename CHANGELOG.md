@@ -8,7 +8,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 ### Added
 
 - Set terminal titles to identify the repository and browsing session, restoring
-  the previous title on exit or while an external editor is open.
+  the previous title on exit or while an external editor is open. Diff titles
+  include the supplied comparison arguments.
 
 - Leave the full branch graph in the terminal after quitting `glog branch`,
   so branch names remain available to copy while deciding what to merge or delete.

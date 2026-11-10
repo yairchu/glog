@@ -302,6 +302,7 @@ pub struct App {
     watch_snapshot: Option<u64>,
     watch_retry: Option<WatchRetry>,
     pub context: String,
+    pub title_command: Option<String>,
     pub title_revision: Option<String>,
     pub log_tab_start: u16,
     pub log_tab_end: u16,
@@ -394,6 +395,7 @@ impl App {
             watch_snapshot: None,
             watch_retry: None,
             context: String::new(),
+            title_command: None,
             title_revision: None,
             log_tab_start: 7,
             log_tab_end: 12,
@@ -471,6 +473,8 @@ impl App {
                     .is_some_and(|source| source.shows_working_tree(self.repository.as_ref())));
         let label = if status_session {
             "Status"
+        } else if let Some(command) = &self.title_command {
+            command
         } else {
             match self.history {
                 History::Log => "Log",
