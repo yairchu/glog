@@ -337,6 +337,27 @@ mod tests {
     }
 
     #[test]
+    fn stash_summary_counts_a_file_once_across_layers() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file.txt", "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        fs::write("file.txt", "staged\n").unwrap();
+        git(&["add", "."]);
+        fs::write("file.txt", "unstaged\n").unwrap();
+        git(&["stash", "push"]);
+
+        let app = load_app(&["show".into(), "--stat".into()]).unwrap();
+        assert_eq!(app.show_rows.iter().filter(|row| row.summary).count(), 2);
+        assert_eq!(
+            app.show_rows.last().unwrap().text,
+            " 1 file changed, 2 insertions(+), 2 deletions(-)"
+        );
+    }
+
+    #[test]
     fn stash_preserves_staged_content_overwritten_in_the_worktree() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
