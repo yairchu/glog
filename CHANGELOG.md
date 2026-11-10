@@ -7,6 +7,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Press `V` to switch between Status and Log, Branches, Stashes, and Reflog while
+  keeping each view's selection, scroll position, and followed references.
+
 - Set terminal titles to identify the repository and browsing session, restoring
   the previous title on exit or while an external editor is open. Diff titles
   include the supplied comparison arguments.

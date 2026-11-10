@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Block, Clear, Paragraph, Tabs, Wrap},
+    widgets::{Block, Clear, List, ListItem, ListState, Paragraph, Tabs, Wrap},
     Frame,
 };
 
@@ -132,8 +132,16 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         Mode::Log => draw_log(frame, app, chunks[1]),
         Mode::Show => draw_show(frame, app, chunks[1]),
     }
+    let status_error = (app.mode == Mode::Status)
+        .then(|| {
+            app.status_view
+                .as_ref()
+                .and_then(|view| view.error.clone())
+                .or_else(|| app.status.clone())
+        })
+        .flatten();
     let mut help = if app.mode == Mode::Status {
-        app.status_view.as_ref().and_then(|view| view.error.clone()).or_else(|| app.status.clone()).unwrap_or_else(|| "h help  q quit  ↑/k ↓/j  e edit  Enter show/fold  s summary  ←/→ commit  Shift-←/→ pan  Tab Log  Esc Log  Ctrl-L redraw · WATCH".to_owned())
+        status_error.clone().unwrap_or_else(|| "h help  q quit  ↑/k ↓/j  e edit  Enter show/fold  s summary  ←/→ commit  Shift-←/→ pan  Tab Log  Esc Log  Ctrl-L redraw · WATCH".to_owned())
     } else if let Some(input) = &app.search_input {
         let prefix = if app.search_reverse { '?' } else { '/' };
         format!("{prefix}{input}█")
@@ -171,6 +179,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.has_reference_back() && app.search_input.is_none() && app.message().is_none() {
         help = format!("Backspace back  {help}");
     }
+    if app.view_menu.is_some() {
+        help = "↑/k ↓/j choose  Enter switch  Esc cancel".into();
+    } else if app.search_input.is_none() && status_error.is_none() && app.message().is_none() {
+        help = format!("V views  {help}");
+    }
     frame.render_widget(
         Paragraph::new(help).style(Style::default().fg(Color::Gray)),
         chunks[2],
@@ -191,6 +204,39 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             },
         );
     }
+    if let Some(selected) = app.view_menu {
+        draw_view_menu(frame, app, selected);
+    }
+}
+
+fn draw_view_menu(frame: &mut Frame, app: &App, selected: usize) {
+    let options = app.views.options();
+    let screen = frame.area();
+    let width = screen.width.min(32);
+    let height = screen.height.min(options.len() as u16 + 2);
+    let area = Rect::new(
+        screen.x + screen.width.saturating_sub(width) / 2,
+        screen.y + screen.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let items = options.iter().map(|view| {
+        ListItem::new(format!(
+            "{} {}",
+            app.views.label(*view),
+            if *view == app.views.active { "•" } else { "" }
+        ))
+    });
+    frame.render_widget(Clear, area);
+    frame.render_stateful_widget(
+        List::new(items)
+            .block(Block::bordered().title(" Views "))
+            .style(Style::default().fg(Color::White).bg(Color::Black))
+            .highlight_style(Style::default().fg(Color::Black).bg(Color::Cyan))
+            .highlight_symbol("› "),
+        area,
+        &mut ListState::default().with_selected(Some(selected)),
+    );
 }
 
 /// The session a help screen describes.
@@ -395,6 +441,7 @@ const HELP_ROWS: &[HelpRow] = &[
         },
     ),
     pager("", "Views and search"),
+    every("V", "open the view menu"),
     (
         "W",
         HelpTexts {

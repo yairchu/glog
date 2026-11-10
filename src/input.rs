@@ -42,6 +42,22 @@ fn apply(event: Event, app: &mut App) {
             }
             return;
         }
+        if let Some(index) = &mut app.view_menu {
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('q' | 'V') => app.view_menu = None,
+                KeyCode::Up | KeyCode::Char('k') => *index = index.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') => {
+                    *index = (*index + 1).min(app.views.options().len() - 1);
+                }
+                KeyCode::Enter => app.select_view(),
+                _ => {}
+            }
+            return;
+        }
+        if key.code == KeyCode::Char('V') {
+            app.open_view_menu();
+            return;
+        }
         if app.show_help {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('h') | KeyCode::Char('q') => app.show_help = false,
@@ -200,6 +216,9 @@ fn apply(event: Event, app: &mut App) {
             _ => pager_key(key.code, app),
         }
     } else if let Event::Mouse(mouse) = event {
+        if app.view_menu.is_some() {
+            return;
+        }
         // The views behind the help overlay and search prompt ignore the
         // mouse. The header stays visible, so its tabs still close help.
         let tab_click = mouse.kind == MouseEventKind::Down(MouseButton::Left)

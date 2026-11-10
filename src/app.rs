@@ -238,6 +238,8 @@ struct LogBookmark {
 }
 
 pub struct App {
+    pub(crate) views: crate::views::Session,
+    pub view_menu: Option<usize>,
     pub images: crate::images::Images,
     pub status_view: Option<crate::status::StatusView>,
     pub grep_view: Option<crate::grep::View>,
@@ -333,6 +335,8 @@ pub struct App {
 impl App {
     pub fn new(commits: Vec<Commit>) -> Self {
         let mut app = Self {
+            views: crate::views::Session::default(),
+            view_menu: None,
             images: crate::images::Images::default(),
             status_view: None,
             grep_view: None,
@@ -2312,7 +2316,15 @@ impl App {
         if self.history == History::Branches {
             Some(self)
         } else {
-            self.reference_back.as_deref().and_then(App::branch_picker)
+            self.reference_back
+                .as_deref()
+                .and_then(App::branch_picker)
+                .or_else(|| {
+                    self.views
+                        .saved
+                        .get(&crate::views::View::Branches)
+                        .and_then(|app| app.branch_picker())
+                })
         }
     }
 
@@ -2582,6 +2594,7 @@ impl App {
     /// Move state that belongs to the session, rather than to a view, into the
     /// view replacing this one. Only the active view is drawn and polled.
     fn hand_over(&mut self, view: &mut App) {
+        view.views = std::mem::take(&mut self.views);
         view.images = std::mem::take(&mut self.images);
         view.browser_results = std::mem::take(&mut self.browser_results);
         view.search_history = std::mem::take(&mut self.search_history);
@@ -2589,6 +2602,49 @@ impl App {
         if self.repository == view.repository && self.github_repository.is_some() {
             view.github_repository = self.github_repository.clone();
         }
+    }
+
+    pub fn open_view_menu(&mut self) {
+        self.show_help = false;
+        self.view_menu = self
+            .views
+            .options()
+            .iter()
+            .position(|view| *view == self.views.active);
+    }
+
+    pub fn select_view(&mut self) {
+        let Some(index) = self.view_menu.take() else {
+            return;
+        };
+        let Some(view) = self.views.options().get(index).copied() else {
+            return;
+        };
+        if view == self.views.active {
+            return;
+        }
+        let target = self
+            .views
+            .saved
+            .remove(&view)
+            .map_or_else(|| view.load(), |app| Ok(*app));
+        let mut target = match target {
+            Ok(app) => app,
+            Err(error) => {
+                self.set_external_error(Some(error));
+                return;
+            }
+        };
+        target.exit_on_esc = self.exit_on_esc;
+        self.hand_over(&mut target);
+        let previous = std::mem::replace(&mut target.views.active, view);
+        let origin = std::mem::replace(self, target);
+        self.views.saved.insert(previous, Box::new(origin));
+        if let Some(status) = &mut self.status_view {
+            status.enable_images(self.images.enabled);
+        }
+        self.rebuild_show_rows();
+        self.redraw = true;
     }
 
     pub fn click_show_row(&mut self, visible_row: usize) {

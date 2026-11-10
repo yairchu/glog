@@ -23,6 +23,7 @@ mod stash;
 mod status;
 mod terminal_title;
 mod ui;
+mod views;
 
 use std::{
     env, io,
@@ -109,6 +110,23 @@ fn main() -> ExitCode {
         }
     };
     let watch = watch || app.watch;
+    app.views.active = match command {
+        Command::Status | Command::Log => views::View::StatusLog,
+        Command::Branch => views::View::Branches,
+        Command::Stash => views::View::Stashes,
+        Command::Reflog => views::View::Reflog,
+        _ => {
+            app.views.original_label = Some(match command {
+                Command::Show => "Show",
+                Command::Diff => "Diff",
+                Command::Blame => "Blame",
+                Command::RangeDiff => "Range diff",
+                Command::Grep => "Grep",
+                _ => unreachable!(),
+            });
+            views::View::Original
+        }
+    };
     // Watching waits for content, as Status always does.
     if !watch && app.is_empty() {
         eprintln!("glog: {}", command.empty_message(app.history));
@@ -147,10 +165,8 @@ fn main() -> ExitCode {
         .and(title_result)
         .and(guard.restore())
         .and_then(|()| {
-            if command == Command::Branch {
-                if let Some(picker) = app.branch_picker() {
-                    ansi::write_lines(io::stdout().lock(), branches::summary(picker))?;
-                }
+            if let Some(picker) = app.branch_picker() {
+                ansi::write_lines(io::stdout().lock(), branches::summary(picker))?;
             }
             Ok(())
         });
@@ -374,6 +390,7 @@ Use glog log show (or glog log diff) to browse a branch named after a command.
 Log arguments are passed through to git log. Inside the TUI, press h for
 key help, Tab to switch between Log and its detail view, Ctrl-L to redraw the screen, and q
 or Ctrl-C to quit.
+Press V to switch between Status and Log, Branches, Stashes, and Reflog, keeping your place.
 Search history persists between sessions; use Up/Down at / or ? to recall it.
 GLOG_TITLE=0 disables terminal titles.
 GLOG_HISTFILE overrides the history path; set it to - to disable persistence.

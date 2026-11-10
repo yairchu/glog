@@ -80,6 +80,9 @@ glog --since="2 weeks ago"
 glog main -- src/
 ```
 
+Press `V` to switch between Status and Log, Branches, Stashes, and Reflog.
+Each view keeps your place, so you can check branches and return to your review.
+
 ### Branches
 
 Run `glog branch` to browse local branches as a graph of branch tips and

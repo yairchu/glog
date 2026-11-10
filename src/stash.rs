@@ -47,7 +47,9 @@ fn into_app(mut rows: Vec<Commit>) -> App {
             entry.selector_padding = width.saturating_sub(Span::raw(&entry.selector).width());
         }
     }
-    App::new(rows)
+    let mut app = App::new(rows);
+    app.history = crate::app::History::Stash;
+    app
 }
 
 fn load_list(args: &[String]) -> Result<Vec<Commit>, String> {

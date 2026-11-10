@@ -89,7 +89,30 @@ pub fn load(args: &[String]) -> Result<Launch, String> {
             String::from_utf8_lossy(&output.stdout).into(),
         ));
     }
-    let rows = rows(tips, date)?;
+    Ok(Launch::Interactive(Box::new(picker(
+        rows(tips, date)?,
+        watch,
+        source,
+        snapshot,
+    ))))
+}
+
+/// Internal view switching stays interactive even for a single branch.
+pub fn load_picker() -> Result<App, String> {
+    Ok(picker(
+        rows(local_tips()?, None)?,
+        false,
+        crate::app::WatchSource::Branches(Vec::new()),
+        None,
+    ))
+}
+
+fn picker(
+    rows: Vec<Commit>,
+    watch: bool,
+    source: crate::app::WatchSource,
+    snapshot: Option<crate::app::WatchSnapshot>,
+) -> App {
     let selected = rows
         .iter()
         .position(|row| {
@@ -103,7 +126,7 @@ pub fn load(args: &[String]) -> Result<Launch, String> {
     app.set_watch_source(source, snapshot);
     app.selected = selected;
     app.center_selection = true;
-    Ok(Launch::Interactive(Box::new(app)))
+    app
 }
 
 /// Watch sessions keep the picker open even for empty and trivial lists.
