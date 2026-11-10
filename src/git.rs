@@ -5243,6 +5243,43 @@ pub(crate) mod tests {
         }
     }
     #[test]
+    fn diff_titles_describe_the_comparison_and_restore_after_following_a_reference() {
+        let directory = TestDirectory::new();
+        let _guard = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        git(&["config", "user.email", "test@example.com"]);
+        git(&["config", "user.name", "Test"]);
+        fs::write("tracked.txt", "one\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "first"]);
+        fs::write("tracked.txt", "two\n").unwrap();
+        git(&["commit", "-qam", "second"]);
+        fs::write("tracked.txt", "three\n").unwrap();
+        git(&["add", "."]);
+        fs::write("tracked.txt", "four\n").unwrap();
+        let root = std::path::Path::new("/work/repo");
+        for (args, expected) in [
+            (vec!["HEAD~", "HEAD"], "Diff HEAD~ HEAD (repo)"),
+            (vec![], "Diff (repo)"),
+            (vec!["--cached"], "Diff --cached (repo)"),
+            (
+                vec!["--stat", "HEAD~", "HEAD", "--", "tracked.txt"],
+                "Diff --stat HEAD~ HEAD -- tracked.txt (repo)",
+            ),
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            let mut app = load_diff_app(&args).unwrap();
+            assert_eq!(app.terminal_title(root), expected);
+            app.bottom();
+            assert_eq!(app.terminal_title(root), expected);
+            app.follow_reference("HEAD");
+            assert_eq!(app.terminal_title(root), "Log (repo)");
+            app.reference_back();
+            assert_eq!(app.terminal_title(root), expected);
+        }
+    }
+
+    #[test]
     fn diff_opens_requested_changes_standalone() {
         let directory = TestDirectory::new();
         let _guard = CurrentDirGuard::enter(directory.path());
