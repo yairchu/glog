@@ -21,6 +21,7 @@ mod range_diff;
 mod search_history;
 mod stash;
 mod status;
+mod terminal_title;
 mod ui;
 
 use std::{
@@ -114,6 +115,9 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
+    if command == Command::Log {
+        app.title_revision = git::log_title_revision(&git_args);
+    }
     app.load_search_history();
     app.exit_on_esc = log_options.exit_on_esc;
     initialize_log_filters(&mut app, log_options);
@@ -135,16 +139,21 @@ fn main() -> ExitCode {
         app.set_watch_source(source, watch_snapshot);
     }
     app.context = args.join(" ");
-    let result = run(&mut terminal, &mut app);
+    let mut title = terminal_title::Title::new();
+    let result = run(&mut terminal, &mut app, &mut title);
+    let title_result = title.restore();
     let _ = app.images.clear(&mut io::stdout());
-    let result = result.and(guard.restore()).and_then(|()| {
-        if command == Command::Branch {
-            if let Some(picker) = app.branch_picker() {
-                ansi::write_lines(io::stdout().lock(), branches::summary(picker))?;
+    let result = result
+        .and(title_result)
+        .and(guard.restore())
+        .and_then(|()| {
+            if command == Command::Branch {
+                if let Some(picker) = app.branch_picker() {
+                    ansi::write_lines(io::stdout().lock(), branches::summary(picker))?;
+                }
             }
-        }
-        Ok(())
-    });
+            Ok(())
+        });
     if let Err(error) = result {
         eprintln!("glog: {error}");
         ExitCode::FAILURE
@@ -366,6 +375,7 @@ Log arguments are passed through to git log. Inside the TUI, press h for
 key help, Tab to switch between Log and its detail view, Ctrl-L to redraw the screen, and q
 or Ctrl-C to quit.
 Search history persists between sessions; use Up/Down at / or ? to recall it.
+GLOG_TITLE=0 disables terminal titles.
 GLOG_HISTFILE overrides the history path; set it to - to disable persistence.
 The default is $XDG_STATE_HOME/glog/search_history, or
 $HOME/.local/state/glog/search_history (Windows: %LOCALAPPDATA%/glog/search_history).";
@@ -388,7 +398,11 @@ fn start_terminal() -> io::Result<Terminal<ratatui::backend::CrosstermBackend<io
     }
 }
 
-fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) -> io::Result<()> {
+fn run<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    title: &mut terminal_title::Title,
+) -> io::Result<()> {
     let mut last_watch = Instant::now();
     let mut last_status = Instant::now();
     let mut deferred = None;
@@ -405,6 +419,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
                 LeaveAlternateScreen,
                 crossterm::cursor::Show
             )?;
+            title.restore()?;
             let result = command.status();
             // Restore the UI even when the editor is missing or exits with an error.
             enable_raw_mode()?;
@@ -433,6 +448,7 @@ fn run<B: ratatui::backend::Backend>(terminal: &mut Terminal<B>, app: &mut App) 
         changed |= app.poll_browser();
         changed |= app.poll_log();
         if changed {
+            title.update(app)?;
             terminal.draw(|frame| ui::draw(frame, app))?;
             app.images.flush(&mut io::stdout())?;
             changed = false;

@@ -302,6 +302,7 @@ pub struct App {
     watch_snapshot: Option<u64>,
     watch_retry: Option<WatchRetry>,
     pub context: String,
+    pub title_revision: Option<String>,
     pub log_tab_start: u16,
     pub log_tab_end: u16,
     pub show_tab_start: u16,
@@ -393,6 +394,7 @@ impl App {
             watch_snapshot: None,
             watch_retry: None,
             context: String::new(),
+            title_revision: None,
             log_tab_start: 7,
             log_tab_end: 12,
             show_tab_start: 13,
@@ -449,6 +451,47 @@ impl App {
             );
         }
         self.file_view()
+    }
+
+    /// Describe the session, keeping the title stable while browsing commits.
+    pub(crate) fn terminal_title(&self, main_repository: &std::path::Path) -> String {
+        let directory = self
+            .repository
+            .as_ref()
+            .map_or(main_repository, |repo| repo.directory());
+        let folder = directory
+            .file_name()
+            .unwrap_or(directory.as_os_str())
+            .to_string_lossy();
+        let status_session = self.mode == Mode::Status
+            || (self.watch
+                && self
+                    .watch_source
+                    .as_ref()
+                    .is_some_and(|source| source.shows_working_tree(self.repository.as_ref())));
+        let label = if status_session {
+            "Status"
+        } else {
+            match self.history {
+                History::Log => "Log",
+                History::Reflog => "Reflog",
+                History::Blame => "Blame",
+                History::Stash => "Stash",
+                History::Branches => "Branches",
+                History::RangeDiff => "Range diff",
+                History::Grep => "Grep",
+            }
+        };
+        let revision = self
+            .title_revision
+            .as_deref()
+            .filter(|_| self.history == History::Log && !status_session);
+        let title = match revision {
+            Some(revision) => format!("{label} {revision} ({folder})"),
+            None => format!("{label} ({folder})"),
+        };
+        // Repository paths may contain terminal control characters.
+        title.chars().filter(|ch| !ch.is_control()).collect()
     }
 
     pub(crate) fn set_repository(&mut self, repository: Option<git::Repository>) {
@@ -2223,6 +2266,7 @@ impl App {
             let mut target = App::new(commits);
             self.prepare_followed(&mut target);
             target.context = format!("log {label}");
+            target.title_revision = Some(label);
             target.watch_source = watch_source;
             target.refresh_log_folds();
             Ok(target)
@@ -2425,6 +2469,7 @@ impl App {
             let mut target = App::new(commits);
             self.prepare_followed(&mut target);
             target.context = format!("log {label}");
+            target.title_revision = Some(label);
             target.refresh_log_folds();
             // Filters carried over may hide the newest commit.
             target.top();

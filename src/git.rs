@@ -638,6 +638,32 @@ pub fn load_log_with_working_tree(
     Ok(entries)
 }
 
+/// Label a simple, explicitly named revision. Complex queries keep a short
+/// generic title rather than guessing which operand describes their history.
+pub(crate) fn log_title_revision(args: &[String]) -> Option<String> {
+    let end = args
+        .iter()
+        .position(|arg| arg == "--")
+        .unwrap_or(args.len());
+    let [revision] = &args[..end] else {
+        return None;
+    };
+    if revision.starts_with('-') {
+        return None;
+    }
+    let output = read_command()
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            revision,
+        ])
+        .output()
+        .ok()?;
+    output.status.success().then(|| revision.clone())
+}
+
 /// Whether a Log with these arguments leads with the working tree: Git finds
 /// that they name no revision, so the Log starts at HEAD, and no path, whose
 /// limit the repository-wide working tree item would ignore. Arguments Git
