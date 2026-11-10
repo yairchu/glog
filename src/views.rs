@@ -49,6 +49,7 @@ impl View {
                 let mut app = crate::status::load_app(&[])?;
                 app.watch = true;
                 app.set_watch_source(source, Some(snapshot));
+                crate::initialize_log_filters(&mut app, crate::log_format::LogOptions::default());
                 app
             }
             Self::Branches => crate::branches::load_picker()?,
