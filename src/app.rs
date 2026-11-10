@@ -1742,6 +1742,38 @@ impl App {
                 preview: None,
             });
         }
+        if self.show_stat && !self.show_files.is_empty() {
+            let count = self.show_files.len();
+            let additions: usize = self.show_files.iter().map(|file| file.additions).sum();
+            let deletions: usize = self.show_files.iter().map(|file| file.deletions).sum();
+            let mut text = format!(" {count} file{} changed", if count == 1 { "" } else { "s" });
+            for (count, change, sign) in
+                [(additions, "insertion", '+'), (deletions, "deletion", '-')]
+            {
+                if count != 0 || (additions == 0 && deletions == 0) {
+                    text.push_str(&format!(
+                        ", {count} {change}{}({sign})",
+                        if count == 1 { "" } else { "s" }
+                    ));
+                }
+            }
+            if self
+                .show_files
+                .iter()
+                .any(|file| file.lazy_untracked_path.is_some())
+            {
+                text.push_str(" (unloaded contents excluded)");
+            }
+            rows.push(ShowRow {
+                text,
+                source: lines.len(),
+                file: None,
+                folded: false,
+                fold_separator: false,
+                summary: false,
+                preview: None,
+            });
+        }
         if self.images.enabled {
             let mut expanded = Vec::new();
             for row in rows {
@@ -3041,7 +3073,9 @@ mod tests {
         app.show_stat = true;
         app.show_text = "commit message\ndiff --git a/one.rs b/one.rs\n--- a/one.rs\n+++ b/one.rs\n-old\n+needle\ndiff --git a/two.rs b/two.rs\n--- a/two.rs\n+++ b/two.rs\n-other\n+replacement\n".to_owned();
         app.ensure_show_rows();
-        assert_eq!(app.show_rows.len(), 3);
+        assert_eq!(app.show_rows.len(), 4);
+        let total = " 2 files changed, 2 insertions(+), 2 deletions(-)";
+        assert_eq!(app.show_rows.last().unwrap().text, total);
         assert_eq!(app.show_rows[0].text, "commit message");
         assert_eq!(app.show_rows[1].text, "▶ one.rs | +1 −1");
         app.show_cursor = 1;
@@ -3049,8 +3083,10 @@ mod tests {
         assert!(app.show_rows[1].summary);
         assert!(!app.show_rows[1].folded);
         assert!(app.show_rows.iter().any(|row| row.text == "+needle"));
+        assert_eq!(app.show_rows.last().unwrap().text, total);
         app.toggle_show_file();
-        assert_eq!(app.show_rows.len(), 3);
+        assert_eq!(app.show_rows.len(), 4);
+        assert_eq!(app.show_rows.last().unwrap().text, total);
         app.search = Some("needle".to_owned());
         app.next_match(false);
         assert_eq!(app.show_rows[app.show_cursor].text, "+needle");
@@ -3058,6 +3094,52 @@ mod tests {
             .show_rows
             .iter()
             .any(|row| row.folded && row.text.contains("two.rs")));
+    }
+
+    #[test]
+    fn stat_totals_include_metadata_only_files_and_match_git_line_counts() {
+        for (patch, expected) in [
+            ("", None),
+            (
+                "diff --git a/file b/file\nold mode 100644\nnew mode 100755\n",
+                Some(" 1 file changed, 0 insertions(+), 0 deletions(-)"),
+            ),
+            (
+                "diff --git a/file b/file\nBinary files a/file and b/file differ\n",
+                Some(" 1 file changed, 0 insertions(+), 0 deletions(-)"),
+            ),
+            (
+                "diff --git a/old b/new\nsimilarity index 100%\nrename from old\nrename to new\n",
+                Some(" 1 file changed, 0 insertions(+), 0 deletions(-)"),
+            ),
+            (
+                "diff --git a/file b/file\n--- a/file\n+++ b/file\n@@ -0,0 +1 @@\n+added\n",
+                Some(" 1 file changed, 1 insertion(+)"),
+            ),
+            (
+                "diff --git a/file b/file\n--- a/file\n+++ b/file\n@@ -1 +0,0 @@\n-deleted\n",
+                Some(" 1 file changed, 1 deletion(-)"),
+            ),
+            (
+                "diff --git a/file b/file\nglog-lazy-untracked:66696c65\n",
+                Some(
+                    " 1 file changed, 0 insertions(+), 0 deletions(-) (unloaded contents excluded)",
+                ),
+            ),
+        ] {
+            let mut app = App::new(Vec::new());
+            app.show_stat = true;
+            app.show_text = patch.to_owned();
+            app.ensure_show_rows();
+            assert_eq!(app.show_rows.last().map(|row| row.text.as_str()), expected);
+            if let Some(row) = app.show_rows.last() {
+                assert!(row.file.is_none());
+                assert!(!row.summary);
+                assert!(!row.folded);
+            }
+            app.toggle_show_stat();
+            assert!(app.show_rows.iter().all(|row| row.file.is_some()));
+        }
     }
 
     #[test]
@@ -3103,7 +3185,7 @@ mod tests {
                 assert_eq!(app.show_rows[0].text, format!("▼ {label} | +1 −1"));
                 assert!(app.show_rows.iter().any(|row| row.text == "+after"));
                 app.toggle_show_file();
-                assert_eq!(app.show_rows.len(), 1);
+                assert_eq!(app.show_rows.len(), 2);
                 if app.show_files[0].lockfile {
                     app.show_stat = false;
                     app.rebuild_show_rows();
@@ -3307,7 +3389,7 @@ mod tests {
                 let expected = app.show_rows[app.show_cursor].text.clone();
                 app.toggle_show_stat();
                 assert!(app.show_rows[app.show_cursor].summary);
-                assert_eq!(app.show_rows.len(), 1);
+                assert_eq!(app.show_rows.len(), 2);
                 app.toggle_show_stat();
                 assert_eq!(
                     app.show_rows[app.show_cursor].text, expected,

@@ -2253,7 +2253,7 @@ mod tests {
     }
     #[test]
     fn stat_view_renders_compact_summaries_and_keeps_expanded_header() {
-        let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
         let mut app = App::new(Vec::new());
         app.mode = Mode::Show;
         app.show_stat = true;
@@ -2267,6 +2267,9 @@ mod tests {
         assert!(row_text(&terminal, 1).starts_with("message"));
         assert!(row_text(&terminal, 2).starts_with("▶ one.rs | +1 −1"));
         assert!(row_text(&terminal, 3).starts_with("▶ image.bin | binary"));
+        assert!(
+            row_text(&terminal, 4).starts_with(" 2 files changed, 1 insertion(+), 1 deletion(-)")
+        );
         for (x, color) in [
             (11, Color::Green),
             (12, Color::Green),
