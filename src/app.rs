@@ -3782,7 +3782,7 @@ mod tests {
         app.ensure_show_rows();
         app.submodules.insert(b"module".to_vec(), Box::new(child));
         app.rebuild_show_rows();
-        app.toggle_file_filter(Some(Category::Extension(Vec::new())));
+        app.toggle_file_filter(Some(Category::Directory(b"module/".to_vec())));
         assert_eq!(
             app.file_filter_counts()[&Category::Extension(b"rs".to_vec())],
             2

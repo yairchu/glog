@@ -22,7 +22,12 @@ impl Category {
         }
     }
 
+    /// A submodule's entry stands for its directory rather than being a file,
+    /// so it belongs to no file category; its own files carry theirs.
     pub fn of(file: &FileSection) -> Vec<Self> {
+        if file.submodule.is_some() {
+            return Vec::new();
+        }
         let path = git::raw_path(&file.path_bytes);
         let extension = path
             .extension()
@@ -39,7 +44,6 @@ impl Category {
     }
 
     pub fn selected(file: &FileSection) -> Self {
-        // A submodule's entry stands for its files, not an extensionless file.
         if file.submodule.is_some() {
             return Self::Directory(crate::path_groups::join(&file.path_bytes, b""));
         }
