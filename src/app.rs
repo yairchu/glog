@@ -2590,6 +2590,18 @@ impl App {
 
     fn reveal_show_location(&mut self, route: &[Vec<u8>], source: usize) -> Option<usize> {
         self.summary_cursor = crate::path_groups::Cursor::default();
+        let file = self.show_files.iter().find(|file| match route.first() {
+            Some(path) => file.key == *path,
+            None => (file.start..file.end).contains(&source),
+        });
+        if let Some(file) = file {
+            // Reveal ancestors in every repository along the search route,
+            // including folders enclosing an already loaded submodule.
+            for directory in crate::path_groups::directories(&file.path_bytes) {
+                self.collapsed_directories
+                    .remove(&crate::summary_paths::key(directory, file.stash_layer));
+            }
+        }
         if let Some((path, rest)) = route.split_first() {
             let index = self
                 .submodules
@@ -2602,20 +2614,6 @@ impl App {
                 .iter()
                 .find_map(|(row, (p, i))| (p == path && *i == index).then_some(*row));
         }
-        if let Some(file) = self
-            .show_files
-            .iter()
-            .find(|file| (file.start..file.end).contains(&source))
-        {
-            for directory in crate::path_groups::directories(&file.path_bytes) {
-                self.collapsed_directories
-                    .remove(&crate::summary_paths::key(directory, file.stash_layer));
-            }
-        }
-        let file = self
-            .show_files
-            .iter()
-            .find(|f| (f.start..f.end).contains(&source));
         // Searching gitlink metadata selects its summary without loading
         // history, and unloaded untracked headers select their folded row.
         let unloaded = |f: &&crate::diff::FileSection| {
