@@ -1986,14 +1986,21 @@ impl App {
     }
 
     pub fn toggle_file_filter(&mut self, category: Option<crate::file_filters::Category>) {
+        let mut filters = self.file_filters.clone();
+        if let Some(category) = category {
+            filters.toggle(category);
+        } else {
+            filters.clear();
+        }
+        self.set_file_filters(filters);
+    }
+
+    /// Apply new file filters, keeping the cursor on what it showed.
+    fn set_file_filters(&mut self, filters: crate::file_filters::Filters) {
         self.ensure_show_rows();
         let source = self.show_rows.get(self.show_cursor).map(|row| row.source);
         let location = self.show_location(self.show_cursor);
-        if let Some(category) = category {
-            self.file_filters.toggle(category);
-        } else {
-            self.file_filters.clear();
-        }
+        self.file_filters = filters;
         self.search_match = None;
         self.status = None;
         self.show_search_location = None;
@@ -3128,7 +3135,13 @@ impl App {
                 );
             }
             self.hand_over(&mut origin);
+            // Filters persist while browsing, including changes made after
+            // following.
+            let filters = std::mem::take(&mut self.file_filters);
             *self = *origin;
+            if self.file_filters != filters {
+                self.set_file_filters(filters);
+            }
             self.redraw = true;
         }
     }
