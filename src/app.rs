@@ -1897,69 +1897,69 @@ impl App {
         }
     }
 
+    /// Visit every changed file, including those in loaded submodules, with
+    /// its path from this repository and whether filters hide it. Hiding a
+    /// submodule's entry hides its files too.
+    fn each_file<'a>(
+        &'a self,
+        prefix: Option<&[u8]>,
+        parent_hidden: bool,
+        visit: &mut dyn FnMut(&'a FileSection, Vec<u8>, bool),
+    ) {
+        for file in &self.show_files {
+            let path = prefix.map_or_else(
+                || file.path_bytes.clone(),
+                |prefix| crate::path_groups::join(prefix, &file.path_bytes),
+            );
+            let hidden = parent_hidden || self.file_filters.hides(file);
+            if let Some(child) = self.submodules.get(&file.key) {
+                child.each_file(Some(&path), hidden, visit);
+            }
+            visit(file, path, hidden);
+        }
+    }
+
     pub fn hidden_file_count(&self) -> usize {
-        let own = self
-            .show_files
-            .iter()
-            .filter(|file| self.file_filters.hides(file))
-            .map(|file| file.path_bytes.as_slice())
-            .collect::<HashSet<_>>()
-            .len();
-        own + self
-            .submodules
-            .iter()
-            .filter(|(path, _)| {
-                self.show_files
-                    .iter()
-                    .any(|file| file.key == **path && !self.file_filters.hides(file))
-            })
-            .map(|(_, child)| child.hidden_file_count())
-            .sum::<usize>()
+        let mut hidden = HashSet::new();
+        self.each_file(None, false, &mut |_, path, is_hidden| {
+            if is_hidden {
+                hidden.insert(path);
+            }
+        });
+        hidden.len()
     }
 
     pub fn file_filter_counts(
         &self,
     ) -> std::collections::BTreeMap<crate::file_filters::Category, usize> {
-        let mut paths: std::collections::BTreeMap<_, HashSet<&[u8]>> =
-            std::collections::BTreeMap::new();
-        for file in &self.show_files {
-            for category in crate::file_filters::Category::of(file) {
-                paths.entry(category).or_default().insert(&file.path_bytes);
+        // Keep every directory filter's button, even once it matches nothing.
+        let mut paths: std::collections::BTreeMap<_, HashSet<Vec<u8>>> = self
+            .file_filters
+            .directories()
+            .map(|directory| {
+                (
+                    crate::file_filters::Category::Directory(directory.clone()),
+                    HashSet::new(),
+                )
+            })
+            .collect();
+        self.each_file(None, false, &mut |file, path, _| {
+            let directories = self
+                .file_filters
+                .directories()
+                .filter(|directory| path.starts_with(directory))
+                .map(|directory| crate::file_filters::Category::Directory(directory.clone()));
+            for category in crate::file_filters::Category::of(file)
+                .into_iter()
+                .chain(directories)
+            {
+                paths.entry(category).or_default().insert(path.clone());
             }
-        }
-        for directory in self.file_filters.directories() {
-            let files = paths
-                .entry(crate::file_filters::Category::Directory(directory.clone()))
-                .or_default();
-            files.extend(
-                self.show_files
-                    .iter()
-                    .filter(|file| file.path_bytes.starts_with(directory))
-                    .map(|file| file.path_bytes.as_slice()),
-            );
-        }
-        let mut counts: std::collections::BTreeMap<_, _> = paths
+        });
+        paths
             .into_iter()
             .map(|(category, paths)| (category, paths.len()))
-            .collect();
-        for (key, child) in &self.submodules {
-            let Some(file) = self.show_files.iter().find(|file| file.key == *key) else {
-                continue;
-            };
-            for (category, count) in child.file_filter_counts() {
-                let category = match category {
-                    crate::file_filters::Category::Directory(path) => {
-                        crate::file_filters::Category::Directory(crate::path_groups::join(
-                            &file.path_bytes,
-                            &path,
-                        ))
-                    }
-                    category => category,
-                };
-                *counts.entry(category).or_default() += count;
-            }
-        }
-        counts
+            .collect()
     }
 
     fn selected_file_category(&self, cursor: usize) -> Option<crate::file_filters::Category> {
