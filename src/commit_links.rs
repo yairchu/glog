@@ -863,6 +863,42 @@ fi
     }
 
     #[test]
+    fn returning_from_blame_keeps_show_file_filters() {
+        use crate::app::{History, Mode};
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        std::fs::write("file.txt", "old\n").unwrap();
+        std::fs::write("Cargo.lock", "old\n").unwrap();
+        commit("base");
+        std::fs::write("file.txt", "new\n").unwrap();
+        std::fs::write("Cargo.lock", "new\n").unwrap();
+        commit("edit");
+
+        let mut app = git::load_show_app(&[]).unwrap();
+        let press = |app: &mut crate::app::App, code| {
+            input::handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), app);
+        };
+        press(&mut app, KeyCode::Char('T'));
+        assert_eq!(app.hidden_file_count(), 0);
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| crate::ansi::plain(&row.text) == "+new")
+            .unwrap();
+        press(&mut app, KeyCode::Char('B'));
+        assert_eq!(app.history, History::Blame);
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.mode, Mode::Show);
+        assert_eq!(app.history, History::Log);
+        assert_eq!(app.hidden_file_count(), 0);
+        assert!(!app
+            .file_filters
+            .hides_category(&crate::file_filters::Category::Lockfiles));
+    }
+
+    #[test]
     fn returning_from_a_followed_reference_keeps_its_file_filters() {
         use crate::file_filters::Category;
 
