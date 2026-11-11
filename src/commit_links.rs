@@ -969,7 +969,7 @@ fi
         let _cwd = CurrentDirGuard::enter(directory.path());
         git(&["init", "-q"]);
         let first = commit("first");
-        std::fs::write("Cargo.lock", "first\nsecond\n").unwrap();
+        std::fs::write("deps.txt", "first\nsecond\n").unwrap();
         let second = commit(&format!("second\n\nSee {first}\n\nMore context"));
         let mut app = git::load_show_app(&[second]).unwrap();
         app.show_cursor = app.show_rows.iter().position(|row| row.folded).unwrap();
@@ -1005,10 +1005,10 @@ fi
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         git(&["init", "-q"]);
-        std::fs::write("Cargo.lock", "first\n").unwrap();
+        std::fs::write("deps.txt", "first\n").unwrap();
         let first = commit("first");
         let second = commit(&format!("second\n\nSee {}.", &first[..9]));
-        std::fs::write("Cargo.lock", "first\nsecond\n").unwrap();
+        std::fs::write("deps.txt", "first\nsecond\n").unwrap();
         std::fs::write("only-third.txt", "new\n").unwrap();
         let third = commit(&format!(
             "third\n\n界 café: review {} and {}.\n\nMore context.",

@@ -24,12 +24,12 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   the culprit or the possibilities left by skipped commits.
 
 - Filter files in Show and Diff with clickable header categories, `t` to hide the
-  selected file's category, and `T` to reset. Summary totals count only visible
-  files. Hide `*_test.go` or lockfiles separately from their extensions; `.go`
-  still includes all Go files. Filters persist while browsing commits. The
-  lockfiles filter replaces automatic lockfile folding and the `L` shortcut;
-  lockfiles now start open like other tracked files. Summary paths share Grep's
-  compact folder controls: focus components with a click or Left/Right,
+  selected file's category, and `T` to show all files. Summary totals count only
+  visible files. Hide `*_test.go` or lockfiles separately from their extensions;
+  `.go` still includes all Go files. Filters persist while browsing commits. The
+  lockfiles filter starts on, replacing automatic lockfile folding in Show and
+  Diff and the `L` shortcut; Status still folds lockfiles. Summary paths share
+  Grep's compact folder controls: focus components with a click or Left/Right,
   click the focused component again or press Enter/z to fold it into an
   aggregate row, or hide its subtree with `t`. Expanded folders add no rows; folding keeps their changes in totals.
 

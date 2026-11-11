@@ -46,9 +46,18 @@ impl Category {
     }
 }
 
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Filters {
     hidden: BTreeSet<Category>,
+}
+
+impl Default for Filters {
+    /// Lockfile churn rarely needs reading, so it starts hidden.
+    fn default() -> Self {
+        Self {
+            hidden: BTreeSet::from([Category::Lockfiles]),
+        }
+    }
 }
 
 impl Filters {

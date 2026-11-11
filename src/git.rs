@@ -3506,7 +3506,7 @@ pub(crate) mod tests {
             .unwrap();
             let oid = String::from_utf8(blob).unwrap();
             let mut index = Vec::new();
-            for path in [b"deps-\xfe.lock", b"deps-\xff.lock"] {
+            for path in [b"deps-\xfe.txt", b"deps-\xff.txt"] {
                 index.extend_from_slice(format!("100644 {}\t", oid.trim()).as_bytes());
                 index.extend_from_slice(path);
                 index.push(0);
@@ -3557,7 +3557,7 @@ pub(crate) mod tests {
         for (paths, expanded) in results {
             assert_eq!(
                 paths,
-                [b"deps-\xfe.lock".to_vec(), b"deps-\xff.lock".to_vec()]
+                [b"deps-\xfe.txt".to_vec(), b"deps-\xff.txt".to_vec()]
             );
             if let Some(expanded) = expanded {
                 assert_eq!(expanded, 1, "only the selected summary should expand");
@@ -4571,16 +4571,16 @@ pub(crate) mod tests {
         git(&["init", "-q"]);
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
-        fs::write("Cargo.lock", "original\n").unwrap();
+        fs::write("deps.txt", "original\n").unwrap();
         git(&["add", "."]);
         git(&["commit", "-qm", "initial"]);
         let mut contents = String::new();
         for i in 0..30 {
             writeln!(contents, "dependency-{i:02}").unwrap();
         }
-        fs::write("Cargo.lock", contents).unwrap();
+        fs::write("deps.txt", contents).unwrap();
         if kind == CommitKind::Staged {
-            git(&["add", "Cargo.lock"]);
+            git(&["add", "deps.txt"]);
         }
 
         let mut app = crate::app::App::new(working_tree_entries().unwrap());
@@ -4620,7 +4620,7 @@ pub(crate) mod tests {
             expanded_files: app
                 .show_rows
                 .iter()
-                .filter(|row| row.text.contains("diff --git") && row.text.contains("Cargo.lock"))
+                .filter(|row| row.text.contains("diff --git") && row.text.contains("deps.txt"))
                 .map(|row| row.text.clone())
                 .collect(),
         };
@@ -4629,14 +4629,14 @@ pub(crate) mod tests {
         assert_eq!(before.expanded_files.len(), 1);
         let fingerprint = watch_fingerprint().unwrap();
         if insert_lines {
-            let contents = fs::read_to_string("Cargo.lock").unwrap();
+            let contents = fs::read_to_string("deps.txt").unwrap();
             fs::write(
-                "Cargo.lock",
+                "deps.txt",
                 format!("new-one\nnew-two\nnew-three\n{contents}"),
             )
             .unwrap();
             if kind == CommitKind::Staged {
-                git(&["add", "Cargo.lock"]);
+                git(&["add", "deps.txt"]);
             }
         } else {
             // An unrelated ref change triggers refresh while the patch stays identical.
@@ -4676,7 +4676,7 @@ pub(crate) mod tests {
         let (before, after) = working_tree_watch_refresh(CommitKind::Unstaged, false);
         assert_eq!(
             after.expanded_files, before.expanded_files,
-            "refresh must keep the unstaged lockfile expanded"
+            "refresh must keep the unstaged file expanded"
         );
     }
 
@@ -4685,7 +4685,7 @@ pub(crate) mod tests {
         let (before, after) = working_tree_watch_refresh(CommitKind::Staged, false);
         assert_eq!(
             after.expanded_files, before.expanded_files,
-            "refresh must keep the staged lockfile expanded"
+            "refresh must keep the staged file expanded"
         );
     }
 

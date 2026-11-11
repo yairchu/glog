@@ -570,8 +570,8 @@ lines use the nearest surviving line. Use `EDITOR=code` for VS Code or
 the file.
 
 Use the header's file filters in Show and Diff to hide extensions, Go tests
-(`*_test.go`), or lockfiles. Press `t` to hide the selected file's category and
-`T` to reset. Summary totals count only visible files, and filters persist
+(`*_test.go`), or lockfiles, which start hidden. Press `t` to hide the selected
+file's category and `T` to show all files. Summary totals count only visible files, and filters persist
 while browsing commits. The `.go` filter includes all Go files; Go tests can
 also be hidden separately. Summary paths use Grep's compact folder controls:
 click a folder component to focus it, then click again to fold its files into

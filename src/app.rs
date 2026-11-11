@@ -3679,7 +3679,7 @@ mod tests {
     fn non_utf8_show_paths_keep_independent_summary_folds() {
         // Git's quoted output also works on filesystems that cannot create
         // these names. The third name contains a literal backslash.
-        let paths = [r"deps-\377.lock", r"deps-\376.lock", r"deps-\\377.lock"];
+        let paths = [r"deps-\377.txt", r"deps-\376.txt", r"deps-\\377.txt"];
         let mut text = String::new();
         for (index, path) in paths.iter().enumerate() {
             writeln!(
@@ -4085,6 +4085,7 @@ mod tests {
     fn overlapping_file_filters_keep_totals_search_and_folds_consistent() {
         use crate::file_filters::Category;
         let mut app = App::new(Vec::new());
+        app.file_filters.clear();
         app.mode = Mode::Show;
         app.show_stat = true;
         for (path, count) in [
@@ -4230,16 +4231,16 @@ mod tests {
             ("a/c", "a/b/c", "a/{ => b}/c"),
             ("x/y/f", "x/f", "x/{y => }/f"),
             ("q/s", "q/r/s2", "q/{s => r/s2}"),
-            ("old/a b.lock", "new/a b.lock", "{old => new}/a b.lock"),
+            ("old/a b.txt", "new/a b.txt", "{old => new}/a b.txt"),
             (
-                r#""old/a\377.lock""#,
-                r#""new/a\377.lock""#,
-                r"{old => new}/a\377.lock",
+                r#""old/a\377.txt""#,
+                r#""new/a\377.txt""#,
+                r"{old => new}/a\377.txt",
             ),
             (
-                r#""old/a\t.lock""#,
-                r#""new/a\t.lock""#,
-                r"{old => new}/a\t.lock",
+                r#""old/a\t.txt""#,
+                r#""new/a\t.txt""#,
+                r"{old => new}/a\t.txt",
             ),
         ] {
             for operation in ["rename", "copy"] {
@@ -4496,6 +4497,7 @@ mod tests {
         child.show_text = "diff --git a/inner.txt b/inner.txt\n--- a/inner.txt\n+++ b/inner.txt\n@@ -1 +1 @@\n-old\n+inner\ndiff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -1 +1 @@\n-old\n+child-lock\n".into();
         child.ensure_show_rows();
         let mut app = App::new(Vec::new());
+        app.file_filters.clear();
         app.mode = Mode::Show;
         app.show_text = format!(
             "diff --git a/before.txt b/before.txt\n--- a/before.txt\n+++ b/before.txt\n@@ -1 +1 @@\n-old\n+before\ndiff --git a/module b/module\nindex {}..{} 160000\ndiff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -1 +1 @@\n-old\n+parent-lock\n",
@@ -4602,21 +4604,11 @@ mod tests {
     }
 
     #[test]
-    fn lockfiles_use_filters_instead_of_automatic_folding() {
+    fn lockfiles_start_hidden_by_a_filter_instead_of_folded() {
         let mut app = App::new(Vec::new());
         app.mode = Mode::Show;
         app.show_text = "diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -1 +1 @@\n-old dep\n+new dep\n".into();
         app.ensure_show_rows();
-        assert!(app
-            .show_rows
-            .iter()
-            .all(|row| !row.folded && !row.fold_separator));
-        app.show_cursor = app
-            .show_rows
-            .iter()
-            .position(|row| row.text == "+new dep")
-            .unwrap();
-        app.hide_selected_file_category();
         assert!(app
             .file_filters
             .hides_category(&crate::file_filters::Category::Lockfiles));
