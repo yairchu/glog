@@ -12,13 +12,20 @@ pub(super) fn origin(
     // Skipping them keeps large imports cheap; the line's own file is still
     // needed when the commit added it, and excluded by the first diff.
     let mut changes = diff(commit, line, parent, "--diff-filter=a", None)?;
-    changes.push_str(&diff(
-        commit,
-        line,
-        parent,
-        "--diff-filter=A",
-        Some(&line.source_path),
-    )?);
+    // Without rename detection, a renamed file counts as added.
+    let added = line
+        .previous
+        .as_ref()
+        .is_none_or(|(_, path)| *path != line.source_path);
+    if added {
+        changes.push_str(&diff(
+            commit,
+            line,
+            parent,
+            "--diff-filter=A",
+            Some(&line.source_path),
+        )?);
+    }
     Ok(find_origin(&changes, &line.source_path, line.source_number))
 }
 
