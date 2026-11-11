@@ -844,6 +844,25 @@ fi
     }
 
     #[test]
+    fn followed_references_keep_file_filters() {
+        use crate::file_filters::Category;
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        std::fs::write("Cargo.lock", "old\n").unwrap();
+        let first = commit("first");
+        std::fs::write("Cargo.lock", "new\n").unwrap();
+        commit(&format!("second, after {first}"));
+        let mut app = git::load_show_app(&[]).unwrap();
+        app.toggle_file_filter(Some(Category::Lockfiles));
+        app.follow_reference(&first);
+        assert_eq!(app.commits[app.selected].hash, first);
+        assert!(!app.file_filters.hides_category(&Category::Lockfiles));
+        assert_eq!(app.hidden_file_count(), 0);
+    }
+
+    #[test]
     fn followed_ranges_select_a_commit_their_filters_show() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
