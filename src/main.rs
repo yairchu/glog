@@ -5,6 +5,7 @@ mod branches;
 mod commit_links;
 mod diff;
 mod editor;
+mod file_filters;
 mod fixups;
 mod git;
 mod grep;
@@ -17,10 +18,12 @@ mod message_format;
 mod operation;
 mod pager;
 mod patch_options;
+mod path_groups;
 mod range_diff;
 mod search_history;
 mod stash;
 mod status;
+mod summary_paths;
 mod terminal_title;
 mod ui;
 mod views;
@@ -565,6 +568,7 @@ mod tests {
         app.show_rows = (0..30)
             .map(|source| app::ShowRow {
                 preview: None,
+                path: None,
                 text: String::new(),
                 source,
                 file: None,

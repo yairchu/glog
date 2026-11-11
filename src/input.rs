@@ -197,7 +197,8 @@ fn apply(event: Event, app: &mut App) {
                 }),
             KeyCode::Enter | KeyCode::Char('z') if app.mode == Mode::Show => app.toggle_show_file(),
             KeyCode::Char('s') if app.mode == Mode::Show => app.toggle_show_stat(),
-            KeyCode::Char('L') if app.mode == Mode::Show => app.toggle_all_lockfiles(),
+            KeyCode::Char('t') if app.mode == Mode::Show => app.hide_selected_file_category(),
+            KeyCode::Char('T') if app.mode == Mode::Show => app.toggle_file_filter(None),
             KeyCode::Char('B') if app.mode == Mode::Show => app.blame_show_line(),
             KeyCode::Char('[') if app.mode == Mode::Show => app.jump_show_file(-1),
             KeyCode::Char(']') if app.mode == Mode::Show => app.jump_show_file(1),
@@ -209,6 +210,20 @@ fn apply(event: Event, app: &mut App) {
             // Leave a followed reference before exiting to the calling tool.
             KeyCode::Esc if app.exit_on_esc && app.has_reference_back() => app.reference_back(),
             KeyCode::Esc if app.exit_on_esc => app.quit = true,
+            KeyCode::Left
+                if app.mode == Mode::Show
+                    && app.show_stat
+                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                app.move_summary_path(false)
+            }
+            KeyCode::Right
+                if app.mode == Mode::Show
+                    && app.show_stat
+                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
+            {
+                app.move_summary_path(true)
+            }
             KeyCode::Left if app.mode == Mode::Show => show_adjacent(app, -1),
             KeyCode::Right if app.mode == Mode::Show => show_adjacent(app, 1),
             KeyCode::Left if !key.modifiers.contains(KeyModifiers::SHIFT) => app.move_adjacent(-1),
@@ -250,6 +265,17 @@ fn apply(event: Event, app: &mut App) {
                 _ => {}
             }
             return;
+        }
+        if app.mode == Mode::Show && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            let filter = app
+                .file_filter_buttons
+                .iter()
+                .find(|(rect, _)| rect.contains((mouse.column, mouse.row).into()))
+                .map(|(_, category)| category.clone());
+            if let Some(category) = filter {
+                app.toggle_file_filter(category);
+                return;
+            }
         }
         if app.mode == Mode::Log && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
             let action = app
@@ -321,6 +347,15 @@ fn apply(event: Event, app: &mut App) {
             {
                 let row = usize::from(mouse.row - app.show_row_origin);
                 if row < app.visible_show_rows {
+                    if let Some((_, index, target)) = app
+                        .visible_show_paths
+                        .iter()
+                        .find(|(rect, _, _)| rect.contains((mouse.column, mouse.row).into()))
+                        .cloned()
+                    {
+                        app.click_summary_path(index, target);
+                        return;
+                    }
                     let reference = app
                         .visible_show_links
                         .iter()
@@ -638,6 +673,7 @@ mod tests {
             app.show_rows = (0..30)
                 .map(|source| crate::app::ShowRow {
                     preview: None,
+                    path: None,
                     text: String::new(),
                     source,
                     file: None,
@@ -674,6 +710,7 @@ mod tests {
         app.show_rows = (0..30)
             .map(|source| crate::app::ShowRow {
                 preview: None,
+                path: None,
                 text: String::new(),
                 source,
                 file: None,

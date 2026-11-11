@@ -661,7 +661,10 @@ mod tests {
             char::from_u32(MARKS[top.row as usize]).unwrap(),
             char::from_u32(MARKS[0]).unwrap()
         );
-        assert_eq!(terminal.backend().buffer()[(0, 1)].symbol(), expected);
+        assert_eq!(
+            terminal.backend().buffer()[(0, app.show_row_origin)].symbol(),
+            expected
+        );
         assert!(!terminal.backend().buffer()[(0, 0)]
             .symbol()
             .starts_with('\u{10eeee}'));

@@ -20,6 +20,7 @@ pub enum Mode {
 
 #[derive(Clone, Debug)]
 pub struct ShowRow {
+    pub path: Option<crate::summary_paths::Path>,
     pub preview: Option<crate::images::Row>,
     pub text: String,
     pub source: usize,
@@ -297,6 +298,11 @@ pub struct App {
     repository: Option<git::Repository>,
     // Each browser opener still running, which may yet report an error.
     browser_results: Vec<crate::commit_links::BrowserResult>,
+    pub visible_show_paths: Vec<(ratatui::layout::Rect, usize, crate::summary_paths::Target)>,
+    pub summary_cursor: crate::path_groups::Cursor,
+    collapsed_directories: HashSet<Vec<u8>>,
+    pub file_filters: crate::file_filters::Filters,
+    pub file_filter_buttons: Vec<(ratatui::layout::Rect, Option<crate::file_filters::Category>)>,
     pub show_stat: bool,
     // Status shares show_stat, so it can change while Show's rows are hidden.
     show_rows_stat: bool,
@@ -397,6 +403,11 @@ impl App {
             github_repository: None,
             repository: None,
             browser_results: Vec::new(),
+            visible_show_paths: Vec::new(),
+            summary_cursor: crate::path_groups::Cursor::default(),
+            collapsed_directories: HashSet::new(),
+            file_filters: crate::file_filters::Filters::default(),
+            file_filter_buttons: Vec::new(),
             show_stat: false,
             show_rows_stat: false,
             stat_bookmark: None,
@@ -1283,6 +1294,7 @@ impl App {
             .unwrap_or(old_cursor) as isize
             - self.show_offset as isize;
         let expanded = self.expanded_folds.clone();
+        let directories = self.collapsed_directories.clone();
         let nested_cursor = self.submodule_rows.get(&old_cursor).cloned();
         let old_submodules: HashMap<_, _> = self
             .show_files
@@ -1319,6 +1331,8 @@ impl App {
                 self.toggle_show_file();
             }
         }
+        self.collapsed_directories = directories;
+        self.rebuild_show_rows();
         let candidates: Vec<_> = self
             .show_rows
             .iter()
@@ -1515,6 +1529,8 @@ impl App {
             .map(|file| file.key.clone())
             .collect();
         self.submodules.clear();
+        self.collapsed_directories.clear();
+        self.summary_cursor = crate::path_groups::Cursor::default();
         self.expanded_folds.clear();
         self.stat_bookmark = None;
         self.stat_submodule_bookmark = None;
@@ -1595,6 +1611,13 @@ impl App {
             });
         }
         let row = self.show_rows.get(cursor)?;
+        if row
+            .path
+            .as_ref()
+            .is_some_and(|path| path.directory.is_some())
+        {
+            return None;
+        }
         let file = &self.show_files[row.file?];
         Some(CursorFile::Own {
             file,
@@ -1686,11 +1709,246 @@ impl App {
         }
     }
 
+    pub fn hidden_file_count(&self) -> usize {
+        let own = self
+            .show_files
+            .iter()
+            .filter(|file| self.file_filters.hides(file))
+            .map(|file| file.path_bytes.as_slice())
+            .collect::<HashSet<_>>()
+            .len();
+        own + self
+            .submodules
+            .iter()
+            .filter(|(path, _)| {
+                self.show_files
+                    .iter()
+                    .any(|file| file.key == **path && !self.file_filters.hides(file))
+            })
+            .map(|(_, child)| child.hidden_file_count())
+            .sum::<usize>()
+    }
+
+    pub fn file_filter_counts(
+        &self,
+    ) -> std::collections::BTreeMap<crate::file_filters::Category, usize> {
+        let mut paths: std::collections::BTreeMap<_, HashSet<&[u8]>> =
+            std::collections::BTreeMap::new();
+        for file in &self.show_files {
+            for category in crate::file_filters::Category::of(file) {
+                paths.entry(category).or_default().insert(&file.path_bytes);
+            }
+        }
+        for directory in self.file_filters.directories() {
+            let files = paths
+                .entry(crate::file_filters::Category::Directory(directory.clone()))
+                .or_default();
+            files.extend(
+                self.show_files
+                    .iter()
+                    .filter(|file| file.path_bytes.starts_with(directory))
+                    .map(|file| file.path_bytes.as_slice()),
+            );
+        }
+        let mut counts: std::collections::BTreeMap<_, _> = paths
+            .into_iter()
+            .map(|(category, paths)| (category, paths.len()))
+            .collect();
+        for (key, child) in &self.submodules {
+            let Some(file) = self.show_files.iter().find(|file| file.key == *key) else {
+                continue;
+            };
+            for (category, count) in child.file_filter_counts() {
+                let category = match category {
+                    crate::file_filters::Category::Directory(path) => {
+                        crate::file_filters::Category::Directory(crate::path_groups::join(
+                            &file.path_bytes,
+                            &path,
+                        ))
+                    }
+                    category => category,
+                };
+                *counts.entry(category).or_default() += count;
+            }
+        }
+        counts
+    }
+
+    fn selected_file_category(&self, cursor: usize) -> Option<crate::file_filters::Category> {
+        if let Some(crate::summary_paths::Target::Directory(path)) = self
+            .show_rows
+            .get(cursor)
+            .and_then(|row| row.path.as_ref())
+            .and_then(|path| path.focused(&self.summary_cursor))
+        {
+            return Some(crate::file_filters::Category::Directory(path.clone()));
+        }
+        match self.cursor_file(cursor)? {
+            CursorFile::Own { file, .. } => Some(crate::file_filters::Category::selected(file)),
+            CursorFile::Submodule { view, row, .. } => view.selected_file_category(row),
+        }
+    }
+
+    pub fn hide_selected_file_category(&mut self) {
+        self.ensure_show_rows();
+        if let Some(category) = self.selected_file_category(self.show_cursor) {
+            self.toggle_file_filter(Some(category));
+        }
+    }
+
+    pub fn toggle_file_filter(&mut self, category: Option<crate::file_filters::Category>) {
+        self.ensure_show_rows();
+        let source = self.show_rows.get(self.show_cursor).map(|row| row.source);
+        let location = self.show_location(self.show_cursor);
+        if let Some(category) = category {
+            self.file_filters.toggle(category);
+        } else {
+            self.file_filters.clear();
+        }
+        self.search_match = None;
+        self.status = None;
+        self.show_search_location = None;
+        self.stat_bookmark = None;
+        self.stat_submodule_bookmark = None;
+        self.rebuild_show_rows();
+        if let Some(source) = source {
+            self.show_cursor = (0..self.show_rows.len())
+                .find(|&row| self.show_location(row) == location)
+                .or_else(|| self.show_rows.iter().position(|row| row.source >= source))
+                .unwrap_or_else(|| self.show_rows.len().saturating_sub(1));
+        }
+        self.summary_cursor = crate::path_groups::Cursor::default();
+        self.show_scroll = Some(ShowScroll::Cursor);
+    }
+
+    pub fn move_summary_path(&mut self, right: bool) {
+        let count = self
+            .show_rows
+            .get(self.show_cursor)
+            .and_then(|row| row.path.as_ref())
+            .map_or(0, |path| path.components.len());
+        self.summary_cursor.step(right, count);
+        self.show_scroll = Some(ShowScroll::Cursor);
+    }
+
+    pub fn click_summary_path(&mut self, row: usize, target: crate::summary_paths::Target) {
+        let already_focused = self.show_cursor == row
+            && self
+                .show_rows
+                .get(row)
+                .and_then(|row| row.path.as_ref())
+                .and_then(|path| path.focused(&self.summary_cursor))
+                == Some(&target);
+        self.show_cursor = row;
+        if let Some(path) = self.show_rows.get(row).and_then(|row| row.path.as_ref()) {
+            if let Some(component) = path
+                .components
+                .iter()
+                .position(|(_, candidate)| *candidate == target)
+            {
+                self.summary_cursor.select(component, path.components.len());
+            }
+        }
+        self.show_scroll = None;
+        if already_focused {
+            self.activate_summary_path(row, target);
+        }
+    }
+
+    fn activate_summary_path(&mut self, row: usize, target: crate::summary_paths::Target) {
+        self.show_cursor = row;
+        self.summary_cursor = crate::path_groups::Cursor::default();
+        if let Some((key, child_row)) = self.submodule_rows.get(&row).cloned() {
+            let prefix = &self
+                .show_files
+                .iter()
+                .find(|file| file.key == key)
+                .expect("visible gitlink")
+                .path_bytes;
+            let target = match target {
+                crate::summary_paths::Target::Directory(path) => {
+                    let prefix = crate::path_groups::join(prefix, b"");
+                    crate::summary_paths::Target::Directory(
+                        path.strip_prefix(prefix.as_slice())
+                            .expect("nested path")
+                            .to_vec(),
+                    )
+                }
+                target => target,
+            };
+            let child = self.submodules.get_mut(&key).expect("visible child");
+            child.activate_summary_path(child_row, target);
+            let selected = child.show_cursor;
+            self.rebuild_show_rows();
+            self.show_cursor = self
+                .submodule_rows
+                .iter()
+                .find_map(|(row, current)| (*current == (key.clone(), selected)).then_some(*row))
+                .unwrap_or(self.show_cursor);
+            self.show_scroll = Some(ShowScroll::Cursor);
+            return;
+        }
+        match target {
+            crate::summary_paths::Target::Directory(path) => self.toggle_summary_directory(path),
+            crate::summary_paths::Target::File => self.toggle_show_file(),
+        }
+    }
+
+    fn toggle_summary_directory(&mut self, path: Vec<u8>) {
+        let source = self
+            .show_rows
+            .get(self.show_cursor)
+            .map_or(0, |row| row.source);
+        let layer = self
+            .show_rows
+            .get(self.show_cursor)
+            .and_then(|row| row.file)
+            .and_then(|file| self.show_files[file].stash_layer);
+        let key = crate::summary_paths::key(&path, layer);
+        if !self.collapsed_directories.remove(&key) {
+            self.collapsed_directories.insert(key);
+        }
+        self.search_match = None;
+        self.rebuild_show_rows();
+        self.show_cursor = self
+            .show_rows
+            .iter()
+            .position(|row| {
+                row.path
+                    .as_ref()
+                    .is_some_and(|p| p.directory.as_ref() == Some(&path))
+                    && row
+                        .file
+                        .is_some_and(|file| self.show_files[file].stash_layer == layer)
+            })
+            .or_else(|| self.show_rows.iter().position(|row| row.source >= source))
+            .unwrap_or(0);
+        self.summary_cursor = crate::path_groups::Cursor::default();
+        self.show_scroll = Some(ShowScroll::Cursor);
+    }
+
     fn rebuild_show_rows(&mut self) {
+        self.visible_show_paths.clear();
         self.show_rows_stat = self.show_stat;
+        for (key, child) in &mut self.submodules {
+            let Some(file) = self.show_files.iter().find(|file| file.key == *key) else {
+                continue;
+            };
+            let filters = self.file_filters.within(&file.path_bytes);
+            if child.file_filters != filters {
+                child.file_filters = filters;
+                child.rebuild_show_rows();
+            }
+        }
         let lines: Vec<_> = self.show_text.lines().collect();
         let mut rows = Vec::new();
         let mut source = 0;
+        let groups = if self.show_stat {
+            crate::summary_paths::Groups::new(&self.show_files, &self.file_filters)
+        } else {
+            crate::summary_paths::Groups::default()
+        };
+        let mut shown_groups = HashSet::new();
         for (file_index, file) in self.show_files.iter().enumerate() {
             for (index, line) in lines[source..file.start].iter().enumerate() {
                 rows.push(ShowRow {
@@ -1701,7 +1959,46 @@ impl App {
                     fold_separator: false,
                     summary: false,
                     preview: None,
+                    path: None,
                 });
+            }
+            if self.file_filters.hides(file) {
+                source = file.end;
+                continue;
+            }
+            if self.show_stat {
+                if let Some((key, group)) = groups.collapsed(file, &self.collapsed_directories) {
+                    if shown_groups.insert(key) {
+                        let files = group
+                            .members
+                            .iter()
+                            .map(|&index| &self.show_files[index])
+                            .collect::<Vec<_>>();
+                        let count = files
+                            .iter()
+                            .map(|file| &file.path_bytes)
+                            .collect::<HashSet<_>>()
+                            .len();
+                        let additions: usize = files.iter().map(|file| file.additions).sum();
+                        let deletions: usize = files.iter().map(|file| file.deletions).sum();
+                        rows.push(ShowRow {
+                            text: format!(
+                                "▶ {} ({count} file{}) | +{additions} −{deletions}",
+                                diff::display_path(&group.path),
+                                if count == 1 { "" } else { "s" }
+                            ),
+                            source: file.start,
+                            file: Some(file_index),
+                            folded: true,
+                            fold_separator: false,
+                            summary: true,
+                            preview: None,
+                            path: Some(groups.layout(file, Some(&group.path))),
+                        });
+                    }
+                    source = file.end;
+                    continue;
+                }
             }
             if self.show_stat || file.submodule.is_some() {
                 let expanded = self.expanded_folds.contains(&file.key);
@@ -1739,6 +2036,7 @@ impl App {
                     fold_separator: false,
                     summary: true,
                     preview: None,
+                    path: self.show_stat.then(|| groups.layout(file, None)),
                 });
                 if expanded && file.submodule.is_none() {
                     for (index, line) in lines[file.start..file.end].iter().enumerate() {
@@ -1750,11 +2048,11 @@ impl App {
                             fold_separator: false,
                             summary: false,
                             preview: None,
+                            path: None,
                         });
                     }
                 }
-            } else if (file.lockfile || file.untracked) && !self.expanded_folds.contains(&file.key)
-            {
+            } else if file.untracked && !self.expanded_folds.contains(&file.key) {
                 rows.push(ShowRow {
                     text: String::new(),
                     source: file.start,
@@ -1763,6 +2061,7 @@ impl App {
                     fold_separator: true,
                     summary: false,
                     preview: None,
+                    path: None,
                 });
                 rows.push(ShowRow {
                     text: format!(
@@ -1773,14 +2072,10 @@ impl App {
                         } else {
                             format!(" — +{} −{}", file.additions, file.deletions)
                         },
-                        if file.untracked {
-                            if file.lazy_untracked_path.is_some() {
-                                "untracked file, contents not loaded"
-                            } else {
-                                "untracked file folded"
-                            }
+                        if file.lazy_untracked_path.is_some() {
+                            "untracked file, contents not loaded"
                         } else {
-                            "lockfile folded"
+                            "untracked file folded"
                         }
                     ),
                     source: file.start,
@@ -1789,6 +2084,7 @@ impl App {
                     fold_separator: false,
                     summary: false,
                     preview: None,
+                    path: None,
                 });
                 rows.push(ShowRow {
                     text: String::new(),
@@ -1798,6 +2094,7 @@ impl App {
                     fold_separator: true,
                     summary: false,
                     preview: None,
+                    path: None,
                 });
             } else {
                 for (index, line) in lines[file.start..file.end].iter().enumerate() {
@@ -1809,6 +2106,7 @@ impl App {
                         fold_separator: false,
                         summary: false,
                         preview: None,
+                        path: None,
                     });
                 }
             }
@@ -1823,18 +2121,23 @@ impl App {
                 fold_separator: false,
                 summary: false,
                 preview: None,
+                path: None,
             });
         }
         if self.show_stat && !self.show_files.is_empty() {
             // A stash can contain the same path in multiple independent layers.
-            let count = self
+            let visible: Vec<_> = self
                 .show_files
+                .iter()
+                .filter(|file| !self.file_filters.hides(file))
+                .collect();
+            let count = visible
                 .iter()
                 .map(|file| file.path_bytes.as_slice())
                 .collect::<HashSet<_>>()
                 .len();
-            let additions: usize = self.show_files.iter().map(|file| file.additions).sum();
-            let deletions: usize = self.show_files.iter().map(|file| file.deletions).sum();
+            let additions: usize = visible.iter().map(|file| file.additions).sum();
+            let deletions: usize = visible.iter().map(|file| file.deletions).sum();
             let mut text = format!(" {count} file{} changed", if count == 1 { "" } else { "s" });
             for (count, change, sign) in
                 [(additions, "insertion", '+'), (deletions, "deletion", '-')]
@@ -1846,12 +2149,14 @@ impl App {
                     ));
                 }
             }
-            if self
-                .show_files
+            if visible
                 .iter()
                 .any(|file| file.lazy_untracked_path.is_some())
             {
                 text.push_str(" (unloaded contents excluded)");
+            }
+            if visible.len() != self.show_files.len() {
+                text.push_str(" (filtered)");
             }
             rows.push(ShowRow {
                 text,
@@ -1861,6 +2166,7 @@ impl App {
                 fold_separator: false,
                 summary: false,
                 preview: None,
+                path: None,
             });
         }
         if self.images.enabled {
@@ -1918,6 +2224,17 @@ impl App {
                 for (index, child_row) in child.show_rows.iter().enumerate() {
                     let mut nested = child_row.clone();
                     nested.text = format!("  {}", nested.text);
+                    if let Some(path) = &mut nested.path {
+                        path.offset += 2;
+                        let prefix = &self.show_files[row.file.unwrap()].path_bytes;
+                        for (_, target) in &mut path.components {
+                            *target = target.under(prefix);
+                        }
+                        path.directory = path
+                            .directory
+                            .as_ref()
+                            .map(|directory| crate::path_groups::join(prefix, directory));
+                    }
                     nested.source = row.source;
                     nested.file = row.file;
                     self.submodule_rows
@@ -1925,6 +2242,18 @@ impl App {
                     nested_rows.push(nested);
                 }
             }
+        }
+        if nested_rows.is_empty() && !self.show_files.is_empty() {
+            nested_rows.push(ShowRow {
+                text: "All files hidden. Press T to clear file filters.".into(),
+                source: lines.len(),
+                file: None,
+                folded: false,
+                fold_separator: false,
+                summary: false,
+                preview: None,
+                path: None,
+            });
         }
         self.show_rows = nested_rows;
         self.show_cursor = self.show_cursor.min(self.show_rows.len().saturating_sub(1));
@@ -2026,7 +2355,18 @@ impl App {
                     .map(|child| (file.end, (&file.key, child)))
             })
             .collect();
+        let mut files = self
+            .show_files
+            .iter()
+            .filter(|file| self.file_filters.hides(file))
+            .peekable();
         for (source, line) in self.show_text.lines().enumerate() {
+            while files.peek().is_some_and(|file| file.end <= source) {
+                files.next();
+            }
+            if files.peek().is_some_and(|file| file.start <= source) {
+                continue;
+            }
             // The placeholder for unloaded untracked contents is internal.
             if !(line.contains("glog-lazy-untracked:")
                 && crate::ansi::plain(line).starts_with("glog-lazy-untracked:"))
@@ -2061,6 +2401,7 @@ impl App {
     }
 
     fn reveal_show_location(&mut self, route: &[Vec<u8>], source: usize) -> Option<usize> {
+        self.summary_cursor = crate::path_groups::Cursor::default();
         if let Some((path, rest)) = route.split_first() {
             let index = self
                 .submodules
@@ -2072,6 +2413,16 @@ impl App {
                 .submodule_rows
                 .iter()
                 .find_map(|(row, (p, i))| (p == path && *i == index).then_some(*row));
+        }
+        if let Some(file) = self
+            .show_files
+            .iter()
+            .find(|file| (file.start..file.end).contains(&source))
+        {
+            for directory in crate::path_groups::directories(&file.path_bytes) {
+                self.collapsed_directories
+                    .remove(&crate::summary_paths::key(directory, file.stash_layer));
+            }
         }
         let file = self
             .show_files
@@ -2098,6 +2449,19 @@ impl App {
     }
 
     pub fn toggle_show_file(&mut self) {
+        if let Some(crate::summary_paths::Target::Directory(path)) = self
+            .show_rows
+            .get(self.show_cursor)
+            .and_then(|row| row.path.as_ref())
+            .and_then(|path| path.focused(&self.summary_cursor))
+            .cloned()
+        {
+            self.activate_summary_path(
+                self.show_cursor,
+                crate::summary_paths::Target::Directory(path),
+            );
+            return;
+        }
         if let Some((path, index)) = self.submodule_rows.get(&self.show_cursor).cloned() {
             let child = self.submodules.get_mut(&path).unwrap();
             child.show_cursor = index;
@@ -2126,7 +2490,7 @@ impl App {
             return;
         };
         let file = &self.show_files[file_index];
-        if !self.show_stat && !file.lockfile && !file.untracked && file.submodule.is_none() {
+        if !self.show_stat && !file.untracked && file.submodule.is_none() {
             return;
         }
         let path = file.key.clone();
@@ -2201,75 +2565,24 @@ impl App {
         self.show_scroll = Some(ShowScroll::Cursor);
     }
 
-    pub fn toggle_all_lockfiles(&mut self) {
-        let current_source = self.show_rows.get(self.show_cursor).map(|row| row.source);
-        let nested_cursor = self.submodule_rows.get(&self.show_cursor).cloned();
-        let lockfiles: Vec<_> = self
-            .show_files
-            .iter()
-            .filter(|file| file.lockfile)
-            .map(|file| file.key.clone())
-            .collect();
-        if lockfiles
-            .iter()
-            .any(|path| !self.expanded_folds.contains(path))
-        {
-            self.expanded_folds.extend(lockfiles);
-        } else {
-            self.expanded_folds.retain(|path| {
-                !self
-                    .show_files
-                    .iter()
-                    .any(|file| file.lockfile && file.key == *path)
-            });
-        }
-        self.search_match = None;
-        self.rebuild_show_rows();
-        if let Some(source) = current_source {
-            // Nested rows share their gitlink's source, so follow them by
-            // their child location and skip them when matching by source.
-            self.show_cursor = nested_cursor
-                .and_then(|location| {
-                    self.submodule_rows
-                        .iter()
-                        .find_map(|(row, current)| (*current == location).then_some(*row))
-                })
-                .or_else(|| {
-                    self.show_rows.iter().enumerate().rposition(|(index, row)| {
-                        row.source <= source && !self.submodule_rows.contains_key(&index)
-                    })
-                })
-                .unwrap_or(0);
-            self.show_scroll = Some(ShowScroll::Cursor);
-        }
-    }
-
     pub fn jump_show_file(&mut self, delta: isize) {
-        let Some(current_source) = self.show_rows.get(self.show_cursor).map(|row| row.source)
-        else {
+        let Some(source) = self.show_rows.get(self.show_cursor).map(|row| row.source) else {
             return;
         };
+        let mut candidates = self.show_rows.iter().enumerate().filter(|(index, row)| {
+            !self.submodule_rows.contains_key(index)
+                && !row.fold_separator
+                && row
+                    .file
+                    .is_some_and(|file| row.source == self.show_files[file].start)
+        });
         let target = if delta < 0 {
-            self.show_files
-                .iter()
-                .rev()
-                .find(|file| file.start < current_source)
+            candidates.rfind(|(_, row)| row.source < source)
         } else {
-            self.show_files
-                .iter()
-                .find(|file| file.start > current_source)
+            candidates.find(|(_, row)| row.source > source)
         };
-        if let Some(target) = target {
-            let rows = || {
-                self.show_rows
-                    .iter()
-                    .enumerate()
-                    .filter(|(index, _)| !self.submodule_rows.contains_key(index))
-            };
-            self.show_cursor = rows()
-                .find(|(_, row)| row.source == target.start && row.folded)
-                .or_else(|| rows().find(|(_, row)| row.source == target.start))
-                .map_or(self.show_cursor, |(index, _)| index);
+        if let Some((index, _)) = target {
+            self.show_cursor = index;
         }
     }
 
@@ -2689,8 +3002,10 @@ impl App {
             return;
         }
         let clicked = self.show_row_at_screen(screen);
+        let already_focused = self.show_cursor == clicked;
         self.show_cursor = clicked.min(self.show_rows.len().saturating_sub(1));
-        if self.show_rows.get(clicked).is_some_and(|row| row.folded) {
+        self.summary_cursor = crate::path_groups::Cursor::default();
+        if already_focused && self.show_rows.get(clicked).is_some_and(|row| row.folded) {
             self.toggle_show_file();
         }
     }
@@ -3165,7 +3480,7 @@ mod tests {
     }
 
     #[test]
-    fn non_utf8_show_paths_keep_independent_folds() {
+    fn non_utf8_show_paths_keep_independent_summary_folds() {
         // Git's quoted output also works on filesystems that cannot create
         // these names. The third name contains a literal backslash.
         let paths = [r"deps-\377.lock", r"deps-\376.lock", r"deps-\\377.lock"];
@@ -3177,35 +3492,33 @@ mod tests {
             )
             .unwrap();
         }
-        for summary in [false, true] {
-            let mut app = App::new(Vec::new());
-            app.show_stat = summary;
-            app.show_text = text.clone();
-            app.ensure_show_rows();
-            assert_eq!(app.show_rows.iter().filter(|row| row.folded).count(), 3);
-            assert!(!app
+        let mut app = App::new(Vec::new());
+        app.show_stat = true;
+        app.show_text = text.clone();
+        app.ensure_show_rows();
+        assert_eq!(app.show_rows.iter().filter(|row| row.folded).count(), 3);
+        assert!(!app
+            .show_rows
+            .iter()
+            .any(|row| row.text.contains("changed file")));
+        for index in 0..paths.len() {
+            app.show_cursor = app
                 .show_rows
                 .iter()
-                .any(|row| row.text.contains("changed file")));
-            for index in 0..paths.len() {
-                app.show_cursor = app
-                    .show_rows
-                    .iter()
-                    .position(|row| row.file == Some(index) && row.folded)
-                    .unwrap();
-                app.toggle_show_file();
-                for other in 0..paths.len() {
-                    assert_eq!(
-                        app.show_rows
-                            .iter()
-                            .any(|row| row.text == format!("+new-{other}")),
-                        other == index,
-                        "summary={summary}, expanded={index}, other={other}"
-                    );
-                }
-                app.toggle_show_file();
-                assert_eq!(app.show_rows.iter().filter(|row| row.folded).count(), 3);
+                .position(|row| row.file == Some(index) && row.folded)
+                .unwrap();
+            app.toggle_show_file();
+            for other in 0..paths.len() {
+                assert_eq!(
+                    app.show_rows
+                        .iter()
+                        .any(|row| row.text == format!("+new-{other}")),
+                    other == index,
+                    "expanded={index}, other={other}"
+                );
             }
+            app.toggle_show_file();
+            assert_eq!(app.show_rows.iter().filter(|row| row.folded).count(), 3);
         }
     }
 
@@ -3237,6 +3550,316 @@ mod tests {
             .show_rows
             .iter()
             .any(|row| row.folded && row.text.contains("two.rs")));
+    }
+
+    #[test]
+    fn compact_folder_actions_stay_in_their_submodule_repository() {
+        use crate::{file_filters::Category, summary_paths::Target};
+        let mut child = App::new(Vec::new());
+        child.show_stat = true;
+        for path in ["test/a.go", "test/b.go"] {
+            child.show_text.push_str(&format!(
+                "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n+child\n"
+            ));
+        }
+        child.ensure_show_rows();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_stat = true;
+        app.show_text = format!(
+            "diff --git a/test/root.go b/test/root.go\n--- a/test/root.go\n+++ b/test/root.go\n@@ -0,0 +1 @@\n+root\ndiff --git a/module b/module\nindex {}..{} 160000\n",
+            "1".repeat(40), "2".repeat(40)
+        );
+        app.ensure_show_rows();
+        app.submodules.insert(b"module".to_vec(), Box::new(child));
+        app.expanded_folds.insert(b"module".to_vec());
+        app.rebuild_show_rows();
+        let select_child = |app: &mut App| {
+            app.show_cursor = app
+                .show_rows
+                .iter()
+                .position(|row| row.summary && row.text.contains("test/a.go"))
+                .unwrap();
+        };
+        select_child(&mut app);
+        app.move_summary_path(false);
+        app.hide_selected_file_category();
+        assert!(app
+            .file_filters
+            .hides_category(&Category::Directory(b"module/test/".to_vec())));
+        assert_eq!(app.hidden_file_count(), 2);
+        assert_eq!(
+            app.file_filter_counts()[&Category::Directory(b"module/test/".to_vec())],
+            2
+        );
+        assert!(app
+            .show_rows
+            .iter()
+            .any(|row| row.text.contains("test/root.go")));
+        assert!(!app
+            .show_rows
+            .iter()
+            .any(|row| row.text.contains("test/a.go")));
+        app.toggle_file_filter(None);
+        select_child(&mut app);
+        app.activate_summary_path(app.show_cursor, Target::Directory(b"module/test/".to_vec()));
+        assert_eq!(
+            app.show_rows[app.show_cursor].text,
+            "  ▶ test/ (2 files) | +2 −0"
+        );
+        app.toggle_show_file();
+        assert!(app
+            .show_rows
+            .iter()
+            .any(|row| row.text.contains("test/a.go")));
+        assert!(app
+            .show_rows
+            .iter()
+            .any(|row| row.text.contains("test/b.go")));
+    }
+
+    #[test]
+    fn compact_folders_keep_stash_layers_separate_and_count_each_path_once() {
+        use crate::{diff::StashLayer, summary_paths::Target};
+        let mut app = App::new(Vec::new());
+        app.show_stat = true;
+        for layer in [StashLayer::Staged, StashLayer::Unstaged] {
+            app.show_text.push_str(&format!("{}\n", layer.marker()));
+            for path in ["test/a.go", "test/b.go"] {
+                app.show_text.push_str(&format!(
+                    "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n+added\n"
+                ));
+            }
+        }
+        app.ensure_show_rows();
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .rposition(|row| row.summary && row.text.contains("test/a.go"))
+            .unwrap();
+        app.activate_summary_path(app.show_cursor, Target::Directory(b"test/".to_vec()));
+        assert_eq!(app.show_rows.iter().filter(|row| row.summary).count(), 3);
+        assert_eq!(
+            app.show_files[app.show_rows[app.show_cursor].file.unwrap()].stash_layer,
+            Some(StashLayer::Unstaged)
+        );
+        assert_eq!(
+            app.show_rows.last().unwrap().text,
+            " 2 files changed, 4 insertions(+)"
+        );
+        app.hide_selected_file_category();
+        assert_eq!(app.hidden_file_count(), 2);
+        assert_eq!(
+            app.show_rows.last().unwrap().text,
+            " 0 files changed, 0 insertions(+), 0 deletions(-) (filtered)"
+        );
+    }
+
+    #[test]
+    fn clicking_a_folded_file_focuses_it_before_expanding() {
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = "metadata\ndiff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+added\n".into();
+        app.ensure_show_rows();
+        let folded = app.show_rows.iter().position(|row| row.folded).unwrap();
+        app.click_show_row(folded);
+        assert_eq!(app.show_cursor, folded);
+        assert!(app.show_rows[folded].folded);
+        assert!(!app.show_rows.iter().any(|row| row.text == "+added"));
+        app.click_show_row(folded);
+        assert!(app.show_rows.iter().any(|row| row.text == "+added"));
+    }
+
+    #[test]
+    fn compact_summary_folders_preserve_totals_and_filter_directory_boundaries() {
+        use crate::{file_filters::Category, summary_paths::Target};
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_stat = true;
+        for (path, count) in [
+            (".internal/a.sh", 1),
+            (".internal/proxy/main.go", 2),
+            (".internal/proxy/supervise.rs", 3),
+            ("test/a.sh", 4),
+            ("test/sub/b.sh", 5),
+            ("testing/c.sh", 6),
+        ] {
+            app.show_text.push_str(&format!(
+                "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +1,{count} @@\n{}",
+                (0..count).map(|n| format!("+added_{path}_{n}\n")).collect::<String>()
+            ));
+        }
+        app.ensure_show_rows();
+        assert_eq!(app.show_rows.len(), 7, "expanded folders add no rows");
+        let total = app.show_rows.last().unwrap().text.clone();
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.text.contains("proxy/main.go"))
+            .unwrap();
+        app.move_summary_path(false);
+        assert_eq!(
+            app.show_rows[app.show_cursor]
+                .path
+                .as_ref()
+                .unwrap()
+                .focused(&app.summary_cursor),
+            Some(&Target::Directory(b".internal/proxy/".to_vec()))
+        );
+        app.toggle_show_file();
+        assert_eq!(app.show_rows.len(), 6);
+        assert_eq!(
+            app.show_rows[app.show_cursor].text,
+            "▶ .internal/proxy/ (2 files) | +5 −0"
+        );
+        assert_eq!(app.show_rows.last().unwrap().text, total);
+        app.jump_show_file(1);
+        assert!(app.show_rows[app.show_cursor].text.contains("test/a.sh"));
+        app.toggle_file_filter(Some(Category::Extension(b"rs".to_vec())));
+        let group = app
+            .show_rows
+            .iter()
+            .position(|row| row.text.contains("proxy/ (1 file)"))
+            .unwrap();
+        app.show_cursor = group;
+        app.toggle_show_file();
+        assert!(!app.show_rows.iter().any(|row| row
+            .path
+            .as_ref()
+            .is_some_and(|path| path.directory.is_some())));
+        app.toggle_file_filter(None);
+        assert_eq!(app.show_rows.len(), 7);
+
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.text.contains("test/a.sh"))
+            .unwrap();
+        app.move_summary_path(false);
+        app.hide_selected_file_category();
+        assert_eq!(
+            app.file_filter_counts()[&Category::Directory(b"test/".to_vec())],
+            2
+        );
+        assert_eq!(app.hidden_file_count(), 2);
+        assert_eq!(
+            app.show_rows.last().unwrap().text,
+            " 4 files changed, 12 insertions(+) (filtered)"
+        );
+        assert!(app
+            .show_rows
+            .iter()
+            .any(|row| row.text.contains("testing/c.sh")));
+        app.search = Some("added_test/sub/b.sh_0".into());
+        app.next_match(false);
+        assert_eq!(
+            app.search_match, None,
+            "search must respect directory filters"
+        );
+        app.toggle_file_filter(None);
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.text.contains("test/a.sh"))
+            .unwrap();
+        app.activate_summary_path(app.show_cursor, Target::Directory(b"test/".to_vec()));
+        assert_eq!(
+            app.show_rows[app.show_cursor].text,
+            "▶ test/ (2 files) | +9 −0"
+        );
+        app.next_match(false);
+        assert_eq!(
+            app.show_rows[app.show_cursor].text,
+            "+added_test/sub/b.sh_0"
+        );
+        assert_eq!(app.show_rows.last().unwrap().text, total);
+    }
+
+    #[test]
+    fn overlapping_file_filters_keep_totals_search_and_folds_consistent() {
+        use crate::file_filters::Category;
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_stat = true;
+        for (path, count) in [
+            ("main.go", 1),
+            ("main_test.go", 2),
+            ("Cargo.lock", 3),
+            ("package-lock.json", 4),
+            ("package.json", 5),
+        ] {
+            app.show_text.push_str(&format!(
+                "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +1,{count} @@\n{}",
+                (0..count).map(|n| format!("+added_{path}_{n}\n")).collect::<String>()
+            ));
+        }
+        app.ensure_show_rows();
+        let total = |app: &App| app.show_rows.last().unwrap().text.clone();
+        assert_eq!(total(&app), " 5 files changed, 15 insertions(+)");
+        let counts = app.file_filter_counts();
+        assert_eq!(counts[&Category::Extension(b"go".to_vec())], 2);
+        assert_eq!(counts[&Category::GoTests], 1);
+        assert_eq!(counts[&Category::Lockfiles], 2);
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.summary && row.text.contains("package.json"))
+            .unwrap();
+        app.toggle_show_file();
+        assert!(app
+            .show_rows
+            .iter()
+            .any(|row| row.text == "+added_package.json_0"));
+
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.summary && row.text.contains("main_test.go"))
+            .unwrap();
+        app.hide_selected_file_category();
+        assert!(app.file_filters.hides_category(&Category::GoTests));
+        assert!(!app
+            .file_filters
+            .hides_category(&Category::Extension(b"go".to_vec())));
+        assert_eq!(total(&app), " 4 files changed, 13 insertions(+) (filtered)");
+        app.search = Some("added_main_test.go".into());
+        app.next_match(false);
+        assert_eq!(app.search_match, None);
+        assert!(!app
+            .show_rows
+            .iter()
+            .any(|row| row.text.contains("main_test.go")));
+        app.search = None;
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.summary && row.text.contains("main.go"))
+            .unwrap();
+        app.jump_show_file(1);
+        assert!(app.show_rows[app.show_cursor].text.contains("Cargo.lock"));
+
+        assert!(app
+            .show_rows
+            .iter()
+            .any(|row| row.text == "+added_package.json_0"));
+        app.toggle_file_filter(Some(Category::Extension(b"go".to_vec())));
+        assert_eq!(total(&app), " 3 files changed, 12 insertions(+) (filtered)");
+        app.toggle_file_filter(Some(Category::GoTests));
+        assert_eq!(total(&app), " 3 files changed, 12 insertions(+) (filtered)");
+        app.toggle_file_filter(Some(Category::Lockfiles));
+        assert_eq!(total(&app), " 1 file changed, 5 insertions(+) (filtered)");
+        app.toggle_file_filter(Some(Category::Extension(b"json".to_vec())));
+        assert_eq!(
+            total(&app),
+            " 0 files changed, 0 insertions(+), 0 deletions(-) (filtered)"
+        );
+        app.toggle_show_stat();
+        assert_eq!(app.show_rows.len(), 1);
+        assert!(app.show_rows[0].text.starts_with("All files hidden."));
+        app.ensure_show_rows();
+        app.toggle_file_filter(None);
+        app.toggle_show_stat();
+        assert_eq!(total(&app), " 5 files changed, 15 insertions(+)");
     }
 
     #[test]
@@ -3329,14 +3952,6 @@ mod tests {
                 assert!(app.show_rows.iter().any(|row| row.text == "+after"));
                 app.toggle_show_file();
                 assert_eq!(app.show_rows.len(), 2);
-                if app.show_files[0].lockfile {
-                    app.show_stat = false;
-                    app.rebuild_show_rows();
-                    assert!(app
-                        .show_rows
-                        .iter()
-                        .any(|row| row.folded && row.text.contains(label)));
-                }
             }
         }
     }
@@ -3549,7 +4164,7 @@ mod tests {
     }
 
     #[test]
-    fn file_jumps_and_lockfile_toggle_skip_expanded_submodule_rows() {
+    fn file_jumps_and_filters_skip_expanded_submodule_rows() {
         use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
         let mut child = App::new(Vec::new());
@@ -3599,7 +4214,7 @@ mod tests {
                 .unwrap();
             let expected = app.show_rows[app.show_cursor].text.clone();
             for _ in 0..2 {
-                press(&mut app, 'L');
+                app.toggle_file_filter(Some(crate::file_filters::Category::Lockfiles));
                 assert_eq!(
                     app.show_rows[app.show_cursor].text, expected,
                     "selected={selected}"
@@ -3662,25 +4277,29 @@ mod tests {
     }
 
     #[test]
-    fn lockfiles_start_folded_and_can_be_expanded() {
+    fn lockfiles_use_filters_instead_of_automatic_folding() {
         let mut app = App::new(Vec::new());
-        app.show_text = "commit metadata\ndiff --git a/src/main.rs b/src/main.rs\n--- a/src/main.rs\n+++ b/src/main.rs\n-old\n+new\ndiff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n-old dep\n+new dep\n"
-            .to_owned();
-        app.reset_show_folds();
-
-        assert!(app.show_rows.iter().any(|row| row.folded));
-        assert_eq!(
-            app.show_rows
-                .iter()
-                .filter(|row| row.fold_separator)
-                .count(),
-            2
-        );
-        assert!(!app.show_rows.iter().any(|row| row.text == "+new dep"));
-
-        app.show_cursor = app.show_rows.iter().position(|row| row.folded).unwrap();
-        app.toggle_show_file();
+        app.mode = Mode::Show;
+        app.show_text = "diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -1 +1 @@\n-old dep\n+new dep\n".into();
+        app.ensure_show_rows();
+        assert!(app
+            .show_rows
+            .iter()
+            .all(|row| !row.folded && !row.fold_separator));
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.text == "+new dep")
+            .unwrap();
+        app.hide_selected_file_category();
+        assert!(app
+            .file_filters
+            .hides_category(&crate::file_filters::Category::Lockfiles));
+        assert_eq!(app.hidden_file_count(), 1);
+        assert!(app.show_rows[0].text.starts_with("All files hidden."));
+        app.toggle_file_filter(None);
         assert!(app.show_rows.iter().any(|row| row.text == "+new dep"));
+        assert!(app.show_rows.iter().all(|row| !row.folded));
     }
 
     #[test]
@@ -3700,21 +4319,6 @@ mod tests {
         app.toggle_show_file();
         assert!(app.show_rows.iter().any(|row| row.text == "+one"));
         assert!(!app.show_rows.iter().any(|row| row.text == "+two"));
-    }
-
-    #[test]
-    fn search_reveals_a_match_inside_a_folded_lockfile() {
-        let mut app = App::new(Vec::new());
-        app.mode = Mode::Show;
-        app.show_text = "diff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n+hidden-needle\n"
-            .to_owned();
-        app.reset_show_folds();
-        app.search = Some("hidden-needle".to_owned());
-
-        app.next_match(false);
-
-        assert_eq!(app.show_rows[app.show_cursor].text, "+hidden-needle");
-        assert_eq!(app.search_match, Some((Mode::Show, app.show_cursor)));
     }
 
     #[test]

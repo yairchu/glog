@@ -88,7 +88,7 @@ pub struct View {
     pub offset: usize,
     pub height: usize,
     pub horizontal: usize,
-    path_component: usize,
+    path_cursor: crate::path_groups::Cursor,
     path_pan: usize,
     reveal_path: bool,
     origin: u16,
@@ -370,7 +370,7 @@ impl View {
             offset: 0,
             height: 0,
             horizontal: 0,
-            path_component: 0,
+            path_cursor: crate::path_groups::Cursor::default(),
             path_pan: 0,
             reveal_path: true,
             origin: 0,
@@ -410,13 +410,8 @@ impl View {
             };
             let path = self.files[file].path.clone();
             let mut parent = root;
-            let mut prefix = Vec::new();
-            let parts: Vec<_> = path.split(|b| *b == b'/').collect();
-            for part in &parts[..parts.len().saturating_sub(1)] {
-                if !prefix.is_empty() {
-                    prefix.push(b'/');
-                }
-                prefix.extend_from_slice(part);
+            for prefix in crate::path_groups::directories(&path) {
+                let prefix = prefix[..prefix.len() - 1].to_vec();
                 parent = if let Some(&index) = directories.get(&(source, prefix.clone())) {
                     index
                 } else {
@@ -570,7 +565,7 @@ impl View {
                 }
             }
         }
-        self.path_component = 0;
+        self.path_cursor = crate::path_groups::Cursor::default();
         self.path_pan = 0;
         self.reveal_path = true;
         self.rebuild();
@@ -614,21 +609,13 @@ impl View {
             .collect()
     }
     fn fold_path_components(&self, node: usize) -> Vec<(String, usize)> {
-        let mut groups: Vec<(String, usize)> = Vec::new();
-        for (component, node) in self.path_components(node) {
-            // An ancestor with the same visible findings offers the same fold.
-            // Keep the deepest node so a group ending in a filename still opens it.
-            if let Some((path, previous)) = groups.last_mut() {
-                if self.counts[*previous].1 == self.counts[node].1 {
-                    path.push_str(&component);
-                    *previous = node;
-                    continue;
-                }
-            }
-            groups.push((component, node));
-        }
-        groups
+        crate::path_groups::compact(
+            self.path_components(node)
+                .into_iter()
+                .map(|(label, node)| (label, node, self.counts[node].1)),
+        )
     }
+
     fn fold_components(&self, node: usize) -> Vec<usize> {
         self.fold_path_components(node)
             .into_iter()
@@ -639,8 +626,7 @@ impl View {
     fn focused_path_node(&self) -> Option<usize> {
         let node = self.path_node(*self.rows.get(self.cursor)?)?;
         let components = self.fold_components(node);
-        let last = components.len().checked_sub(1)?;
-        Some(components[last - self.path_component.min(last)])
+        Some(components[self.path_cursor.index(components.len())?])
     }
     pub fn move_horizontal(&mut self, right: bool) {
         if !right && self.path_pan > 0 {
@@ -655,16 +641,11 @@ impl View {
             .and_then(|row| self.path_node(*row))
             .map(|node| self.fold_components(node).len())
             .unwrap_or(0);
-        self.path_component = self.path_component.min(count.saturating_sub(1));
-        if right && self.path_component == 0 {
+        if right && self.path_cursor.index(count) == count.checked_sub(1) {
             self.horizontal = self.horizontal.saturating_add(4);
             self.path_pan = self.path_pan.saturating_add(4);
         } else if count > 0 {
-            self.path_component = if right {
-                self.path_component - 1
-            } else {
-                (self.path_component + 1).min(count - 1)
-            };
+            self.path_cursor.step(right, count);
             self.reveal_path = true;
         } else {
             self.horizontal = self.horizontal.saturating_sub(4);
@@ -815,9 +796,8 @@ impl View {
             file.hits[hit].line,
         ))
     }
-    /// Click filters or groups immediately; a second click on a result opens it.
+    /// Click a path or row to focus it; click it again to fold or open it.
     pub fn click(&mut self, column: u16, row: u16) -> bool {
-        self.path_component = 0;
         self.reveal_path = self.path_pan == 0;
         if let Some((_, action)) = self
             .buttons
@@ -834,9 +814,21 @@ impl View {
             .find(|(rect, _)| rect.contains((column, row).into()))
         {
             let node = *node;
-            self.cursor = self.offset + usize::from(row - self.origin);
-            self.toggle_fold(node);
-            self.rebuild();
+            let index = self.offset + usize::from(row - self.origin);
+            let already_focused = self.cursor == index && self.focused_path_node() == Some(node);
+            self.cursor = index;
+            if let Some(path) = self.rows.get(index).and_then(|row| self.path_node(*row)) {
+                let components = self.fold_components(path);
+                if let Some(component) = components.iter().position(|candidate| *candidate == node)
+                {
+                    self.path_cursor.select(component, components.len());
+                }
+            }
+            self.reveal_path = false;
+            if already_focused {
+                self.toggle_fold(node);
+                self.rebuild();
+            }
             return false;
         }
         if row < self.origin || usize::from(row - self.origin) >= self.height {
@@ -846,10 +838,13 @@ impl View {
         if index >= self.rows.len() {
             return false;
         }
-        let open = index == self.cursor
-            && matches!(self.nodes[self.rows[index].node].kind, Kind::Match { .. });
+        let already_focused = index == self.cursor;
+        let open =
+            already_focused && matches!(self.nodes[self.rows[index].node].kind, Kind::Match { .. });
         self.cursor = index;
-        if !matches!(self.nodes[self.rows[index].node].kind, Kind::Match { .. }) {
+        self.path_cursor = crate::path_groups::Cursor::default();
+        if already_focused && !matches!(self.nodes[self.rows[index].node].kind, Kind::Match { .. })
+        {
             self.action(Action::Fold);
         }
         open
@@ -923,7 +918,7 @@ impl PagerView for View {
                     .iter()
                     .position(|candidate| candidate.node == row.node)
                     .unwrap();
-                self.path_component = 0;
+                self.path_cursor = crate::path_groups::Cursor::default();
                 self.reveal_path = self.path_pan == 0;
                 return true;
             }
@@ -1736,10 +1731,17 @@ mod tests {
             .line(view.rows[0])
             .to_string()
             .contains("界/sub/a.rs:1:"));
+        view.cursor = 2;
         terminal
             .draw(|frame| view.draw(frame, frame.area(), None, None))
             .unwrap();
         let (button, folder) = *view.fold_buttons.iter().find(|(_, node)| matches!(&view.nodes[*node].kind, Kind::Directory(path) if path == "界/sub")).unwrap();
+        view.click(button.right() - 1, button.y);
+        assert!(
+            has_hit(&view, 0) && has_hit(&view, 1),
+            "first click only focuses the folder"
+        );
+        assert_eq!(view.focused_path_node(), Some(folder));
         view.click(button.right() - 1, button.y);
         assert!(!has_hit(&view, 0) && !has_hit(&view, 1));
         assert!(has_hit(&view, 2));
@@ -1767,6 +1769,12 @@ mod tests {
             .draw(|frame| view.draw(frame, frame.area(), None, None))
             .unwrap();
         let (button, _) = *view.fold_buttons.iter().find(|(_, node)| matches!(&view.nodes[*node].kind, Kind::Directory(path) if path == "界")).unwrap();
+        view.click(button.x, button.y);
+        assert_eq!(
+            view.rows.len(),
+            3,
+            "changing components only moves the path cursor"
+        );
         view.click(button.x, button.y);
         assert_eq!(view.rows.len(), 1);
         assert!(view.find("界/sub/b.rs", false));

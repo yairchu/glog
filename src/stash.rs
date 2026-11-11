@@ -360,8 +360,21 @@ mod tests {
         fs::write("file.txt", "unstaged\n").unwrap();
         git(&["stash", "push"]);
 
-        let app = load_app(&["show".into(), "--stat".into()]).unwrap();
+        let mut app = load_app(&["show".into(), "--stat".into()]).unwrap();
         assert_eq!(app.show_rows.iter().filter(|row| row.summary).count(), 2);
+        assert_eq!(
+            app.show_rows.last().unwrap().text,
+            " 1 file changed, 2 insertions(+), 2 deletions(-)"
+        );
+        let txt = crate::file_filters::Category::Extension(b"txt".to_vec());
+        assert_eq!(app.file_filter_counts()[&txt], 1);
+        app.toggle_file_filter(Some(txt));
+        assert!(app.show_rows.iter().all(|row| !row.summary));
+        assert_eq!(
+            app.show_rows.last().unwrap().text,
+            " 0 files changed, 0 insertions(+), 0 deletions(-) (filtered)"
+        );
+        app.toggle_file_filter(None);
         assert_eq!(
             app.show_rows.last().unwrap().text,
             " 1 file changed, 2 insertions(+), 2 deletions(-)"

@@ -12,7 +12,9 @@ use ratatui::{
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
     app.type_buttons.clear();
+    app.file_filter_buttons.clear();
     app.visible_show_links.clear();
+    app.visible_show_paths.clear();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -102,6 +104,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.mode == Mode::Log && app.history == History::Log {
         draw_type_controls(frame, app, header[2]);
+    } else if app.mode == Mode::Show {
+        app.ensure_show_rows();
+        let counts = app.file_filter_counts();
+        if !counts.is_empty() {
+            draw_file_filters(frame, app, header[2], counts);
+        }
     }
     if live {
         frame.render_widget(
@@ -167,13 +175,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         // s subject); the help screen lists every key.
         "h help  q quit  ↑/k ↓/j  ←/→ commit  Enter show  t hide type  z fold merge  m fold all  a author  d date  r refs  / ? search".to_owned()
     } else if !has_log {
-        "h help  q quit  ↑/k ↓/j  [/ ] file  B blame  e edit  Enter/z fold  s summary  L lockfiles  / ? search"
+        "h help  q quit  ↑/k ↓/j  [/ ] file  B blame  e edit  Enter/z fold  t hide type  T reset  s summary  / ? search"
             .to_owned()
     } else if app.history == History::Stash {
-        "h help  q quit  ↑/k ↓/j  ←/→ stash  [/ ] file  B blame  e edit  Enter/z fold  s summary  Tab Stash  / ? search"
+        "h help  q quit  ↑/k ↓/j  ←/→ stash  [/ ] file  B blame  e edit  Enter/z fold  t hide type  T reset  s summary  Tab Stash  / ? search"
             .to_owned()
     } else {
-        "h help  q quit  ↑/k ↓/j  ←/→ commit  [/ ] file  B blame  e edit  Enter/z fold  s summary  L lockfiles  / ? search"
+        "h help  q quit  ↑/k ↓/j  ←/→ commit  [/ ] file  B blame  e edit  Enter/z fold  t hide type  T reset  s summary  / ? search"
             .to_owned()
     };
     if app.has_reference_back() && app.search_input.is_none() && app.message().is_none() {
@@ -377,7 +385,7 @@ const HELP_ROWS: &[HelpRow] = &[
         "Mouse wheel",
         HelpTexts {
             range_diff: Some("scroll up / down"),
-            grep: Some("scroll; click groups to fold, matches to select/open"),
+            grep: Some("scroll; click to focus, click focused item again to act"),
             ..NO_HELP
         },
     ),
@@ -497,10 +505,30 @@ const HELP_ROWS: &[HelpRow] = &[
     (
         "t / T",
         HelpTexts {
-            log: Some("hide selected type / clear filters (Log)"),
+            log: Some("hide selected type (Log) or file category (Show) / clear filters"),
+            reflog: Some("hide selected file category / clear filters (Show)"),
+            blame: Some("hide selected file category / clear filters (Show)"),
+            stash: Some("hide selected file category / clear filters (Show)"),
+            detail: Some("hide selected file category / clear filters (Show)"),
             grep: Some("hide selected extension / clear filters"),
             ..NO_HELP
         },
+    ),
+    detail(
+        "Shift-←/→",
+        "choose inline folder or file in summaries; t hides the focused group",
+    ),
+    detail(
+        "click path",
+        "focus folder or file; click again to fold (Show summaries)",
+    ),
+    detail(
+        "click filter",
+        "toggle file category; summary totals follow visible files (Show)",
+    ),
+    detail(
+        "",
+        ".go includes *_test.go; hide Go tests or lockfiles separately",
     ),
     (
         "M",
@@ -529,7 +557,6 @@ const HELP_ROWS: &[HelpRow] = &[
             ..NO_HELP
         },
     ),
-    detail("L", "expand / fold all lockfiles (Show)"),
     detail("e", "open working file in editor (Show/Status)"),
     (
         "s",
@@ -983,6 +1010,62 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
 }
 
+fn draw_file_filters(
+    frame: &mut Frame,
+    app: &mut App,
+    area: Rect,
+    counts: std::collections::BTreeMap<crate::file_filters::Category, usize>,
+) {
+    let hidden = app.hidden_file_count();
+    let label = if hidden == 0 {
+        "Files [T all] ".to_owned()
+    } else {
+        format!("Files ({hidden} hidden) [T all] ")
+    };
+    let mut items = vec![(label, None, false)];
+    items.extend(counts.into_iter().map(|(category, count)| {
+        let hidden = app.file_filters.hides_category(&category);
+        (
+            format!(
+                "[{} {count}{}] ",
+                category.label(),
+                if hidden { " ×" } else { "" }
+            ),
+            Some(category),
+            hidden,
+        )
+    }));
+    let mut x = area.x;
+    for (label, category, hidden) in items {
+        let width = Line::from(label.as_str())
+            .width()
+            .min(usize::from(area.right() - x)) as u16;
+        if width == 0 {
+            break;
+        }
+        let rect = Rect::new(x, area.y, width, 1);
+        let style = if hidden {
+            Style::default()
+                .fg(Color::Gray)
+                .add_modifier(Modifier::CROSSED_OUT)
+        } else {
+            Style::default().fg(Color::Cyan)
+        };
+        frame.render_widget(Paragraph::new(label).style(style.bg(Color::DarkGray)), rect);
+        app.file_filter_buttons.push((rect, category));
+        x += width;
+    }
+}
+
+enum ShowHit {
+    Link(crate::commit_links::Target),
+    Path(usize, crate::summary_paths::Target),
+}
+
+fn hit_style(id: usize) -> Style {
+    Style::default().fg(Color::Rgb((id >> 16) as u8, (id >> 8) as u8, id as u8))
+}
+
 fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
     app.ensure_show_rows();
     app.show_row_origin = area.y;
@@ -1071,7 +1154,7 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
     let visible = first..rows.min(first + height);
     if app.show_rows[visible.clone()]
         .iter()
-        .any(|row| message_entry(&app.show_links, row).is_some())
+        .any(|row| row.path.is_some() || message_entry(&app.show_links, row).is_some())
     {
         // Render an ID mask with exactly the viewport's wrapping and scroll rules.
         // This keeps hit targets correct for wide characters and wrapped hashes.
@@ -1086,15 +1169,24 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
                     marked = ansi::style_ranges(
                         marked,
                         links.iter().map(|link| {
-                            targets.push(link.target.clone());
-                            let id = targets.len() as u32;
-                            let style = Style::default().fg(Color::Rgb(
-                                (id >> 16) as u8,
-                                (id >> 8) as u8,
-                                id as u8,
-                            ));
+                            targets.push(ShowHit::Link(link.target.clone()));
+                            let style = hit_style(targets.len());
                             (link.range.clone(), style)
                         }),
+                    );
+                }
+                if let Some(path) = &app.show_rows[index].path {
+                    marked = ansi::style_ranges(
+                        marked,
+                        path.ranges().into_iter().enumerate().map(
+                            |(component, (mut range, target))| {
+                                if component == 0 {
+                                    range.start = 0;
+                                }
+                                targets.push(ShowHit::Path(index, target.clone()));
+                                (range, hit_style(targets.len()))
+                            },
+                        ),
                     );
                 }
                 marked.spans = ansi::display_spans(marked.spans);
@@ -1126,11 +1218,22 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
                     continue;
                 };
                 // Adjacent cells of one link form a single hit target.
-                if previous == Some(id) {
-                    app.visible_show_links.last_mut().unwrap().0.width += width;
-                } else {
-                    app.visible_show_links
-                        .push((Rect::new(start, y, width, 1), target.clone()));
+                let rect = Rect::new(start, y, width, 1);
+                match target {
+                    ShowHit::Link(target) => {
+                        if previous == Some(id) {
+                            app.visible_show_links.last_mut().unwrap().0.width += width;
+                        } else {
+                            app.visible_show_links.push((rect, target.clone()));
+                        }
+                    }
+                    ShowHit::Path(row, target) => {
+                        if previous == Some(id) {
+                            app.visible_show_paths.last_mut().unwrap().0.width += width;
+                        } else {
+                            app.visible_show_paths.push((rect, *row, target.clone()));
+                        }
+                    }
                 }
                 previous = Some(id);
             }
@@ -1239,6 +1342,23 @@ fn drawn_show_line(app: &App, index: usize, mut line: Line<'static>) -> Line<'st
     if let Some(query) = &app.search {
         let current = app.search_match == Some((Mode::Show, index));
         line = highlight_matches(line, query, current);
+    }
+    if index == app.show_cursor {
+        if let Some(path) = &app.show_rows[index].path {
+            if let Some(component) = app.summary_cursor.index(path.components.len()) {
+                let (range, _) = &path.ranges()[component];
+                line = ansi::style_ranges(
+                    line,
+                    std::iter::once((
+                        range.clone(),
+                        Style::default()
+                            .fg(Color::Black)
+                            .bg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                    )),
+                );
+            }
+        }
     }
     // Style and search ranges refer to the original bytes; expand only after styling.
     line.spans = ansi::display_spans(std::mem::take(&mut line.spans));
@@ -2301,6 +2421,201 @@ mod tests {
         assert!(footer.starts_with("Watch refresh failed: boom"), "{footer}");
     }
     #[test]
+    fn inline_summary_folder_buttons_include_wide_characters_without_extra_rows() {
+        use crate::summary_paths::Target;
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_stat = true;
+        for path in ["界/test/one.go", "界/test/two.go", "other/three.go"] {
+            app.show_text.push_str(&format!(
+                "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n+added\n"
+            ));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.show_rows.len(), 4);
+        assert_eq!(app.show_row_origin, 1);
+        handle(
+            Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT)),
+            &mut app,
+        );
+        assert_eq!(
+            app.show_rows[app.show_cursor]
+                .path
+                .as_ref()
+                .unwrap()
+                .focused(&app.summary_cursor),
+            Some(&Target::Directory("界/test/".as_bytes().to_vec()))
+        );
+        handle(
+            Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)),
+            &mut app,
+        );
+        assert_eq!(
+            app.show_rows[app.show_cursor]
+                .path
+                .as_ref()
+                .unwrap()
+                .focused(&app.summary_cursor),
+            Some(&Target::File)
+        );
+        let (rect, _, _) = app
+            .visible_show_paths
+            .iter()
+            .find(|(_, index, target)| {
+                *index == 1 && *target == Target::Directory("界/test/".as_bytes().to_vec())
+            })
+            .unwrap();
+        let click = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x + 3,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        handle(click.clone(), &mut app);
+        assert_eq!(
+            app.show_rows.len(),
+            4,
+            "the first click only focuses the folder"
+        );
+        assert_eq!(
+            app.show_rows[app.show_cursor]
+                .path
+                .as_ref()
+                .unwrap()
+                .focused(&app.summary_cursor),
+            Some(&Target::Directory("界/test/".as_bytes().to_vec()))
+        );
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.show_cursor, 1);
+        assert_eq!(
+            app.show_offset, 0,
+            "focusing a visible component must not move it away from the pointer"
+        );
+        handle(click, &mut app);
+        assert_eq!(app.show_rows.len(), 3);
+        assert_eq!(
+            app.show_rows[app.show_cursor].text,
+            "▶ 界/test/ (2 files) | +2 −0"
+        );
+        assert_eq!(
+            app.show_rows.last().unwrap().text,
+            " 3 files changed, 3 insertions(+)"
+        );
+        handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE)),
+            &mut app,
+        );
+        assert_eq!(
+            app.show_rows.last().unwrap().text,
+            " 1 file changed, 1 insertion(+) (filtered)"
+        );
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert!(app.file_filter_buttons.iter().any(|(_, category)| *category
+            == Some(crate::file_filters::Category::Directory(
+                "界/test/".as_bytes().to_vec()
+            ))));
+    }
+
+    #[test]
+    fn show_file_filter_buttons_and_keyboard_share_overlapping_categories() {
+        use crate::file_filters::Category;
+        use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_stat = true;
+        for path in ["one.go", "one_test.go", "file.界"] {
+            app.show_text.push_str(&format!(
+                "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n+added\n"
+            ));
+        }
+        let mut terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.show_row_origin, 1);
+        assert!(!app.file_filter_buttons.is_empty());
+        assert!(app
+            .file_filter_buttons
+            .iter()
+            .all(|(rect, _)| rect.y == 0 && rect.x >= app.show_tab_end));
+        let click = |app: &mut App, category: Option<Category>| {
+            let (rect, _) = app
+                .file_filter_buttons
+                .iter()
+                .find(|(_, current)| *current == category)
+                .unwrap();
+            // Include the second cell of a wide category label in its hitbox.
+            let column = rect.x
+                + if category == Some(Category::Extension("界".as_bytes().to_vec())) {
+                    3
+                } else {
+                    rect.width - 1
+                };
+            let row = rect.y;
+            handle(
+                Event::Mouse(MouseEvent {
+                    kind: MouseEventKind::Down(MouseButton::Left),
+                    column,
+                    row,
+                    modifiers: KeyModifiers::NONE,
+                }),
+                app,
+            );
+        };
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.summary && row.text.contains("one_test.go"))
+            .unwrap();
+        handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE)),
+            &mut app,
+        );
+        assert_eq!(
+            app.show_rows.last().unwrap().text,
+            " 2 files changed, 2 insertions(+) (filtered)"
+        );
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        click(&mut app, Some(Category::Extension(b"go".to_vec())));
+        assert_eq!(
+            app.show_rows.last().unwrap().text,
+            " 1 file changed, 1 insertion(+) (filtered)"
+        );
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        click(&mut app, Some(Category::GoTests));
+        // Revealing the subgroup cannot override a hidden extension.
+        assert_eq!(
+            app.show_rows.last().unwrap().text,
+            " 1 file changed, 1 insertion(+) (filtered)"
+        );
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        click(
+            &mut app,
+            Some(Category::Extension("界".as_bytes().to_vec())),
+        );
+        assert_eq!(
+            app.show_rows.last().unwrap().text,
+            " 0 files changed, 0 insertions(+), 0 deletions(-) (filtered)"
+        );
+        for (width, height) in [(12, 4), (1, 2)] {
+            terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            assert!(app
+                .file_filter_buttons
+                .iter()
+                .all(|(rect, _)| rect.right() <= width));
+        }
+        handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('T'), KeyModifiers::NONE)),
+            &mut app,
+        );
+        assert_eq!(
+            app.show_rows.last().unwrap().text,
+            " 3 files changed, 3 insertions(+)"
+        );
+    }
+
+    #[test]
     fn stat_view_renders_compact_summaries_and_keeps_expanded_header() {
         let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
         let mut app = App::new(Vec::new());
@@ -2313,20 +2628,23 @@ mod tests {
                 .map(|x| terminal.backend().buffer()[(x, y)].symbol())
                 .collect::<String>()
         };
-        assert!(row_text(&terminal, 1).starts_with("message"));
-        assert!(row_text(&terminal, 2).starts_with("▶ one.rs | +1 −1"));
-        assert!(row_text(&terminal, 3).starts_with("▶ image.bin | binary"));
-        assert!(
-            row_text(&terminal, 4).starts_with(" 2 files changed, 1 insertion(+), 1 deletion(-)")
-        );
+        let origin = app.show_row_origin;
+        assert!(row_text(&terminal, origin).starts_with("message"));
+        assert!(row_text(&terminal, origin + 1).starts_with("▶ one.rs | +1 −1"));
+        assert!(row_text(&terminal, origin + 2).starts_with("▶ image.bin | binary"));
+        assert!(row_text(&terminal, origin + 3)
+            .starts_with(" 2 files changed, 1 insertion(+), 1 deletion(-)"));
         for (x, color) in [
             (11, Color::Green),
             (12, Color::Green),
             (14, Color::Red),
             (15, Color::Red),
         ] {
-            assert_eq!(terminal.backend().buffer()[(x, 2)].fg, color);
-            assert_eq!(terminal.backend().buffer()[(x, 2)].bg, Color::Reset);
+            assert_eq!(terminal.backend().buffer()[(x, origin + 1)].fg, color);
+            assert_eq!(
+                terminal.backend().buffer()[(x, origin + 1)].bg,
+                Color::Reset
+            );
         }
         app.show_cursor = 1;
         handle(
@@ -2334,11 +2652,17 @@ mod tests {
             &mut app,
         );
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
-        assert!(row_text(&terminal, 2).starts_with("▼ one.rs | +1 −1"));
-        assert!(row_text(&terminal, 3).contains("diff --git a/one.rs"));
-        assert_eq!(terminal.backend().buffer()[(11, 2)].fg, Color::Green);
-        assert_eq!(terminal.backend().buffer()[(14, 2)].fg, Color::Red);
-        assert_eq!(terminal.backend().buffer()[(11, 2)].bg, Color::DarkGray);
+        assert!(row_text(&terminal, origin + 1).starts_with("▼ one.rs | +1 −1"));
+        assert!(row_text(&terminal, origin + 2).contains("diff --git a/one.rs"));
+        assert_eq!(
+            terminal.backend().buffer()[(11, origin + 1)].fg,
+            Color::Green
+        );
+        assert_eq!(terminal.backend().buffer()[(14, origin + 1)].fg, Color::Red);
+        assert_eq!(
+            terminal.backend().buffer()[(11, origin + 1)].bg,
+            Color::DarkGray
+        );
     }
 
     #[test]
@@ -2891,7 +3215,7 @@ mod tests {
         handle(key(KeyCode::Char(']')), &mut app);
         terminal.draw(|frame| draw(frame, &mut app)).unwrap();
         assert!(app.show_rows[app.show_cursor].folded);
-        let cursor_y = 1 + app.show_cursor - app.show_offset;
+        let cursor_y = usize::from(app.show_row_origin) + app.show_cursor - app.show_offset;
         let cursor = &terminal.backend().buffer()[(0, cursor_y as u16)];
         assert_eq!(cursor.bg, Color::DarkGray);
         assert_eq!(cursor.fg, Color::LightYellow);

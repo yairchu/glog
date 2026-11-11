@@ -4564,6 +4564,7 @@ pub(crate) mod tests {
             .position(|commit| commit.kind == kind)
             .unwrap();
         app.mode = crate::app::Mode::Show;
+        app.show_stat = true;
         app.load_show();
         app.show_cursor = app.show_rows.iter().position(|row| row.folded).unwrap();
         app.toggle_show_file();

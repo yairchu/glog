@@ -261,9 +261,9 @@ glog grep -i needle
 glog grep -F needle HEAD -- src/
 ```
 
-Press `z` or click a path to fold the selected file or folder, and `m` to fold
-or expand all; Left/Right choose which folder in the path to fold. Enter opens
-a match in Blame, and Backspace returns to the results. Press `t` to hide the
+Click a path to focus it, then click it again or press `z` to fold the file or
+folder. Use `m` to fold or expand all; Left/Right choose which folder in the
+path to fold. Enter opens a match in Blame, and Backspace returns to the results. Press `t` to hide the
 selected file's extension, `T` to clear filters, or click the extension
 buttons. `/` and `?` search within the results, including inside folds.
 
@@ -364,8 +364,8 @@ appear first when present. Renames show both paths; files with staged and
 unstaged edits appear in both sections. It also works before the first commit
 and in detached HEAD state.
 
-Sections and regular patches start open, while lockfiles and new files start
-folded, just like Show. `Enter`/`z` toggles sections and individual files. Use Up/Down or j/k,
+Sections and regular patches start open, while new files start folded, just
+like Show. `Enter`/`z` toggles sections and individual files. Use Up/Down or j/k,
 Page Up/Down, Home/End (or `g`/`G`, `<`/`>`), and the mouse to navigate. Left/Right navigates history,
 just like Show: Right opens the newest commit, and Left from that commit returns
 to Working tree. Shift-Left/Right pans long lines in Status.
@@ -520,15 +520,15 @@ so graph edges may span them.
 | `a`, `d`, `r`, `x`, `s` | toggle author/date/refs/hash/subject | — |
 | `←`, `→` | select previous/newer or next/older commit | previous/newer or next/older commit |
 | `[`, `]` | — | previous/next changed file |
+| `Shift-←`, `Shift-→` | — | choose an inline folder or file in summaries |
 | `Enter` | open selected commit | expand/fold current folded file |
 | `z` | expand/fold selected merge history | expand/fold current folded file |
-| `L` | — | expand/fold all lockfiles |
 | `e` | — | open working file at the selected line in your editor |
 | `O` | open commit on GitHub | open commit on GitHub at the selected file/line |
 | `W` | toggle watch | toggle watch for the current Log |
 | `m` | expand/fold all merge histories | — |
 | `M` | hide/show merge commits | — |
-| `t`, `T` | hide selected commit type / clear filters | — |
+| `t`, `T` | hide selected commit type / clear filters | hide focused file category or folder / clear filters |
 | `s` | toggle subject | toggle file summary / patch |
 | `g` / `<` / `Home`, `G` / `>` / `End` | first/last commit | top/bottom |
 | `/`, `?`, `n`, `N` | search forward/backward; repeat/opposite | search forward/backward; repeat/opposite |
@@ -569,13 +569,16 @@ lines use the nearest surviving line. Use `EDITOR=code` for VS Code or
 `EDITOR=xed` for Xcode on macOS. Add `--wait` to return to glog after closing
 the file.
 
-Common lockfiles (`*.lock`, `package-lock.json`, and `pnpm-lock.yaml`) start
-folded in Show so source changes remain prominent. The placeholder always shows
-the file and its added/deleted line counts. Press `Enter` or `z`, or click the
-placeholder, to reveal the complete diff. Searching reveals a folded lockfile
-automatically when it contains the selected match.
+Use the header's file filters in Show and Diff to hide extensions, Go tests
+(`*_test.go`), or lockfiles. Press `t` to hide the selected file's category and
+`T` to reset. Summary totals count only visible files, and filters persist
+while browsing commits. The `.go` filter includes all Go files; Go tests can
+also be hidden separately. Summary paths use Grep's compact folder controls:
+click a folder component to focus it, then click again to fold its files into
+one aggregate row, or use Shift-Left/Right and Enter/z. Expanded folders add no
+rows. Press `t` on a focused folder to hide its subtree; folding keeps it in totals.
 
-New untracked files also start folded individually, keeping large generated
+New untracked files start folded individually, keeping large generated
 trees navigable while allowing each file to be expanded independently. Their
 contents are loaded and formatted only when expanded, so repositories with
 many untracked artifacts still open quickly.

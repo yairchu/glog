@@ -693,10 +693,7 @@ impl StatusView {
         }
     }
     fn fold_by_default(entry: &Entry) -> bool {
-        entry.dirty_submodule()
-            || entry.key.group == Group::Untracked
-            || entry.label == "added"
-            || crate::diff::is_lockfile(&entry.key.path.to_string_lossy())
+        entry.dirty_submodule() || entry.key.group == Group::Untracked || entry.label == "added"
     }
     // Ask Git for effective attributes in one batch, covering worktree/index
     // fallback, nested .gitattributes, info/attributes and global attributes.
@@ -2014,11 +2011,11 @@ mod tests {
             .rows
             .iter()
             .any(|row| row.text.ends_with("file.txt | +2 −1")));
-        assert!(!view
+        assert!(view
             .patches
             .keys()
-            .any(|key| key.path == std::path::Path::new("Cargo.lock")
-                || key.group == Group::Untracked));
+            .any(|key| key.path == std::path::Path::new("Cargo.lock")));
+        assert!(!view.patches.keys().any(|key| key.group == Group::Untracked));
         let key = Key {
             group: Group::Unstaged,
             path: "file.txt".into(),
@@ -2117,7 +2114,7 @@ mod tests {
             .unwrap();
         view.toggle();
         assert!(view.rows[view.cursor].text.ends_with("untracked | +1 −0"));
-        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(120, 40)).unwrap();
         terminal
             .draw(|frame| crate::ui::draw(frame, &mut app))
             .unwrap();
@@ -2139,7 +2136,7 @@ mod tests {
                 .unwrap();
             let buffer = terminal.backend().buffer();
             let mut checked = false;
-            for y in 0..30 {
+            for y in 0..buffer.area.height {
                 let line: String = (0..120).map(|x| buffer[(x, y)].symbol()).collect();
                 if let Some(index) = line
                     .chars()

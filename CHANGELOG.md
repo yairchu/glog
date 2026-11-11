@@ -5,6 +5,18 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Filter files in Show and Diff with clickable header categories, `t` to hide the
+  selected file's category, and `T` to reset. Summary totals count only visible
+  files. Hide `*_test.go` or lockfiles separately from their extensions; `.go`
+  still includes all Go files. Filters persist while browsing commits. The
+  lockfiles filter replaces automatic lockfile folding and the `L` shortcut;
+  lockfiles now start open like other tracked files. Summary paths share Grep's
+  compact folder controls: focus components with a click or Shift-Left/Right,
+  click the focused component again or press Enter/z to fold it into an
+  aggregate row, or hide its subtree with `t`. Expanded folders add no rows; folding keeps their changes in totals.
+
 ### Fixed
 
 - Follow moved code to its original location when opening a Blame line's parent,
