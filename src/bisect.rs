@@ -214,11 +214,20 @@ impl Graph {
         rows: Vec<git::Commit>,
         date_args: Vec<String>,
     ) -> Self {
-        let landmarks: HashSet<_> = rows.iter().map(|row| row.hash.clone()).collect();
-        let shown: Vec<_> = ancestry
+        let results: HashSet<_> = rows.iter().map(|row| &row.hash).collect();
+        let shown = ancestry.with_junctions(
+            &ancestry
+                .nodes
+                .iter()
+                .map(|node| results.contains(&node.hash))
+                .collect::<Vec<_>>(),
+        );
+        let landmarks: HashSet<_> = ancestry
             .nodes
             .iter()
-            .map(|node| landmarks.contains(&node.hash))
+            .zip(&shown)
+            .filter(|(_, shown)| **shown)
+            .map(|(node, _)| node.hash.clone())
             .collect();
         let sections = ancestry.sections(&shown);
         Self {
@@ -1283,27 +1292,24 @@ mod tests {
         assert_eq!(parents(&shared), HashSet::from([good]));
         press(&mut app, KeyCode::Char('z'));
         assert_eq!(app.commits.len(), 2);
-        // These commits belong to both connections; expanding both inserts each once.
+        // A merge splitting toward different landmarks is shown, not shared by two gaps.
         let left = commit("visible left", &[&shared]);
         let right = commit("visible right", &[&shared]);
-        let hidden = commit("hidden junction", &[&left, &right]);
-        let top = commit("top", &[&hidden]);
-        let mut app = projected_app(&[top.clone(), left, right]);
-        app.selected = app.commits.iter().position(|row| row.hash == top).unwrap();
-        let controls = entry(&app, &top).gaps.clone();
-        assert_eq!(controls.len(), 2);
-        assert!(controls.iter().all(|control| control.count == 1));
-        for control in &controls {
-            app.bisect_graph.as_mut().unwrap().focus = Some(control.edge.clone());
-            app.toggle_bisect_gap();
-        }
+        let junction = commit("junction", &[&left, &right]);
+        let middle = commit("middle", &[&junction]);
+        let top = commit("top", &[&middle]);
+        let app = projected_app(&[top.clone(), left.clone(), right.clone()]);
+        let controls = &entry(&app, &top).gaps;
+        assert_eq!(controls.len(), 1);
+        assert_eq!(controls[0].edge.to, junction);
+        assert_eq!(controls[0].count, 1);
+        assert!(entry(&app, &junction).intermediate);
+        assert!(entry(&app, &junction).gaps.is_empty());
+        let row = app.commits.iter().find(|row| row.hash == junction).unwrap();
         assert_eq!(
-            app.commits.iter().filter(|row| row.hash == hidden).count(),
-            1
+            row.parents.iter().cloned().collect::<HashSet<_>>(),
+            HashSet::from([left, right])
         );
-        app.bisect_graph.as_mut().unwrap().focus = Some(controls[0].edge.clone());
-        app.toggle_bisect_gap();
-        assert!(app.commits.iter().any(|row| row.hash == hidden));
     }
     #[test]
     fn remaining_steps_follow_gits_scoped_session_estimate_and_skips() {

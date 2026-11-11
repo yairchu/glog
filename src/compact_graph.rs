@@ -99,6 +99,56 @@ impl Graph {
         parents
     }
 
+    /// Also show omitted commits where routes split toward different shown
+    /// commits or join from different ones, so no omitted commit belongs to
+    /// more than one section.
+    pub fn with_junctions(&self, shown: &[bool]) -> Vec<bool> {
+        let mut shown = shown.to_vec();
+        loop {
+            let mut changed = false;
+            // Parents follow children, so each pass sees its inputs settled.
+            let mut frontiers = vec![BTreeSet::new(); self.nodes.len()];
+            for index in (0..self.nodes.len()).rev() {
+                let routes: BTreeSet<_> = self.nodes[index]
+                    .parents
+                    .iter()
+                    .map(|parent| &frontiers[*parent])
+                    .filter(|frontier| !frontier.is_empty())
+                    .collect();
+                if !shown[index] && routes.len() > 1 {
+                    shown[index] = true;
+                    changed = true;
+                }
+                frontiers[index] = if shown[index] {
+                    BTreeSet::from([index])
+                } else {
+                    routes.into_iter().next().cloned().unwrap_or_default()
+                };
+            }
+            let mut arrivals = vec![BTreeSet::<BTreeSet<usize>>::new(); self.nodes.len()];
+            for index in 0..self.nodes.len() {
+                let routes = std::mem::take(&mut arrivals[index]);
+                if !shown[index] && routes.len() > 1 {
+                    shown[index] = true;
+                    changed = true;
+                }
+                let sources = if shown[index] {
+                    BTreeSet::from([index])
+                } else {
+                    routes.into_iter().next().unwrap_or_default()
+                };
+                if !sources.is_empty() {
+                    for parent in &self.nodes[index].parents {
+                        arrivals[*parent].insert(sources.clone());
+                    }
+                }
+            }
+            if !changed {
+                return shown;
+            }
+        }
+    }
+
     /// Every connection's distinct omitted commits, stopping at shown nodes.
     /// A merge may reach the same commit by several paths; sets deduplicate it.
     pub fn sections(&self, shown: &[bool]) -> Vec<Section> {
@@ -151,4 +201,71 @@ fn reaches(parents: &HashMap<usize, Vec<usize>>, from: usize, target: usize) -> 
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn disjoint_sections(ancestry: &str, landmarks: &[&str]) -> Vec<(String, String, Vec<String>)> {
+        let graph = Graph::parse(ancestry).unwrap();
+        let shown: Vec<_> = graph
+            .nodes
+            .iter()
+            .map(|node| landmarks.contains(&node.hash.as_str()))
+            .collect();
+        let sections = graph.sections(&graph.with_junctions(&shown));
+        let mut owners = HashMap::new();
+        for section in &sections {
+            for member in &section.members {
+                assert_eq!(
+                    owners.insert(member, &section.edge),
+                    None,
+                    "{member} is shared"
+                );
+            }
+        }
+        let mut sections: Vec<_> = sections
+            .into_iter()
+            .map(|section| (section.edge.from, section.edge.to, section.members))
+            .collect();
+        sections.sort();
+        sections
+    }
+
+    fn section(from: &str, to: &str, members: &[&str]) -> (String, String, Vec<String>) {
+        (
+            from.into(),
+            to.into(),
+            members.iter().map(|member| (*member).into()).collect(),
+        )
+    }
+
+    #[test]
+    fn omitted_routes_split_and_join_at_shown_junctions() {
+        // An omitted merge leads to two landmarks.
+        assert_eq!(
+            disjoint_sections(
+                "bad c\nc x\nx a1 a2\na1 good1\na2 good2\ngood1\ngood2\n",
+                &["bad", "good1", "good2"],
+            ),
+            [
+                section("bad", "x", &["c"]),
+                section("x", "good1", &["a1"]),
+                section("x", "good2", &["a2"]),
+            ]
+        );
+        // One route passes the split; another reaches the same commit around it.
+        assert_eq!(
+            disjoint_sections(
+                "bad p1 p2\np1 a b\np2 h\na h\nb good2\nh good1\ngood1\ngood2\n",
+                &["bad", "good1", "good2"],
+            ),
+            [
+                section("bad", "h", &["p2"]),
+                section("p1", "good2", &["b"]),
+                section("p1", "h", &["a"]),
+            ]
+        );
+    }
 }
