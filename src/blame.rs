@@ -2639,6 +2639,37 @@ mod tests {
     }
 
     #[test]
+    fn blame_parent_reports_new_file_when_another_file_cannot_be_diffed() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write(
+            ".gitattributes",
+            "new.txt diff=readable\nother.dat diff=broken\n",
+        )
+        .unwrap();
+        git(&["config", "diff.readable.textconv", "cat"]);
+        git(&["config", "diff.broken.textconv", "false"]);
+        fs::write("other.dat", "old\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        fs::write("new.txt", "a\n").unwrap();
+        fs::write("other.dat", "new\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "add"]);
+
+        let (rows, _) = load(&["new.txt".into()]).unwrap();
+        let commit = &rows[0];
+        let Err(error) = load_parent(commit, commit.blame().unwrap()) else {
+            panic!("a new file has nothing earlier to blame");
+        };
+        assert!(
+            error.ends_with("added this file; nothing earlier to blame"),
+            "{error}"
+        );
+    }
+
+    #[test]
     fn blame_parent_ignores_configured_inter_hunk_context() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
