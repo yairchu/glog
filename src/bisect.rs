@@ -1192,7 +1192,7 @@ mod tests {
             compact
         );
         input::handle(
-            Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT)),
+            Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
             &mut app,
         );
         assert!(app.focused_bisect_gap().is_none());
@@ -1200,7 +1200,7 @@ mod tests {
         assert_eq!(app.mode, Mode::Show);
         press(&mut app, KeyCode::Backspace);
         input::handle(
-            Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)),
+            Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
             &mut app,
         );
         assert!(app.focused_bisect_gap().is_some());

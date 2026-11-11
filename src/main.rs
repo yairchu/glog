@@ -350,7 +350,8 @@ numbers preserve decision order; shared ancestors connect divergent histories.
 Range rows between landmarks exclude endpoints and count each commit once.
 Select a commit or range with Up/Down; Enter opens the commit or expands the
 range. Click a range to focus, then click again to expand; Enter/z toggles it.
-z within a gap collapses it. Shift-Left/Right also selects a source commit's gaps.
+z within a gap collapses it. Left/Right also select a source commit's gaps, and
+Shift-Left/Right move between commits.
 Enter opens the selected commit; Esc or Backspace returns. --watch or W refreshes
 as the session changes. This view does not change bisect results or checkout.
 

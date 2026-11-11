@@ -18,7 +18,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   mode. Range rows between landmarks count distinct intervening commits,
   excluding the endpoints. Select a range with Up/Down and press Enter/z to
   expand its commits in the graph, or click to focus it and click again to
-  expand. Press `z` within an expanded gap to collapse it. Open commits with Enter; watch progress with
+  expand, or focus a commit's ranges with Left/Right. Press `z` within an
+  expanded gap to collapse it. Open commits with Enter; watch progress with
   `--watch` or `W`, preserving expanded sections. Completed sessions identify
   the culprit or the possibilities left by skipped commits.
 
@@ -28,9 +29,16 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   still includes all Go files. Filters persist while browsing commits. The
   lockfiles filter replaces automatic lockfile folding and the `L` shortcut;
   lockfiles now start open like other tracked files. Summary paths share Grep's
-  compact folder controls: focus components with a click or Shift-Left/Right,
+  compact folder controls: focus components with a click or Left/Right,
   click the focused component again or press Enter/z to fold it into an
   aggregate row, or hide its subtree with `t`. Expanded folders add no rows; folding keeps their changes in totals.
+
+### Changed
+
+- **Breaking:** Shift-Left/Right now move between commits, reflog entries,
+  stashes, and Blame chunks, in place of plain Left/Right. Plain Left/Right
+  act within the view, as horizontal keys do in pagers: they pan in Status
+  and choose folders in Show summaries.
 
 ### Fixed
 

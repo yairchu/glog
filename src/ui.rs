@@ -165,7 +165,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         })
         .flatten();
     let mut help = if app.mode == Mode::Status {
-        status_error.clone().unwrap_or_else(|| "h help  q quit  ↑/k ↓/j  e edit  Enter show/fold  s summary  ←/→ commit  Shift-←/→ pan  Tab Log  Esc Log  Ctrl-L redraw · WATCH".to_owned())
+        status_error.clone().unwrap_or_else(|| "h help  q quit  ↑/k ↓/j  e edit  Enter show/fold  s summary  Shift-←/→ commit  ←/→ pan  Tab Log  Esc Log  Ctrl-L redraw · WATCH".to_owned())
     } else if let Some(input) = &app.search_input {
         let prefix = if app.search_reverse { '?' } else { '/' };
         format!("{prefix}{input}█")
@@ -178,29 +178,30 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.history == History::Branches {
         "h help  q quit  ↑/k ↓/j  Enter/click branch log  d date  / ? search".to_owned()
     } else if app.mode == Mode::Log && app.history == History::Bisect {
-        "h help  q quit  ↑/k ↓/j select  ←/→ commit  Enter show/expand  z expand/fold  / ? search"
+        "h help  q quit  ↑/k ↓/j select  ←/→ gap  Shift-←/→ commit  Enter show/expand  z expand/fold  / ? search"
             .to_owned()
     } else if app.mode == Mode::Log && app.history == History::Reflog {
-        "h help  q quit  ↑/k ↓/j  ←/→ entry  Enter show  z fold  / ? search".to_owned()
+        "h help  q quit  ↑/k ↓/j  Shift-←/→ entry  Enter show  z fold  / ? search".to_owned()
     } else if app.mode == Mode::Log && app.history == History::Stash {
-        "h help  q quit  ↑/k ↓/j  ←/→ stash  Enter show  a author  d date  / ? search".to_owned()
+        "h help  q quit  ↑/k ↓/j  Shift-←/→ stash  Enter show  a author  d date  / ? search"
+            .to_owned()
     } else if app.mode == Mode::Log && file_view {
         "h help  q quit  ↑/k ↓/j  a author  d date  x hash  / ? search".to_owned()
     } else if app.mode == Mode::Log && app.history == History::Blame {
-        "h help  q quit  ↑/k ↓/j  ←/→ chunk  Enter show  p blame parent  Esc/Backspace back  a author  d date  x hash  / ? search"
+        "h help  q quit  ↑/k ↓/j  Shift-←/→ chunk  Enter show  p blame parent  Esc/Backspace back  a author  d date  x hash  / ? search"
             .to_owned()
     } else if app.mode == Mode::Log {
         // Keep the hint short by omitting the row format toggles (x hash,
         // s subject); the help screen lists every key.
-        "h help  q quit  ↑/k ↓/j  ←/→ commit  Enter show  t hide type  z fold merge  m fold all  a author  d date  r refs  / ? search".to_owned()
+        "h help  q quit  ↑/k ↓/j  Shift-←/→ commit  Enter show  t hide type  z fold merge  m fold all  a author  d date  r refs  / ? search".to_owned()
     } else if !has_log {
         "h help  q quit  ↑/k ↓/j  [/ ] file  B blame  e edit  Enter/z fold  t hide type  T reset  s summary  / ? search"
             .to_owned()
     } else if app.history == History::Stash {
-        "h help  q quit  ↑/k ↓/j  ←/→ stash  [/ ] file  B blame  e edit  Enter/z fold  t hide type  T reset  s summary  Tab Stash  / ? search"
+        "h help  q quit  ↑/k ↓/j  Shift-←/→ stash  [/ ] file  B blame  e edit  Enter/z fold  t hide type  T reset  s summary  Tab Stash  / ? search"
             .to_owned()
     } else {
-        "h help  q quit  ↑/k ↓/j  ←/→ commit  [/ ] file  B blame  e edit  Enter/z fold  t hide type  T reset  s summary  / ? search"
+        "h help  q quit  ↑/k ↓/j  Shift-←/→ commit  [/ ] file  B blame  e edit  Enter/z fold  t hide type  T reset  s summary  / ? search"
             .to_owned()
     };
     if app.has_reference_back() && app.search_input.is_none() && app.message().is_none() {
@@ -421,11 +422,23 @@ const HELP_ROWS: &[HelpRow] = &[
     (
         "←/→",
         HelpTexts {
+            log: Some("choose inline folder or file in summaries (Show); pan (Status)"),
+            bisect: Some("focus a commit gap (Bisect); choose folder or file (Show summaries)"),
+            grep: Some("select fold target; at last target, → pans and ← pans back"),
+            ..detail(
+                "",
+                "choose inline folder or file in summaries; t hides the focused group",
+            )
+            .1
+        },
+    ),
+    (
+        "Shift-←/→",
+        HelpTexts {
             log: Some("previous / next commit (Log/Show/Status)"),
             reflog: Some("previous / next reflog entry"),
             bisect: Some("previous / next commit"),
             blame: Some("previous / next commit chunk"),
-            grep: Some("select fold target; at last target, → pans and ← pans back"),
             stash: Some("previous / next stash"),
             ..NO_HELP
         },
@@ -556,17 +569,6 @@ const HELP_ROWS: &[HelpRow] = &[
             detail: Some("hide selected file category / clear filters (Show)"),
             grep: Some("hide selected extension / clear filters"),
             ..NO_HELP
-        },
-    ),
-    (
-        "Shift-←/→",
-        HelpTexts {
-            bisect: Some("focus a commit gap (Bisect); choose folder or file (Show summaries)"),
-            ..detail(
-                "",
-                "choose inline folder or file in summaries; t hides the focused group",
-            )
-            .1
         },
     ),
     (
@@ -2637,7 +2639,7 @@ mod tests {
         assert_eq!(app.show_rows.len(), 4);
         assert_eq!(app.show_row_origin, 1);
         handle(
-            Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT)),
+            Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
             &mut app,
         );
         assert_eq!(
@@ -2649,7 +2651,7 @@ mod tests {
             Some(&Target::Directory("界/test/".as_bytes().to_vec()))
         );
         handle(
-            Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)),
+            Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
             &mut app,
         );
         assert_eq!(
@@ -3637,11 +3639,13 @@ mod tests {
         assert_eq!(app.show_tab_start, app.show_tab_end);
         assert!(!row_text(&terminal, 29).contains("commit"));
         assert_eq!(app.log_tab_start, app.log_tab_end);
-        for code in [KeyCode::Tab, KeyCode::Esc, KeyCode::Left, KeyCode::Right] {
-            crate::input::handle(
-                Event::Key(KeyEvent::new(code, KeyModifiers::NONE)),
-                &mut app,
-            );
+        for (code, modifiers) in [
+            (KeyCode::Tab, KeyModifiers::NONE),
+            (KeyCode::Esc, KeyModifiers::NONE),
+            (KeyCode::Left, KeyModifiers::SHIFT),
+            (KeyCode::Right, KeyModifiers::SHIFT),
+        ] {
+            crate::input::handle(Event::Key(KeyEvent::new(code, modifiers)), &mut app);
             assert_eq!(app.mode, Mode::Show);
             assert_eq!(app.show_text, "comparison patch");
         }

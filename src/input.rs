@@ -135,10 +135,10 @@ fn apply(event: Event, app: &mut App) {
                 KeyCode::Tab | KeyCode::Esc => app.switch_mode(),
                 KeyCode::Char('q') => app.quit = true,
                 KeyCode::Char('h') => app.show_help = true,
-                KeyCode::Left if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     show_adjacent(app, -1)
                 }
-                KeyCode::Right if !key.modifiers.contains(KeyModifiers::SHIFT) => {
+                KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     show_adjacent(app, 1)
                 }
                 _ => {
@@ -170,7 +170,7 @@ fn apply(event: Event, app: &mut App) {
         }
         if app.mode == Mode::Log && app.history == History::Bisect {
             if matches!(key.code, KeyCode::Left | KeyCode::Right)
-                && key.modifiers.contains(KeyModifiers::SHIFT)
+                && !key.modifiers.contains(KeyModifiers::SHIFT)
             {
                 app.move_bisect_gap(key.code == KeyCode::Right);
                 return;
@@ -248,24 +248,19 @@ fn apply(event: Event, app: &mut App) {
             // Leave a followed reference before exiting to the calling tool.
             KeyCode::Esc if app.exit_on_esc && app.has_reference_back() => app.reference_back(),
             KeyCode::Esc if app.exit_on_esc => app.quit = true,
-            KeyCode::Left
-                if app.mode == Mode::Show
-                    && app.show_stat
-                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
-            {
-                app.move_summary_path(false)
+            // Plain arrows act within the view, as horizontal keys do in
+            // pagers; Shift-arrows step through history.
+            KeyCode::Left | KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                let delta = if key.code == KeyCode::Right { 1 } else { -1 };
+                if app.mode == Mode::Show {
+                    show_adjacent(app, delta)
+                } else {
+                    app.move_adjacent(delta)
+                }
             }
-            KeyCode::Right
-                if app.mode == Mode::Show
-                    && app.show_stat
-                    && key.modifiers.contains(KeyModifiers::SHIFT) =>
-            {
-                app.move_summary_path(true)
+            KeyCode::Left | KeyCode::Right if app.mode == Mode::Show && app.show_stat => {
+                app.move_summary_path(key.code == KeyCode::Right)
             }
-            KeyCode::Left if app.mode == Mode::Show => show_adjacent(app, -1),
-            KeyCode::Right if app.mode == Mode::Show => show_adjacent(app, 1),
-            KeyCode::Left if !key.modifiers.contains(KeyModifiers::SHIFT) => app.move_adjacent(-1),
-            KeyCode::Right if !key.modifiers.contains(KeyModifiers::SHIFT) => app.move_adjacent(1),
             _ => pager_key(key.code, app),
         }
     } else if let Event::Mouse(mouse) = event {

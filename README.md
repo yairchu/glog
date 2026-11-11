@@ -112,7 +112,7 @@ glog --watch --fold-merges
 glog --fold-merges --all
 ```
 
-Navigation skips folded commits, including Left/Right in Show. Searching Log
+Navigation skips folded commits, including Shift-Left/Right in Show. Searching Log
 still searches the full loaded history and expands folds containing a match.
 Watch refreshes preserve fold choices and the selected commit; new merges start
 folded when `--fold-merges` is enabled. The graph is redrawn around hidden commits.
@@ -287,7 +287,7 @@ together. Git's `log.date` configuration is respected. `--date=STYLE`
 overrides the display format.
 
 Enter opens the selected commit. Tab or Escape returns to the reflog, and
-Left/Right in Show moves between reflog entries. Search matches the displayed
+Shift-Left/Right in Show moves between reflog entries. Search matches the displayed
 event text or commit hash. Repeated visits to the same commit remain separate
 entries. Finished or aborted rebases start folded at their final entry.
 Consecutive rebases of the same branch also fold into a chain when their
@@ -322,8 +322,8 @@ plain file view until one returns. The code is syntax-highlighted when
 `log.date` configuration is respected, and `--date=STYLE` overrides it.
 
 Enter opens the selected line's commit at the blamed file. Tab or Escape
-returns to the blame, and Left/Right move between runs of lines from different
-commits, in both views. Lines not committed yet open the working-tree status.
+returns to the blame, and Shift-Left/Right move between runs of lines from
+different commits, in both views. Lines not committed yet open the working-tree status.
 
 Press `p` to blame the file as it was just before the selected line's commit,
 following renames. The parent's version of the line stays at the same height
@@ -346,7 +346,7 @@ glog stash show --stat 'stash@{2}'
 Each row shows the stash selector, date, author, and message. `a` and `d` toggle
 the author and date columns. Enter opens separate staged, unstaged, and
 saved untracked patches, preserving staged content even when it was later
-overwritten in the working tree. Left/Right
+overwritten in the working tree. Shift-Left/Right
 move between stashes in either view; Tab or Escape returns to the list.
 Search, file folding, and `s` for the file summary work as in Show.
 
@@ -366,9 +366,9 @@ and in detached HEAD state.
 
 Sections and regular patches start open, while new files start folded, just
 like Show. `Enter`/`z` toggles sections and individual files. Use Up/Down or j/k,
-Page Up/Down, Home/End (or `g`/`G`, `<`/`>`), and the mouse to navigate. Left/Right navigates history,
-just like Show: Right opens the newest commit, and Left from that commit returns
-to Working tree. Shift-Left/Right pans long lines in Status.
+Page Up/Down, Home/End (or `g`/`G`, `<`/`>`), and the mouse to navigate. Shift-Left/Right navigates
+history, just like Show: Shift-Right opens the newest commit, and Shift-Left from
+that commit returns to Working tree. Left/Right pan long lines in Status.
 Status refreshes once per second while visible, preserving expanded files and
 the reading position where possible. File statistics always show additions in
 green and deletions in red. Press `s` to switch between patches and collapsed
@@ -518,9 +518,9 @@ so graph edges may span them.
 | `B` | — | blame the selected line; deleted lines use the parent version |
 | `Backspace` | return to the previous view | return to the previous view |
 | `a`, `d`, `r`, `x`, `s` | toggle author/date/refs/hash/subject | — |
-| `←`, `→` | select previous/newer or next/older commit | previous/newer or next/older commit |
+| `Shift-←`, `Shift-→` | select previous/newer or next/older commit | previous/newer or next/older commit |
 | `[`, `]` | — | previous/next changed file |
-| `Shift-←`, `Shift-→` | — | choose an inline folder or file in summaries |
+| `←`, `→` | — | choose an inline folder or file in summaries |
 | `Enter` | open selected commit | expand/fold current folded file |
 | `z` | expand/fold selected merge history | expand/fold current folded file |
 | `e` | — | open working file at the selected line in your editor |
@@ -575,7 +575,7 @@ Use the header's file filters in Show and Diff to hide extensions, Go tests
 while browsing commits. The `.go` filter includes all Go files; Go tests can
 also be hidden separately. Summary paths use Grep's compact folder controls:
 click a folder component to focus it, then click again to fold its files into
-one aggregate row, or use Shift-Left/Right and Enter/z. Expanded folders add no
+one aggregate row, or use Left/Right and Enter/z. Expanded folders add no
 rows. Press `t` on a focused folder to hide its subtree; folding keeps it in totals.
 
 New untracked files start folded individually, keeping large generated

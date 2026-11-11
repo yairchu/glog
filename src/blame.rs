@@ -2131,13 +2131,13 @@ mod tests {
         // Line history needs a visible column; the file view does not load it.
         let spec = format!("{snapshot}:file.txt");
         let mut file = git::load_show_app(&[spec]).unwrap();
-        for code in [
-            KeyCode::Enter,
-            KeyCode::Tab,
-            KeyCode::Char('p'),
-            KeyCode::Right,
+        for (code, modifiers) in [
+            (KeyCode::Enter, KeyModifiers::NONE),
+            (KeyCode::Tab, KeyModifiers::NONE),
+            (KeyCode::Char('p'), KeyModifiers::NONE),
+            (KeyCode::Right, KeyModifiers::SHIFT),
         ] {
-            key(code, &mut file);
+            input::handle(Event::Key(KeyEvent::new(code, modifiers)), &mut file);
             assert_eq!(file.mode, Mode::Log);
             assert_eq!(file.selected, 0);
             assert!(file.pending_blame.is_some());
@@ -2763,9 +2763,15 @@ mod tests {
         let key = |code, app: &mut App| {
             input::handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), app)
         };
-        key(KeyCode::Left, &mut app);
+        input::handle(
+            Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT)),
+            &mut app,
+        );
         assert_eq!(app.selected, 2);
-        key(KeyCode::Right, &mut app);
+        input::handle(
+            Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)),
+            &mut app,
+        );
         assert_eq!(app.selected, 3);
         for code in ['t', 'M', 'z', 'm', 'r', 's'] {
             key(KeyCode::Char(code), &mut app);

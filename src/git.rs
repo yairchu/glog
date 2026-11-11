@@ -2459,7 +2459,10 @@ pub(crate) mod tests {
         key(KeyCode::Enter, &mut app);
         assert_eq!(app.mode, Mode::Show);
         assert!(crate::ansi::plain(&app.show_text).contains("feat: first"));
-        key(KeyCode::Left, &mut app);
+        input::handle(
+            Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT)),
+            &mut app,
+        );
         assert_eq!(app.selected, 1);
         assert!(crate::ansi::plain(&app.show_text).contains("fix: second"));
         key(KeyCode::Tab, &mut app);
@@ -3317,7 +3320,10 @@ pub(crate) mod tests {
         key(&mut app, KeyCode::Enter);
         assert_eq!(app.mode, Mode::Show);
         assert!(app.show_text.contains("outer merge"));
-        key(&mut app, KeyCode::Right);
+        input::handle(
+            Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)),
+            &mut app,
+        );
         assert_eq!(app.selected, next);
         key(&mut app, KeyCode::Tab);
         assert_eq!(app.mode, Mode::Log);
@@ -4719,7 +4725,7 @@ pub(crate) mod tests {
         git(&["init", "-q"]);
         git(&["config", "user.email", "test@example.com"]);
         git(&["config", "user.name", "Test"]);
-        let key = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        let shift = |code| Event::Key(KeyEvent::new(code, KeyModifiers::SHIFT));
         // Status watches the default Log, as `glog status` sets it up.
         let watched = |app: &mut App| {
             app.watch = true;
@@ -4729,7 +4735,7 @@ pub(crate) mod tests {
         watched(&mut unborn);
         unborn.pending_history = Some(Vec::new());
         unborn.open_status();
-        input::handle(key(KeyCode::Right), &mut unborn);
+        input::handle(shift(KeyCode::Right), &mut unborn);
         assert_eq!(unborn.mode, Mode::Status);
         assert_eq!(unborn.selected, 0);
         for subject in ["first", "second"] {
@@ -4749,19 +4755,19 @@ pub(crate) mod tests {
             }
             app.open_status();
             app.status_view.as_mut().unwrap().cursor = 1;
-            input::handle(key(KeyCode::Right), &mut app);
+            input::handle(shift(KeyCode::Right), &mut app);
             assert_eq!(app.mode, Mode::Show);
             assert_eq!(app.commits[app.selected].subject, "second");
             assert!(app.show_text.contains("second"));
-            input::handle(key(KeyCode::Left), &mut app);
+            input::handle(shift(KeyCode::Left), &mut app);
             assert_eq!(app.mode, Mode::Status);
             assert_eq!(app.selected, 0);
             assert_eq!(app.status_view.as_ref().unwrap().cursor, 1);
-            input::handle(key(KeyCode::Left), &mut app);
+            input::handle(shift(KeyCode::Left), &mut app);
             assert_eq!(app.mode, Mode::Status);
             assert_eq!(app.selected, 0);
             input::handle(
-                Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::SHIFT)),
+                Event::Key(KeyEvent::new(KeyCode::Right, KeyModifiers::NONE)),
                 &mut app,
             );
             assert_eq!(app.mode, Mode::Status);
@@ -4793,7 +4799,7 @@ pub(crate) mod tests {
         assert!(app.show_text.contains("initial"));
         fs::write(".git/index", "corrupt").unwrap();
         input::handle(
-            Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::NONE)),
+            Event::Key(KeyEvent::new(KeyCode::Left, KeyModifiers::SHIFT)),
             &mut app,
         );
         assert_eq!(app.mode, Mode::Status);

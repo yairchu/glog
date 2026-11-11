@@ -347,6 +347,10 @@ mod tests {
         input::handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), app);
     }
 
+    fn shift(app: &mut App, code: KeyCode) {
+        input::handle(Event::Key(KeyEvent::new(code, KeyModifiers::SHIFT)), app);
+    }
+
     #[test]
     fn stash_summary_counts_a_file_once_across_layers() {
         let directory = TestDirectory::new();
@@ -543,12 +547,12 @@ mod tests {
         );
         key(&mut app, KeyCode::Char('s'));
         assert!(app.show_stat);
-        key(&mut app, KeyCode::Left);
+        shift(&mut app, KeyCode::Left);
         assert_eq!(app.selected, 0);
         assert!(crate::ansi::plain(&app.show_text).contains("+second change"));
         key(&mut app, KeyCode::Tab);
         assert_eq!(app.mode, Mode::Log);
-        key(&mut app, KeyCode::Right);
+        shift(&mut app, KeyCode::Right);
         assert_eq!(app.selected, 1);
 
         let direct = load_app(&["show".into(), "--stat".into(), "1".into()]).unwrap();
@@ -584,7 +588,7 @@ mod tests {
             (KeyCode::Left, 1),
             (KeyCode::Left, 0),
         ] {
-            key(&mut repeated, direction);
+            shift(&mut repeated, direction);
             assert_eq!(repeated.selected, index);
             assert_eq!(
                 heading(&repeated),
