@@ -30,30 +30,38 @@ pub struct Commit {
 
 /// Text whose commit hashes are highlighted as in Log.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
-pub struct Text(Vec<(String, bool)>);
+pub struct Text {
+    parts: Vec<(String, bool)>,
+    pub action: Option<Action>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Action {
+    Bisect,
+}
 
 impl Text {
     fn push(&mut self, text: &str) {
-        self.0.push((text.to_owned(), false));
+        self.parts.push((text.to_owned(), false));
     }
     fn push_hash(&mut self, hash: &str) {
-        self.0.push((hash.to_owned(), true));
+        self.parts.push((hash.to_owned(), true));
     }
     fn hashes(&self) -> impl Iterator<Item = &str> {
-        self.0
+        self.parts
             .iter()
             .filter(|(_, hash)| *hash)
             .map(|(text, _)| text.as_str())
     }
     fn abbreviate(&mut self, short: impl Fn(&str) -> String) {
-        for (text, hash) in &mut self.0 {
+        for (text, hash) in &mut self.parts {
             if *hash {
                 *text = short(text);
             }
         }
     }
     pub fn spans(&self) -> Vec<Span<'static>> {
-        self.0
+        self.parts
             .iter()
             .map(|(text, hash)| match hash {
                 true => crate::log_format::field_span(crate::log_format::Field::Hash, text.clone()),
@@ -65,7 +73,9 @@ impl Text {
 
 impl std::fmt::Display for Text {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.iter().try_for_each(|(text, _)| f.write_str(text))
+        self.parts
+            .iter()
+            .try_for_each(|(text, _)| f.write_str(text))
     }
 }
 
@@ -269,7 +279,10 @@ fn commits(operation: &Operation) -> Vec<(&'static str, &String)> {
 
 /// `operation` as `git status` would summarise it, with whole hashes.
 fn describe(operation: &Operation) -> Text {
-    let mut text = Text::default();
+    let mut text = Text {
+        action: matches!(operation, Operation::Bisect { .. }).then_some(Action::Bisect),
+        ..Text::default()
+    };
     let commit = |text: &mut Text, prefix: &str, hash: &str| {
         text.push(prefix);
         text.push_hash(hash);

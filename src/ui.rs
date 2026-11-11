@@ -48,6 +48,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         History::Blame => "Blame",
         History::Stash => "Stash",
         History::Branches => "Branches",
+        History::Bisect => "Bisect",
         // These views have no tabs.
         History::RangeDiff | History::Grep => "",
     };
@@ -104,6 +105,21 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.mode == Mode::Log && app.history == History::Log {
         draw_type_controls(frame, app, header[2]);
+    } else if app.mode == Mode::Log && app.history == History::Bisect {
+        if let Some(steps) = app
+            .bisect_graph
+            .as_ref()
+            .and_then(|graph| graph.remaining_steps)
+        {
+            frame.render_widget(
+                Paragraph::new(format!(
+                    " ~{steps} step{} after this test",
+                    if steps == 1 { "" } else { "s" }
+                ))
+                .style(header_style),
+                header[2],
+            );
+        }
     } else if app.mode == Mode::Show {
         app.ensure_show_rows();
         let counts = app.file_filter_counts();
@@ -161,6 +177,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         "h help  q quit  ↑/k ↓/j  wheel scroll  Space/b page  / ? search".to_owned()
     } else if app.history == History::Branches {
         "h help  q quit  ↑/k ↓/j  Enter/click branch log  d date  / ? search".to_owned()
+    } else if app.mode == Mode::Log && app.history == History::Bisect {
+        "h help  q quit  ↑/k ↓/j select  ←/→ commit  Enter show/expand  z expand/fold  / ? search"
+            .to_owned()
     } else if app.mode == Mode::Log && app.history == History::Reflog {
         "h help  q quit  ↑/k ↓/j  ←/→ entry  Enter show  z fold  / ? search".to_owned()
     } else if app.mode == Mode::Log && app.history == History::Stash {
@@ -204,6 +223,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 History::Grep => HelpView::Grep,
                 _ if !has_log => HelpView::Detail,
                 History::Log => HelpView::Log,
+                History::Bisect => HelpView::Bisect,
                 History::Reflog => HelpView::Reflog,
                 History::Blame if file_view => HelpView::File,
                 History::Blame => HelpView::Blame,
@@ -252,6 +272,7 @@ fn draw_view_menu(frame: &mut Frame, app: &App, selected: usize) {
 enum HelpView {
     Log,
     Reflog,
+    Bisect,
     Blame,
     Stash,
     /// Show, Diff, or Status without a Log to return to.
@@ -267,6 +288,7 @@ enum HelpView {
 struct HelpTexts {
     log: Option<&'static str>,
     reflog: Option<&'static str>,
+    bisect: Option<&'static str>,
     blame: Option<&'static str>,
     stash: Option<&'static str>,
     /// Show, Diff, or Status without a Log to return to.
@@ -282,6 +304,7 @@ impl HelpTexts {
         match view {
             HelpView::Log => self.log,
             HelpView::Reflog => self.reflog,
+            HelpView::Bisect => self.bisect,
             HelpView::Blame => self.blame,
             HelpView::Stash => self.stash,
             HelpView::Detail => self.detail,
@@ -296,6 +319,7 @@ impl HelpTexts {
 const NO_HELP: HelpTexts = HelpTexts {
     log: None,
     reflog: None,
+    bisect: None,
     blame: None,
     stash: None,
     detail: None,
@@ -315,6 +339,7 @@ const fn every(key: &'static str, text: &'static str) -> HelpRow {
         HelpTexts {
             log: text,
             reflog: text,
+            bisect: text,
             blame: text,
             stash: text,
             detail: text,
@@ -352,6 +377,7 @@ const fn detail(key: &'static str, text: &'static str) -> HelpRow {
         HelpTexts {
             log: text,
             reflog: text,
+            bisect: text,
             blame: text,
             stash: text,
             detail: text,
@@ -372,6 +398,7 @@ const HELP_ROWS: &[HelpRow] = &[
         HelpTexts {
             log: Some("previous / next; move Show cursor"),
             reflog: Some("previous / next; move Show cursor"),
+            bisect: Some("select a commit or range; move Show cursor"),
             blame: Some("previous / next; move Show cursor"),
             stash: Some("previous / next; move Show cursor"),
             detail: Some("previous / next; move Show cursor"),
@@ -396,6 +423,7 @@ const HELP_ROWS: &[HelpRow] = &[
         HelpTexts {
             log: Some("previous / next commit (Log/Show/Status)"),
             reflog: Some("previous / next reflog entry"),
+            bisect: Some("previous / next commit"),
             blame: Some("previous / next commit chunk"),
             grep: Some("select fold target; at last target, → pans and ← pans back"),
             stash: Some("previous / next stash"),
@@ -408,6 +436,7 @@ const HELP_ROWS: &[HelpRow] = &[
         HelpTexts {
             log: Some("follow a commit or open a link (Show)"),
             reflog: Some("follow a commit or open a link (Show)"),
+            bisect: Some("follow a commit or open a link (Show)"),
             blame: Some("follow a commit or open a link (Show)"),
             // Show links nothing in stash messages.
             stash: None,
@@ -421,6 +450,7 @@ const HELP_ROWS: &[HelpRow] = &[
         "a/d/r/x/s",
         HelpTexts {
             log: Some("toggle author/date/refs/hash/subject (Log)"),
+            bisect: Some("toggle author/date/refs/hash/subject (Bisect)"),
             ..NO_HELP
         },
     ),
@@ -433,6 +463,13 @@ const HELP_ROWS: &[HelpRow] = &[
         },
     ),
     branches("d", "show / hide dates"),
+    (
+        "",
+        HelpTexts {
+            bisect: Some("  HEAD checked out   ! culprit   ? possible culprit"),
+            ..NO_HELP
+        },
+    ),
     (
         "a/d",
         HelpTexts {
@@ -457,16 +494,21 @@ const HELP_ROWS: &[HelpRow] = &[
             branches: Some("toggle watch"),
             stash: Some("toggle watch"),
             reflog: Some("toggle watch"),
+            bisect: Some("toggle watch"),
             ..NO_HELP
         },
     ),
     every("O", "open commit on GitHub (selected file/line in Show)"),
-    detail("B", "blame selected line (Show)"),
+    detail(
+        "B",
+        "blame selected line (Show); open bisect graph (Status, when bisecting)",
+    ),
     (
         "Enter",
         HelpTexts {
             log: Some("open commit / toggle section or file"),
             reflog: Some("open commit / toggle section or file"),
+            bisect: Some("open commit / expand focused gap / toggle file (Show)"),
             blame: Some("open commit / toggle section or file"),
             stash: Some("open stash / toggle section or file"),
             detail: Some("open commit (Status) / toggle section or file"),
@@ -480,6 +522,7 @@ const HELP_ROWS: &[HelpRow] = &[
         HelpTexts {
             log: Some("fold merge (Log) / file (Show)"),
             reflog: Some("fold rebase, rebase chain, amend chain, or visits / file (Show)"),
+            bisect: Some("expand / collapse a commit gap (Bisect) / file (Show)"),
             grep: Some("fold file or folder highlighted by the path cursor"),
             blame: FILE_FOLD,
             stash: FILE_FOLD,
@@ -507,6 +550,7 @@ const HELP_ROWS: &[HelpRow] = &[
         HelpTexts {
             log: Some("hide selected type (Log) or file category (Show) / clear filters"),
             reflog: Some("hide selected file category / clear filters (Show)"),
+            bisect: Some("hide selected file category / clear filters (Show)"),
             blame: Some("hide selected file category / clear filters (Show)"),
             stash: Some("hide selected file category / clear filters (Show)"),
             detail: Some("hide selected file category / clear filters (Show)"),
@@ -514,9 +558,23 @@ const HELP_ROWS: &[HelpRow] = &[
             ..NO_HELP
         },
     ),
-    detail(
+    (
         "Shift-←/→",
-        "choose inline folder or file in summaries; t hides the focused group",
+        HelpTexts {
+            bisect: Some("focus a commit gap (Bisect); choose folder or file (Show summaries)"),
+            ..detail(
+                "",
+                "choose inline folder or file in summaries; t hides the focused group",
+            )
+            .1
+        },
+    ),
+    (
+        "click gap",
+        HelpTexts {
+            bisect: Some("focus a commit count; click again or Enter/z expands / collapses"),
+            ..NO_HELP
+        },
     ),
     detail(
         "click path",
@@ -550,6 +608,7 @@ const HELP_ROWS: &[HelpRow] = &[
             // A followed reference opens as a Log, whatever it was followed from.
             log: Some("return after following a link or opening blame"),
             reflog: Some("return after opening blame"),
+            bisect: Some("return to Bisect (Show) / Status / previous view"),
             blame: Some("return to the previous blame or review"),
             detail: Some("return after opening blame"),
             file: Some("return to the previous blame, if any"),
@@ -563,6 +622,7 @@ const HELP_ROWS: &[HelpRow] = &[
         HelpTexts {
             log: FILE_SUMMARY,
             reflog: Some("toggle file summary / patch (Show)"),
+            bisect: Some("toggle file summary / patch (Show)"),
             blame: FILE_SUMMARY,
             stash: Some("toggle file summary / patch (Show)"),
             detail: FILE_SUMMARY,
@@ -574,6 +634,7 @@ const HELP_ROWS: &[HelpRow] = &[
         HelpTexts {
             log: Some("return to Log / cancel"),
             reflog: Some("return to Reflog / cancel"),
+            bisect: Some("return to Bisect (Show) / Status / cancel"),
             blame: Some("return to Blame (Show) / previous blame or review / cancel"),
             stash: Some("return to Stash / cancel"),
             file: Some("close help / cancel search"),
@@ -588,6 +649,7 @@ const HELP_ROWS: &[HelpRow] = &[
         HelpTexts {
             log: Some("switch Log / detail"),
             reflog: Some("switch Reflog / Show"),
+            bisect: Some("switch Bisect / Show"),
             blame: Some("switch Blame / detail"),
             stash: Some("switch Stash / Show"),
             grep: Some("open match in Blame / fold group"),
@@ -716,14 +778,149 @@ fn draw_type_controls(frame: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+/// Bisect ranges are display-only graph vertices, selectable like commit rows.
+fn draw_bisect_log(frame: &mut Frame, app: &mut App, area: Rect) {
+    use crate::bisect::Target;
+    app.log_row_origin = area.y;
+    app.visible_log_rows.clear();
+    app.visible_log_links.clear();
+    app.visible_bisect_gaps.clear();
+    let date_column = app.log_date_column();
+    let focus = app.focused_bisect_gap();
+    let display = &app.bisect_graph.as_ref().expect("bisect graph").display;
+    let selected = display.selected(app.selected, focus.as_ref());
+    let start: usize = (0..selected).map(|index| display.height(index)).sum();
+    let cursor = start
+        + display
+            .rows
+            .get(selected)
+            .map_or(0, |_| display.height(selected).saturating_sub(1));
+    let height = usize::from(area.height);
+    if std::mem::take(&mut app.center_selection) {
+        app.log_offset = cursor.saturating_sub(height / 2);
+    } else if cursor < app.log_offset {
+        app.log_offset = start;
+    } else if cursor >= app.log_offset + height.max(1) {
+        app.log_offset = cursor + 1 - height.max(1);
+    }
+    // Measure only visible graph blocks, as in Log, retaining lazy lane drawing.
+    let mut visible = Vec::new();
+    let mut physical = 0;
+    'rows: for index in 0..display.rows.len() {
+        let rows = display.height(index);
+        if physical + rows <= app.log_offset {
+            physical += rows;
+            continue;
+        }
+        for part in 0..rows {
+            if physical >= app.log_offset {
+                if visible.len() >= height {
+                    break 'rows;
+                }
+                visible.push((index, part));
+            }
+            physical += 1;
+        }
+    }
+    let graph_width = visible
+        .iter()
+        .map(|&(index, part)| ansi::parse_line(&display.graph(index)[part]).width())
+        .max()
+        .unwrap_or(0);
+    let commits: Vec<_> = visible
+        .iter()
+        .filter_map(|&(index, part)| {
+            if part + 1 != display.height(index) {
+                return None;
+            }
+            match display.rows[index].target {
+                Target::Commit(source) => Some(&app.commits[source]),
+                _ => None,
+            }
+        })
+        .collect();
+    let hash = commits
+        .iter()
+        .map(|commit| Span::raw(&commit.short_hash).width())
+        .max()
+        .unwrap_or(0);
+    let columns = date_column.map(|date| {
+        date.columns(
+            hash,
+            crate::log_format::author_column(commits.iter().copied()),
+        )
+        .with_bisect(crate::bisect::Columns::measure(&app.commits))
+    });
+    let mut lines = Vec::new();
+    for (index, part) in visible {
+        let row = &display.rows[index];
+        let mut line = ansi::parse_line(&display.graph(index)[part]);
+        let last = part + 1 == display.height(index);
+        let mut commit = None;
+        if last {
+            line.spans.push(Span::raw(
+                " ".repeat(graph_width.saturating_sub(line.width())),
+            ));
+            match &row.target {
+                Target::Commit(source) => {
+                    let metadata = app.log_format.row_with_fixup(
+                        &app.commits[*source],
+                        columns.as_ref(),
+                        Style::default(),
+                        None,
+                    );
+                    let offset = line.spans.iter().map(|span| span.content.len()).sum();
+                    line.spans.extend(metadata.spans);
+                    if let Some(query) = &app.search {
+                        line = metadata.stand_ins.shifted(offset).highlight(
+                            line,
+                            query,
+                            app.search_match == Some((Mode::Log, *source)),
+                        );
+                    }
+                    commit = Some(*source);
+                }
+                Target::Gap { source, control } => {
+                    line.spans.push(Span::styled(
+                        control.label(),
+                        Style::default().fg(Color::Yellow),
+                    ));
+                    app.visible_bisect_gaps.push((
+                        Rect::new(area.x, area.y + lines.len() as u16, area.width, 1),
+                        *source,
+                        control.edge.clone(),
+                    ));
+                }
+            }
+            if index == selected {
+                line.style = Style::default()
+                    .bg(Color::DarkGray)
+                    .add_modifier(Modifier::BOLD);
+            }
+        }
+        lines.push(line);
+        app.visible_log_rows.push(commit);
+    }
+    frame.render_widget(Paragraph::new(Text::from(lines)), area);
+}
+
 fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
+    if app.history == History::Bisect && app.bisect_graph.is_some() {
+        draw_bisect_log(frame, app, area);
+        return;
+    }
     let height = area.height as usize;
     app.log_row_origin = area.y;
     app.visible_log_rows.clear();
     app.visible_log_links.clear();
+    app.visible_bisect_gaps.clear();
     if app.commits.is_empty() {
         frame.render_widget(
-            Paragraph::new("No commits matched the supplied arguments."),
+            Paragraph::new(if app.history == History::Bisect {
+                "No bisect session in progress."
+            } else {
+                "No commits matched the supplied arguments."
+            }),
             area,
         );
         return;
@@ -862,7 +1059,10 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             if !graph_only && part + 1 == graph_rows.len() {
                 let deferred =
                     date_column.is_some() && commit.kind == crate::git::CommitKind::Revision;
-                let marker = app.log_folds.marker(index);
+                let marker = app
+                    .log_folds
+                    .marker(index)
+                    .filter(|_| app.history != History::Bisect);
                 // Reflog keeps its own nodes. Its fold control follows the
                 // hash in aligned columns, otherwise it leads the row.
                 let reflog = commit.reflog().is_some();

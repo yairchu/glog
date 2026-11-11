@@ -429,6 +429,7 @@ pub struct StatusView {
     pub horizontal: u16,
     pub height: usize,
     pub origin: u16,
+    pub bisect_button: Option<Rect>,
     pub error: Option<String>,
     // Whether `error` came from a refresh, which a later successful refresh
     // resolves. Errors from actions stay until the next action.
@@ -1218,11 +1219,19 @@ impl StatusView {
         self.draw_with_images(frame, area, &mut crate::images::Images::default());
     }
 
-    /// The branch, its upstream and operations in progress, with commit
-    /// hashes highlighted as in Log.
-    fn heading(&self) -> Vec<Span<'static>> {
+    /// Whether the status snapshot offers a bisect graph.
+    pub fn has_bisect(&self) -> bool {
+        self.snapshot
+            .state
+            .operations
+            .iter()
+            .any(|operation| operation.action == Some(crate::operation::Action::Bisect))
+    }
+
+    /// The branch, upstream, and operations, with an optional action's span range.
+    fn heading(&self) -> (Vec<Span<'static>>, Option<std::ops::Range<usize>>) {
         if self.unloaded {
-            return vec![Span::raw("Working tree status unavailable")];
+            return (vec![Span::raw("Working tree status unavailable")], None);
         }
         let snapshot = &self.snapshot;
         let mut heading = if snapshot.branch != "(detached)" {
@@ -1249,14 +1258,23 @@ impl StatusView {
                 snapshot.upstream
             )));
         }
+        let mut bisect = None;
         for operation in &snapshot.state.operations {
             heading.push(Span::raw(" · "));
+            let start = heading.len();
             heading.extend(operation.spans());
+            if operation.action == Some(crate::operation::Action::Bisect) {
+                heading.push(Span::raw(" [B]"));
+                for span in &mut heading[start..] {
+                    span.style = span.style.add_modifier(Modifier::UNDERLINED);
+                }
+                bisect = Some(start..heading.len());
+            }
         }
         if snapshot.entries.is_empty() {
             heading.push(Span::raw(" · Working tree clean"));
         }
-        heading
+        (heading, bisect)
     }
 
     pub fn draw_with_images(
@@ -1265,8 +1283,23 @@ impl StatusView {
         area: Rect,
         images: &mut crate::images::Images,
     ) {
+        let (heading, bisect) = self.heading();
+        let heading = crate::ansi::display_spans(heading);
+        self.bisect_button = bisect.and_then(|range| {
+            let start: usize = heading[..range.start].iter().map(Span::width).sum();
+            let width: usize = heading[range].iter().map(Span::width).sum();
+            let available = usize::from(area.width).saturating_sub(start);
+            (available > 0 && width > 0 && area.height > 0).then(|| {
+                Rect::new(
+                    area.x + start as u16,
+                    area.y,
+                    width.min(available) as u16,
+                    1,
+                )
+            })
+        });
         frame.render_widget(
-            Paragraph::new(Line::from(crate::ansi::display_spans(self.heading())))
+            Paragraph::new(Line::from(heading))
                 .style(Style::default().add_modifier(Modifier::BOLD)),
             Rect::new(area.x, area.y, area.width, area.height.min(1)),
         );

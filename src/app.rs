@@ -46,6 +46,7 @@ pub enum History {
     Blame,
     Stash,
     Branches,
+    Bisect,
     RangeDiff,
     Grep,
 }
@@ -64,6 +65,7 @@ pub enum WatchSource {
         worktree: std::sync::OnceLock<git::Worktree>,
     },
     Branches(Vec<String>),
+    Bisect(Vec<String>),
     Stashes(Vec<String>),
     Reflog(Vec<String>),
     /// A branch's Log opened from a picker with these arguments.
@@ -131,6 +133,7 @@ impl WatchSource {
             Self::Log { worktree, .. } if self.shows_working_tree(repository) => {
                 git::watch_fingerprint_in(Self::worktree(worktree)?)
             }
+            Self::Bisect(_) => crate::bisect::fingerprint(),
             Self::Stashes(_) | Self::Reflog(_) => git::reflog_fingerprint(),
             _ => git::refs_fingerprint_at(repository),
         }
@@ -165,6 +168,7 @@ impl WatchSource {
             }
             Self::Log { args, .. } => git::load_log_at(args, repository)?,
             Self::Branches(args) => crate::branches::load_watched(args)?,
+            Self::Bisect(args) => crate::bisect::load_app(args)?.commits,
             Self::Stashes(args) => crate::stash::load_app(args)?.commits,
             Self::Reflog(args) => git::load_reflog(args)?,
             Self::BranchLog { picker, branch } => {
@@ -325,6 +329,8 @@ pub struct App {
     pub log_row_origin: u16,
     pub type_buttons: Vec<(ratatui::layout::Rect, LogAction)>,
     pub visible_log_rows: Vec<Option<usize>>,
+    pub bisect_graph: Option<crate::bisect::Graph>,
+    pub visible_bisect_gaps: Vec<(ratatui::layout::Rect, usize, crate::compact_graph::Edge)>,
     pub show_row_origin: u16,
     pub visible_show_rows: usize,
     pub watch: bool,
@@ -379,6 +385,7 @@ impl App {
                 Some(git::Annotation::Blame(_)) => History::Blame,
                 Some(git::Annotation::Stash(_)) => History::Stash,
                 Some(git::Annotation::Branch(_)) => History::Branches,
+                Some(git::Annotation::Bisect(_)) => History::Bisect,
             },
             commits,
             pending_blame: None,
@@ -426,6 +433,8 @@ impl App {
             log_row_origin: 0,
             type_buttons: Vec::new(),
             visible_log_rows: Vec::new(),
+            bisect_graph: None,
+            visible_bisect_gaps: Vec::new(),
             show_row_origin: 0,
             visible_show_rows: 0,
             watch: false,
@@ -458,7 +467,10 @@ impl App {
             submodule_patch: None,
             diff_sides: None,
         };
-        if matches!(app.history, History::Reflog | History::Branches) {
+        if matches!(
+            app.history,
+            History::Reflog | History::Branches | History::Bisect
+        ) {
             app.refresh_log_folds();
             app.ensure_log_selection();
         }
@@ -520,6 +532,7 @@ impl App {
                 History::Blame => "Blame",
                 History::Stash => "Stash",
                 History::Branches => "Branches",
+                History::Bisect => "Bisect",
                 History::RangeDiff => "Range diff",
                 History::Grep => "Grep",
             }
@@ -579,6 +592,144 @@ impl App {
             }
             Err(error) => self.status = Some(format!("Could not load history: {error}")),
         }
+    }
+
+    pub fn bisect_controls(&self) -> &[crate::bisect::Control] {
+        match self
+            .commits
+            .get(self.selected)
+            .and_then(|row| row.annotation.as_ref())
+        {
+            Some(git::Annotation::Bisect(entry)) => &entry.gaps,
+            _ => &[],
+        }
+    }
+
+    pub fn focused_bisect_gap(&self) -> Option<crate::compact_graph::Edge> {
+        let focus = self.bisect_graph.as_ref()?.focus.as_ref()?;
+        self.bisect_controls()
+            .iter()
+            .any(|control| &control.edge == focus)
+            .then(|| focus.clone())
+    }
+
+    fn move_bisect_row(&mut self, delta: isize, amount: usize) {
+        let focused = self.focused_bisect_gap();
+        let Some(graph) = &mut self.bisect_graph else {
+            return;
+        };
+        let current = graph.display.selected(self.selected, focused.as_ref());
+        let next = if delta < 0 {
+            current.saturating_sub(amount)
+        } else {
+            current
+                .saturating_add(amount)
+                .min(graph.display.rows.len().saturating_sub(1))
+        };
+        let Some(row) = graph.display.rows.get(next) else {
+            return;
+        };
+        match &row.target {
+            crate::bisect::Target::Commit(index) => {
+                self.selected = *index;
+                graph.focus = None;
+            }
+            crate::bisect::Target::Gap { source, control } => {
+                self.selected = *source;
+                graph.focus = Some(control.edge.clone());
+            }
+        }
+    }
+
+    pub fn move_bisect_gap(&mut self, right: bool) {
+        let controls = self.bisect_controls();
+        let focused = self.focused_bisect_gap();
+        let index = controls
+            .iter()
+            .position(|control| Some(&control.edge) == focused.as_ref());
+        let next = match (index, right) {
+            (None, true) => Some(0),
+            (None, false) | (Some(0), false) => None,
+            (Some(index), true) => Some((index + 1).min(controls.len().saturating_sub(1))),
+            (Some(index), false) => Some(index - 1),
+        };
+        let edge = next
+            .and_then(|index| controls.get(index))
+            .map(|control| control.edge.clone());
+        if let Some(graph) = &mut self.bisect_graph {
+            graph.focus = edge;
+        }
+    }
+
+    pub fn toggle_bisect_gap(&mut self) {
+        let edge = self
+            .focused_bisect_gap()
+            .or_else(|| {
+                self.bisect_controls()
+                    .first()
+                    .map(|control| control.edge.clone())
+            })
+            .or_else(|| {
+                self.bisect_graph
+                    .as_ref()?
+                    .containing(&self.commits.get(self.selected)?.hash)
+            });
+        let Some(edge) = edge else { return };
+        let source = self
+            .commits
+            .iter()
+            .position(|row| row.hash == edge.from)
+            .unwrap_or(self.selected);
+        let Some(graph) = &mut self.bisect_graph else {
+            return;
+        };
+        graph.focus = Some(edge.clone());
+        match graph.toggle(&edge) {
+            Ok(rows) => {
+                self.selected = source;
+                self.replace_commits(rows);
+            }
+            Err(error) => self.status = Some(error),
+        }
+    }
+
+    pub fn click_bisect_gap(&mut self, row: usize, edge: crate::compact_graph::Edge) {
+        let activate = self.selected == row && self.focused_bisect_gap().as_ref() == Some(&edge);
+        self.selected = row;
+        if let Some(graph) = &mut self.bisect_graph {
+            graph.focus = Some(edge);
+        }
+        if activate {
+            self.toggle_bisect_gap();
+        }
+    }
+
+    pub fn open_bisect(&mut self) {
+        if !self
+            .status_view
+            .as_ref()
+            .is_some_and(|view| view.has_bisect())
+        {
+            return;
+        }
+        let loaded = crate::bisect::load_app(&["--watch".into()]).and_then(|mut target| {
+            if target.commits.is_empty() {
+                return Err("No bisect session in progress".into());
+            }
+            target.context = "bisect log".into();
+            target.exit_on_esc = self.exit_on_esc;
+            target.github_repository = self.github_repository.clone();
+            Ok(target)
+        });
+        self.enter_followed(loaded);
+    }
+
+    pub fn has_bisect_back(&self) -> bool {
+        self.history == History::Bisect
+            && self
+                .reference_back
+                .as_ref()
+                .is_some_and(|origin| origin.mode == Mode::Status)
     }
 
     pub fn open_status(&mut self) {
@@ -677,7 +828,11 @@ impl App {
                     return;
                 }
                 let amount = if delta.abs() == 1 { 1 } else { page.max(1) };
-                self.selected = self.log_selection(delta, amount);
+                if self.history == History::Bisect && self.bisect_graph.is_some() {
+                    self.move_bisect_row(delta, amount);
+                } else {
+                    self.selected = self.log_selection(delta, amount);
+                }
             }
             Mode::Show => {
                 let amount = if delta.abs() == 1 { 1 } else { page.max(1) };
@@ -1139,7 +1294,21 @@ impl App {
         if self.watch_snapshot == Some(snapshot) {
             return Ok(false);
         }
-        let commits = source.load(self.repository.as_ref())?;
+        let commits = if let WatchSource::Bisect(args) = source {
+            let mut fresh = crate::bisect::load_app(args)?;
+            if let (Some(graph), Some(old)) = (&mut fresh.bisect_graph, &self.bisect_graph) {
+                graph.inherit(old);
+                fresh.commits = graph.rows()?;
+            }
+            self.bisect_graph = fresh.bisect_graph;
+            // Bisect omits HEAD in graph refs, while Show includes it. Ref
+            // refreshes must also invalidate changes hidden by that omission.
+            self.cache.clear();
+            self.cache_order.clear();
+            fresh.commits
+        } else {
+            source.load(self.repository.as_ref())?
+        };
         self.status = None;
         self.watch_snapshot = Some(snapshot);
         self.replace_commits(commits);
@@ -1149,7 +1318,10 @@ impl App {
     /// The date width changes only when the Log/Reflog history is replaced.
     /// Graph/hash and author widths follow the visible rows on each draw.
     pub fn log_date_column(&mut self) -> Option<crate::log_format::DateColumn> {
-        if !matches!(self.history, History::Log | History::Reflog) || !self.log_format.is_tabular()
+        if !matches!(
+            self.history,
+            History::Log | History::Reflog | History::Bisect
+        ) || !self.log_format.is_tabular()
         {
             return None;
         }
@@ -1162,6 +1334,19 @@ impl App {
 
     pub fn replace_commits(&mut self, commits: Vec<Commit>) {
         self.log_date_column = None;
+        // Follow progress only while the candidate is selected in the graph;
+        // reading an older result or its patch keeps that commit selected.
+        let follows_bisect = self.history == History::Bisect
+            && self.mode == Mode::Log
+            && self.focused_bisect_gap().is_none()
+            && self.commits.get(self.selected).is_none_or(|row| {
+                matches!(&row.annotation, Some(git::Annotation::Bisect(entry)) if entry.testing)
+            });
+        let bisect_selection = if follows_bisect {
+            crate::bisect::selection(&commits)
+        } else {
+            None
+        };
         let selected_branch = self.commits.get(self.selected).and_then(Commit::branch);
         let moved_branch = selected_branch.and_then(|node| {
             node.branches
@@ -1211,13 +1396,16 @@ impl App {
         self.cache_order
             .retain(|hash| self.cache.contains_key(hash));
         self.commits = commits;
-        let preserved = reflog_selection.or(moved_branch).or_else(|| {
-            selected.and_then(|key| {
-                self.commits
-                    .iter()
-                    .position(|commit| commit.kind == key.0 && commit.hash == key.1)
-            })
-        });
+        let preserved = bisect_selection
+            .or(reflog_selection)
+            .or(moved_branch)
+            .or_else(|| {
+                selected.and_then(|key| {
+                    self.commits
+                        .iter()
+                        .position(|commit| commit.kind == key.0 && commit.hash == key.1)
+                })
+            });
         self.selected =
             preserved.unwrap_or_else(|| self.selected.min(self.commits.len().saturating_sub(1)));
         self.refresh_log_folds();

@@ -224,15 +224,39 @@ fn graph_rows(mut tips: HashMap<String, Vec<Branch>>) -> Result<Vec<Commit>, Str
             kind: BranchKind::Remote,
         });
     }
-    // Pin the refs before traversal so concurrent branch changes cannot mix snapshots.
-    let mut hashes: Vec<_> = tips.keys().cloned().collect();
+    compact_tips(tips, primary.as_deref())
+}
+
+/// Compact selected revisions and their shared ancestors using the branch graph.
+pub(crate) fn selected_graph(
+    hashes: impl IntoIterator<Item = String>,
+) -> Result<(Vec<Commit>, crate::compact_graph::Graph), String> {
+    let tips: HashMap<_, _> = hashes.into_iter().map(|hash| (hash, Vec::new())).collect();
+    let ancestry = read_ancestry(tips.keys().cloned().collect())?;
+    let rows = compact(&ancestry, tips, None)?;
+    Ok((rows, crate::compact_graph::Graph::parse(&ancestry)?))
+}
+
+fn compact_tips(
+    tips: HashMap<String, Vec<Branch>>,
+    primary: Option<&str>,
+) -> Result<Vec<Commit>, String> {
+    compact(
+        &read_ancestry(tips.keys().cloned().collect())?,
+        tips,
+        primary,
+    )
+}
+
+fn read_ancestry(mut hashes: Vec<String>) -> Result<String, String> {
+    // Pin the refs before traversal so concurrent changes cannot mix snapshots.
     hashes.sort();
     let mut input = hashes.join("\n") + "\n";
     for base in history_cutoffs(&hashes) {
         input += &format!("^{base}^@\n");
     }
-    let output = if hashes.is_empty() {
-        String::new()
+    if hashes.is_empty() {
+        Ok(String::new())
     } else {
         git::pipe_through(
             git::read_command()
@@ -240,9 +264,8 @@ fn graph_rows(mut tips: HashMap<String, Vec<Branch>>) -> Result<Vec<Commit>, Str
                 .env("GIT_NO_LAZY_FETCH", "1"),
             input.as_bytes(),
         )
-        .ok_or("could not read branch ancestry")?
-    };
-    compact(&output, tips, primary.as_deref())
+        .ok_or_else(|| "could not read commit ancestry".into())
+    }
 }
 
 fn origin_default_ref() -> Option<String> {
@@ -457,38 +480,14 @@ fn merge_base(args: &[&str], hashes: &[impl AsRef<std::ffi::OsStr>]) -> Option<S
     Some(base.trim().to_owned()).filter(|base| !base.is_empty())
 }
 
-struct Node {
-    hash: String,
-    /// Parents within the walk. Those below its common-ancestor cutoff
-    /// carry no forks.
-    parents: Vec<usize>,
-}
-
 fn compact(
     ancestry: &str,
     mut tips: HashMap<String, Vec<Branch>>,
     primary: Option<&str>,
 ) -> Result<Vec<Commit>, String> {
-    let records: Vec<_> = ancestry
-        .lines()
-        .map(|line| line.split_whitespace().collect::<Vec<_>>())
-        .filter(|fields| !fields.is_empty())
-        .collect();
-    let indices: HashMap<_, _> = records
-        .iter()
-        .enumerate()
-        .map(|(index, fields)| (fields[0], index))
-        .collect();
-    let nodes: Vec<_> = records
-        .iter()
-        .map(|fields| Node {
-            hash: fields[0].into(),
-            parents: fields[1..]
-                .iter()
-                .filter_map(|hash| indices.get(hash).copied())
-                .collect(),
-        })
-        .collect();
+    let graph = crate::compact_graph::Graph::parse(ancestry)?;
+    let nodes = &graph.nodes;
+    let indices = &graph.indices;
     let tip_indices = tips
         .keys()
         .map(|hash| {
@@ -528,7 +527,9 @@ fn compact(
     let mut owners = vec![BTreeSet::new(); nodes.len()];
     for (owner, (hash, _)) in tips
         .iter()
-        .filter(|(_, branches)| branches.iter().any(|branch| branch.merged_into.is_none()))
+        .filter(|(_, branches)| {
+            branches.is_empty() || branches.iter().any(|branch| branch.merged_into.is_none())
+        })
         .enumerate()
     {
         owners[tip_indices[hash]].insert(owner);
@@ -550,40 +551,7 @@ fn compact(
             owners[parent].extend(reachable.iter().copied());
         }
     }
-    // Compress paths to their next retained ancestors. Prune redundant edges
-    // when a merge reaches a node both directly and through a nearer fork.
-    let mut frontiers: Vec<BTreeSet<usize>> = vec![BTreeSet::new(); nodes.len()];
-    let mut ancestors: HashMap<usize, HashSet<usize>> = HashMap::new();
-    let mut parents = HashMap::new();
-    for index in (0..nodes.len()).rev() {
-        let frontier: BTreeSet<_> = nodes[index]
-            .parents
-            .iter()
-            .flat_map(|&parent| frontiers[parent].iter().copied())
-            .collect();
-        if keep[index] {
-            let nearest: Vec<_> = frontier
-                .iter()
-                .copied()
-                .filter(|candidate| {
-                    !frontier
-                        .iter()
-                        .any(|other| other != candidate && ancestors[other].contains(candidate))
-                })
-                .collect();
-            let reachable = nearest
-                .iter()
-                .flat_map(|parent| {
-                    std::iter::once(*parent).chain(ancestors[parent].iter().copied())
-                })
-                .collect();
-            ancestors.insert(index, reachable);
-            parents.insert(index, nearest);
-            frontiers[index].insert(index);
-        } else {
-            frontiers[index] = frontier;
-        }
-    }
+    let parents = graph.project(&keep, true);
     Ok(nodes
         .iter()
         .enumerate()

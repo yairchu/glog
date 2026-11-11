@@ -62,7 +62,10 @@ impl DateColumn {
                 .iter()
                 .filter(|c| {
                     c.kind == CommitKind::Revision
-                        && (c.annotation.is_none() || c.reflog().is_some())
+                        && matches!(
+                            c.annotation,
+                            None | Some(Annotation::Reflog(_)) | Some(Annotation::Bisect(_))
+                        )
                 })
                 .map(|commit| Span::raw(date(commit)).width())
                 .max()
@@ -76,6 +79,7 @@ impl DateColumn {
             date: self.0,
             author,
             hash_marker: None,
+            bisect: None,
         }
     }
 }
@@ -97,12 +101,18 @@ pub struct Columns {
     date: usize,
     author: usize,
     hash_marker: Option<&'static str>,
+    bisect: Option<crate::bisect::Columns>,
 }
 
 impl Columns {
     /// Add a fold control to the hash cell, before its alignment padding.
     pub fn with_hash_marker(mut self, marker: Option<&'static str>) -> Self {
         self.hash_marker = marker;
+        self
+    }
+
+    pub fn with_bisect(mut self, columns: crate::bisect::Columns) -> Self {
+        self.bisect = Some(columns);
         self
     }
 
@@ -250,6 +260,22 @@ impl LogFormat {
                 return crate::blame::row(commit, line, line.starts_chunk, self);
             }
             Some(Annotation::Branch(node)) => crate::branches::spans(commit, node, self),
+            Some(Annotation::Bisect(entry)) => {
+                let mut row = self.commit_row(commit, columns, hash_style, None);
+                let prefix = crate::bisect::prefix(
+                    entry,
+                    columns.and_then(|columns| columns.bisect.as_ref()),
+                );
+                let bytes = prefix.spans.iter().map(|span| span.content.len()).sum();
+                row.stand_ins = row.stand_ins.shifted(bytes);
+                row.stand_ins.append(prefix.stand_ins);
+                for (range, _) in &mut row.links {
+                    range.start += bytes;
+                    range.end += bytes;
+                }
+                row.spans.splice(0..0, prefix.spans);
+                return row;
+            }
         };
         let mut stand_ins = crate::ui::StandIns::default();
         stand_ins.push_undrawn(commit.hash.clone());
@@ -495,6 +521,7 @@ impl LogFormat {
             date: 0,
             author: author_width(commit),
             hash_marker: None,
+            bisect: None,
         });
         self.row_with_fixup(commit, columns.as_ref(), Style::default(), fixup)
             .matches(query)

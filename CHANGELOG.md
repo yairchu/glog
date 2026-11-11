@@ -7,6 +7,21 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Browse the current bisect session by clicking its indicator in Status or
+  pressing `B` there, or with `glog bisect log`. A compact ancestry graph
+  connects numbered results, shared ancestors, and HEAD, including the
+  candidate in `--no-checkout` sessions. Aligned columns keep HEAD's cyan label
+  separate from good/bad results and the culprit marker (`!`, or `?` for a
+  possible culprit), including when HEAD is the culprit. Refs retain branches,
+  remotes, and tags without repeating HEAD. The header shows Git's estimated
+  steps after the current test, honoring session paths, terms, and first-parent
+  mode. Range rows between landmarks count distinct intervening commits,
+  excluding the endpoints. Select a range with Up/Down and press Enter/z to
+  expand its commits in the graph, or click to focus it and click again to
+  expand. Press `z` within an expanded gap to collapse it. Open commits with Enter; watch progress with
+  `--watch` or `W`, preserving expanded sections. Completed sessions identify
+  the culprit or the possibilities left by skipped commits.
+
 - Filter files in Show and Diff with clickable header categories, `t` to hide the
   selected file's category, and `T` to reset. Summary totals count only visible
   files. Hide `*_test.go` or lockfiles separately from their extensions; `.go`

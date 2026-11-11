@@ -190,6 +190,7 @@ pub enum Annotation {
     Blame(crate::blame::BlameLine),
     Stash(crate::stash::StashEntry),
     Branch(crate::branches::BranchNode),
+    Bisect(crate::bisect::Entry),
 }
 
 impl Commit {
@@ -594,6 +595,26 @@ pub fn load_log_at(
         commit.traversal = traversal;
     }
     empty_commits::mark(&mut commits, repository);
+    Ok(commits)
+}
+
+/// Read metadata for pinned revisions without an argument per commit.
+pub(crate) fn load_revisions(
+    hashes: &[String],
+    date_args: &[String],
+) -> Result<Vec<Commit>, String> {
+    let mut args = vec![
+        "--no-walk=unsorted".into(),
+        "--no-graph".into(),
+        "--stdin".into(),
+    ];
+    args.extend_from_slice(date_args);
+    let mut command = log_command(&args, None)?;
+    let input = hashes.join("\n") + "\n";
+    let output =
+        pipe_through(&mut command, input.as_bytes()).ok_or("could not read commit metadata")?;
+    let mut commits = parse_log(&output)?;
+    empty_commits::mark(&mut commits, None);
     Ok(commits)
 }
 

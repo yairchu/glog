@@ -1,8 +1,10 @@
 mod ansi;
 mod app;
+mod bisect;
 mod blame;
 mod branches;
 mod commit_links;
+mod compact_graph;
 mod diff;
 mod editor;
 mod file_filters;
@@ -90,6 +92,7 @@ fn main() -> ExitCode {
         Command::Grep => grep::load_app(command_args),
         Command::Reflog => git::load_reflog_app(command_args),
         Command::Stash => stash::load_app(command_args),
+        Command::Bisect => bisect::load_app(command_args),
         Command::Branch => match branches::load(command_args) {
             Ok(branches::Launch::Print(text)) => {
                 print!("{text}");
@@ -184,6 +187,7 @@ fn initialize_views(app: &mut App, command: Command, git_args: &[String]) {
                 Command::Blame => "Blame",
                 Command::RangeDiff => "Range diff",
                 Command::Grep => "Grep",
+                Command::Bisect => "Bisect",
                 _ => unreachable!(),
             });
             views::View::Original
@@ -214,6 +218,7 @@ enum Command {
     Blame,
     Stash,
     Branch,
+    Bisect,
     Show,
     Diff,
     RangeDiff,
@@ -240,6 +245,7 @@ impl Command {
                 "the file is empty"
             }
             Stash => "no stashes matched",
+            Bisect => "no bisect session in progress",
             Log | Show | Branch | Status => "no commits matched",
         }
     }
@@ -265,6 +271,7 @@ fn parse_command(args: &[String]) -> (Command, &[String]) {
         Some("blame") => (Command::Blame, &args[1..]),
         Some("stash") => (Command::Stash, &args[1..]),
         Some("branch") => (Command::Branch, &args[1..]),
+        Some("bisect") => (Command::Bisect, &args[1..]),
         Some("status") => (Command::Status, &args[1..]),
         Some("show") => (Command::Show, &args[1..]),
         Some("diff") => (Command::Diff, &args[1..]),
@@ -291,6 +298,7 @@ Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
             [--exit-on-esc]
        glog [log] [git log arguments] [--] [pathspec...]
        glog branch [--watch] [--date=STYLE]
+       glog bisect log [--watch] [--date=STYLE]
        glog reflog [--watch] [ref] [--all] [-n COUNT] [--date=STYLE]
        glog blame [-L LINE] [--date=STYLE] [revision] [--] file
        glog stash [list [--watch] [-n COUNT] [--date=STYLE]]
@@ -315,7 +323,7 @@ Options:
   --hide-types=TYPES
                 Hide comma-separated commit types (e.g. test,refactor,docs);
                 T clears filters
-  --watch       Refresh Log, Branches, Stashes, or Reflog as they change (W toggles)
+  --watch       Refresh Log, Branches, Stashes, Reflog, or Bisect (W toggles)
   --exit-on-esc Exit from the Log list with Escape (glog / glog log)
   --color-moved[=MODE]
                 Highlight moved code for this session (bare flag: zebra).
@@ -330,6 +338,21 @@ Options:
                 Match moved-code whitespace exactly for this session
   -h, --help    Print help
   -V, --version Print version
+
+When bisecting, click the bisect indicator in Status or press B to open its graph.
+Return from the graph to Status with Esc or Backspace.
+The header shows Git's estimated steps after the current test. HEAD is cyan;
+recorded good/bad results keep their own colors. HEAD and culprit have separate
+columns: ! marks the culprit, ? a possible culprit. Commit columns align like Log;
+refs retain branches, remotes, and tags without repeating the HEAD decoration.
+Bisect log shows recorded results and HEAD in a compact ancestry graph. Step
+numbers preserve decision order; shared ancestors connect divergent histories.
+Range rows between landmarks exclude endpoints and count each commit once.
+Select a commit or range with Up/Down; Enter opens the commit or expands the
+range. Click a range to focus, then click again to expand; Enter/z toggles it.
+z within a gap collapses it. Shift-Left/Right also selects a source commit's gaps.
+Enter opens the selected commit; Esc or Backspace returns. --watch or W refreshes
+as the session changes. This view does not change bisect results or checkout.
 
 Branch lists local branches and shared ancestors in a compact graph, including
 origin's stored default tip (origin/HEAD, or origin/main / origin/master).
@@ -347,7 +370,7 @@ On quitting, leave the branch graph in the terminal for reference and copying.
 Status opens the Working tree detail view in a watch session.
 Log shows committed history, loaded once unless --watch or W enables refresh.
 Watching preserves revision/path arguments; Logs that name no revision or path
-also include a Working tree item. W toggles watching in Log, Branches, Stashes, and Reflog.
+also include a Working tree item. W toggles watching in Log, Branches, Stashes, Reflog, and Bisect.
 Graphs use rounded paths, ● for commits, • for empty non-merge commits or a
 clean working tree with nothing in progress, and ○ for boundary commits. Merge
 commits stay filled.
@@ -622,6 +645,7 @@ mod tests {
             (vec!["log", "blame"], Command::Log, vec!["blame"]),
             (vec!["log", "reflog"], Command::Log, vec!["reflog"]),
             (vec!["branch"], Command::Branch, vec![]),
+            (vec!["bisect", "log"], Command::Bisect, vec!["log"]),
             (vec!["log", "branch"], Command::Log, vec!["branch"]),
             (vec!["stash"], Command::Stash, vec![]),
             (

@@ -98,6 +98,13 @@ fn apply(event: Event, app: &mut App) {
             app.blame_back();
             return;
         }
+        if key.code == KeyCode::Backspace
+            && app.mode == Mode::Show
+            && app.history == History::Bisect
+        {
+            app.switch_mode();
+            return;
+        }
         if key.code == KeyCode::Backspace && app.has_reference_back() {
             app.reference_back();
             return;
@@ -107,6 +114,10 @@ fn apply(event: Event, app: &mut App) {
             return;
         }
         if app.mode == Mode::Status {
+            if key.code == KeyCode::Char('B') {
+                app.open_bisect();
+                return;
+            }
             // Commit rows open the commit; other rows fold below.
             let commit = (key.code == KeyCode::Enter)
                 .then(|| {
@@ -157,11 +168,38 @@ fn apply(event: Event, app: &mut App) {
             }
             return;
         }
+        if app.mode == Mode::Log && app.history == History::Bisect {
+            if matches!(key.code, KeyCode::Left | KeyCode::Right)
+                && key.modifiers.contains(KeyModifiers::SHIFT)
+            {
+                app.move_bisect_gap(key.code == KeyCode::Right);
+                return;
+            }
+            if key.code == KeyCode::Char('z')
+                || key.code == KeyCode::Enter && app.focused_bisect_gap().is_some()
+            {
+                app.toggle_bisect_gap();
+                return;
+            }
+            if matches!(
+                key.code,
+                KeyCode::Left
+                    | KeyCode::Right
+                    | KeyCode::Home
+                    | KeyCode::End
+                    | KeyCode::Tab
+                    | KeyCode::Char('g' | 'G' | '<' | '>' | '/' | '?' | 'n' | 'N')
+            ) {
+                if let Some(graph) = &mut app.bisect_graph {
+                    graph.focus = None;
+                }
+            }
+        }
         use crate::log_format::Field;
         let field = match key.code {
             KeyCode::Char(c) if app.mode == Mode::Log => {
                 Field::for_key(c).filter(|field| match app.history {
-                    History::Log => true,
+                    History::Log | History::Bisect => true,
                     History::Blame => Field::ATTRIBUTION.contains(field),
                     History::Stash => matches!(field, Field::Author | Field::Date),
                     History::Branches => field == &Field::Date,
@@ -206,7 +244,7 @@ fn apply(event: Event, app: &mut App) {
             KeyCode::Esc if app.history == History::Blame && app.has_blame_back() => {
                 app.blame_back()
             }
-            KeyCode::Esc if app.has_branch_back() => app.reference_back(),
+            KeyCode::Esc if app.has_branch_back() || app.has_bisect_back() => app.reference_back(),
             // Leave a followed reference before exiting to the calling tool.
             KeyCode::Esc if app.exit_on_esc && app.has_reference_back() => app.reference_back(),
             KeyCode::Esc if app.exit_on_esc => app.quit = true,
@@ -290,6 +328,16 @@ fn apply(event: Event, app: &mut App) {
         }
 
         if app.mode == Mode::Status && mouse.row != 0 {
+            let bisect = matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                && app
+                    .status_view
+                    .as_ref()
+                    .and_then(|view| view.bisect_button)
+                    .is_some_and(|rect| rect.contains((mouse.column, mouse.row).into()));
+            if bisect {
+                app.open_bisect();
+                return;
+            }
             if let Some(view) = &mut app.status_view {
                 match mouse.kind {
                     MouseEventKind::ScrollUp => view.move_by(-3),
@@ -321,6 +369,15 @@ fn apply(event: Event, app: &mut App) {
             MouseEventKind::Down(MouseButton::Left)
                 if app.mode == Mode::Log && mouse.row >= app.log_row_origin =>
             {
+                if let Some((_, row, edge)) = app
+                    .visible_bisect_gaps
+                    .iter()
+                    .find(|(rect, _, _)| rect.contains((mouse.column, mouse.row).into()))
+                    .cloned()
+                {
+                    app.click_bisect_gap(row, edge);
+                    return;
+                }
                 if let Some(link) = app
                     .visible_log_links
                     .iter()
@@ -335,10 +392,16 @@ fn apply(event: Event, app: &mut App) {
                     if app.history == History::Branches {
                         app.selected = selected;
                         app.open_branch();
-                    } else if app.selected == selected {
-                        app.switch_mode();
                     } else {
-                        app.selected = selected;
+                        let had_gap_focus = app.focused_bisect_gap().is_some();
+                        if let Some(graph) = &mut app.bisect_graph {
+                            graph.focus = None;
+                        }
+                        if app.selected == selected && !had_gap_focus {
+                            app.switch_mode();
+                        } else {
+                            app.selected = selected;
+                        }
                     }
                 }
             }
