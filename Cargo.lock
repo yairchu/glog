@@ -236,7 +236,7 @@ dependencies = [
 
 [[package]]
 name = "glog-tui"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "base64",
  "crossterm",

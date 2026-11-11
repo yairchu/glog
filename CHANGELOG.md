@@ -5,6 +5,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+## 0.10.0 - 2026-11-12
+
 ### Added
 
 - Browse the current bisect session by clicking its indicator in Status or
@@ -613,7 +615,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Initial release of the interactive `git log` and `git show` browser.
 
-[Unreleased]: https://github.com/yairchu/glog/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/yairchu/glog/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/yairchu/glog/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/yairchu/glog/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/yairchu/glog/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/yairchu/glog/compare/v0.7.2...v0.8.0
