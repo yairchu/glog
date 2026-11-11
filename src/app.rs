@@ -3190,6 +3190,8 @@ impl App {
             return;
         }
         let clicked = self.show_row_at_screen(screen);
+        // Deliberately two-step: a first click only focuses a folded row, and
+        // clicking the focused row unfolds it.
         let already_focused = self.show_cursor == clicked;
         self.show_cursor = clicked.min(self.show_rows.len().saturating_sub(1));
         self.summary_cursor = crate::path_groups::Cursor::default();
