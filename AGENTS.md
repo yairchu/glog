@@ -23,6 +23,9 @@
   options in command-line help rather than adding them to introductory docs.
 - Don't add tests for behavior that works and was never broken. Add a
   regression test when something breaks or proves verifiably error-prone.
+- Use Windows-compatible filenames in tests shared across platforms. Use
+  portable names with spaces or Unicode when testing path handling; gate tests
+  requiring Windows-incompatible filenames to platforms that support them.
 - Prefer code structures that make mistakes hard over ones that rely on
   matching or keeping separate pieces in sync, such as filtering
   user-facing text by its contents.
