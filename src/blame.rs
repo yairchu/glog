@@ -2536,18 +2536,16 @@ mod tests {
             let directory = TestDirectory::new();
             let _cwd = CurrentDirGuard::enter(directory.path());
             git(&["init", "-q"]);
+            // Non-ASCII paths exercise Git quoting on every supported platform.
+            let source = "source café.txt";
             let moved = "begin_moved_block();\nselected_moved_line();\nend_moved_block();\n";
-            fs::write(
-                "source\tfile.txt",
-                format!("source_header\n{moved}source_footer\n"),
-            )
-            .unwrap();
+            fs::write(source, format!("source_header\n{moved}source_footer\n")).unwrap();
             if !new_file {
                 fs::write("target.txt", "target_header\ntarget_footer\n").unwrap();
             }
             git(&["add", "."]);
             git(&["commit", "-qm", "base"]);
-            fs::write("source\tfile.txt", "source_header\nsource_footer\n").unwrap();
+            fs::write(source, "source_header\nsource_footer\n").unwrap();
             fs::write(
                 "target.txt",
                 format!("target_header\n{moved}target_footer\n"),
@@ -2565,9 +2563,9 @@ mod tests {
             assert_eq!(app.status, None, "new file: {new_file}");
             assert_eq!(app.selected, 2);
             let line = app.commits[app.selected].blame().unwrap();
-            assert_eq!(line.source_path, b"source\tfile.txt");
+            assert_eq!(line.source_path, source.as_bytes());
             assert!(
-                app.context.ends_with(" -- source\\tfile.txt"),
+                app.context.ends_with(&format!(" -- {source}")),
                 "{}",
                 app.context
             );
