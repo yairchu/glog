@@ -4620,6 +4620,21 @@ mod tests {
     }
 
     #[test]
+    fn notice_all_files_hidden_after_commit_message() {
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = "commit message\ndiff --git a/Cargo.lock b/Cargo.lock\n--- a/Cargo.lock\n+++ b/Cargo.lock\n@@ -1 +1 @@\n-old dep\n+new dep\n".into();
+        app.ensure_show_rows();
+        assert_eq!(app.show_rows[0].text, "commit message");
+        assert!(app
+            .show_rows
+            .last()
+            .unwrap()
+            .text
+            .starts_with("All files hidden."));
+    }
+
+    #[test]
     fn untracked_files_start_folded_individually() {
         let mut app = App::new(Vec::new());
         app.show_text = "diff --git a/one.txt b/one.txt\nnew file mode 100644\n--- /dev/null\n+++ b/one.txt\n@@ -0,0 +1 @@\n+one\ndiff --git a/two.txt b/two.txt\nnew file mode 100644\n--- /dev/null\n+++ b/two.txt\n@@ -0,0 +1 @@\n+two\n"
