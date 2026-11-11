@@ -2624,8 +2624,10 @@ impl App {
         let folded_start = file.filter(unloaded).map(|f| f.start);
         if let Some(file) = file.filter(|f| !unloaded(f)) {
             self.expanded_folds.insert(file.key.clone());
-            self.rebuild_show_rows();
         }
+        // Revealing ancestor folders also changes rows for files whose
+        // contents stay unloaded, including submodule summaries.
+        self.rebuild_show_rows();
         self.show_rows.iter().enumerate().position(|(index, row)| {
             !self.submodule_rows.contains_key(&index)
                 && if let Some(start) = folded_start {
