@@ -4004,6 +4004,54 @@ mod tests {
     }
 
     #[test]
+    fn search_reveals_loaded_submodule_contents_inside_collapsed_summary_folders() {
+        for depth in [1, 2] {
+            let mut app = App::new(Vec::new());
+            app.show_stat = true;
+            app.show_text = "diff --git a/file.go b/file.go\n--- a/file.go\n+++ b/file.go\n@@ -0,0 +1 @@\n+unique_child_needle\n".into();
+            app.ensure_show_rows();
+            for _ in 0..depth {
+                let mut parent = App::new(Vec::new());
+                parent.show_stat = true;
+                parent.show_text = format!(
+                    "diff --git a/modules/one b/modules/one\nindex {}..{} 160000\ndiff --git a/modules/two.txt b/modules/two.txt\n--- a/modules/two.txt\n+++ b/modules/two.txt\n@@ -0,0 +1 @@\n+other\n",
+                    "1".repeat(40), "2".repeat(40)
+                );
+                parent.ensure_show_rows();
+                parent
+                    .submodules
+                    .insert(b"modules/one".to_vec(), Box::new(app));
+                parent.expanded_folds.insert(b"modules/one".to_vec());
+                parent.rebuild_show_rows();
+                parent.activate_summary_path(
+                    0,
+                    crate::summary_paths::Target::Directory(b"modules/".to_vec()),
+                );
+                assert_eq!(
+                    parent.show_rows[parent.show_cursor]
+                        .path
+                        .as_ref()
+                        .unwrap()
+                        .directory,
+                    Some(b"modules/".to_vec())
+                );
+                app = parent;
+            }
+            app.mode = Mode::Show;
+            app.search = Some("unique_child_needle".into());
+            app.next_match(false);
+            assert_eq!(
+                app.show_rows[app.show_cursor].text.trim_start(),
+                "+unique_child_needle",
+                "depth={depth}"
+            );
+            assert_eq!(app.search_match, Some((Mode::Show, app.show_cursor)));
+            assert_eq!(app.show_location(app.show_cursor).0.len(), depth);
+            assert_eq!(app.status, None);
+        }
+    }
+
+    #[test]
     fn overlapping_file_filters_keep_totals_search_and_folds_consistent() {
         use crate::file_filters::Category;
         let mut app = App::new(Vec::new());
