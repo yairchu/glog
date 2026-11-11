@@ -4440,6 +4440,25 @@ mod tests {
     }
 
     #[test]
+    fn previous_file_jump_lands_on_expanded_summary_row() {
+        let mut app = App::new(Vec::new());
+        app.show_stat = true;
+        app.show_text = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+a\ndiff --git a/b.txt b/b.txt\n--- a/b.txt\n+++ b/b.txt\n@@ -1 +1 @@\n-old\n+b\n".into();
+        app.ensure_show_rows();
+        app.toggle_show_file();
+        let summary = |app: &App, name| {
+            app.show_rows
+                .iter()
+                .position(|row| row.summary && row.text.contains(name))
+                .unwrap()
+        };
+        assert!(app.show_rows[summary(&app, "a.txt")].text.starts_with('▼'));
+        app.show_cursor = summary(&app, "b.txt");
+        app.jump_show_file(-1);
+        assert_eq!(app.show_cursor, summary(&app, "a.txt"));
+    }
+
+    #[test]
     fn file_jumps_and_filters_skip_expanded_submodule_rows() {
         use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 
