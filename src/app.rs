@@ -3819,6 +3819,31 @@ mod tests {
     }
 
     #[test]
+    fn hiding_extensionless_files_keeps_submodules() {
+        use crate::file_filters::Category;
+
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_stat = true;
+        app.show_text = format!(
+            "diff --git a/Makefile b/Makefile\n--- a/Makefile\n+++ b/Makefile\n@@ -1 +1 @@\n-old\n+new\ndiff --git a/module b/module\nindex {}..{} 160000\n",
+            "1".repeat(40),
+            "2".repeat(40)
+        );
+        app.ensure_show_rows();
+        assert_eq!(
+            app.file_filter_counts()[&Category::Extension(Vec::new())],
+            1
+        );
+        app.toggle_file_filter(Some(Category::Extension(Vec::new())));
+        assert_eq!(app.hidden_file_count(), 1);
+        assert!(app
+            .show_rows
+            .iter()
+            .any(|row| row.summary && row.text.contains("module")));
+    }
+
+    #[test]
     fn compact_folder_actions_stay_in_their_submodule_repository() {
         use crate::{file_filters::Category, summary_paths::Target};
         let mut child = App::new(Vec::new());
