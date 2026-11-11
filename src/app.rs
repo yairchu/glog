@@ -719,6 +719,7 @@ impl App {
             target.context = "bisect log".into();
             target.exit_on_esc = self.exit_on_esc;
             target.github_repository = self.github_repository.clone();
+            target.file_filters = self.file_filters.clone();
             Ok(target)
         });
         self.enter_followed(loaded);
@@ -3045,6 +3046,7 @@ impl App {
         target.set_repository(self.repository.clone());
         target.github_repository = self.github_repository.clone();
         target.exit_on_esc = self.exit_on_esc;
+        target.file_filters = self.file_filters.clone();
         // Followed views start unwatched; branch Logs may opt in with W.
         // Leave watch on the saved origin so returning resumes its refreshes.
         // Reflog, stash, and blame views have their own formats and no type
