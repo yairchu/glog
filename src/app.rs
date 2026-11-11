@@ -2431,7 +2431,8 @@ impl App {
                 }
             }
         }
-        if nested_rows.is_empty() && !self.show_files.is_empty() {
+        // The commit message stays visible, so check for file rows rather than any rows.
+        if !self.show_files.is_empty() && nested_rows.iter().all(|row| row.file.is_none()) {
             nested_rows.push(ShowRow {
                 text: "All files hidden. Press T to clear file filters.".into(),
                 source: lines.len(),
@@ -3870,9 +3871,15 @@ mod tests {
         app.hide_selected_file_category();
         assert_eq!(app.hidden_file_count(), 2);
         assert_eq!(
-            app.show_rows.last().unwrap().text,
+            app.show_rows[app.show_rows.len() - 2].text,
             " 0 files changed, 0 insertions(+), 0 deletions(-) (filtered)"
         );
+        assert!(app
+            .show_rows
+            .last()
+            .unwrap()
+            .text
+            .starts_with("All files hidden."));
     }
 
     #[test]
@@ -4157,9 +4164,15 @@ mod tests {
         assert_eq!(total(&app), " 1 file changed, 5 insertions(+) (filtered)");
         app.toggle_file_filter(Some(Category::Extension(b"json".to_vec())));
         assert_eq!(
-            total(&app),
+            app.show_rows[app.show_rows.len() - 2].text,
             " 0 files changed, 0 insertions(+), 0 deletions(-) (filtered)"
         );
+        assert!(app
+            .show_rows
+            .last()
+            .unwrap()
+            .text
+            .starts_with("All files hidden."));
         app.toggle_show_stat();
         assert_eq!(app.show_rows.len(), 1);
         assert!(app.show_rows[0].text.starts_with("All files hidden."));

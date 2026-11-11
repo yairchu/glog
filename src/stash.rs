@@ -375,9 +375,15 @@ mod tests {
         app.toggle_file_filter(Some(txt));
         assert!(app.show_rows.iter().all(|row| !row.summary));
         assert_eq!(
-            app.show_rows.last().unwrap().text,
+            app.show_rows[app.show_rows.len() - 2].text,
             " 0 files changed, 0 insertions(+), 0 deletions(-) (filtered)"
         );
+        assert!(app
+            .show_rows
+            .last()
+            .unwrap()
+            .text
+            .starts_with("All files hidden."));
         app.toggle_file_filter(None);
         assert_eq!(
             app.show_rows.last().unwrap().text,

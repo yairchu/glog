@@ -2796,9 +2796,15 @@ mod tests {
             Some(Category::Extension("界".as_bytes().to_vec())),
         );
         assert_eq!(
-            app.show_rows.last().unwrap().text,
+            app.show_rows[app.show_rows.len() - 2].text,
             " 0 files changed, 0 insertions(+), 0 deletions(-) (filtered)"
         );
+        assert!(app
+            .show_rows
+            .last()
+            .unwrap()
+            .text
+            .starts_with("All files hidden."));
         for (width, height) in [(12, 4), (1, 2)] {
             terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
