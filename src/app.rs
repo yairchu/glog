@@ -3749,6 +3749,30 @@ mod tests {
     }
 
     #[test]
+    fn hiding_a_submodule_counts_its_files_as_hidden() {
+        use crate::file_filters::Category;
+        let mut child = App::new(Vec::new());
+        child.show_text = "diff --git a/inner.rs b/inner.rs\n--- a/inner.rs\n+++ b/inner.rs\n@@ -1 +1 @@\n-old\n+inner\n".into();
+        child.ensure_show_rows();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = format!(
+            "diff --git a/root.rs b/root.rs\n--- a/root.rs\n+++ b/root.rs\n@@ -1 +1 @@\n-old\n+root\ndiff --git a/module b/module\nindex {}..{} 160000\n",
+            "1".repeat(40),
+            "2".repeat(40)
+        );
+        app.ensure_show_rows();
+        app.submodules.insert(b"module".to_vec(), Box::new(child));
+        app.rebuild_show_rows();
+        app.toggle_file_filter(Some(Category::Extension(Vec::new())));
+        assert_eq!(
+            app.file_filter_counts()[&Category::Extension(b"rs".to_vec())],
+            2
+        );
+        assert_eq!(app.hidden_file_count(), 2);
+    }
+
+    #[test]
     fn compact_folder_actions_stay_in_their_submodule_repository() {
         use crate::{file_filters::Category, summary_paths::Target};
         let mut child = App::new(Vec::new());
