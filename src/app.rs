@@ -2757,18 +2757,24 @@ impl App {
         let Some(source) = self.show_rows.get(self.show_cursor).map(|row| row.source) else {
             return;
         };
-        let mut candidates = self.show_rows.iter().enumerate().filter(|(index, row)| {
-            !self.submodule_rows.contains_key(index)
-                && !row.fold_separator
-                && row
-                    .file
-                    .is_some_and(|file| row.source == self.show_files[file].start)
-        });
-        let target = if delta < 0 {
-            candidates.rfind(|(_, row)| row.source < source)
-        } else {
-            candidates.find(|(_, row)| row.source > source)
+        let candidates = || {
+            self.show_rows.iter().enumerate().filter(|(index, row)| {
+                !self.submodule_rows.contains_key(index)
+                    && !row.fold_separator
+                    && row
+                        .file
+                        .is_some_and(|file| row.source == self.show_files[file].start)
+            })
         };
+        let target = if delta < 0 {
+            candidates().rfind(|(_, row)| row.source < source)
+        } else {
+            candidates().find(|(_, row)| row.source > source)
+        };
+        // An expanded file's patch starts at its summary row's source; land
+        // on the file's first row, as a forward jump would.
+        let target = target
+            .and_then(|(_, target)| candidates().find(|(_, row)| row.source == target.source));
         if let Some((index, _)) = target {
             self.show_cursor = index;
         }
