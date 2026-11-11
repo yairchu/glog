@@ -2603,6 +2603,38 @@ mod tests {
     }
 
     #[test]
+    fn blame_parent_maps_lines_when_another_file_cannot_be_diffed() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write(
+            ".gitattributes",
+            "file.txt diff=readable\nother.dat diff=broken\n",
+        )
+        .unwrap();
+        git(&["config", "diff.readable.textconv", "cat"]);
+        git(&["config", "diff.broken.textconv", "false"]);
+        fs::write("file.txt", "a\nb\nc\n").unwrap();
+        fs::write("other.dat", "old\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        // Move detection diffs the whole commit, so the broken driver fails it.
+        fs::write("file.txt", "a\nB\nc\n").unwrap();
+        fs::write("other.dat", "new\n").unwrap();
+        git(&["commit", "-qam", "edit"]);
+
+        let (rows, _) = load(&["file.txt".into()]).unwrap();
+        let commit = &rows[1];
+        assert_eq!(code(commit.blame().unwrap()), "B");
+        let ParentBlame {
+            commits: parent,
+            selected,
+            ..
+        } = load_parent(commit, commit.blame().unwrap()).unwrap();
+        assert_eq!(code(parent[selected].blame().unwrap()), "b");
+    }
+
+    #[test]
     fn blame_parent_ignores_configured_inter_hunk_context() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
