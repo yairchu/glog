@@ -3964,6 +3964,44 @@ mod tests {
     }
 
     #[test]
+    fn search_reveals_submodule_metadata_inside_a_collapsed_summary_folder() {
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_stat = true;
+        app.show_text = format!(
+            "diff --git a/modules/one b/modules/one\nindex {}..{} 160000\n--- a/modules/one\n+++ b/modules/one\n@@ -1 +1 @@\n-Subproject commit {}\n+Subproject commit {}\ndiff --git a/modules/two.txt b/modules/two.txt\n--- a/modules/two.txt\n+++ b/modules/two.txt\n@@ -0,0 +1 @@\n+other\n",
+            "1".repeat(40), "2".repeat(40), "1".repeat(40), "2".repeat(40)
+        );
+        app.ensure_show_rows();
+        app.show_cursor = 0;
+        app.activate_summary_path(
+            0,
+            crate::summary_paths::Target::Directory(b"modules/".to_vec()),
+        );
+        assert!(app.show_rows[app.show_cursor]
+            .path
+            .as_ref()
+            .unwrap()
+            .directory
+            .is_some());
+        app.search = Some("22222222".into());
+        app.next_match(false);
+        let row = &app.show_rows[app.show_cursor];
+        assert!(
+            row.text.contains("modules/one"),
+            "cursor stayed on {}",
+            row.text
+        );
+        assert!(row.summary && row.folded);
+        assert!(row.path.as_ref().unwrap().directory.is_none());
+        assert_eq!(app.search_match, Some((Mode::Show, app.show_cursor)));
+        assert!(
+            app.submodules.is_empty(),
+            "search must not load submodule history"
+        );
+    }
+
+    #[test]
     fn overlapping_file_filters_keep_totals_search_and_folds_consistent() {
         use crate::file_filters::Category;
         let mut app = App::new(Vec::new());
