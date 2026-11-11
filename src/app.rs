@@ -1747,6 +1747,7 @@ impl App {
     pub fn blame_show_line(&mut self) {
         let loaded = self.show_blame(self.show_cursor).map(|mut target| {
             target.exit_on_esc = self.exit_on_esc;
+            target.file_filters = self.file_filters.clone();
             target
         });
         self.enter_followed(loaded);
