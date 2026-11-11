@@ -635,12 +635,16 @@ pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<ParentBlame, Str
             line.source_path.as_slice(),
         ),
     };
-    if let Some((path, number)) = moves::origin(commit, line, parent)? {
-        return load_parent_file(commit, line, parent, &path, number);
-    }
-    // A new file can contain moved code, but has no same-file fallback.
-    if line.previous.is_none() {
-        return Err(no_history());
+    // Move detection diffs the whole commit, so any file in it can fail it.
+    // That must not block mapping a line through its own file's history.
+    match (moves::origin(commit, line, parent), &line.previous) {
+        (Ok(Some((path, number))), _) => {
+            return load_parent_file(commit, line, parent, &path, number)
+        }
+        (Ok(None) | Err(_), Some(_)) => {}
+        // A new file can contain moved code, but has no same-file fallback.
+        (Ok(None), None) => return Err(no_history()),
+        (Err(error), None) => return Err(error),
     }
     let output = git::read_command_at(Some(&line.file.repository))
         .env("LC_ALL", "C")
