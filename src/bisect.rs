@@ -16,13 +16,63 @@ use ratatui::{
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Entry {
-    results: Vec<(usize, String)>,
+    results: Vec<Outcome>,
     head: bool,
     pub testing: bool,
     culprit: bool,
     possible_culprit: bool,
     intermediate: bool,
     pub gaps: Vec<Control>,
+}
+
+/// A recorded step, classified when parsed because sessions can rename terms.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Outcome {
+    step: usize,
+    term: String,
+    verdict: Verdict,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Verdict {
+    New,
+    Old,
+    Skip,
+}
+
+/// The session's names for new (bad) and old (good) commits.
+struct Terms {
+    new: String,
+    old: String,
+}
+
+impl Terms {
+    fn load() -> Self {
+        log_path()
+            .ok()
+            .and_then(|path| std::fs::read_to_string(path.with_file_name("BISECT_TERMS")).ok())
+            .and_then(|text| {
+                let mut lines = text.lines();
+                Some(Self {
+                    new: lines.next()?.to_owned(),
+                    old: lines.next()?.to_owned(),
+                })
+            })
+            .unwrap_or_else(|| Self {
+                new: "bad".into(),
+                old: "good".into(),
+            })
+    }
+
+    fn verdict(&self, term: &str) -> Verdict {
+        if term == self.new {
+            Verdict::New
+        } else if term == self.old {
+            Verdict::Old
+        } else {
+            Verdict::Skip
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -408,7 +458,7 @@ fn remaining_steps() -> Option<usize> {
         .find_map(|line| line.strip_prefix("bisect_steps=")?.parse().ok())
 }
 
-fn parse(log: &str) -> HashMap<String, Entry> {
+fn parse(log: &str, terms: &Terms) -> HashMap<String, Entry> {
     let mut entries = HashMap::<String, Entry>::new();
     let mut step = 0;
     let mut has_outcome = false;
@@ -443,7 +493,11 @@ fn parse(log: &str) -> HashMap<String, Entry> {
                 .entry(hash.into())
                 .or_default()
                 .results
-                .push((step, role.into()));
+                .push(Outcome {
+                    step,
+                    term: role.into(),
+                    verdict: terms.verdict(role),
+                });
         }
     }
     entries
@@ -469,7 +523,7 @@ pub fn load_app(args: &[String]) -> Result<App, String> {
     let mut rows = Vec::new();
     let mut bisect_graph = None;
     if let Some(log) = read_log()? {
-        let mut entries = parse(&String::from_utf8_lossy(&log));
+        let mut entries = parse(&String::from_utf8_lossy(&log), &Terms::load());
         let output = git::read_command()
             .args(["rev-parse", "--verify", "HEAD^{commit}"])
             .output()
@@ -575,13 +629,13 @@ impl Columns {
             step: entries
                 .iter()
                 .flat_map(|entry| &entry.results)
-                .map(|(step, _)| step.to_string().len())
+                .map(|outcome| outcome.step.to_string().len())
                 .max()
                 .unwrap_or(1),
             role: entries
                 .iter()
                 .flat_map(|entry| &entry.results)
-                .map(|(_, role)| Span::raw(role).width())
+                .map(|outcome| Span::raw(&outcome.term).width())
                 .max()
                 .unwrap_or(0),
             decision: 0,
@@ -637,14 +691,19 @@ fn decision_spans(entry: &Entry, columns: Option<&Columns>) -> Vec<Span<'static>
     if entry.testing {
         spans.push(Span::styled("testing", Style::default().fg(Color::Yellow)));
     }
-    for (step, role) in &entry.results {
+    for Outcome {
+        step,
+        term: role,
+        verdict,
+    } in &entry.results
+    {
         if !spans.is_empty() {
             spans.push(Span::raw(" / "));
         }
-        let color = match role.as_str() {
-            "good" | "old" => Color::Green,
-            "bad" | "new" => Color::Red,
-            _ => Color::Yellow,
+        let color = match verdict {
+            Verdict::Old => Color::Green,
+            Verdict::New => Color::Red,
+            Verdict::Skip => Color::Yellow,
         };
         let step_width = columns.map_or(1, |columns| columns.step);
         let role = columns.map_or_else(
@@ -705,6 +764,14 @@ mod tests {
         git(&args)
     }
 
+    fn outcome(step: usize, term: &str, verdict: Verdict) -> Outcome {
+        Outcome {
+            step,
+            term: term.into(),
+            verdict,
+        }
+    }
+
     fn entry<'a>(app: &'a App, hash: &str) -> &'a Entry {
         match &app
             .commits
@@ -760,8 +827,11 @@ mod tests {
                 .fg,
             Some(Color::Green)
         );
-        assert_eq!(entry(&app, &bad).results, [(1, "bad".into())]);
-        assert_eq!(entry(&app, &good).results, [(2, "good".into())]);
+        assert_eq!(entry(&app, &bad).results, [outcome(1, "bad", Verdict::New)]);
+        assert_eq!(
+            entry(&app, &good).results,
+            [outcome(2, "good", Verdict::Old)]
+        );
         assert_eq!(app.commits[0].parents, std::slice::from_ref(&head));
         assert_eq!(app.commits[1].parents, std::slice::from_ref(&good));
         let mut terminal = Terminal::new(TestBackend::new(120, 18)).unwrap();
@@ -847,7 +917,7 @@ mod tests {
         assert!(entry(&app, &other)
             .results
             .iter()
-            .any(|(_, role)| role == "skip"));
+            .any(|outcome| outcome.term == "skip"));
         // Resolving a skipped candidate replaces the earlier ambiguous outcome.
         git(&["bisect", "good", &other]);
         let resolved = load_app(&[]).unwrap();
@@ -893,7 +963,7 @@ mod tests {
         assert!(entry(&app, &middle)
             .results
             .iter()
-            .any(|(_, role)| role == "broken"));
+            .any(|outcome| outcome.term == "broken" && outcome.verdict == Verdict::New));
         assert_eq!(git(&["rev-parse", "HEAD"]), bad);
         git(&["bisect", "reset"]);
         assert!(app.poll_watch());
@@ -1317,18 +1387,29 @@ mod tests {
         let mut app = projected_app(&[tip.clone(), left.clone(), right.clone(), base.clone()]);
         for row in &mut app.commits {
             let (results, author, date) = if row.hash == tip {
-                (vec![(12, "bad".into())], "Dan Raviv", "2026-11-10 22:00")
+                (
+                    vec![outcome(12, "bad", Verdict::New)],
+                    "Dan Raviv",
+                    "2026-11-10 22:00",
+                )
             } else if row.hash == left {
                 (
-                    vec![(1, "good".into()), (10, "good".into())],
+                    vec![
+                        outcome(1, "good", Verdict::Old),
+                        outcome(10, "good", Verdict::Old),
+                    ],
                     "Alexandria ParticularlyLong Surname",
                     "2026-09-14",
                 )
             } else if row.hash == right {
-                (vec![(13, "good".into())], "李 王", "2026-09-04 23:34")
+                (
+                    vec![outcome(13, "good", Verdict::Old)],
+                    "李 王",
+                    "2026-09-04 23:34",
+                )
             } else {
                 (
-                    vec![(2, "good".into())],
+                    vec![outcome(2, "good", Verdict::Old)],
                     "Nir Averbuch",
                     "2026-07-14 17:08 +0300",
                 )
