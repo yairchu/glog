@@ -8,11 +8,33 @@ pub(super) fn origin(
     line: &BlameLine,
     parent: &str,
 ) -> Result<Option<(Vec<u8>, usize)>, String> {
+    // Moved code comes from removed lines, which files the commit added lack.
+    // Skipping them keeps large imports cheap; the line's own file is still
+    // needed when the commit added it, and excluded by the first diff.
+    let mut changes = diff(commit, line, parent, "--diff-filter=a", None)?;
+    changes.push_str(&diff(
+        commit,
+        line,
+        parent,
+        "--diff-filter=A",
+        Some(&line.source_path),
+    )?);
+    Ok(find_origin(&changes, &line.source_path, line.source_number))
+}
+
+fn diff(
+    commit: &Commit,
+    line: &BlameLine,
+    parent: &str,
+    filter: &str,
+    path: Option<&[u8]>,
+) -> Result<String, String> {
     let output = git::read_command_at(Some(&line.file.repository))
         .env("LC_ALL", "C")
         .args([
             "-c",
             "core.quotepath=true",
+            "--literal-pathspecs",
             "diff",
             "--no-color",
             "--no-ext-diff",
@@ -22,6 +44,7 @@ pub(super) fn origin(
             "--dst-prefix=b/",
             "--inter-hunk-context=0",
             "-U0",
+            filter,
             if line.file.textconv {
                 "--textconv"
             } else {
@@ -29,6 +52,7 @@ pub(super) fn origin(
             },
         ])
         .args([parent, &commit.hash, "--"])
+        .args(path.map(git::raw_path))
         .output()
         .map_err(|error| format!("could not find moved code: {error}"))?;
     if !output.status.success() {
@@ -37,11 +61,7 @@ pub(super) fn origin(
             &output.stderr,
         ));
     }
-    Ok(find_origin(
-        &String::from_utf8_lossy(&output.stdout),
-        &line.source_path,
-        line.source_number,
-    ))
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 struct Block<'a> {
