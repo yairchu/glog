@@ -39,10 +39,32 @@ impl Category {
     }
 
     pub fn selected(file: &FileSection) -> Self {
+        // A submodule's entry stands for its files, not an extensionless file.
+        if file.submodule.is_some() {
+            return Self::Directory(crate::path_groups::join(&file.path_bytes, b""));
+        }
         // Hide the most specific category from the keyboard.
         Self::of(file)
             .pop()
             .expect("every file has an extension category")
+    }
+
+    /// Rebase a nested repository's category onto its path in this one.
+    pub fn under(self, directory: &[u8]) -> Self {
+        match self {
+            Self::Directory(path) => Self::Directory(crate::path_groups::join(directory, &path)),
+            category => category,
+        }
+    }
+}
+
+/// Whether `directory` holds the file at `path`. A submodule's entry stands
+/// for the directory of its files, so hiding that directory hides the entry.
+pub fn in_directory(file: &FileSection, path: &[u8], directory: &[u8]) -> bool {
+    if file.submodule.is_some() {
+        crate::path_groups::join(path, b"").starts_with(directory)
+    } else {
+        path.starts_with(directory)
     }
 }
 
@@ -105,7 +127,7 @@ impl Filters {
             return false;
         }
         self.directories()
-            .any(|path| file.path_bytes.starts_with(path))
+            .any(|directory| in_directory(file, &file.path_bytes, directory))
             || Category::of(file)
                 .iter()
                 .any(|category| self.hidden.contains(category))

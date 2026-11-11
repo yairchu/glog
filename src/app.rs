@@ -1948,7 +1948,7 @@ impl App {
             let directories = self
                 .file_filters
                 .directories()
-                .filter(|directory| path.starts_with(directory))
+                .filter(|directory| crate::file_filters::in_directory(file, &path, directory))
                 .map(|directory| crate::file_filters::Category::Directory(directory.clone()));
             for category in crate::file_filters::Category::of(file)
                 .into_iter()
@@ -1974,7 +1974,9 @@ impl App {
         }
         match self.cursor_file(cursor)? {
             CursorFile::Own { file, .. } => Some(crate::file_filters::Category::selected(file)),
-            CursorFile::Submodule { view, row, .. } => view.selected_file_category(row),
+            CursorFile::Submodule { gitlink, view, row } => view
+                .selected_file_category(row)
+                .map(|category| category.under(&gitlink.path_bytes)),
         }
     }
 
