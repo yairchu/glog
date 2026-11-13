@@ -3845,6 +3845,58 @@ mod tests {
     }
 
     #[test]
+    fn single_file_summary_folders_can_be_selected_and_hidden() {
+        use crate::{file_filters::Category, summary_paths::Target};
+
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_stat = true;
+        for path in [
+            ".internal/util.sh",
+            "bin/chopi.sh",
+            "test/nested/integration.sh",
+        ] {
+            app.show_text.push_str(&format!(
+                "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -0,0 +1 @@\n+added\n"
+            ));
+        }
+        app.ensure_show_rows();
+        app.show_cursor = app
+            .show_rows
+            .iter()
+            .position(|row| row.summary && row.text.contains("test/nested/integration.sh"))
+            .unwrap();
+        let path = app.show_rows[app.show_cursor].path.as_ref().unwrap();
+        assert_eq!(
+            path.components,
+            vec![
+                ("test/".into(), Target::Directory(b"test/".to_vec())),
+                (
+                    "nested/".into(),
+                    Target::Directory(b"test/nested/".to_vec())
+                ),
+                ("integration.sh".into(), Target::File),
+            ]
+        );
+        app.move_summary_path(false);
+        app.move_summary_path(false);
+        app.hide_selected_file_category();
+        assert!(app
+            .file_filters
+            .hides_category(&Category::Directory(b"test/".to_vec())));
+        assert_eq!(app.hidden_file_count(), 1);
+        assert_eq!(app.show_rows.iter().filter(|row| row.summary).count(), 2);
+        assert!(app
+            .show_rows
+            .iter()
+            .any(|row| row.text.contains("bin/chopi.sh")));
+        assert_eq!(
+            app.show_rows.last().unwrap().text,
+            " 2 files changed, 2 insertions(+) (filtered)"
+        );
+    }
+
+    #[test]
     fn compact_folder_actions_stay_in_their_submodule_repository() {
         use crate::{file_filters::Category, summary_paths::Target};
         let mut child = App::new(Vec::new());

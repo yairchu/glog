@@ -5,6 +5,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Fixed
+
+- Keep every folder selectable in Show and Diff summaries so folders containing
+  a single changed file can be hidden with `t`.
+
 ## 0.10.0 - 2026-11-12
 
 ### Added

@@ -113,14 +113,13 @@ impl Groups {
         let mut parts = Vec::new();
         let mut previous = 0;
         for prefix in crate::path_groups::directories(&file.path_bytes) {
-            let Some(group) = self.groups.get(&key(prefix, file.stash_layer)) else {
+            if !self.groups.contains_key(&key(prefix, file.stash_layer)) {
                 continue;
-            };
+            }
             let label = diff::display_path(prefix);
             parts.push((
                 label[previous..].to_owned(),
                 Target::Directory(prefix.to_vec()),
-                group.members.len(),
             ));
             previous = label.len();
             if directory == Some(prefix) {
@@ -128,10 +127,12 @@ impl Groups {
             }
         }
         if directory.is_none() {
-            parts.push((file.path[previous..].to_owned(), Target::File, 1));
+            parts.push((file.path[previous..].to_owned(), Target::File));
         }
         Path {
-            components: crate::path_groups::compact(parts),
+            // Every ancestor is a distinct filter target, even when it has
+            // the same visible files as its child or the file itself.
+            components: parts,
             directory: directory.map(<[u8]>::to_vec),
             offset: "▶ ".len(),
         }
