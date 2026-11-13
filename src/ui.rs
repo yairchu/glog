@@ -13,6 +13,7 @@ use ratatui::{
 pub fn draw(frame: &mut Frame, app: &mut App) {
     app.type_buttons.clear();
     app.file_filter_buttons.clear();
+    app.code_stats_button = None;
     app.visible_show_links.clear();
     app.visible_show_paths.clear();
     let chunks = Layout::default()
@@ -165,7 +166,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         })
         .flatten();
     let mut help = if app.mode == Mode::Status {
-        status_error.clone().unwrap_or_else(|| "h help  q quit  ↑/k ↓/j  e edit  Enter show/fold  s summary  Shift-←/→ commit  ←/→ pan  Tab Log  Esc Log  Ctrl-L redraw · WATCH".to_owned())
+        status_error.clone().unwrap_or_else(|| "h help  q quit  ↑/k ↓/j  e edit  Enter show/fold  s summary  C code stats  Shift-←/→ commit  ←/→ pan  Tab Log  Esc Log  Ctrl-L redraw · WATCH".to_owned())
     } else if let Some(input) = &app.search_input {
         let prefix = if app.search_reverse { '?' } else { '/' };
         format!("{prefix}{input}█")
@@ -619,6 +620,10 @@ const HELP_ROWS: &[HelpRow] = &[
         },
     ),
     detail("e", "open working file in editor (Show/Status)"),
+    detail(
+        "C",
+        "toggle code / all-line statistics (Show/Status summaries)",
+    ),
     (
         "s",
         HelpTexts {
@@ -1218,6 +1223,19 @@ fn draw_file_filters(
     area: Rect,
     counts: std::collections::BTreeMap<crate::file_filters::Category, usize>,
 ) {
+    let label = if app.code_stats {
+        "[C code stats] "
+    } else {
+        "[C all lines] "
+    };
+    let width = Span::raw(label).width().min(usize::from(area.width)) as u16;
+    let button = Rect::new(area.x, area.y, width, area.height.min(1));
+    frame.render_widget(
+        Paragraph::new(label).style(Style::default().fg(Color::Cyan).bg(Color::DarkGray)),
+        button,
+    );
+    app.code_stats_button = Some(button);
+    let area = Rect::new(area.x + width, area.y, area.width - width, area.height);
     let hidden = app.hidden_file_count();
     let label = if hidden == 0 {
         "Files [T all] ".to_owned()
@@ -2821,6 +2839,25 @@ mod tests {
             app.show_rows.last().unwrap().text,
             " 3 files changed, 3 insertions(+)"
         );
+        terminal = Terminal::new(TestBackend::new(100, 12)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let button = app.code_stats_button.unwrap();
+        handle(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: button.x,
+                row: button.y,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut app,
+        );
+        assert!(app.code_stats);
+        assert_eq!(app.hidden_file_count(), 0);
+        handle(
+            Event::Key(KeyEvent::new(KeyCode::Char('C'), KeyModifiers::NONE)),
+            &mut app,
+        );
+        assert!(!app.code_stats);
     }
 
     #[test]

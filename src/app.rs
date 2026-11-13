@@ -308,6 +308,9 @@ pub struct App {
     pub file_filters: crate::file_filters::Filters,
     pub file_filter_buttons: Vec<(ratatui::layout::Rect, Option<crate::file_filters::Category>)>,
     pub show_stat: bool,
+    pub code_stats: bool,
+    pub code_stats_button: Option<ratatui::layout::Rect>,
+    code_counts: HashMap<Vec<u8>, Option<crate::code_stats::Counts>>,
     // Status shares show_stat, so it can change while Show's rows are hidden.
     show_rows_stat: bool,
     stat_bookmark: Option<(Vec<u8>, usize, Option<crate::images::Row>)>,
@@ -416,6 +419,9 @@ impl App {
             file_filters: crate::file_filters::Filters::default(),
             file_filter_buttons: Vec::new(),
             show_stat: false,
+            code_stats: false,
+            code_stats_button: None,
+            code_counts: HashMap::new(),
             show_rows_stat: false,
             stat_bookmark: None,
             stat_submodule_bookmark: None,
@@ -738,6 +744,7 @@ impl App {
             crate::status::StatusView::load().unwrap_or_else(crate::status::StatusView::unavailable)
         });
         view.enable_images(self.images.enabled);
+        view.set_code_stats(self.code_stats);
         if view.show_stat != self.show_stat {
             view.toggle_stat();
         }
@@ -1711,6 +1718,7 @@ impl App {
         }
         self.show_search_location = None;
         self.show_files = diff::file_sections(&self.show_text);
+        self.code_counts.clear();
         self.raw_untracked_files = self
             .show_files
             .iter()
@@ -2126,16 +2134,52 @@ impl App {
         self.show_scroll = Some(ShowScroll::Cursor);
     }
 
+    pub fn toggle_code_stats(&mut self) {
+        self.code_stats = !self.code_stats;
+        if let Some(view) = &mut self.status_view {
+            view.set_code_stats(self.code_stats);
+        }
+        self.rebuild_show_rows();
+    }
+
+    fn file_counts(&self, file: &FileSection) -> (usize, usize) {
+        if self.code_stats {
+            if let Some(Some(counts)) = self.code_counts.get(&file.key) {
+                return (counts.additions, counts.deletions);
+            }
+        }
+        (file.additions, file.deletions)
+    }
+
     fn rebuild_show_rows(&mut self) {
         self.visible_show_paths.clear();
         self.show_rows_stat = self.show_stat;
+        if self.code_stats && self.show_stat {
+            let repository = self
+                .show_repository()
+                .cloned()
+                .or_else(|| git::Repository::main().ok());
+            if let Some(repository) = repository {
+                let lines: Vec<_> = self.show_text.lines().collect();
+                for file in &self.show_files {
+                    self.code_counts.entry(file.key.clone()).or_insert_with(|| {
+                        crate::code_stats::count(
+                            &lines[file.start..file.end].join("\n"),
+                            file,
+                            &repository,
+                        )
+                    });
+                }
+            }
+        }
         for (key, child) in &mut self.submodules {
             let Some(file) = self.show_files.iter().find(|file| file.key == *key) else {
                 continue;
             };
             let filters = self.file_filters.within(&file.path_bytes);
-            if child.file_filters != filters {
+            if child.file_filters != filters || child.code_stats != self.code_stats {
                 child.file_filters = filters;
+                child.code_stats = self.code_stats;
                 child.rebuild_show_rows();
             }
         }
@@ -2178,8 +2222,10 @@ impl App {
                             .map(|file| &file.path_bytes)
                             .collect::<HashSet<_>>()
                             .len();
-                        let additions: usize = files.iter().map(|file| file.additions).sum();
-                        let deletions: usize = files.iter().map(|file| file.deletions).sum();
+                        let additions: usize =
+                            files.iter().map(|file| self.file_counts(file).0).sum();
+                        let deletions: usize =
+                            files.iter().map(|file| self.file_counts(file).1).sum();
                         rows.push(ShowRow {
                             text: format!(
                                 "▶ {} ({count} file{}) | +{additions} −{deletions}",
@@ -2220,7 +2266,8 @@ impl App {
                 }) {
                     "binary".to_owned()
                 } else {
-                    format!("+{} −{}", file.additions, file.deletions)
+                    let (added, deleted) = self.file_counts(file);
+                    format!("+{added} −{deleted}")
                 };
                 rows.push(ShowRow {
                     text: format!(
@@ -2335,8 +2382,8 @@ impl App {
                 .map(|file| file.path_bytes.as_slice())
                 .collect::<HashSet<_>>()
                 .len();
-            let additions: usize = visible.iter().map(|file| file.additions).sum();
-            let deletions: usize = visible.iter().map(|file| file.deletions).sum();
+            let additions: usize = visible.iter().map(|file| self.file_counts(file).0).sum();
+            let deletions: usize = visible.iter().map(|file| self.file_counts(file).1).sum();
             let mut text = format!(" {count} file{} changed", if count == 1 { "" } else { "s" });
             for (count, change, sign) in
                 [(additions, "insertion", '+'), (deletions, "deletion", '-')]
@@ -2356,6 +2403,9 @@ impl App {
             }
             if visible.len() != self.show_files.len() {
                 text.push_str(" (filtered)");
+            }
+            if self.code_stats {
+                text.push_str(" (code stats)");
             }
             rows.push(ShowRow {
                 text,
@@ -2736,6 +2786,7 @@ impl App {
                     self.show_text = lines.join("\n");
                     self.show_text.push('\n');
                     self.show_files = diff::file_sections(&self.show_text);
+                    self.code_counts.clear();
                     self.expanded_folds.insert(path.clone());
                     self.status = None;
                     true
@@ -3152,6 +3203,13 @@ impl App {
     /// Move state that belongs to the session, rather than to a view, into the
     /// view replacing this one. Only the active view is drawn and polled.
     fn hand_over(&mut self, view: &mut App) {
+        if view.code_stats != self.code_stats {
+            view.code_stats = self.code_stats;
+            if let Some(status) = &mut view.status_view {
+                status.set_code_stats(self.code_stats);
+            }
+            view.rebuild_show_rows();
+        }
         view.views = std::mem::take(&mut self.views);
         view.images = std::mem::take(&mut self.images);
         view.browser_results = std::mem::take(&mut self.browser_results);

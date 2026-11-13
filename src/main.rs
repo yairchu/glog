@@ -3,6 +3,7 @@ mod app;
 mod bisect;
 mod blame;
 mod branches;
+mod code_stats;
 mod commit_links;
 mod compact_graph;
 mod diff;
@@ -423,6 +424,12 @@ against the working tree (A); omitted range endpoints default to HEAD.
 Diffs open standalone, without a Log tab or adjacent-commit navigation.
 Diff exits if empty. Add --stat to Show or Diff to start with
 expandable file summaries; press s in Show to toggle summary / patch.
+C toggles code statistics in Show, Diff, and Status summaries. This excludes
+blank and comment-only lines in supported languages, and Python module, class,
+and function docstrings. Mixed code/comment lines and other strings still count.
+Unsupported languages, combined diffs, oversized files, and unavailable snapshots
+keep ordinary counts. Counts follow Git's changed lines,
+not just the difference in file size. Normal Git line counts remain the default.
 Use glog log show (or glog log diff) to browse a branch named after a command.
 Log arguments are passed through to git log. Inside the TUI, press h for
 key help, Tab to switch between Log and its detail view, Ctrl-L to redraw the screen, and q

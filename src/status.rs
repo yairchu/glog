@@ -420,6 +420,7 @@ pub struct StatusView {
     stat_reads: std::cell::Cell<usize>,
     rows: Vec<Row>,
     pub show_stat: bool,
+    code_stats: bool,
     stats: HashMap<Key, String>,
     expanded_folds: HashSet<Key>,
     collapsed_files: HashSet<Key>,
@@ -481,6 +482,7 @@ impl StatusView {
             root,
             // Like Show, nested views open as summaries; files expand individually.
             show_stat: true,
+            code_stats: self.code_stats,
             images_enabled: self.images_enabled,
             nested: true,
             ..Self::default()
@@ -615,7 +617,36 @@ impl StatusView {
                 );
             }
         }
+        if self.code_stats {
+            let repository = crate::git::Repository::checked_out(self.root.clone());
+            for entry in &snapshot.entries {
+                let Some(raw) = stats.get_mut(&entry.key) else {
+                    continue;
+                };
+                if let Some(counts) = self.patch(entry).ok().and_then(|patch| {
+                    let files = crate::diff::file_sections(&patch);
+                    (files.len() == 1)
+                        .then(|| crate::code_stats::count(&patch, &files[0], &repository))
+                        .flatten()
+                }) {
+                    *raw = format!("+{} −{}", counts.additions, counts.deletions);
+                }
+            }
+        }
         Ok(stats)
+    }
+    pub fn set_code_stats(&mut self, enabled: bool) {
+        if self.code_stats == enabled {
+            return;
+        }
+        self.code_stats = enabled;
+        self.stats.clear();
+        for child in self.submodules.values_mut() {
+            child.set_code_stats(enabled);
+        }
+        if let Err(error) = self.refresh() {
+            self.error = Some(error);
+        }
     }
     pub fn toggle_stat(&mut self) {
         if self.unloaded {
@@ -1263,6 +1294,9 @@ impl StatusView {
             )));
         }
         let mut bisect = None;
+        if self.code_stats {
+            heading.push(Span::raw(" · Code stats [C]"));
+        }
         for operation in &snapshot.state.operations {
             heading.push(Span::raw(" · "));
             let start = heading.len();
@@ -1362,6 +1396,49 @@ mod tests {
     use super::*;
     use crate::git::tests::{fail, git, git_command, succeed, CurrentDirGuard, TestDirectory};
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn code_stats_cover_staged_unstaged_untracked_and_refresh() {
+        use std::fs;
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file.py", "# old docs\nvalue = 1\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        fs::write("file.py", "# new docs\nvalue = 2\n").unwrap();
+        fs::write("new.sh", "# docs\necho hi\n").unwrap();
+        fs::write("other.unknown-glog", "one\ntwo\n").unwrap();
+        let mut view = StatusView::load().unwrap();
+        view.set_code_stats(true);
+        let file = |group| Key {
+            group,
+            path: PathBuf::from("file.py"),
+        };
+        assert_eq!(view.stats[&file(Group::Unstaged)], "+1 −1");
+        let new = Key {
+            group: Group::Untracked,
+            path: PathBuf::from("new.sh"),
+        };
+        assert_eq!(view.stats[&new], "+1 −0");
+        assert_eq!(
+            view.stats[&Key {
+                group: Group::Untracked,
+                path: PathBuf::from("other.unknown-glog")
+            }],
+            "+2 −0"
+        );
+        git(&["add", "file.py"]);
+        view.refresh().unwrap();
+        assert_eq!(view.stats[&file(Group::Staged)], "+1 −1");
+        fs::write("file.py", "# more docs\nvalue = 2\n").unwrap();
+        view.refresh().unwrap();
+        assert_eq!(view.stats[&file(Group::Unstaged)], "+0 −0");
+        assert_eq!(view.stats[&file(Group::Staged)], "+1 −1");
+        view.set_code_stats(false);
+        assert_eq!(view.stats[&file(Group::Staged)], "+2 −2");
+        assert_eq!(view.stats[&new], "+2 −0");
+    }
 
     #[test]
     fn status_starts_in_log_when_clean_and_keeps_details_when_cleaned() {

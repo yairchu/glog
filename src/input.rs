@@ -114,6 +114,10 @@ fn apply(event: Event, app: &mut App) {
             return;
         }
         if app.mode == Mode::Status {
+            if key.code == KeyCode::Char('C') {
+                app.toggle_code_stats();
+                return;
+            }
             if key.code == KeyCode::Char('B') {
                 app.open_bisect();
                 return;
@@ -235,6 +239,7 @@ fn apply(event: Event, app: &mut App) {
                 }),
             KeyCode::Enter | KeyCode::Char('z') if app.mode == Mode::Show => app.toggle_show_file(),
             KeyCode::Char('s') if app.mode == Mode::Show => app.toggle_show_stat(),
+            KeyCode::Char('C') if app.mode == Mode::Show => app.toggle_code_stats(),
             KeyCode::Char('t') if app.mode == Mode::Show => app.hide_selected_file_category(),
             KeyCode::Char('T') if app.mode == Mode::Show => app.toggle_file_filter(None),
             KeyCode::Char('B') if app.mode == Mode::Show => app.blame_show_line(),
@@ -300,6 +305,13 @@ fn apply(event: Event, app: &mut App) {
             return;
         }
         if app.mode == Mode::Show && mouse.kind == MouseEventKind::Down(MouseButton::Left) {
+            if app
+                .code_stats_button
+                .is_some_and(|rect| rect.contains((mouse.column, mouse.row).into()))
+            {
+                app.toggle_code_stats();
+                return;
+            }
             let filter = app
                 .file_filter_buttons
                 .iter()

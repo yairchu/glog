@@ -5,6 +5,13 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Toggle code statistics with `C` in Show, Diff, and Status. Summaries exclude
+  blank and comment-only lines across supported languages, including Python
+  docstrings. Lines mixing code and comments still count. Unsupported or
+  unavailable source snapshots retain ordinary counts.
+
 ### Fixed
 
 - Keep every folder selectable in Show and Diff summaries so folders containing

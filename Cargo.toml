@@ -22,3 +22,7 @@ base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "ico", "webp"] }
 editor-command = "2"
 sha2 = "0.10"
+mezura-core = "3"
+tempfile = "3"
+tree-sitter = "0.25"
+tree-sitter-python = "0.25"
