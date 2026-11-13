@@ -329,6 +329,7 @@ pub struct App {
     // Several hidden gitlink lines share one visible summary row.
     show_search_location: Option<(Vec<Vec<u8>>, usize)>,
     pub show_help: bool,
+    pub help_scroll: crate::ui::HelpScroll,
     pub log_row_origin: u16,
     pub type_buttons: Vec<(ratatui::layout::Rect, LogAction)>,
     pub visible_log_rows: Vec<Option<usize>>,
@@ -436,6 +437,7 @@ impl App {
             search_match: None,
             show_search_location: None,
             show_help: false,
+            help_scroll: crate::ui::HelpScroll::default(),
             log_row_origin: 0,
             type_buttons: Vec::new(),
             visible_log_rows: Vec::new(),
@@ -3227,6 +3229,11 @@ impl App {
             .options()
             .iter()
             .position(|view| *view == self.views.active);
+    }
+
+    pub fn open_help(&mut self) {
+        self.help_scroll = crate::ui::HelpScroll::default();
+        self.show_help = true;
     }
 
     pub fn select_view(&mut self) {

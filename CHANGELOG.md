@@ -14,6 +14,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Fixed
 
+- Wrap long help descriptions and allow scrolling through every shortcut on
+  smaller terminals with pager keys and the mouse wheel.
+
 - Keep every folder selectable in Show and Diff summaries so folders containing
   a single changed file can be hidden with `t`.
 

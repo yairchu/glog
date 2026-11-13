@@ -61,6 +61,12 @@ fn apply(event: Event, app: &mut App) {
         if app.show_help {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('h') | KeyCode::Char('q') => app.show_help = false,
+                KeyCode::Up | KeyCode::Char('k') => app.help_scroll.move_by(-1),
+                KeyCode::Down | KeyCode::Char('j') => app.help_scroll.move_by(1),
+                KeyCode::PageUp | KeyCode::Char('b') => app.help_scroll.page(-1),
+                KeyCode::PageDown | KeyCode::Char(' ' | 'f') => app.help_scroll.page(1),
+                KeyCode::Home | KeyCode::Char('g' | '<') => app.help_scroll.top(),
+                KeyCode::End | KeyCode::Char('G' | '>') => app.help_scroll.bottom(),
                 _ => {}
             }
             return;
@@ -138,7 +144,7 @@ fn apply(event: Event, app: &mut App) {
             match key.code {
                 KeyCode::Tab | KeyCode::Esc => app.switch_mode(),
                 KeyCode::Char('q') => app.quit = true,
-                KeyCode::Char('h') => app.show_help = true,
+                KeyCode::Char('h') => app.open_help(),
                 KeyCode::Left if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     show_adjacent(app, -1)
                 }
@@ -278,7 +284,15 @@ fn apply(event: Event, app: &mut App) {
             && mouse.row == 0
             && ((app.log_tab_start..app.log_tab_end).contains(&mouse.column)
                 || (app.show_tab_start..app.show_tab_end).contains(&mouse.column));
-        if app.search_input.is_some() || (app.show_help && !tab_click) {
+        if app.show_help && !tab_click && app.search_input.is_none() {
+            match mouse.kind {
+                MouseEventKind::ScrollUp => app.help_scroll.move_by(-3),
+                MouseEventKind::ScrollDown => app.help_scroll.move_by(3),
+                _ => {}
+            }
+            return;
+        }
+        if app.search_input.is_some() {
             return;
         }
         if let Some(view) = app.pager_view() {
@@ -463,7 +477,7 @@ fn pager_key(code: KeyCode, app: &mut App) {
         KeyCode::Char('?') => app.begin_search(true),
         KeyCode::Char('n') => app.repeat_search(false),
         KeyCode::Char('N') => app.repeat_search(true),
-        KeyCode::Char('h') => app.show_help = true,
+        KeyCode::Char('h') => app.open_help(),
         _ => {}
     }
 }

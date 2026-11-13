@@ -210,6 +210,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if app.view_menu.is_some() {
         help = "↑/k ↓/j choose  Enter switch  Esc cancel".into();
+    } else if app.show_help {
+        help = "Help: ↑/k ↓/j scroll  Space/b page  Home/End  wheel scroll  Esc/h/q close".into();
     } else if app.search_input.is_none() && status_error.is_none() && app.message().is_none() {
         help = format!("V views  {help}");
     }
@@ -232,6 +234,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 History::Stash => HelpView::Stash,
                 History::Branches => HelpView::Branches,
             },
+            &mut app.help_scroll,
         );
     }
     if let Some(selected) = app.view_menu {
@@ -701,19 +704,84 @@ fn help_text(view: HelpView) -> String {
         .join("\n")
 }
 
-fn draw_help(frame: &mut Frame, view: HelpView) {
+#[derive(Default)]
+pub struct HelpScroll {
+    offset: usize,
+    maximum: usize,
+    height: usize,
+}
+
+impl HelpScroll {
+    pub fn move_by(&mut self, delta: isize) {
+        self.offset = self.offset.saturating_add_signed(delta).min(self.maximum);
+    }
+
+    pub fn page(&mut self, delta: isize) {
+        self.move_by(delta * self.height.max(1) as isize);
+    }
+
+    pub fn top(&mut self) {
+        self.offset = 0;
+    }
+
+    pub fn bottom(&mut self) {
+        self.offset = self.maximum;
+    }
+
+    fn viewport(&mut self, lines: usize, height: usize) {
+        self.height = height;
+        self.maximum = lines.saturating_sub(height);
+        self.offset = self.offset.min(self.maximum);
+    }
+}
+
+fn draw_help(frame: &mut Frame, view: HelpView, scroll: &mut HelpScroll) {
     let screen = frame.area();
-    let width = screen.width.saturating_sub(4).min(68);
-    let height = screen.height.saturating_sub(2).min(28);
+    let text = help_text(view);
+    let desired_width = text
+        .lines()
+        .map(|line| Span::raw(line).width())
+        .max()
+        .unwrap_or(0)
+        + 2;
+    let width = desired_width.min(usize::from(
+        screen
+            .width
+            .saturating_sub(if screen.width >= 20 { 4 } else { 0 }),
+    )) as u16;
+    let paragraph = Paragraph::new(text).wrap(Wrap { trim: false });
+    let lines = if width > 2 {
+        paragraph.line_count(width - 2)
+    } else {
+        0
+    };
+    let height = (lines.saturating_add(2)).min(usize::from(
+        screen
+            .height
+            .saturating_sub(if screen.height >= 6 { 2 } else { 0 }),
+    )) as u16;
     let area = Rect::new(
         screen.x + screen.width.saturating_sub(width) / 2,
         screen.y + screen.height.saturating_sub(height) / 2,
         width,
         height,
     );
+    scroll.viewport(lines, usize::from(height.saturating_sub(2)));
+    let title = if scroll.maximum > 0 {
+        format!(
+            " Help {}–{}/{} ",
+            scroll.offset + 1,
+            (scroll.offset + scroll.height).min(lines),
+            lines
+        )
+    } else {
+        " Help ".to_owned()
+    };
     frame.render_widget(Clear, area);
     frame.render_widget(
-        Paragraph::new(help_text(view)).block(Block::bordered().title(" Help ")),
+        paragraph
+            .scroll((scroll.offset.min(u16::MAX as usize) as u16, 0))
+            .block(Block::bordered().title(title)),
         area,
     );
 }
@@ -1824,6 +1892,80 @@ mod tests {
     use crate::input::handle;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn help_wraps_and_scrolls_every_description_without_moving_the_underlying_view() {
+        use crossterm::event::{MouseEvent, MouseEventKind};
+        let mut app = App::new(vec![commit("underlying commit", 1)]);
+        let press =
+            |code, app: &mut App| handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), app);
+        press(KeyCode::Char('h'), &mut app);
+        let mut terminal = Terminal::new(TestBackend::new(74, 18)).unwrap();
+        let mut contents = Vec::new();
+        loop {
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            assert!(app.help_scroll.maximum > 0);
+            let at_end = app.help_scroll.offset == app.help_scroll.maximum;
+            // The popup fills 70x16, centered within this 74x18 terminal.
+            // Take the first interior row at each offset, and the remaining
+            // viewport on the last page, so every wrapped line is read once.
+            for y in if at_end { 2..16 } else { 2..3 } {
+                contents.push(
+                    (3..71)
+                        .map(|x| terminal.backend().buffer()[(x, y)].symbol())
+                        .collect::<String>(),
+                );
+            }
+            if at_end {
+                break;
+            }
+            press(KeyCode::Down, &mut app);
+        }
+        let normalize = |text: &str| text.split_whitespace().collect::<Vec<_>>().join(" ");
+        assert_eq!(
+            normalize(&contents.join("\n")),
+            normalize(&help_text(HelpView::Log))
+        );
+        assert_eq!(app.selected, 0);
+        assert_eq!(app.mode, Mode::Log);
+        let bottom = app.help_scroll.offset;
+        handle(
+            Event::Mouse(MouseEvent {
+                kind: MouseEventKind::ScrollUp,
+                column: 10,
+                row: 5,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut app,
+        );
+        assert_eq!(app.help_scroll.offset, bottom.saturating_sub(3));
+        press(KeyCode::Home, &mut app);
+        assert_eq!(app.help_scroll.offset, 0);
+        press(KeyCode::PageDown, &mut app);
+        assert_eq!(app.help_scroll.offset, app.help_scroll.height);
+        press(KeyCode::PageUp, &mut app);
+        assert_eq!(app.help_scroll.offset, 0);
+        press(KeyCode::End, &mut app);
+        assert_eq!(app.help_scroll.offset, bottom);
+        press(KeyCode::Esc, &mut app);
+        assert!(!app.show_help);
+        press(KeyCode::Char('h'), &mut app);
+        assert_eq!(app.help_scroll.offset, 0);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        press(KeyCode::End, &mut app);
+        terminal = Terminal::new(TestBackend::new(200, 80)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(
+            app.help_scroll.maximum, 0,
+            "use available space when everything fits"
+        );
+        assert_eq!(app.help_scroll.offset, 0);
+        for (width, height) in [(12, 4), (1, 2), (0, 0)] {
+            terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        }
+        assert_eq!(app.selected, 0);
+    }
 
     #[test]
     fn file_help_explains_how_to_enable_line_history() {
