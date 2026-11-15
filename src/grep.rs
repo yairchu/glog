@@ -1167,18 +1167,12 @@ mod tests {
             });
             key(&mut app, KeyCode::Char('e'));
             let command = app.pending_editor.take().expect("editor command");
+            // Git's root spelling differs from canonicalize() on Windows:
+            // C:/... versus \\?\C:\.... Use the same root as the editor target.
+            let mut positioned = git::repository_root().unwrap().join(file).into_os_string();
+            positioned.push(format!(":{line}:1"));
             assert!(
-                command.get_args().any(|arg| arg
-                    == format!(
-                        "{}:{line}:1",
-                        directory
-                            .path()
-                            .canonicalize()
-                            .unwrap()
-                            .join(file)
-                            .display()
-                    )
-                    .as_str()),
+                command.get_args().any(|arg| arg == positioned),
                 "{command:?}"
             );
             assert_eq!(app.mode, Mode::Grep);
