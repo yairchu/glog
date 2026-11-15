@@ -622,7 +622,13 @@ const HELP_ROWS: &[HelpRow] = &[
             ..NO_HELP
         },
     ),
-    detail("e", "open working file in editor (Show/Status)"),
+    (
+        "e",
+        HelpTexts {
+            grep: Some("open working file at matching line in editor"),
+            ..detail("e", "open working file in editor (Show/Status)").1
+        },
+    ),
     detail(
         "C",
         "toggle code / all-line statistics (Show/Status summaries)",

@@ -765,6 +765,28 @@ impl View {
         }
         (Line::from(spans), layout, stand_ins)
     }
+    pub fn editor_target(&self) -> Result<crate::editor::Target, String> {
+        let row = self.rows.get(self.cursor).ok_or("No file selected")?;
+        let (file, line) = match self.nodes[row.node].kind {
+            Kind::Match { file, hit } => (file, Some(self.files[file].hits[hit].line)),
+            Kind::File(file) => (file, None),
+            _ => return Err("No file selected".into()),
+        };
+        let file = &self.files[file];
+        let revision = match &self.sources[file.source] {
+            Source::Worktree => None,
+            Source::Index => Some(""),
+            Source::Revision { hash, .. } => Some(hash.as_str()),
+        };
+        crate::editor::Target::from_file(
+            &self.repository,
+            &file.path,
+            line.map(u32::try_from)
+                .transpose()
+                .map_err(|_| "Line number is too large")?,
+            revision,
+        )
+    }
     pub fn open(&self) -> Option<Result<App, String>> {
         let node = self.rows.get(self.cursor)?.node;
         let Kind::Match { file, hit } = self.nodes[node].kind else {
@@ -1108,6 +1130,79 @@ mod tests {
     }
     fn has_hit(view: &View, file: usize) -> bool {
         view.rows.iter().any(|row| matches!(view.nodes[row.node].kind, Kind::Match { file: found, .. } if found == file))
+    }
+
+    #[test]
+    fn editor_key_maps_source_lines_to_working_files() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        std::fs::create_dir("nested").unwrap();
+        let path = "nested/file space.rs";
+        std::fs::write(path, "before\nneedle\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        std::fs::write(path, "staged\nbefore\nneedle\n").unwrap();
+        git(&["add", "."]);
+        std::fs::write(path, "working\nstaged\nbefore\nneedle\n").unwrap();
+        std::fs::write("nested/loose file.rs", "untracked\nneedle\n").unwrap();
+        // Attributes must not suppress positions: grep searches raw text.
+        std::fs::write(".gitattributes", "*.rs diff=readable\n").unwrap();
+        git(&["config", "diff.readable.textconv", "sed '1d'"]);
+        let previous_visual = std::env::var_os("VISUAL");
+        std::env::set_var("VISUAL", "code");
+        for (options, file, line) in [
+            (vec!["needle"], path, 4),
+            (vec!["--cached", "needle"], path, 4),
+            (vec!["needle", "HEAD"], path, 4),
+            (
+                vec!["--untracked", "needle", "--", "nested/loose file.rs"],
+                "nested/loose file.rs",
+                2,
+            ),
+        ] {
+            let mut app = load_app(&args(&options)).unwrap();
+            select(app.grep_view.as_mut().unwrap(), |kind| {
+                matches!(kind, Kind::Match { .. })
+            });
+            key(&mut app, KeyCode::Char('e'));
+            let command = app.pending_editor.take().expect("editor command");
+            assert!(
+                command.get_args().any(|arg| arg
+                    == format!(
+                        "{}:{line}:1",
+                        directory
+                            .path()
+                            .canonicalize()
+                            .unwrap()
+                            .join(file)
+                            .display()
+                    )
+                    .as_str()),
+                "{command:?}"
+            );
+            assert_eq!(app.mode, Mode::Grep);
+            assert!(app.status.is_none(), "{:?}", app.status);
+        }
+        match previous_visual {
+            Some(value) => std::env::set_var("VISUAL", value),
+            None => std::env::remove_var("VISUAL"),
+        }
+        let mut app = load_app(&args(&["needle"])).unwrap();
+        std::fs::remove_file(path).unwrap();
+        key(&mut app, KeyCode::Char('e'));
+        assert!(app.pending_editor.is_none());
+        assert!(app.status.is_some());
+        // A bare repository must never treat its own files as working files.
+        git(&["clone", "--bare", "-q", ".", "bare.git"]);
+        std::env::set_current_dir("bare.git").unwrap();
+        let mut bare = load_app(&args(&["needle", "HEAD"])).unwrap();
+        select(bare.grep_view.as_mut().unwrap(), |kind| {
+            matches!(kind, Kind::Match { .. })
+        });
+        key(&mut bare, KeyCode::Char('e'));
+        assert!(bare.pending_editor.is_none());
+        assert!(bare.status.is_some());
     }
 
     #[test]

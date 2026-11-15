@@ -1742,6 +1742,11 @@ impl App {
                 .as_ref()
                 .ok_or_else(|| "No file selected".to_owned())
                 .and_then(|view| view.editor_target())
+        } else if self.mode == Mode::Grep {
+            self.grep_view
+                .as_ref()
+                .ok_or_else(|| "No file selected".to_owned())
+                .and_then(|view| view.editor_target())
         } else {
             self.show_editor_target(self.show_cursor)
         };

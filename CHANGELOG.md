@@ -7,6 +7,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Press `e` in Grep to open the selected match in your editor. Matches from
+  the index or a revision map to the corresponding working-tree line.
+
 - Toggle code statistics with `C` in Show, Diff, and Status. Summaries exclude
   blank and comment-only lines across supported languages, including Python
   docstrings. Lines mixing code and comments still count. Unsupported or

@@ -18,6 +18,43 @@ pub struct Target {
 }
 
 impl Target {
+    /// Raw source-file positions, as displayed by grep. An empty revision
+    /// names the index; no revision means the working tree.
+    pub fn from_file(
+        repository: &git::Repository,
+        path: &[u8],
+        line: Option<u32>,
+        revision: Option<&str>,
+    ) -> Result<Self, String> {
+        let root = repository.work_tree()?.to_owned();
+        let blob = revision
+            .map(|revision| {
+                let mut spec = revision.as_bytes().to_vec();
+                spec.push(b':');
+                spec.extend_from_slice(path);
+                let output = git::read_command_at(Some(repository))
+                    .args(["rev-parse", "--verify"])
+                    .arg(git::raw_path(&spec))
+                    .output()
+                    .map_err(|error| error.to_string())?;
+                if !output.status.success() {
+                    return Err(git::stderr_message(
+                        "Could not resolve the matched file",
+                        &output.stderr,
+                    ));
+                }
+                Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+            })
+            .transpose()?;
+        Ok(Self {
+            root,
+            path: git::raw_path(path),
+            line,
+            blob,
+            textconv: Textconv::Disabled,
+        })
+    }
+
     pub fn from_patch(
         root: PathBuf,
         path: PathBuf,

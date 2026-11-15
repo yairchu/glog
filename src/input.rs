@@ -75,6 +75,7 @@ fn apply(event: Event, app: &mut App) {
             match key.code {
                 // Rows other than matches fold instead.
                 KeyCode::Enter | KeyCode::Tab => app.open_grep_match(),
+                KeyCode::Char('e') => app.request_editor(),
                 KeyCode::Char('z') => app.grep_action(crate::grep::Action::Fold),
                 KeyCode::Char('m') => app.grep_action(crate::grep::Action::FoldAll),
                 KeyCode::Char('t') => app.grep_action(crate::grep::Action::HideExtension),
