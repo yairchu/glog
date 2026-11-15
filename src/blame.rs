@@ -215,6 +215,7 @@ fn blame_version(
             date,
             path,
             textconv,
+            version.clone(),
         )
     };
     match version {
@@ -380,6 +381,37 @@ fn parent_path(
     Ok(path.to_vec())
 }
 
+/// Resolve a caller-relative path before running commands at the root.
+fn prefixed_path(path: &[u8]) -> Result<Vec<u8>, String> {
+    let prefix = crate::git::read_command()
+        .args(["rev-parse", "--show-prefix"])
+        .output()
+        .map_err(|error| format!("could not resolve file path: {error}"))?;
+    if !prefix.status.success() {
+        return Err(git::stderr_message(
+            "could not resolve file path",
+            &prefix.stderr,
+        ));
+    }
+    let mut full = prefix
+        .stdout
+        .strip_suffix(b"\n")
+        .unwrap_or(&prefix.stdout)
+        .to_vec();
+    full.extend_from_slice(path);
+    let mut parts = Vec::new();
+    for part in full.split(|&byte| byte == b'/') {
+        match part {
+            b"" | b"." => {}
+            b".." => {
+                parts.pop().ok_or("file path is outside the repository")?;
+            }
+            _ => parts.push(part),
+        }
+    }
+    Ok(parts.join(&b'/'))
+}
+
 /// Open `path` as it is in `revision`, a resolved commit hash.
 pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String> {
     if path.is_empty() {
@@ -389,33 +421,7 @@ pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String
     // REV:path is rooted at the repository, except for Git's explicit ./ and
     // ../ forms. Resolve those before moving commands to the repository root.
     if path.starts_with(b"./") || path.starts_with(b"../") {
-        let prefix = crate::git::read_command()
-            .args(["rev-parse", "--show-prefix"])
-            .output()
-            .map_err(|error| format!("could not resolve file path: {error}"))?;
-        if !prefix.status.success() {
-            return Err(git::stderr_message(
-                "could not resolve file path",
-                &prefix.stderr,
-            ));
-        }
-        let mut full = prefix
-            .stdout
-            .strip_suffix(b"\n")
-            .unwrap_or(&prefix.stdout)
-            .to_vec();
-        full.extend(path);
-        let mut parts = Vec::new();
-        for part in full.split(|&byte| byte == b'/') {
-            match part {
-                b"" | b"." => {}
-                b".." => {
-                    parts.pop().ok_or("file path is outside the repository")?;
-                }
-                _ => parts.push(part),
-            }
-        }
-        path = parts.join(&b'/');
+        path = prefixed_path(&path)?;
     }
     let repository = git::Repository::main()?;
     // Unlike `cat-file blob`, --textconv also accepts trees. Keep this view
@@ -448,7 +454,15 @@ pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String
         return Err("the file is binary; this view supports text files".into());
     }
     let lines = unattributed_lines(&output.stdout, &revision, &path);
-    let rows = render_lines(lines, HashMap::new(), repository.clone(), "", &path, true);
+    let rows = render_lines(
+        lines,
+        HashMap::new(),
+        repository.clone(),
+        "",
+        &path,
+        true,
+        Version::Revision(revision.clone()),
+    );
     let mut app = crate::app::App::new(rows);
     app.set_repository(Some(repository.clone()));
     app.history = crate::app::History::Blame;
@@ -487,6 +501,8 @@ pub struct BlameFile {
     pub repository: git::Repository,
     date: String,
     pub textconv: bool,
+    path: Vec<u8>,
+    version: Version,
     hash_width: usize,
     date_width: usize,
     author_width: usize,
@@ -507,6 +523,22 @@ pub struct BlameLine {
     /// That commit's parent and the file's path there, unless the commit
     /// added the file without history to follow.
     pub previous: Option<(String, Vec<u8>)>,
+}
+
+impl BlameLine {
+    pub fn editor_target(&self) -> Result<crate::editor::Target, String> {
+        crate::editor::Target::from_file(
+            &self.file.repository,
+            &self.file.path,
+            Some(u32::try_from(self.number).map_err(|_| "Line number is too large")?),
+            &self.file.version,
+            if self.file.textconv {
+                crate::editor::Textconv::Allowed
+            } else {
+                crate::editor::Textconv::Disabled
+            },
+        )
+    }
 }
 
 /// Open the exact source side of a grep match, retaining raw path bytes.
@@ -758,6 +790,22 @@ fn blame_with_textconv(
     // Blame these file contents in place of the working tree's.
     contents: Option<&[u8]>,
 ) -> Result<Vec<Commit>, String> {
+    let pinned = revision.map(|revision| {
+        git::resolve_names([revision], repository)
+            .remove(revision)
+            .unwrap_or_else(|| revision.to_owned())
+    });
+    let revision = pinned.as_deref();
+    let displayed_path = if repository.is_some() || git::raw_path(path).is_absolute() {
+        path.to_vec()
+    } else {
+        prefixed_path(path)?
+    };
+    let version = match revision {
+        Some(revision) => Version::Revision(revision.to_owned()),
+        None if contents.is_some() => Version::Index,
+        None => Version::Worktree,
+    };
     let mut command = git::read_command_at(repository);
     command.args(["-c", "core.quotepath=true", "blame", "--porcelain"]);
     if !textconv {
@@ -801,7 +849,13 @@ fn blame_with_textconv(
     };
     let details = commit_details(&lines, date, &repository)?;
     Ok(render_lines(
-        lines, details, repository, date, path, textconv,
+        lines,
+        details,
+        repository,
+        date,
+        &displayed_path,
+        textconv,
+        version,
     ))
 }
 
@@ -812,6 +866,7 @@ fn render_lines(
     date: &str,
     path: &[u8],
     textconv: bool,
+    version: Version,
 ) -> Vec<Commit> {
     let mut highlighted = highlight(&crate::diff::display_path(path), &lines).map(Vec::into_iter);
     let width = |text: &str| Span::raw(text).width();
@@ -819,6 +874,8 @@ fn render_lines(
         repository,
         date: date.to_owned(),
         textconv,
+        path: path.to_vec(),
+        version,
         hash_width: details
             .values()
             .map(|d| d.short_hash.len())
@@ -1483,6 +1540,130 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.mode, Mode::Show);
         check(app, "-staged", &format!("{stash}^2"), true);
+    }
+
+    fn edit(app: &mut App) -> std::process::Command {
+        let previous_visual = std::env::var_os("VISUAL");
+        std::env::set_var("VISUAL", "code");
+        press(app, KeyCode::Char('e'));
+        match previous_visual {
+            Some(value) => std::env::set_var("VISUAL", value),
+            None => std::env::remove_var("VISUAL"),
+        }
+        app.pending_editor
+            .take()
+            .unwrap_or_else(|| panic!("{:?}", app.status))
+    }
+
+    #[test]
+    fn blame_and_file_editor_keys_share_snapshot_line_mapping() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::create_dir("nested").unwrap();
+        fs::write("old name.txt", "before\nneedle\nafter\ntail\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        git(&["mv", "old name.txt", "nested/new name.txt"]);
+        git(&["commit", "-qm", "rename"]);
+        let head = trimmed(succeed(&mut git_command(&["rev-parse", "HEAD"])));
+        std::env::set_current_dir("nested").unwrap();
+        let mut blamed = load_app(&["HEAD".into(), "new name.txt".into()]).unwrap();
+        assert_eq!(
+            blamed.commits[1].blame().unwrap().source_path,
+            b"old name.txt"
+        );
+        let mut file = load_file(head, "./new name.txt").unwrap();
+        fs::write("new name.txt", "inserted\nbefore\nneedle\nafter\ntail\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "advance ref"]);
+        fs::write(
+            "new name.txt",
+            "local\ninserted\nbefore\nneedle\nafter\ntail\n",
+        )
+        .unwrap();
+        for app in [&mut blamed, &mut file] {
+            app.selected = 1;
+            let pending = app.pending_blame.is_some();
+            let command = edit(app);
+            let mut expected = git::repository_root()
+                .unwrap()
+                .join("nested/new name.txt")
+                .into_os_string();
+            expected.push(":4:1");
+            assert!(command.get_args().any(|arg| arg == expected), "{command:?}");
+            assert_eq!(app.mode, Mode::Log);
+            assert_eq!(app.pending_blame.is_some(), pending);
+        }
+        // The same line in working-tree blame needs no historical translation.
+        let mut working = load_app(&["new name.txt".into()]).unwrap();
+        working.selected = 3;
+        assert_eq!(
+            edit(&mut working).get_args().collect::<Vec<_>>(),
+            edit(&mut blamed).get_args().collect::<Vec<_>>()
+        );
+        let absolute = git::repository_root().unwrap().join("nested/new name.txt");
+        let mut absolute_view =
+            load_app(&["HEAD".into(), absolute.to_str().unwrap().into()]).unwrap();
+        absolute_view.selected = 2;
+        assert_eq!(
+            edit(&mut absolute_view).get_args().collect::<Vec<_>>(),
+            edit(&mut blamed).get_args().collect::<Vec<_>>()
+        );
+        // Index blame must map staged positions, including uncommitted lines.
+        fs::write(
+            "new name.txt",
+            "staged\ninserted\nbefore\nneedle\nafter\ntail\n",
+        )
+        .unwrap();
+        git(&["add", "."]);
+        fs::write(
+            "new name.txt",
+            "local\nstaged\ninserted\nbefore\nneedle\nafter\ntail\n",
+        )
+        .unwrap();
+        let repository = git::Repository::main().unwrap();
+        let mut staged =
+            load_grep_file(Version::Index, b"nested/new name.txt", repository, 1).unwrap();
+        let mut expected = git::repository_root()
+            .unwrap()
+            .join("nested/new name.txt")
+            .into_os_string();
+        expected.push(":2:1");
+        assert!(edit(&mut staged).get_args().any(|arg| arg == expected));
+    }
+
+    #[test]
+    fn file_editor_skips_textconv_positions_and_refuses_bare_files() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("config", "header\nneedle\n").unwrap();
+        fs::write(".gitattributes", "config diff=readable\n").unwrap();
+        git(&["config", "diff.readable.textconv", "sed '1d'"]);
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        let head = trimmed(succeed(&mut git_command(&["rev-parse", "HEAD"])));
+        for mut app in [
+            load_app(&["config".into()]).unwrap(),
+            load_file(head.clone(), "config").unwrap(),
+        ] {
+            let command = edit(&mut app);
+            assert_eq!(
+                command.get_args().collect::<Vec<_>>(),
+                [git::repository_root().unwrap().join("config").as_os_str()]
+            );
+        }
+        git(&["clone", "--bare", "-q", ".", "bare.git"]);
+        std::env::set_current_dir("bare.git").unwrap();
+        for mut app in [
+            load_app(&["HEAD".into(), "config".into()]).unwrap(),
+            load_file(head, "config").unwrap(),
+        ] {
+            press(&mut app, KeyCode::Char('e'));
+            assert!(app.pending_editor.is_none());
+            assert!(app.status.is_some());
+        }
     }
 
     #[test]

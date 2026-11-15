@@ -18,20 +18,43 @@ pub struct Target {
 }
 
 impl Target {
-    /// Raw source-file positions, as displayed by grep. An empty revision
-    /// names the index; no revision means the working tree.
+    /// A selected line in a file snapshot. All views share the same mapping
+    /// from this snapshot to the working file.
     pub fn from_file(
         repository: &git::Repository,
         path: &[u8],
         line: Option<u32>,
-        revision: Option<&str>,
+        version: &git::Version,
+        textconv: Textconv,
     ) -> Result<Self, String> {
+        let revision = match version {
+            git::Version::Revision(revision) => Some(revision.as_str()),
+            git::Version::Index => Some(""),
+            git::Version::Worktree | git::Version::Untracked => None,
+        };
         let root = repository.work_tree()?.to_owned();
         let blob = revision
             .map(|revision| {
+                let path = git::raw_path(path);
+                let relative = if path.is_absolute() {
+                    path.canonicalize()
+                        .map_err(|error| error.to_string())?
+                        .strip_prefix(root.canonicalize().map_err(|error| error.to_string())?)
+                        .map_err(|_| "file path is outside the repository")?
+                        .to_owned()
+                } else {
+                    path
+                };
                 let mut spec = revision.as_bytes().to_vec();
                 spec.push(b':');
-                spec.extend_from_slice(path);
+                let source_path = git::path_bytes(&relative);
+                // Git tree paths always use forward slashes.
+                #[cfg(windows)]
+                let source_path = source_path
+                    .iter()
+                    .map(|&byte| if byte == b'\\' { b'/' } else { byte })
+                    .collect::<Vec<_>>();
+                spec.extend_from_slice(&source_path);
                 let output = git::read_command_at(Some(repository))
                     .args(["rev-parse", "--verify"])
                     .arg(git::raw_path(&spec))
@@ -51,7 +74,7 @@ impl Target {
             path: git::raw_path(path),
             line,
             blob,
-            textconv: Textconv::Disabled,
+            textconv,
         })
     }
 

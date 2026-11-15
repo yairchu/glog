@@ -626,6 +626,8 @@ const HELP_ROWS: &[HelpRow] = &[
         "e",
         HelpTexts {
             grep: Some("open working file at matching line in editor"),
+            blame: Some("open working file at selected line in editor"),
+            file: Some("open working file at selected line in editor"),
             ..detail("e", "open working file in editor (Show/Status)").1
         },
     ),

@@ -116,7 +116,10 @@ fn apply(event: Event, app: &mut App) {
             app.reference_back();
             return;
         }
-        if key.code == KeyCode::Char('e') && matches!(app.mode, Mode::Show | Mode::Status) {
+        if key.code == KeyCode::Char('e')
+            && (matches!(app.mode, Mode::Show | Mode::Status)
+                || app.mode == Mode::Log && app.history == History::Blame)
+        {
             app.request_editor();
             return;
         }

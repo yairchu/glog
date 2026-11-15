@@ -1747,6 +1747,12 @@ impl App {
                 .as_ref()
                 .ok_or_else(|| "No file selected".to_owned())
                 .and_then(|view| view.editor_target())
+        } else if self.mode == Mode::Log && self.history == History::Blame {
+            self.commits
+                .get(self.selected)
+                .and_then(Commit::blame)
+                .ok_or_else(|| "No file selected".to_owned())
+                .and_then(|line| line.editor_target())
         } else {
             self.show_editor_target(self.show_cursor)
         };
