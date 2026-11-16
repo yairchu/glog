@@ -5097,6 +5097,57 @@ mod tests {
     }
 
     #[test]
+    fn code_stats_toggle_preserves_wrapped_cursor() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_stat = true;
+        app.show_text = "diff --git a/file.rs b/file.rs\n--- /dev/null\n+++ b/file.rs\n@@ -0,0 +1 @@\n+fn long_function_name_for_wrapping() {}\n".into();
+        app.ensure_show_rows();
+        app.toggle_show_file();
+        app.code_stats = true;
+        let key = app.show_files[0].key.clone();
+        // A count wider than the diff's own, so toggling rewraps the summary.
+        app.code_counts.spawn(vec![key], |_| {
+            vec![Some(crate::code_stats::Counts {
+                additions: 10,
+                deletions: 0,
+            })]
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.counting_code() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "code counts did not complete"
+            );
+            app.poll_code_counts();
+            std::thread::yield_now();
+        }
+        let mut terminal = Terminal::new(TestBackend::new(12, 8)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let row = app
+            .show_rows
+            .iter()
+            .position(|row| row.text.contains("+fn long"))
+            .unwrap();
+        app.set_show_cursor_screen(app.show_row_starts[row] + 1);
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let position = app.show_cursor_screen() - app.show_offset;
+        assert_eq!(app.show_cursor_continuation(), 1);
+        app.toggle_code_stats();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        assert_eq!(app.show_cursor, row);
+        assert_eq!(app.show_cursor_continuation(), 1);
+        assert_eq!(app.show_cursor_screen() - app.show_offset, position);
+    }
+
+    #[test]
     fn stat_hotkey_preserves_nested_submodule_reading_lines() {
         fn wrap(child: App) -> App {
             let mut app = App::new(Vec::new());
