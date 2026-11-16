@@ -288,6 +288,28 @@ mod tests {
     use crate::git::tests::{git, CurrentDirGuard, TestDirectory};
 
     #[test]
+    fn code_stats_handle_suppressed_blank_context_lines() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        std::fs::write("file.py", "value = 1\n\n# old\nother = 2\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        git(&["config", "diff.suppressBlankEmpty", "true"]);
+        std::fs::write("file.py", "value = 1\n\n# new\nother = 3\n").unwrap();
+
+        let app = git::load_diff_app(&[]).unwrap();
+        let file = crate::diff::file_sections(&app.show_text).remove(0);
+        assert_eq!(
+            count(&app.show_text, &file, &git::Repository::main().unwrap()),
+            Some(Counts {
+                additions: 1,
+                deletions: 1
+            })
+        );
+    }
+
+    #[test]
     fn committed_stats_use_full_snapshots_and_keep_filters_and_folder_totals() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
