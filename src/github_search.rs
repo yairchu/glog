@@ -512,6 +512,40 @@ mod tests {
     }
 
     #[test]
+    fn invalid_results_do_not_hide_valid_ones() {
+        let result = |name: &str, host: &str| {
+            json!({
+                "path": "file.rs", "sha": BLOB,
+                "url": format!("https://{host}/{name}/blob/{COMMIT}/file.rs"),
+                "repository": {"nameWithOwner": name, "url": format!("https://{host}/{name}")},
+                "textMatches": []
+            })
+        };
+        let output = serde_json::to_vec(&json!([
+            result("owner/../escape", "github.com"),
+            result("owner/valid", "github.com"),
+            result("owner/enterprise", "ghe.example.com:8443"),
+        ]))
+        .unwrap();
+        let mut app = app_from_json(&output).unwrap();
+        let view = app.grep_view.as_mut().unwrap();
+        assert_eq!(view.match_count(), 2);
+        assert!(view.find("(file match)", false));
+        let names: Vec<_> = std::iter::from_fn(|| {
+            let name = view.github_target()?.file.repository.name.clone();
+            view.find("(file match)", false);
+            Some(name)
+        })
+        .take(2)
+        .collect();
+        assert!(names.contains(&"owner/valid".to_string()));
+        assert!(names.contains(&"owner/enterprise".to_string()));
+        let invalid =
+            serde_json::to_vec(&json!([result("owner/../escape", "github.com")])).unwrap();
+        assert!(app_from_json(&invalid).is_err());
+    }
+
+    #[test]
     fn query_arguments_cannot_replace_the_structured_output() {
         for flag in [
             "--json=path",
