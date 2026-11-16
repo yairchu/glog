@@ -454,7 +454,7 @@ mod tests {
     }
 
     #[test]
-    fn counted_branch_logs_keep_the_explicit_interchange_anchor() {
+    fn filtered_branch_logs_keep_the_explicit_interchange_anchor() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         git(&["init", "-q"]);
@@ -480,6 +480,12 @@ mod tests {
             vec!["-n10", "side"],
             vec!["--max-count", "10", "side"],
             vec!["--max-count=10", "side"],
+            vec!["--since", "2000-01-01", "side"],
+            vec!["--after", "2000-01-01", "side"],
+            vec!["--since-as-filter", "2000-01-01", "side"],
+            vec!["--until", "2099-01-01", "side"],
+            vec!["--before", "2099-01-01", "side"],
+            vec!["--skip", "1", "side"],
         ] {
             let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
             let commits = load_log(&args).unwrap();
