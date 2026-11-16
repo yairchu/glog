@@ -308,7 +308,7 @@ pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
                 "--no-notes",
             ])
             .arg("-z")
-            .arg("--format=%H%x00%h%x00%gD%x00%gs%x00%s%x00%gn%x00%P")
+            .arg("--format=%H%x00%h%x00%gD%x00%gs%x00%s%x00%gn%x00%P%x00%ae%x00%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)")
             .args(&reference);
         command
     };
@@ -394,7 +394,7 @@ fn parse_reflog(output: &str, rebasing: bool) -> Result<Vec<Commit>, String> {
         .unwrap_or(output)
         .split('\0')
         .collect();
-    let (records, remainder) = fields.as_chunks::<7>();
+    let (records, remainder) = fields.as_chunks::<9>();
     if !remainder.is_empty() {
         return Err("invalid Git reflog output".into());
     }
@@ -417,6 +417,8 @@ fn parse_reflog(output: &str, rebasing: bool) -> Result<Vec<Commit>, String> {
             let mut commit = pseudo_commit(CommitKind::Revision, fields[1], fields[4]);
             commit.hash = fields[0].into();
             commit.parents = fields[6].split_whitespace().map(str::to_owned).collect();
+            // Deduplicate credits against the commit author, not the ref-update actor.
+            commit.collaborators = Collaborators::parse(fields[8], fields[7]);
             commit.graph = vec![String::new()];
             commit.annotation = Some(Annotation::Reflog(ReflogEntry {
                 reference: reference.into(),
@@ -3026,7 +3028,7 @@ pub(crate) mod tests {
     #[test]
     fn reflog_rejects_multiline_dates_and_malformed_records() {
         assert!(parse_reflog(
-            "hash\0short\0HEAD@{2020\n01}\0reset\0subject\0Actor\0\0",
+            "hash\0short\0HEAD@{2020\n01}\0reset\0subject\0Actor\0\0author@example.com\0\0",
             false
         )
         .is_err());
@@ -3037,8 +3039,8 @@ pub(crate) mod tests {
     fn reflog_dates_may_contain_selector_syntax() {
         // Ref names cannot contain "@{", but custom date formats can.
         let entries = parse_reflog(
-            "hash\0short\0HEAD@{01@{x}\0reset: moving\0subject\0Actor\0\0\
-             hash\0short\0HEAD@{02@{x}\0reset: moving\0subject\0Actor\0\0",
+            "hash\0short\0HEAD@{01@{x}\0reset: moving\0subject\0Actor\0\0author@example.com\0\0\
+             hash\0short\0HEAD@{02@{x}\0reset: moving\0subject\0Actor\0\0author@example.com\0\0",
             false,
         )
         .unwrap();
@@ -3056,7 +3058,7 @@ pub(crate) mod tests {
 
         let mut app = App::new(
             parse_reflog(
-                "hash\0short\0HEAD@{1}\0checkout: moving\0subject\0Actor\0\0",
+                "hash\0short\0HEAD@{1}\0checkout: moving\0subject\0Actor\0\0author@example.com\0\0",
                 false,
             )
             .unwrap(),

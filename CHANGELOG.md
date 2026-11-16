@@ -31,6 +31,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Fixed
 
+- Show coauthor icons when opening commits from Reflog.
+
 - Limit horizontal panning in Status to overflowing content, and only offer
   the pan shortcut when lines extend beyond the screen.
 
