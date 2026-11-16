@@ -1134,6 +1134,34 @@ mod tests {
     }
 
     #[test]
+    fn cached_grep_editor_keeps_the_displayed_index_snapshot_after_restaging() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let path = "file space.txt";
+        std::fs::write(path, "before\nneedle\nafter\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "initial"]);
+        let mut app = load_app(&args(&["--cached", "needle"])).unwrap();
+        select(app.grep_view.as_mut().unwrap(), |kind| {
+            matches!(kind, Kind::Match { .. })
+        });
+        std::fs::write(path, "inserted\nbefore\nneedle\nafter\n").unwrap();
+        git(&["add", "."]);
+        let previous_visual = std::env::var_os("VISUAL");
+        std::env::set_var("VISUAL", "code");
+        key(&mut app, KeyCode::Char('e'));
+        match previous_visual {
+            Some(value) => std::env::set_var("VISUAL", value),
+            None => std::env::remove_var("VISUAL"),
+        }
+        let command = app.pending_editor.take().expect("editor command");
+        let mut expected = git::repository_root().unwrap().join(path).into_os_string();
+        expected.push(":3:1");
+        assert!(command.get_args().any(|arg| arg == expected), "{command:?}");
+    }
+
+    #[test]
     fn editor_key_maps_source_lines_to_working_files() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());

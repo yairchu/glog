@@ -1556,6 +1556,32 @@ mod tests {
     }
 
     #[test]
+    fn index_blame_editor_keeps_the_displayed_snapshot_after_restaging() {
+        for unborn in [false, true] {
+            let directory = TestDirectory::new();
+            let _cwd = CurrentDirGuard::enter(directory.path());
+            git(&["init", "-q"]);
+            let path = "file space.txt";
+            fs::write(path, "before\nneedle\nafter\n").unwrap();
+            git(&["add", "."]);
+            if !unborn {
+                git(&["commit", "-qm", "initial"]);
+            }
+            let repository = git::Repository::main().unwrap();
+            let mut app = load_grep_file(Version::Index, path.as_bytes(), repository, 2).unwrap();
+            fs::write(path, "inserted\nbefore\nneedle\nafter\n").unwrap();
+            git(&["add", "."]);
+            let command = edit(&mut app);
+            let mut expected = git::repository_root().unwrap().join(path).into_os_string();
+            expected.push(":3:1");
+            assert!(
+                command.get_args().any(|arg| arg == expected),
+                "unborn={unborn}: {command:?}"
+            );
+        }
+    }
+
+    #[test]
     fn blame_and_file_editor_keys_share_snapshot_line_mapping() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
