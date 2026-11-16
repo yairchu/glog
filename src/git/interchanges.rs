@@ -393,16 +393,15 @@ fn anchor(request: &Request) -> Option<String> {
         _ => "HEAD",
     };
     // A source can name an annotated tag. The graph contains commits, so
-    // seed its peeled commit just as merge-base does.
+    // seed the commit Git traversed from it. Appending a peel suffix instead
+    // would change the meaning of spellings such as `:/message`.
     let output = request
         .git()
-        .args(["rev-parse", "--verify", &format!("{tip}^{{commit}}")])
+        .args(["rev-list", "--no-walk", "-n1", "--end-of-options", tip])
         .output()
         .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    let commit = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (output.status.success() && !commit.is_empty()).then_some(commit)
 }
 
 #[cfg(test)]
