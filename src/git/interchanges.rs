@@ -244,10 +244,21 @@ fn anchor(request: &Request) -> Option<String> {
         if arg == "--" {
             break;
         }
-        // rev-parse understands attached count limits, but unlike git log it
-        // treats the separate operand of --max-count as a path. Consume these
-        // option/value pairs before asking it to resolve revision endpoints.
-        if crate::log_format::takes_pattern(arg) || matches!(arg.as_str(), "-n" | "--max-count") {
+        // Unlike git log, rev-parse treats separate filter operands as paths
+        // and stops resolving revisions there. Filters don't change the
+        // endpoints, so consume their values before resolving the anchor.
+        if crate::log_format::takes_pattern(arg)
+            || matches!(
+                arg.as_str(),
+                "-n" | "--max-count"
+                    | "--skip"
+                    | "--since"
+                    | "--after"
+                    | "--since-as-filter"
+                    | "--until"
+                    | "--before"
+            )
+        {
             args.next();
             continue;
         }
