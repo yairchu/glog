@@ -11,6 +11,7 @@ mod editor;
 mod file_filters;
 mod fixups;
 mod git;
+mod github_search;
 mod grep;
 mod hunk;
 mod images;
@@ -91,6 +92,7 @@ fn main() -> ExitCode {
         Command::Diff => git::load_diff_app(command_args),
         Command::RangeDiff => range_diff::load_app(command_args),
         Command::Grep => grep::load_app(command_args),
+        Command::GithubSearch => github_search::load_app(command_args),
         Command::Reflog => git::load_reflog_app(command_args),
         Command::Stash => stash::load_app(command_args),
         Command::Bisect => bisect::load_app(command_args),
@@ -188,6 +190,7 @@ fn initialize_views(app: &mut App, command: Command, git_args: &[String]) {
                 Command::Blame => "Blame",
                 Command::RangeDiff => "Range diff",
                 Command::Grep => "Grep",
+                Command::GithubSearch => "GitHub search",
                 Command::Bisect => "Bisect",
                 _ => unreachable!(),
             });
@@ -224,6 +227,7 @@ enum Command {
     Diff,
     RangeDiff,
     Grep,
+    GithubSearch,
     Status,
 }
 
@@ -231,7 +235,7 @@ impl Command {
     /// Whether the arguments are search patterns, which go to Git whole,
     /// even those spelled like display options.
     fn takes_patterns(self) -> bool {
-        self == Command::Grep
+        matches!(self, Command::Grep | Command::GithubSearch)
     }
 
     /// Why the command has nothing to browse.
@@ -240,7 +244,7 @@ impl Command {
         match self {
             Diff | RangeDiff => "no changes",
             Reflog => "no reflog entries matched",
-            Grep => "no matches",
+            Grep | GithubSearch => "no matches",
             Blame => "the file is empty",
             Log | Show | Branch | Stash | Status if history == app::History::Blame => {
                 "the file is empty"
@@ -267,6 +271,12 @@ fn initialize_session(command: Command, args: &[String]) -> Result<Vec<String>, 
 }
 
 fn parse_command(args: &[String]) -> (Command, &[String]) {
+    if args
+        .get(..3)
+        .is_some_and(|prefix| prefix == ["gh", "search", "code"])
+    {
+        return (Command::GithubSearch, &args[3..]);
+    }
     match args.first().map(String::as_str) {
         Some("reflog") => (Command::Reflog, &args[1..]),
         Some("blame") => (Command::Blame, &args[1..]),
@@ -309,6 +319,7 @@ Usage: glog [--watch] [--fold-merges] [--hide-merges] [--hide-types=TYPES]
        glog diff [--cached] [--stat] [revision [revision]] [[--] pathspec...]
        glog range-diff [git range-diff arguments]
        glog grep [matching options] [-e] pattern [revision...] [-- pathspec...]
+       glog gh search code [query] [gh search code options]
        glog status
 
 Options:
@@ -393,6 +404,14 @@ Stash lists saved work; Enter opens its changes, including saved untracked files
 Stash show opens a stash by index or reference (the latest by default).
 Blame shows which commit last changed each line; Enter opens it, p blames
 the file before it, and Backspace returns.
+GitHub code search uses gh authentication and accepts gh search code query options,
+including --repo, --owner, --language, and --limit. Results group by repository,
+folder, and file. Enter opens the exact remote file; e opens it on GitHub.
+Inside a remote file, e opens the selected line; Esc or Backspace returns.
+Files load on demand without a checkout. Output options (--json, --jq, --template,
+--web) are reserved for glog's interface. GitHub's API uses legacy code search;
+results can differ from the website and regular expressions are not supported.
+
 Grep searches tracked text files, --cached searches the index, and --untracked
 also searches untracked files. Accept matching options such as -i, -w, -F, -E,
 -e and -f, compound expressions, and commit revisions. Binary files are skipped.
@@ -507,6 +526,7 @@ fn run<B: ratatui::backend::Backend>(
             changed = true;
         }
         changed |= app.images.poll();
+        changed |= app.poll_github_file();
         changed |= app.poll_browser();
         changed |= app.poll_log();
         if changed {
@@ -688,6 +708,12 @@ mod tests {
                 vec!["-i", "needle"],
             ),
             (vec!["log", "grep"], Command::Log, vec!["grep"]),
+            (
+                vec!["gh", "search", "code", "--repo", "owner/repo", "needle"],
+                Command::GithubSearch,
+                vec!["--repo", "owner/repo", "needle"],
+            ),
+            (vec!["log", "gh"], Command::Log, vec!["gh"]),
         ] {
             let args: Vec<String> = args.into_iter().map(str::to_owned).collect();
             let (actual, rest) = parse_command(&args);

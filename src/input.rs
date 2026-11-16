@@ -73,6 +73,10 @@ fn apply(event: Event, app: &mut App) {
         }
         if app.mode == Mode::Grep {
             match key.code {
+                KeyCode::Esc if app.cancel_github_file() => {}
+                KeyCode::Esc | KeyCode::Backspace if app.has_reference_back() => {
+                    app.reference_back()
+                }
                 // Rows other than matches fold instead.
                 KeyCode::Enter | KeyCode::Tab => app.open_grep_match(),
                 KeyCode::Char('e') => app.request_editor(),
@@ -85,6 +89,14 @@ fn apply(event: Event, app: &mut App) {
                         view.move_horizontal(key.code == KeyCode::Right);
                     }
                 }
+                _ => pager_key(key.code, app),
+            }
+            return;
+        }
+        if app.mode == Mode::GithubFile {
+            match key.code {
+                KeyCode::Char('e') => app.request_editor(),
+                KeyCode::Esc | KeyCode::Backspace => app.reference_back(),
                 _ => pager_key(key.code, app),
             }
             return;
@@ -217,7 +229,10 @@ fn apply(event: Event, app: &mut App) {
                     History::Blame => Field::ATTRIBUTION.contains(field),
                     History::Stash => matches!(field, Field::Author | Field::Date),
                     History::Branches => field == &Field::Date,
-                    History::Reflog | History::RangeDiff | History::Grep => false,
+                    History::Reflog
+                    | History::RangeDiff
+                    | History::Grep
+                    | History::GithubSearch => false,
                 })
             }
             _ => None,
@@ -316,6 +331,10 @@ fn apply(event: Event, app: &mut App) {
                 MouseEventKind::Down(MouseButton::Left) => {
                     if let Some(view) = &mut app.range_diff_view {
                         view.click(mouse.row);
+                    }
+                    if let Some(view) = &mut app.github_file_view {
+                        app.search_match = None;
+                        view.pager.click(mouse.row);
                     }
                 }
                 _ => {}

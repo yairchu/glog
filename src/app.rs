@@ -13,6 +13,7 @@ use crate::{
 pub enum Mode {
     Status,
     Grep,
+    GithubFile,
     RangeDiff,
     Log,
     Show,
@@ -49,6 +50,7 @@ pub enum History {
     Bisect,
     RangeDiff,
     Grep,
+    GithubSearch,
 }
 
 /// The command to repeat when this view watches its repository.
@@ -272,6 +274,8 @@ pub struct App {
     pub status_view: Option<crate::status::StatusView>,
     pub grep_view: Option<crate::grep::View>,
     pub range_diff_view: Option<crate::range_diff::View>,
+    pub github_file_view: Option<crate::github_search::FileView>,
+    pending_github_file: Option<crate::github_search::Pending>,
     pub commits: Vec<Commit>,
     pub history: History,
     pub pending_blame: Option<crate::blame::FileRevision>,
@@ -383,6 +387,8 @@ impl App {
             status_view: None,
             grep_view: None,
             range_diff_view: None,
+            github_file_view: None,
+            pending_github_file: None,
             history: match commits
                 .first()
                 .and_then(|commit| commit.annotation.as_ref())
@@ -519,6 +525,12 @@ impl App {
 
     /// Describe the session, keeping the title stable while browsing commits.
     pub(crate) fn terminal_title(&self, main_repository: &std::path::Path) -> String {
+        if self.history == History::GithubSearch {
+            return format!("GitHub · {}", self.context)
+                .chars()
+                .filter(|ch| !ch.is_control())
+                .collect();
+        }
         let directory = self
             .repository
             .as_ref()
@@ -547,6 +559,7 @@ impl App {
                 History::Bisect => "Bisect",
                 History::RangeDiff => "Range diff",
                 History::Grep => "Grep",
+                History::GithubSearch => "GitHub search",
             }
         };
         let revision = self
@@ -761,13 +774,15 @@ impl App {
     }
 
     pub fn has_log_view(&self) -> bool {
-        !matches!(self.history, History::RangeDiff | History::Grep)
-            && !self.commits.get(self.selected).is_some_and(|commit| {
-                matches!(
-                    commit.kind,
-                    CommitKind::Comparison { .. } | CommitKind::Staged | CommitKind::Unstaged
-                )
-            })
+        !matches!(
+            self.history,
+            History::RangeDiff | History::Grep | History::GithubSearch
+        ) && !self.commits.get(self.selected).is_some_and(|commit| {
+            matches!(
+                commit.kind,
+                CommitKind::Comparison { .. } | CommitKind::Staged | CommitKind::Unstaged
+            )
+        })
     }
 
     pub fn switch_mode(&mut self) {
@@ -813,6 +828,10 @@ impl App {
         match self.mode {
             Mode::Grep => self.grep_view.as_mut().map(|view| view as _),
             Mode::RangeDiff => self.range_diff_view.as_mut().map(|view| view as _),
+            Mode::GithubFile => self
+                .github_file_view
+                .as_mut()
+                .map(|view| &mut view.pager as _),
             Mode::Log | Mode::Show | Mode::Status => None,
         }
     }
@@ -828,7 +847,7 @@ impl App {
     pub fn move_by(&mut self, delta: isize, page: usize) {
         match self.mode {
             Mode::Status => {}
-            Mode::Grep | Mode::RangeDiff => {
+            Mode::Grep | Mode::RangeDiff | Mode::GithubFile => {
                 if let Some(view) = self.pager_view() {
                     if delta.abs() == 1 {
                         view.move_by(delta);
@@ -1625,7 +1644,7 @@ impl App {
     pub fn top(&mut self) {
         match self.mode {
             Mode::Status => {}
-            Mode::Grep | Mode::RangeDiff => {
+            Mode::Grep | Mode::RangeDiff | Mode::GithubFile => {
                 if let Some(view) = self.pager_view() {
                     view.top();
                 }
@@ -1645,7 +1664,7 @@ impl App {
     pub fn bottom(&mut self) {
         match self.mode {
             Mode::Status => {}
-            Mode::Grep | Mode::RangeDiff => {
+            Mode::Grep | Mode::RangeDiff | Mode::GithubFile => {
                 if let Some(view) = self.pager_view() {
                     view.bottom();
                 }
@@ -1777,6 +1796,15 @@ impl App {
     }
 
     pub fn request_editor(&mut self) {
+        if self.history == History::GithubSearch {
+            if let Some(view) = &self.github_file_view {
+                let url = view.url();
+                self.follow_link(&crate::commit_links::Target::Url(url));
+            } else {
+                self.request_github_file(crate::github_search::Action::Browse);
+            }
+            return;
+        }
         let target = if self.mode == Mode::Status {
             self.status_view
                 .as_ref()
@@ -2960,12 +2988,71 @@ impl App {
     }
 
     pub fn open_grep_match(&mut self) {
+        if self.history == History::GithubSearch
+            && self
+                .grep_view
+                .as_ref()
+                .and_then(crate::grep::View::github_match_target)
+                .is_some()
+        {
+            self.request_github_file(crate::github_search::Action::Open);
+            return;
+        }
         let loaded = self.grep_view.as_ref().and_then(crate::grep::View::open);
         if let Some(loaded) = loaded {
             self.enter_followed(loaded);
         } else {
             self.grep_action(crate::grep::Action::Fold);
         }
+    }
+
+    fn request_github_file(&mut self, action: crate::github_search::Action) {
+        let target = self
+            .grep_view
+            .as_ref()
+            .and_then(crate::grep::View::github_target);
+        match target {
+            Some(target) => {
+                self.pending_github_file =
+                    Some(crate::github_search::Pending::start(target, action));
+                self.status = Some("Loading GitHub file… Esc cancels".into());
+            }
+            None => self.status = Some("No file selected".into()),
+        }
+    }
+
+    pub fn cancel_github_file(&mut self) -> bool {
+        if self.pending_github_file.take().is_some() {
+            self.status = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn poll_github_file(&mut self) -> bool {
+        use std::sync::mpsc::TryRecvError;
+        let Some(pending) = self.pending_github_file.take() else {
+            return false;
+        };
+        let loaded = match pending.receiver.try_recv() {
+            Ok(loaded) => loaded,
+            Err(TryRecvError::Empty) => {
+                self.pending_github_file = Some(pending);
+                return false;
+            }
+            Err(TryRecvError::Disconnected) => Err("Could not load GitHub file".into()),
+        };
+        match loaded {
+            Err(error) => self.status = Some(error),
+            Ok(crate::github_search::Outcome::Open(loaded)) => {
+                self.enter_followed(Ok(loaded.into_app()))
+            }
+            Ok(crate::github_search::Outcome::Browse(url)) => {
+                self.follow_link(&crate::commit_links::Target::Url(url));
+            }
+        }
+        true
     }
 
     pub fn has_branch_back(&self) -> bool {
@@ -3412,7 +3499,7 @@ impl App {
         };
         match self.mode {
             Mode::Status => {}
-            Mode::Grep | Mode::RangeDiff => {
+            Mode::Grep | Mode::RangeDiff | Mode::GithubFile => {
                 let mode = self.mode;
                 if let Some(view) = self.pager_view() {
                     if view.find(&query, reverse) {

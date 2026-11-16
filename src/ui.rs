@@ -26,7 +26,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         .split(frame.area());
     let has_log = app.has_log_view();
     let selected = match app.mode {
-        Mode::Log | Mode::Grep | Mode::RangeDiff => 0,
+        Mode::Log | Mode::Grep | Mode::RangeDiff | Mode::GithubFile => 0,
         Mode::Show => 1,
         Mode::Status => 1,
     };
@@ -51,7 +51,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         History::Branches => "Branches",
         History::Bisect => "Bisect",
         // These views have no tabs.
-        History::RangeDiff | History::Grep => "",
+        History::RangeDiff | History::Grep | History::GithubSearch => "",
     };
     // File and Branches have no detail tab; branches open a separate Log.
     let labels: &[&str] = match (has_log, file_view || app.history == History::Branches) {
@@ -144,7 +144,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 view.draw_with_images(frame, chunks[1], &mut app.images);
             }
         }
-        Mode::Grep | Mode::RangeDiff => {
+        Mode::Grep | Mode::RangeDiff | Mode::GithubFile => {
             let current = app
                 .search_match
                 .filter(|(mode, _)| *mode == app.mode)
@@ -172,6 +172,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         format!("{prefix}{input}█")
     } else if let Some(message) = app.message() {
         message.to_owned()
+    } else if app.mode == Mode::GithubFile {
+        "h help  q quit  ↑/k ↓/j  e GitHub  Esc/Backspace back  / ? search".to_owned()
+    } else if app.mode == Mode::Grep && app.history == History::GithubSearch {
+        "h help  q quit  ←/→ path/pan  Enter file/fold  e GitHub  z fold  m fold all  t hide extension  T reset  / ? search".to_owned()
     } else if app.mode == Mode::Grep {
         "h help  q quit  ←/→ path/pan  Enter open/fold  z fold  m fold all  t hide extension  T reset  / ? search".to_owned()
     } else if app.mode == Mode::RangeDiff {
@@ -225,6 +229,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             match app.history {
                 History::RangeDiff => HelpView::RangeDiff,
                 History::Grep => HelpView::Grep,
+                History::GithubSearch if app.mode == Mode::GithubFile => HelpView::GithubFile,
+                History::GithubSearch => HelpView::GithubSearch,
                 _ if !has_log => HelpView::Detail,
                 History::Log => HelpView::Log,
                 History::Bisect => HelpView::Bisect,
@@ -286,6 +292,8 @@ enum HelpView {
     Branches,
     RangeDiff,
     Grep,
+    GithubSearch,
+    GithubFile,
 }
 
 /// A key's description in each help screen; `None` omits its row there.
@@ -302,6 +310,8 @@ struct HelpTexts {
     branches: Option<&'static str>,
     range_diff: Option<&'static str>,
     grep: Option<&'static str>,
+    github_search: Option<&'static str>,
+    github_file: Option<&'static str>,
 }
 
 impl HelpTexts {
@@ -317,6 +327,8 @@ impl HelpTexts {
             HelpView::Branches => self.branches,
             HelpView::RangeDiff => self.range_diff,
             HelpView::Grep => self.grep,
+            HelpView::GithubSearch => self.github_search.or(self.grep),
+            HelpView::GithubFile => self.github_file.or(self.range_diff),
         }
     }
 }
@@ -332,6 +344,8 @@ const NO_HELP: HelpTexts = HelpTexts {
     branches: None,
     range_diff: None,
     grep: None,
+    github_search: None,
+    github_file: None,
 };
 
 /// A key and its descriptions. Rows without a key are shown verbatim.
@@ -352,6 +366,8 @@ const fn every(key: &'static str, text: &'static str) -> HelpRow {
             branches: text,
             range_diff: None,
             grep: None,
+            github_search: None,
+            github_file: None,
         },
     )
 }
@@ -411,6 +427,8 @@ const HELP_ROWS: &[HelpRow] = &[
             branches: Some("select a branch or shared ancestor"),
             range_diff: Some("move cursor"),
             grep: Some("previous / next result or group"),
+            github_search: None,
+            github_file: None,
         },
     ),
     (
@@ -531,6 +549,7 @@ const HELP_ROWS: &[HelpRow] = &[
             detail: Some("open commit (Status) / toggle section or file"),
             branches: Some("open its Log up to the next shared node"),
             grep: Some("open match in Blame / fold group"),
+            github_search: Some("open remote file / fold group"),
             ..NO_HELP
         },
     ),
@@ -618,6 +637,7 @@ const HELP_ROWS: &[HelpRow] = &[
             blame: Some("return to the previous blame or review"),
             detail: Some("return after opening blame"),
             file: Some("return to the previous blame, if any"),
+            github_file: Some("return to GitHub search results (also Esc)"),
             branches: Some("return here from a branch Log"),
             ..NO_HELP
         },
@@ -626,6 +646,8 @@ const HELP_ROWS: &[HelpRow] = &[
         "e",
         HelpTexts {
             grep: Some("open working file at matching line in editor"),
+            github_search: Some("open selected result on GitHub"),
+            github_file: Some("open selected line on GitHub"),
             blame: Some("open working file at selected line in editor"),
             file: Some("open working file at selected line in editor"),
             ..detail("e", "open working file at cursor in editor (Show/Status)").1
@@ -658,6 +680,8 @@ const HELP_ROWS: &[HelpRow] = &[
             file: Some("close help / cancel search"),
             range_diff: Some("close help / cancel search"),
             grep: Some("close help / cancel search"),
+            github_search: Some("cancel file loading / close help / cancel search"),
+            github_file: Some("return to search results / close help / cancel search"),
             branches: Some("return here from a branch Log / cancel"),
             ..NO_HELP
         },
@@ -671,6 +695,7 @@ const HELP_ROWS: &[HelpRow] = &[
             blame: Some("switch Blame / detail"),
             stash: Some("switch Stash / Show"),
             grep: Some("open match in Blame / fold group"),
+            github_search: Some("open remote file / fold group"),
             ..NO_HELP
         },
     ),

@@ -267,6 +267,11 @@ path to fold. Enter opens a match in Blame, and Backspace returns to the results
 selected file's extension, `T` to clear filters, or click the extension
 buttons. `/` and `?` search within the results, including inside folds.
 
+Search GitHub with `glog gh search code needle --repo owner/repo`, using your
+GitHub CLI authentication. Results group by repository, folder, and file.
+Enter opens a remote file without a checkout; `e` opens the result or selected
+file line on GitHub. Escape or Backspace returns to the results.
+
 ## Reflog
 
 Browse the local history of ref updates:

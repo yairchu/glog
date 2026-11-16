@@ -22,6 +22,7 @@ enum Source {
     Worktree,
     Index,
     Revision { label: String, hash: String },
+    Github(String),
 }
 impl Source {
     fn label(&self) -> &str {
@@ -29,20 +30,27 @@ impl Source {
             Self::Worktree => "",
             Self::Index => "Index",
             Self::Revision { label, .. } => label,
+            Self::Github(label) => label,
         }
     }
 }
 #[derive(Debug)]
-struct Hit {
-    line: usize,
-    text: String,
+pub(crate) struct Hit {
+    pub location: crate::github_search::Location,
+    pub text: String,
+}
+
+#[derive(Debug)]
+enum FileTarget {
+    Local(crate::editor::Source),
+    Github(crate::github_search::File),
 }
 #[derive(Debug)]
 struct File {
     source: usize,
     path: Vec<u8>,
     extension: Vec<u8>,
-    editor_source: crate::editor::Source,
+    target: FileTarget,
     hits: Vec<Hit>,
     number_width: usize,
 }
@@ -74,7 +82,7 @@ pub enum Action {
 }
 
 pub struct View {
-    repository: git::Repository,
+    repository: Option<git::Repository>,
     sources: Vec<Source>,
     files: Vec<File>,
     nodes: Vec<Node>,
@@ -340,15 +348,16 @@ impl View {
                     source,
                     path: path.to_vec(),
                     extension: extension(path),
-                    editor_source: crate::editor::Source::capture(
+                    target: FileTarget::Local(crate::editor::Source::capture(
                         &repository,
                         path,
                         &match &sources[source] {
                             Source::Worktree => git::Version::Worktree,
                             Source::Index => git::Version::Index,
                             Source::Revision { hash, .. } => git::Version::Revision(hash.clone()),
+                            Source::Github(_) => unreachable!("Git grep only has local sources"),
                         },
-                    ),
+                    )),
                     hits: Vec::new(),
                     number_width: 1,
                 });
@@ -357,10 +366,40 @@ impl View {
             let file = &mut files[index];
             file.number_width = file.number_width.max(line.to_string().len());
             file.hits.push(Hit {
-                line,
+                location: crate::github_search::Location::Line(line),
                 text: String::from_utf8_lossy(text).into_owned(),
             });
         }
+        Ok(Self::from_files(Some(repository), sources, files))
+    }
+
+    pub fn github(results: Vec<(crate::github_search::File, Vec<Hit>)>) -> Self {
+        let mut sources = Vec::new();
+        let mut indices = HashMap::new();
+        let mut files = Vec::new();
+        for (file, hits) in results {
+            let label = file.label();
+            let source = *indices.entry(label.clone()).or_insert_with(|| {
+                sources.push(Source::Github(label));
+                sources.len() - 1
+            });
+            files.push(File {
+                source,
+                extension: extension(file.path.as_bytes()),
+                path: file.path.as_bytes().to_vec(),
+                number_width: 0,
+                target: FileTarget::Github(file),
+                hits,
+            });
+        }
+        Self::from_files(None, sources, files)
+    }
+
+    fn from_files(
+        repository: Option<git::Repository>,
+        sources: Vec<Source>,
+        files: Vec<File>,
+    ) -> Self {
         let mut extensions = BTreeMap::new();
         for file in &files {
             *extensions.entry(file.extension.clone()).or_default() += 1;
@@ -389,7 +428,7 @@ impl View {
         };
         view.build();
         view.rebuild();
-        Ok(view)
+        view
     }
     pub fn match_count(&self) -> usize {
         self.files.iter().map(|file| file.hits.len()).sum()
@@ -766,10 +805,14 @@ impl View {
                 }
                 let width = self.files[*file].number_width;
                 let hit = &self.files[*file].hits[*hit];
-                spans.push(Span::styled(
-                    format!("{:>width$}: ", hit.line),
-                    Style::default().fg(Color::DarkGray),
-                ));
+                if let Some(number) = hit.location.line() {
+                    spans.push(Span::styled(
+                        format!("{number:>width$}: "),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                } else {
+                    spans.push(Span::raw(" "));
+                }
                 spans.extend(ansi::normalized_line(&hit.text).spans);
             }
         }
@@ -778,21 +821,49 @@ impl View {
     pub fn editor_target(&self) -> Result<crate::editor::Target, String> {
         let row = self.rows.get(self.cursor).ok_or("No file selected")?;
         let (file, line) = match self.nodes[row.node].kind {
-            Kind::Match { file, hit } => (file, Some(self.files[file].hits[hit].line)),
+            Kind::Match { file, hit } => (file, self.files[file].hits[hit].location.line()),
             Kind::File(file) => (file, None),
             _ => return Err("No file selected".into()),
         };
         let file = &self.files[file];
+        let FileTarget::Local(source) = &file.target else {
+            return Err("Remote files open on GitHub".into());
+        };
         crate::editor::Target::from_file(
-            &self.repository,
+            self.repository.as_ref().ok_or("No local repository")?,
             &file.path,
             line.map(u32::try_from)
                 .transpose()
                 .map_err(|_| "Line number is too large")?,
-            &file.editor_source,
+            source,
             crate::editor::Textconv::Disabled,
         )
     }
+    pub fn github_match_target(&self) -> Option<crate::github_search::Target> {
+        let row = self.rows.get(self.cursor)?;
+        if matches!(self.nodes[row.node].kind, Kind::Match { .. }) {
+            self.github_target()
+        } else {
+            None
+        }
+    }
+
+    pub fn github_target(&self) -> Option<crate::github_search::Target> {
+        let row = self.rows.get(self.cursor)?;
+        let (file, location) = match self.nodes[row.node].kind {
+            Kind::Match { file, hit } => (file, self.files[file].hits[hit].location.clone()),
+            Kind::File(file) => (file, crate::github_search::Location::File),
+            _ => return None,
+        };
+        let FileTarget::Github(file) = &self.files[file].target else {
+            return None;
+        };
+        Some(crate::github_search::Target {
+            file: file.clone(),
+            location,
+        })
+    }
+
     pub fn open(&self) -> Option<Result<App, String>> {
         let node = self.rows.get(self.cursor)?.node;
         let Kind::Match { file, hit } = self.nodes[node].kind else {
@@ -802,10 +873,11 @@ impl View {
         let version = match &self.sources[file.source] {
             Source::Revision { hash, .. } => git::Version::Revision(hash.clone()),
             Source::Index => git::Version::Index,
+            Source::Github(_) => return None,
             Source::Worktree => {
                 let mut spec = b"HEAD:".to_vec();
                 spec.extend_from_slice(&file.path);
-                let tracked = git::read_command_at(Some(&self.repository))
+                let tracked = git::read_command_at(self.repository.as_ref())
                     .args(["cat-file", "-e"])
                     .arg(git::raw_path(&spec))
                     .output()
@@ -820,8 +892,8 @@ impl View {
         Some(crate::blame::load_grep_file(
             version,
             &file.path,
-            self.repository.clone(),
-            file.hits[hit].line,
+            self.repository.clone()?,
+            file.hits[hit].location.line()?,
         ))
     }
     /// Click a path or row to focus it; click it again to fold or open it.
