@@ -762,11 +762,11 @@ impl StatusView {
         for child in self.submodules.values_mut() {
             changed |= child.poll_code_counts();
         }
-        if self.code_counts.poll() {
+        changed |= self.code_counts.poll();
+        if changed {
             self.rebuild();
             // Count files that changed during this count.
             self.request_code_counts();
-            changed = true;
         }
         changed
     }
@@ -780,12 +780,19 @@ impl StatusView {
     /// Wait for code counts, as if `poll_code_counts` ran once they completed.
     #[cfg(test)]
     pub fn settle_code_counts(&mut self) {
+        let mut changed = false;
         for child in self.submodules.values_mut() {
+            changed |= child.counting_code();
             child.settle_code_counts();
         }
-        while self.code_counts.settle() {
+        loop {
+            changed |= self.code_counts.settle();
+            if !changed {
+                break;
+            }
             self.rebuild();
             self.request_code_counts();
+            changed = false;
         }
     }
 

@@ -2300,9 +2300,9 @@ impl App {
         for child in self.submodules.values_mut() {
             changed |= child.poll_code_counts();
         }
-        if self.code_counts.poll() {
-            self.rebuild_show_rows();
-            changed = true;
+        changed |= self.code_counts.poll();
+        if changed {
+            self.rebuild_show_rows_preserving_cursor();
         }
         if let Some(view) = &mut self.status_view {
             changed |= view.poll_code_counts();
@@ -2330,13 +2330,24 @@ impl App {
                     settled = true;
                 }
             }
-            if self.code_counts.settle() {
-                self.rebuild_show_rows();
-                settled = true;
-            }
+            settled |= self.code_counts.settle();
             if !settled {
                 break;
             }
+            self.rebuild_show_rows_preserving_cursor();
+        }
+    }
+
+    /// Counts change row text, so keep the focused continuation and its screen
+    /// position while remeasuring any summaries whose wrapping changed.
+    fn rebuild_show_rows_preserving_cursor(&mut self) {
+        let continuation = self.show_cursor_continuation();
+        let position = self.show_cursor_screen() as isize - self.show_offset as isize;
+        let measured = !self.show_row_starts.is_empty();
+        self.rebuild_show_rows();
+        self.show_continuation = (self.show_cursor, continuation);
+        if measured && self.show_scroll.is_none() {
+            self.show_scroll = Some(ShowScroll::PreserveCursorPosition(position));
         }
     }
 
