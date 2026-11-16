@@ -5,7 +5,7 @@ use mezura_core::{EngineConfig, Languages, SpanKind};
 
 use crate::{ansi, diff::FileSection, git};
 
-const MAX_BYTES: u64 = 8 * 1024 * 1024;
+pub(crate) const MAX_BYTES: u64 = 8 * 1024 * 1024;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Counts {

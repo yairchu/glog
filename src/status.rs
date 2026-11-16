@@ -46,6 +46,8 @@ struct Entry {
     // Preserve exact bytes for Git and filesystem operations.
     raw_path: PathBuf,
     raw_original: Option<PathBuf>,
+    // Relevant HEAD/index blobs, captured while parsing porcelain fields.
+    stats_blobs: Vec<String>,
 }
 impl Entry {
     fn dirty_submodule(&self) -> bool {
@@ -124,6 +126,7 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
                 original: None,
                 raw_path: raw_path(&raw[2..]),
                 raw_original: None,
+                stats_blobs: Vec::new(),
             });
             continue;
         }
@@ -167,6 +170,7 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
                 original,
                 raw_path,
                 raw_original,
+                stats_blobs: Vec::new(),
             });
             continue;
         }
@@ -195,6 +199,11 @@ fn parse(bytes: &[u8]) -> Result<Snapshot, String> {
                     original: original.clone().filter(|_| renamed),
                     raw_path: raw_path.clone(),
                     raw_original: raw_original.clone().filter(|_| renamed),
+                    stats_blobs: fields[if group == Group::Staged { 6 } else { 7 }..8]
+                        .iter()
+                        .filter(|id| !id.bytes().all(|byte| byte == b'0'))
+                        .map(|id| (*id).to_owned())
+                        .collect(),
                 });
             }
         }
@@ -619,10 +628,14 @@ impl StatusView {
         }
         if self.code_stats {
             let repository = crate::git::Repository::checked_out(self.root.clone());
+            let mut eligible_blobs = HashMap::new();
             for entry in &snapshot.entries {
                 let Some(raw) = stats.get_mut(&entry.key) else {
                     continue;
                 };
+                if !self.code_stats_eligible(entry, &mut eligible_blobs) {
+                    continue;
+                }
                 if let Some(counts) = self.patch(entry).ok().and_then(|patch| {
                     let files = crate::diff::file_sections(&patch);
                     (files.len() == 1)
@@ -634,6 +647,35 @@ impl StatusView {
             }
         }
         Ok(stats)
+    }
+
+    fn code_stats_eligible(&self, entry: &Entry, blobs: &mut HashMap<String, bool>) -> bool {
+        // Combined conflict patches cannot be classified. Check source sizes
+        // before rendering any patch, including collapsed untracked files.
+        if entry.key.group == Group::Conflicts {
+            return false;
+        }
+        if matches!(entry.key.group, Group::Unstaged | Group::Untracked) {
+            match std::fs::symlink_metadata(self.root.join(&entry.raw_path)) {
+                Ok(metadata)
+                    if metadata.is_file() && metadata.len() <= crate::code_stats::MAX_BYTES => {}
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                _ => return false,
+            }
+        }
+        entry.stats_blobs.iter().all(|id| {
+            *blobs.entry(id.clone()).or_insert_with(|| {
+                crate::git::read_command_in(&self.root)
+                    .args(["cat-file", "-s", id])
+                    .env("GIT_NO_LAZY_FETCH", "1")
+                    .output()
+                    .ok()
+                    .filter(|output| output.status.success())
+                    .and_then(|output| String::from_utf8(output.stdout).ok())
+                    .and_then(|size| size.trim().parse::<u64>().ok())
+                    .is_some_and(|size| size <= crate::code_stats::MAX_BYTES)
+            })
+        })
     }
     pub fn set_code_stats(&mut self, enabled: bool) {
         if self.code_stats == enabled {
@@ -2097,6 +2139,7 @@ mod tests {
             original: None,
             raw_path: "image.png".into(),
             raw_original: None,
+            stats_blobs: Vec::new(),
         });
         view.patches.insert(key.clone(), "diff --git a/image.png b/image.png\nindex abcd1234..abcd5678 100644\nBinary files a/image.png and b/image.png differ\n".into());
         view.enable_images(true);
