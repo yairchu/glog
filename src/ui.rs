@@ -1718,7 +1718,9 @@ fn drawn_show_line(app: &App, index: usize, width: u16, selected: bool) -> (Line
         let current = app.search_match == Some((Mode::Show, index));
         line = highlight_matches(line, query, current);
     }
-    if selected {
+    // Path focus belongs to the logical summary row, even when its component
+    // wraps beyond the screen row carrying the cursor background.
+    if index == app.show_cursor {
         if let Some(path) = &app.show_rows[index].path {
             if let Some(component) = app.summary_cursor.index(path.components.len()) {
                 let (range, _) = &path.ranges()[component];
