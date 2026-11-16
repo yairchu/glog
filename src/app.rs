@@ -2291,7 +2291,7 @@ impl App {
         if let Some(view) = &mut self.status_view {
             view.set_code_stats(self.code_stats);
         }
-        self.rebuild_show_rows();
+        self.rebuild_show_rows_preserving_cursor();
     }
 
     /// Show code counts as they complete, in submodules too.
