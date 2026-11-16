@@ -4282,6 +4282,34 @@ mod show_wrapping_tests {
     }
 
     #[test]
+    fn keyboard_path_focus_highlights_components_across_wrapped_rows() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let mut terminal = Terminal::new(TestBackend::new(16, 12)).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_stat = true;
+        app.show_text = "diff --git a/longdirectoryname/file.txt b/longdirectoryname/file.txt\n--- a/longdirectoryname/file.txt\n+++ b/longdirectoryname/file.txt\n@@ -1 +1 @@\n-old\n+new".into();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        for (key, expected) in [
+            (KeyCode::Left, "longdirectoryname/"),
+            (KeyCode::Right, "file.txt"),
+        ] {
+            crate::input::handle(Event::Key(KeyEvent::new(key, KeyModifiers::NONE)), &mut app);
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let highlighted: String = (app.show_row_origin..11)
+                .flat_map(|y| (0..16).map(move |x| &buffer[(x, y)]))
+                .filter(|cell| {
+                    cell.bg == Color::Cyan && cell.modifier.contains(Modifier::UNDERLINED)
+                })
+                .map(|cell| cell.symbol())
+                .collect();
+            assert_eq!(highlighted, expected, "after {key:?}");
+        }
+    }
+
+    #[test]
     fn wrapped_diff_continuations_keep_their_background_except_at_the_cursor() {
         let mut terminal = Terminal::new(TestBackend::new(10, 6)).unwrap();
         let mut app = App::new(Vec::new());
