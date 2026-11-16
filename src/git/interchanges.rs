@@ -320,28 +320,25 @@ fn anchor(request: &Request) -> Option<String> {
         if arg == "--" {
             break;
         }
-        // Unlike git log, rev-parse treats separate filter operands as paths
-        // and stops resolving revisions there. Filters don't change the
-        // endpoints, so consume their values before resolving the anchor.
-        if crate::log_format::takes_pattern(arg)
-            || matches!(
-                arg.as_str(),
-                "-n" | "-L"
-                    | "--max-count"
-                    | "--skip"
-                    | "--since"
-                    | "--after"
-                    | "--since-as-filter"
-                    | "--until"
-                    | "--before"
-                    | "--date"
-            )
-        {
-            args.next();
+        // Unlike git log, rev-parse treats separate option values as paths
+        // and stops resolving revisions there, so consume them first. Only
+        // ref selection changes the endpoints, and rev-parse takes its
+        // values joined, except for --default.
+        if crate::log_format::takes_separate_value(arg) {
+            let Some(value) = args.next() else {
+                break;
+            };
+            match arg.as_str() {
+                "--exclude" | "--glob" | "--exclude-hidden" => {
+                    revisions.push(format!("{arg}={value}"));
+                }
+                "--default" => revisions.extend([arg.clone(), value.clone()]),
+                _ => {}
+            }
             continue;
         }
         all |= arg == "--all";
-        revisions.push(arg);
+        revisions.push(arg.clone());
     }
     let output = request
         .git()
@@ -355,9 +352,12 @@ fn anchor(request: &Request) -> Option<String> {
             "HEAD",
         ])
         .args(revisions)
-        .env("GIT_NO_LAZY_FETCH", "1")
         .output()
         .ok()?;
+    // A partial result could anchor at the wrong tip; mark nothing instead.
+    if !output.status.success() {
+        return None;
+    }
     let text = String::from_utf8_lossy(&output.stdout);
     let tips: HashSet<_> = text.lines().filter(|line| !line.starts_with('^')).collect();
     let tip = if !all && tips.len() == 1 {
