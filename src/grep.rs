@@ -289,6 +289,39 @@ pub fn load_app(args: &[String]) -> Result<App, String> {
     Ok(app)
 }
 
+/// Capture stage-zero blobs together so cached matches do not spawn a Git
+/// process per file. Paths stay as bytes, including tabs and non-UTF-8 names.
+fn index_blobs(repository: &git::Repository) -> Result<HashMap<Vec<u8>, String>, String> {
+    let output = git::read_command_at(Some(repository))
+        .args(["ls-files", "--stage", "--full-name", "-z"])
+        .output()
+        .map_err(|error| format!("Could not read index blobs: {error}"))?;
+    if !output.status.success() {
+        return Err(git::stderr_message(
+            "Could not read index blobs",
+            &output.stderr,
+        ));
+    }
+    let mut blobs = HashMap::new();
+    for record in output
+        .stdout
+        .split(|&byte| byte == 0)
+        .filter(|record| !record.is_empty())
+    {
+        let mut fields = record;
+        let header = take(&mut fields, b'\t')?;
+        let header = std::str::from_utf8(header).map_err(|error| error.to_string())?;
+        let mut metadata = header.split_whitespace();
+        let _mode = metadata.next().ok_or("Missing index mode")?;
+        let blob = metadata.next().ok_or("Missing index blob")?;
+        let stage = metadata.next().ok_or("Missing index stage")?;
+        if stage == "0" {
+            blobs.insert(fields.to_vec(), blob.to_owned());
+        }
+    }
+    Ok(blobs)
+}
+
 fn take<'a>(input: &mut &'a [u8], delimiter: u8) -> Result<&'a [u8], String> {
     let end = input
         .iter()
@@ -318,6 +351,12 @@ impl View {
         sources: Vec<Source>,
         mut input: &[u8],
     ) -> Result<Self, String> {
+        let index_blobs =
+            if !input.is_empty() && sources.iter().any(|source| matches!(source, Source::Index)) {
+                index_blobs(&repository)
+            } else {
+                Ok(HashMap::new())
+            };
         let mut files: Vec<File> = Vec::new();
         let mut indices = HashMap::new();
         while !input.is_empty() {
@@ -348,16 +387,23 @@ impl View {
                     source,
                     path: path.to_vec(),
                     extension: extension(path),
-                    target: FileTarget::Local(crate::editor::Source::capture(
-                        &repository,
-                        path,
-                        &match &sources[source] {
-                            Source::Worktree => git::Version::Worktree,
-                            Source::Index => git::Version::Index,
-                            Source::Revision { hash, .. } => git::Version::Revision(hash.clone()),
-                            Source::Github(_) => unreachable!("Git grep only has local sources"),
-                        },
-                    )),
+                    target: FileTarget::Local(match &sources[source] {
+                        Source::Worktree => crate::editor::Source::Worktree,
+                        Source::Index => crate::editor::Source::Index(
+                            index_blobs
+                                .as_ref()
+                                .map_err(Clone::clone)
+                                .and_then(|blobs| {
+                                    blobs.get(path).cloned().ok_or_else(|| {
+                                        "Could not resolve the matched file in the index".into()
+                                    })
+                                }),
+                        ),
+                        Source::Revision { hash, .. } => {
+                            crate::editor::Source::Revision(hash.clone())
+                        }
+                        Source::Github(_) => unreachable!("Git grep only has local sources"),
+                    }),
                     hits: Vec::new(),
                     number_width: 1,
                 });
@@ -1208,6 +1254,55 @@ mod tests {
     }
     fn has_hit(view: &View, file: usize) -> bool {
         view.rows.iter().any(|row| matches!(view.nodes[row.node].kind, Kind::Match { file: found, .. } if found == file))
+    }
+
+    #[test]
+    fn cached_grep_captures_many_index_blobs_in_one_batch() {
+        struct Trace(Option<std::ffi::OsString>);
+        impl Drop for Trace {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("GIT_TRACE", value),
+                    None => std::env::remove_var("GIT_TRACE"),
+                }
+            }
+        }
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        std::fs::create_dir("nested").unwrap();
+        for index in 0..100 {
+            std::fs::write(format!("nested/file {index:03} café.txt"), "needle\n").unwrap();
+        }
+        git(&["add", "."]);
+        let blob = git(&["rev-parse", ":nested/file 000 café.txt"]);
+        // Grep returns root-relative paths even when launched in a subdirectory.
+        std::env::set_current_dir("nested").unwrap();
+        let trace_path = directory.path().join("git-trace");
+        let trace = Trace(std::env::var_os("GIT_TRACE"));
+        std::env::set_var("GIT_TRACE", &trace_path);
+        let app = load_app(&args(&["--cached", "needle"])).unwrap();
+        drop(trace);
+
+        let view = app.grep_view.unwrap();
+        assert_eq!(view.files.len(), 100);
+        for file in &view.files {
+            assert!(matches!(
+                &file.target,
+                FileTarget::Local(crate::editor::Source::Index(Ok(found))) if found == &blob
+            ));
+        }
+        let calls = std::fs::read_to_string(trace_path).unwrap();
+        assert_eq!(
+            calls.matches("built-in: git ls-files").count(),
+            1,
+            "{calls}"
+        );
+        assert!(
+            !calls.contains("rev-parse --verify"),
+            "index blobs must not be resolved one file at a time: {calls}"
+        );
     }
 
     #[test]
