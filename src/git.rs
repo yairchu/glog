@@ -589,7 +589,7 @@ pub fn load_log_at(
 ) -> Result<LoadedLog, String> {
     let commits = read_log_at(user_args, repository)?;
     let interchanges =
-        (!commits.is_empty()).then(|| interchanges::Pending::new(user_args, repository));
+        (!commits.is_empty()).then(|| interchanges::Pending::new(user_args, repository, &commits));
     Ok(LoadedLog {
         commits,
         interchanges,

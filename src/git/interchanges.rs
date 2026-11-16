@@ -1,7 +1,8 @@
 //! Mark connections to branches whose tips need not appear in the Log.
 use std::{
     collections::{HashMap, HashSet},
-    process::Command,
+    io::{BufRead, BufReader, Write},
+    process::{Command, Stdio},
     sync::{mpsc, Arc},
 };
 
@@ -25,6 +26,8 @@ struct Read {
 
 struct Request {
     args: Vec<String>,
+    /// The displayed commits, which alone can show markers.
+    wanted: HashSet<String>,
     command: Command,
     previous: Option<Arc<Bases>>,
 }
@@ -33,13 +36,14 @@ struct Request {
 /// the same history can reuse it.
 pub struct Bases {
     args: Vec<String>,
+    wanted: HashSet<String>,
     anchor: String,
     tips: HashSet<String>,
     bases: HashSet<String>,
 }
 
 impl Pending {
-    pub fn new(args: &[String], repository: Option<&Repository>) -> Self {
+    pub fn new(args: &[String], repository: Option<&Repository>, commits: &[Commit]) -> Self {
         // Capture both the directory and environment before leaving the caller.
         // This also preserves relative GIT_DIR/object paths and test isolation.
         let base = read_command_at(repository);
@@ -66,6 +70,7 @@ impl Pending {
         Self {
             request: Some(Request {
                 args: args.to_vec(),
+                wanted: commits.iter().map(|commit| commit.hash.clone()).collect(),
                 command,
                 previous: None,
             }),
@@ -191,13 +196,17 @@ impl Request {
             .collect();
         // The bases follow from the anchor and branch tips alone.
         if let Some(previous) = &self.previous {
-            if previous.anchor == anchor && previous.tips == branch_tips {
+            if previous.anchor == anchor
+                && previous.tips == branch_tips
+                && self.wanted.is_subset(&previous.wanted)
+            {
                 return Some(previous.clone());
             }
         }
         let bases = |bases| {
             Some(Arc::new(Bases {
                 args: self.args.clone(),
+                wanted: self.wanted.clone(),
                 anchor: anchor.clone(),
                 tips: branch_tips.clone(),
                 bases,
@@ -211,25 +220,50 @@ impl Request {
         if branches.is_empty() {
             return bases(HashSet::new());
         }
-        // One topological walk reads all branches, with no argument-count limit.
-        // In particular, --octopus would find ancestors shared by *every* tip,
-        // whereas we need the union of each branch's bases with the anchor.
-        let input = std::iter::once(anchor.as_str())
-            .chain(branches.iter().map(String::as_str))
-            .map(|tip| format!("{tip}\n"))
-            .collect::<String>();
-        let output = super::pipe_through_cancellable(
-            self.git()
-                .args(["rev-list", "--topo-order", "--parents", "--stdin"]),
-            input.as_bytes(),
-            cancel,
-        )?;
-        let graph = String::from_utf8(output).ok()?;
-        let mut found = bases_in_graph(&graph, &anchor, &branches);
+        let mut found = self.walk(&anchor, &branches, cancel)?;
         // Branch refs already expose these connections. Tags alone do not,
         // so use the branch-tip snapshot rather than displayed decorations.
         found.retain(|base| !branch_tips.contains(base));
         bases(found)
+    }
+
+    /// One topological walk reads all branches, with no argument-count limit.
+    /// In particular, --octopus would find ancestors shared by *every* tip,
+    /// whereas we need the union of each branch's bases with the anchor.
+    /// The walk also starts at displayed commits, so that it can stop once
+    /// it processed them all, rather than reading the entire history.
+    fn walk(&self, anchor: &str, branches: &[String], cancel: &Cancel) -> Option<HashSet<String>> {
+        let input = std::iter::once(anchor)
+            .chain(branches.iter().map(String::as_str))
+            .chain(self.wanted.iter().map(String::as_str))
+            .map(|tip| format!("{tip}\n"))
+            .collect::<String>();
+        let mut child = self
+            .git()
+            .args(["rev-list", "--topo-order", "--parents", "--stdin"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let mut stdin = child.stdin.take()?;
+        let stdout = child.stdout.take()?;
+        cancel.register(child);
+        std::thread::scope(|scope| {
+            scope.spawn(move || stdin.write_all(input.as_bytes()));
+            let mut failed = false;
+            let lines = BufReader::new(stdout)
+                .lines()
+                .map_while(|line| line.map_err(|_| failed = true).ok());
+            let (found, complete) = bases_in_graph(lines, anchor, branches, &self.wanted);
+            let mut child = cancel.take()?;
+            if complete || failed {
+                // Unread output would block Git from exiting.
+                let _ = child.kill();
+            }
+            let status = child.wait().ok()?;
+            (complete || (!failed && status.success())).then_some(found)
+        })
     }
 }
 
@@ -244,22 +278,38 @@ struct Paint {
 /// is a best base for a branch only if no common descendant already covered
 /// that branch. Tracking coverage separately retains all criss-cross bases.
 /// Remove processed paint so memory follows the walk's frontier, not its depth.
-fn bases_in_graph(graph: &str, anchor: &str, branches: &[String]) -> HashSet<String> {
+/// Topological order processes a commit only after all of its children, so
+/// its paint is final then. Stop once every wanted commit was processed, and
+/// return whether that happened.
+fn bases_in_graph(
+    graph: impl IntoIterator<Item = impl AsRef<str>>,
+    anchor: &str,
+    branches: &[String],
+    wanted: &HashSet<String>,
+) -> (HashSet<String>, bool) {
     let words = branches.len().div_ceil(64);
-    let mut pending = HashMap::<&str, Paint>::new();
-    pending.entry(anchor).or_default().anchor = true;
+    let mut pending = HashMap::<String, Paint>::new();
+    pending.entry(anchor.to_owned()).or_default().anchor = true;
     for (index, tip) in branches.iter().enumerate() {
-        let paint = pending.entry(tip).or_default();
+        let paint = pending.entry(tip.clone()).or_default();
         paint.reached.resize(words, 0);
         paint.reached[index / 64] |= 1 << (index % 64);
     }
     let mut bases = HashSet::new();
-    for line in graph.lines() {
-        let mut fields = line.split_whitespace();
+    let mut remaining: HashSet<&str> = wanted.iter().map(String::as_str).collect();
+    if remaining.is_empty() {
+        return (bases, true);
+    }
+    for line in graph {
+        let mut fields = line.as_ref().split_whitespace();
         let Some(hash) = fields.next() else {
             continue;
         };
+        remaining.remove(hash);
         let Some(mut paint) = pending.remove(hash) else {
+            if remaining.is_empty() {
+                return (bases, true);
+            }
             continue;
         };
         paint.reached.resize(words, 0);
@@ -277,8 +327,11 @@ fn bases_in_graph(graph: &str, anchor: &str, branches: &[String]) -> HashSet<Str
                 *covered |= reached;
             }
         }
+        if remaining.is_empty() {
+            return (bases, true);
+        }
         for parent in fields {
-            let next = pending.entry(parent).or_default();
+            let next = pending.entry(parent.to_owned()).or_default();
             next.anchor |= paint.anchor;
             next.reached.resize(words, 0);
             next.covered.resize(words, 0);
@@ -290,7 +343,7 @@ fn bases_in_graph(graph: &str, anchor: &str, branches: &[String]) -> HashSet<Str
             }
         }
     }
-    bases
+    (bases, false)
 }
 
 /// Returns the marked rows with the nodes they replaced.
@@ -389,6 +442,15 @@ mod tests {
         log_folds::LogFolds,
     };
 
+    /// The request to mark the Log of `args`.
+    fn request(args: &[String]) -> super::Request {
+        let commits = crate::git::read_log_at(args, None).unwrap();
+        super::Pending::new(args, None, &commits)
+            .request
+            .take()
+            .unwrap()
+    }
+
     #[test]
     fn branch_refs_keep_regular_nodes_while_tags_keep_interchange_markers() {
         for empty in [false, true] {
@@ -444,7 +506,7 @@ mod tests {
         let feature = git(&["rev-parse", "HEAD"]);
         git(&["checkout", "-q", "main"]);
         let args = ["-L", "1,1:file.txt", "feature"].map(str::to_owned);
-        let request = super::Pending::new(&args, None).request.take().unwrap();
+        let request = request(&args);
         assert_eq!(super::anchor(&request), Some(feature));
     }
 
@@ -464,9 +526,24 @@ mod tests {
             &["--max-age", "0", "feature"],
         ] {
             let args: Vec<_> = args.iter().map(|arg| arg.to_string()).collect();
-            let request = super::Pending::new(&args, None).request.take().unwrap();
+            let request = request(&args);
             assert_eq!(super::anchor(&request), Some(feature.clone()), "{args:?}");
         }
+    }
+
+    #[test]
+    fn walk_stops_once_displayed_commits_are_processed() {
+        let graph = ["anchor base", "branch base", "base root"]
+            .into_iter()
+            .map(str::to_owned)
+            .chain(std::iter::from_fn(|| {
+                panic!("read past the displayed commits")
+            }));
+        let wanted = ["anchor", "base"].map(str::to_owned).into();
+        assert_eq!(
+            super::bases_in_graph(graph, "anchor", &["branch".to_owned()], &wanted),
+            (["base".to_owned()].into(), true)
+        );
     }
 
     #[test]
@@ -521,7 +598,7 @@ mod tests {
         assert!(expected.contains(&a));
         assert!(expected.contains(&b));
         expected.retain(|base| !tips.contains(base));
-        let request = super::Pending::new(&[], None).request.take().unwrap();
+        let request = request(&[]);
         assert_eq!(
             request.bases(&crate::git::Cancel::default()).unwrap().bases,
             expected
@@ -620,6 +697,7 @@ mod tests {
         sender
             .send(std::sync::Arc::new(super::Bases {
                 args: Vec::new(),
+                wanted: Default::default(),
                 anchor: String::new(),
                 tips: Default::default(),
                 bases: commits.iter().map(|commit| commit.hash.clone()).collect(),
