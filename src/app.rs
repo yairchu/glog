@@ -2304,6 +2304,9 @@ impl App {
             self.rebuild_show_rows();
             changed = true;
         }
+        if let Some(view) = &mut self.status_view {
+            changed |= view.poll_code_counts();
+        }
         changed
     }
 

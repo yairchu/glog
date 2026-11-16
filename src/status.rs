@@ -10,8 +10,9 @@ use std::{
     collections::{hash_map::DefaultHasher, HashMap, HashSet},
     hash::{Hash, Hasher},
     io::{self, Read},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::Command,
+    sync::atomic::AtomicBool,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -497,13 +498,15 @@ pub struct StatusView {
     patches: HashMap<Key, String>,
     fingerprints: HashMap<Key, u64>,
     #[cfg(test)]
-    patch_reads: std::cell::Cell<usize>,
+    patch_reads: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     #[cfg(test)]
     stat_reads: std::cell::Cell<usize>,
     rows: Rows,
     pub show_stat: bool,
     code_stats: bool,
+    /// Ordinary statistics, which code counts replace once read.
     stats: HashMap<Key, String>,
+    code_counts: crate::code_stats::BackgroundCounts<Key>,
     expanded_folds: HashSet<Key>,
     collapsed_files: HashSet<Key>,
     stat_bookmark: Option<Row>,
@@ -579,16 +582,14 @@ impl StatusView {
 
     /// The staged then unstaged statistics shown for a path.
     #[cfg(test)]
-    pub(crate) fn code_stats_for(&self, path: &str) -> Vec<&str> {
+    pub(crate) fn code_stats_for(&self, path: &str) -> Vec<String> {
         [Group::Staged, Group::Unstaged]
             .into_iter()
             .filter_map(|group| {
-                self.stats
-                    .get(&Key {
-                        group,
-                        path: path.into(),
-                    })
-                    .map(String::as_str)
+                self.stat(&Key {
+                    group,
+                    path: path.into(),
+                })
             })
             .collect()
     }
@@ -609,7 +610,8 @@ impl StatusView {
     }
     fn patch(&self, entry: &Entry) -> Result<String, String> {
         #[cfg(test)]
-        self.patch_reads.set(self.patch_reads.get() + 1);
+        self.patch_reads
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if entry.key.group == Group::Untracked {
             return crate::git::show_untracked_in(&self.root, &entry.raw_path);
         }
@@ -623,15 +625,7 @@ impl StatusView {
         crate::git::format_output(output.stdout)
     }
     fn diff_command(&self, entry: &Entry) -> Command {
-        let mut command = crate::git::patch_command_in(&self.root);
-        command
-            .arg("--literal-pathspecs")
-            .args(["diff", "--no-ext-diff", "--no-textconv", RENAME_DETECTION])
-            .args(crate::git::DIFF_PREFIX_ARGS);
-        if entry.key.group == Group::Staged {
-            command.arg("--cached");
-        }
-        command
+        diff_command_in(&self.root, entry)
     }
     fn diff_paths(&self, command: &mut Command, entry: &Entry) {
         command.arg("--").arg(&entry.raw_path);
@@ -716,161 +710,96 @@ impl StatusView {
                 );
             }
         }
-        if self.code_stats {
-            for (key, counts) in self.code_counts(snapshot) {
-                if let Some(raw) = stats.get_mut(&key) {
-                    *raw = format!("+{} −{}", counts.additions, counts.deletions);
-                }
-            }
-        }
         Ok(stats)
     }
 
-    /// Code-only counts for the entries that can be classified, reading
-    /// tracked patches with one Git process per group rather than per file.
-    fn code_counts(&self, snapshot: &Snapshot) -> Vec<(Key, crate::code_stats::Counts)> {
-        let repository = crate::git::Repository::checked_out(self.root.clone());
-        let entries = self.code_stats_eligible(&snapshot.entries, &repository);
-        let mut patches = Vec::new();
-        for entry in entries
-            .iter()
-            .filter(|entry| entry.key.group == Group::Untracked)
-        {
-            if let Ok(patch) = self.patch(entry) {
-                patches.push((entry.key.clone(), patch));
-            }
-        }
-        for group in [Group::Staged, Group::Unstaged] {
-            let members: Vec<_> = entries
-                .iter()
-                .filter(|entry| entry.key.group == group)
-                .collect();
-            let Some(first) = members.first() else {
-                continue;
-            };
-            #[cfg(test)]
-            self.patch_reads.set(self.patch_reads.get() + members.len());
-            // Bound each command line, which Windows limits to 32K characters.
-            let mut chunks = vec![Vec::new()];
-            let mut length = 0;
-            for entry in &members {
-                let paths = [Some(&entry.raw_path), entry.raw_original.as_ref()];
-                let size: usize = paths
-                    .iter()
-                    .flatten()
-                    .map(|path| path.as_os_str().len() + 1)
-                    .sum();
-                if length + size > 16 * 1024 && !chunks.last().unwrap().is_empty() {
-                    chunks.push(Vec::new());
-                    length = 0;
-                }
-                length += size;
-                chunks.last_mut().unwrap().push(*entry);
-            }
-            for chunk in chunks {
-                let mut command = self.diff_command(first);
-                command.args(["--no-color", "--full-index", "--submodule=short", "--"]);
-                for entry in &chunk {
-                    command.arg(&entry.raw_path);
-                    if let Some(original) = &entry.raw_original {
-                        command.arg(original);
-                    }
-                }
-                let Some(output) = command
-                    .output()
-                    .ok()
-                    .filter(|output| output.status.success())
-                else {
-                    continue;
-                };
-                let text = String::from_utf8_lossy(&output.stdout);
-                let lines: Vec<_> = text.lines().collect();
-                let files = crate::diff::file_sections(&text);
-                for entry in chunk {
-                    // Each entry's patch is the one file section at its path.
-                    let mut matching = files
-                        .iter()
-                        .filter(|file| raw_path(&file.path_bytes) == entry.raw_path);
-                    if let (Some(file), None) = (matching.next(), matching.next()) {
-                        patches.push((entry.key.clone(), lines[file.start..file.end].join("\n")));
-                    }
-                }
-            }
-        }
-        let sections: Vec<_> = patches
-            .iter()
-            .map(|(_, patch)| crate::diff::file_sections(patch))
-            .collect();
-        let (keys, requests): (Vec<_>, Vec<_>) = patches
-            .iter()
-            .zip(&sections)
-            .filter_map(|((key, patch), files)| match &files[..] {
-                [file] => Some((key.clone(), (patch.as_str(), file))),
-                _ => None,
-            })
-            .unzip();
-        keys.into_iter()
-            .zip(crate::code_stats::count_all(&requests, &repository))
-            .filter_map(|(key, counts)| Some((key, counts?)))
-            .collect()
+    /// The statistics shown for a file: its code counts once read, if enabled.
+    fn stat(&self, key: &Key) -> Option<String> {
+        let stats = self.stats.get(key)?;
+        Some(
+            match self.code_counts.get(key).filter(|_| self.code_stats) {
+                Some(counts) => format!("+{} −{}", counts.additions, counts.deletions),
+                None => stats.clone(),
+            },
+        )
     }
 
-    fn code_stats_eligible<'a>(
-        &self,
-        entries: &'a [Entry],
-        repository: &crate::git::Repository,
-    ) -> Vec<&'a Entry> {
-        // Combined conflict patches cannot be classified. Check source sizes
-        // before rendering any patch, including collapsed untracked files.
-        let entries: Vec<_> = entries
+    /// Count code in files that changed since their last count, off the UI thread.
+    fn request_code_counts(&mut self) {
+        if !self.code_stats || self.code_counts.counting() {
+            return;
+        }
+        let entries: Vec<_> = self
+            .snapshot
+            .entries
             .iter()
-            .filter(|entry| entry.key.group != Group::Conflicts)
             .filter(|entry| {
-                !matches!(entry.key.group, Group::Unstaged | Group::Untracked)
-                    || match std::fs::symlink_metadata(self.root.join(&entry.raw_path)) {
-                        Ok(metadata) => {
-                            metadata.is_file() && metadata.len() <= crate::code_stats::MAX_BYTES
-                        }
-                        Err(error) => error.kind() == io::ErrorKind::NotFound,
-                    }
+                // Combined conflict patches cannot be classified.
+                entry.key.group != Group::Conflicts
+                    && self.stats.contains_key(&entry.key)
+                    && self.code_counts.missing(&entry.key)
             })
+            .cloned()
             .collect();
-        let ids: Vec<_> = entries
-            .iter()
-            .flat_map(|entry| &entry.stats_blobs)
-            .map(String::as_str)
-            .collect();
-        let small: HashSet<_> = ids
-            .iter()
-            .zip(crate::code_stats::blob_sizes(&ids, repository))
-            .filter(|(_, size)| {
-                size.as_ref()
-                    .is_some_and(|(_, size)| *size <= crate::code_stats::MAX_BYTES)
-            })
-            .map(|(id, _)| *id)
-            .collect();
-        entries
-            .into_iter()
-            .filter(|entry| {
-                entry
-                    .stats_blobs
-                    .iter()
-                    .all(|id| small.contains(id.as_str()))
-            })
-            .collect()
+        let keys = entries.iter().map(|entry| entry.key.clone()).collect();
+        let root = self.root.clone();
+        #[cfg(test)]
+        let patch_reads = self.patch_reads.clone();
+        self.code_counts.spawn(keys, move |cancel| {
+            code_counts(
+                &root,
+                &entries,
+                cancel,
+                #[cfg(test)]
+                &patch_reads,
+            )
+        });
     }
+
+    /// Show code counts as they complete, in submodules too.
+    pub fn poll_code_counts(&mut self) -> bool {
+        let mut changed = false;
+        for child in self.submodules.values_mut() {
+            changed |= child.poll_code_counts();
+        }
+        if self.code_counts.poll() {
+            self.rebuild();
+            // Count files that changed during this count.
+            self.request_code_counts();
+            changed = true;
+        }
+        changed
+    }
+
+    pub fn counting_code(&self) -> bool {
+        self.code_stats
+            && (self.code_counts.counting()
+                || self.submodules.values().any(StatusView::counting_code))
+    }
+
+    /// Wait for code counts, as if `poll_code_counts` ran once they completed.
+    #[cfg(test)]
+    pub fn settle_code_counts(&mut self) {
+        for child in self.submodules.values_mut() {
+            child.settle_code_counts();
+        }
+        while self.code_counts.settle() {
+            self.rebuild();
+            self.request_code_counts();
+        }
+    }
+
     pub fn set_code_stats(&mut self, enabled: bool) {
         if self.code_stats == enabled {
             return;
         }
         self.code_stats = enabled;
-        self.stats.clear();
+        self.code_counts = Default::default();
         for child in self.submodules.values_mut() {
             child.set_code_stats(enabled);
         }
-        if let Err(error) = self.refresh() {
-            self.error = Some(error);
-        }
+        self.request_code_counts();
+        self.rebuild();
     }
     pub fn toggle_stat(&mut self) {
         if self.unloaded {
@@ -1104,6 +1033,8 @@ impl StatusView {
             }
         }
         stats.extend(self.load_stats(&changed, &mut failed)?);
+        self.code_counts
+            .invalidate(changed.entries.iter().map(|entry| &entry.key));
         // Retry failed reads even if file metadata has not changed.
         for key in failed {
             fingerprints.remove(&key);
@@ -1139,6 +1070,7 @@ impl StatusView {
         self.snapshot = snapshot;
         self.patches = patches;
         self.unloaded = false;
+        self.request_code_counts();
         self.rebuild();
         Ok(())
     }
@@ -1218,8 +1150,7 @@ impl StatusView {
                     None => path,
                 };
                 let detail = self
-                    .stats
-                    .get(&entry.key)
+                    .stat(&entry.key)
                     .map(|stats| format!(" | {stats}"))
                     .unwrap_or_default();
                 self.rows.push(Row {
@@ -1530,7 +1461,9 @@ impl StatusView {
             )));
         }
         let mut bisect = None;
-        if self.code_stats {
+        if self.counting_code() {
+            heading.push(Span::raw(" · Code stats… [C]"));
+        } else if self.code_stats {
             heading.push(Span::raw(" · Code stats [C]"));
         }
         for operation in &snapshot.state.operations {
@@ -1619,6 +1552,162 @@ impl StatusView {
             }
         }
     }
+}
+
+fn diff_command_in(root: &Path, entry: &Entry) -> Command {
+    let mut command = crate::git::patch_command_in(root);
+    command
+        .arg("--literal-pathspecs")
+        .args(["diff", "--no-ext-diff", "--no-textconv", RENAME_DETECTION])
+        .args(crate::git::DIFF_PREFIX_ARGS);
+    if entry.key.group == Group::Staged {
+        command.arg("--cached");
+    }
+    command
+}
+
+/// Code-only counts for the entries that can be classified, reading
+/// tracked patches with one Git process per group rather than per file.
+fn code_counts(
+    root: &Path,
+    all: &[Entry],
+    cancel: &AtomicBool,
+    #[cfg(test)] patch_reads: &std::sync::atomic::AtomicUsize,
+) -> Vec<Option<crate::code_stats::Counts>> {
+    let repository = crate::git::Repository::checked_out(root.to_owned());
+    let entries = code_stats_eligible(root, all, &repository);
+    let mut patches = Vec::new();
+    for entry in entries
+        .iter()
+        .filter(|entry| entry.key.group == Group::Untracked)
+    {
+        #[cfg(test)]
+        patch_reads.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Ok(patch) = crate::git::show_untracked_in(root, &entry.raw_path) {
+            patches.push((entry.key.clone(), patch));
+        }
+    }
+    for group in [Group::Staged, Group::Unstaged] {
+        let members: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.key.group == group)
+            .collect();
+        let Some(first) = members.first() else {
+            continue;
+        };
+        #[cfg(test)]
+        patch_reads.fetch_add(members.len(), std::sync::atomic::Ordering::Relaxed);
+        // Bound each command line, which Windows limits to 32K characters.
+        let mut chunks = vec![Vec::new()];
+        let mut length = 0;
+        for entry in &members {
+            let paths = [Some(&entry.raw_path), entry.raw_original.as_ref()];
+            let size: usize = paths
+                .iter()
+                .flatten()
+                .map(|path| path.as_os_str().len() + 1)
+                .sum();
+            if length + size > 16 * 1024 && !chunks.last().unwrap().is_empty() {
+                chunks.push(Vec::new());
+                length = 0;
+            }
+            length += size;
+            chunks.last_mut().unwrap().push(*entry);
+        }
+        for chunk in chunks {
+            let mut command = diff_command_in(root, first);
+            command.args(["--no-color", "--full-index", "--submodule=short", "--"]);
+            for entry in &chunk {
+                command.arg(&entry.raw_path);
+                if let Some(original) = &entry.raw_original {
+                    command.arg(original);
+                }
+            }
+            let Some(output) = command
+                .output()
+                .ok()
+                .filter(|output| output.status.success())
+            else {
+                continue;
+            };
+            let text = String::from_utf8_lossy(&output.stdout);
+            let lines: Vec<_> = text.lines().collect();
+            let files = crate::diff::file_sections(&text);
+            for entry in chunk {
+                // Each entry's patch is the one file section at its path.
+                let mut matching = files
+                    .iter()
+                    .filter(|file| raw_path(&file.path_bytes) == entry.raw_path);
+                if let (Some(file), None) = (matching.next(), matching.next()) {
+                    patches.push((entry.key.clone(), lines[file.start..file.end].join("\n")));
+                }
+            }
+        }
+    }
+    let sections: Vec<_> = patches
+        .iter()
+        .map(|(_, patch)| crate::diff::file_sections(patch))
+        .collect();
+    let (keys, requests): (Vec<_>, Vec<_>) = patches
+        .iter()
+        .zip(&sections)
+        .filter_map(|((key, patch), files)| match &files[..] {
+            [file] => Some((key.clone(), (patch.as_str(), file))),
+            _ => None,
+        })
+        .unzip();
+    let counts: HashMap<_, _> = keys
+        .into_iter()
+        .zip(crate::code_stats::count_all(&requests, &repository, cancel))
+        .collect();
+    all.iter()
+        .map(|entry| counts.get(&entry.key).copied().flatten())
+        .collect()
+}
+
+fn code_stats_eligible<'a>(
+    root: &Path,
+    entries: &'a [Entry],
+    repository: &crate::git::Repository,
+) -> Vec<&'a Entry> {
+    // Combined conflict patches cannot be classified. Check source sizes
+    // before rendering any patch, including collapsed untracked files.
+    let entries: Vec<_> = entries
+        .iter()
+        .filter(|entry| entry.key.group != Group::Conflicts)
+        .filter(|entry| {
+            !matches!(entry.key.group, Group::Unstaged | Group::Untracked)
+                || match std::fs::symlink_metadata(root.join(&entry.raw_path)) {
+                    Ok(metadata) => {
+                        metadata.is_file() && metadata.len() <= crate::code_stats::MAX_BYTES
+                    }
+                    Err(error) => error.kind() == io::ErrorKind::NotFound,
+                }
+        })
+        .collect();
+    let ids: Vec<_> = entries
+        .iter()
+        .flat_map(|entry| &entry.stats_blobs)
+        .map(String::as_str)
+        .collect();
+    let small: HashSet<_> = ids
+        .iter()
+        .zip(crate::code_stats::blob_sizes(&ids, repository))
+        .filter(|(_, size)| {
+            size.as_ref()
+                .is_some_and(|(_, size)| *size <= crate::code_stats::MAX_BYTES)
+        })
+        .map(|(id, _)| *id)
+        .collect();
+    entries
+        .into_iter()
+        .filter(|entry| {
+            entry
+                .stats_blobs
+                .iter()
+                .all(|id| small.contains(id.as_str()))
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -1729,19 +1818,23 @@ mod tests {
         };
         view.refresh().unwrap();
         let ordinary = view.stats.clone();
-        assert_eq!(view.patch_reads.get(), 0);
+        assert_eq!(
+            view.patch_reads.load(std::sync::atomic::Ordering::Relaxed),
+            0
+        );
 
         view.set_code_stats(true);
+        view.settle_code_counts();
 
         for (key, counts) in ordinary {
             if key.path == std::path::Path::new("small.py") {
-                assert_eq!(view.stats[&key], "+0 −0");
+                assert_eq!(view.stat(&key).unwrap(), "+0 −0");
             } else {
-                assert_eq!(view.stats[&key], counts, "{}", key.path.display());
+                assert_eq!(view.stat(&key).unwrap(), counts, "{}", key.path.display());
             }
         }
         assert_eq!(
-            view.patch_reads.get(),
+            view.patch_reads.load(std::sync::atomic::Ordering::Relaxed),
             1,
             "only the small file should load a patch; oversized old and new snapshots retain ordinary counts"
         );
@@ -1761,33 +1854,62 @@ mod tests {
         fs::write("other.unknown-glog", "one\ntwo\n").unwrap();
         let mut view = StatusView::load().unwrap();
         view.set_code_stats(true);
+        view.settle_code_counts();
         let file = |group| Key {
             group,
             path: PathBuf::from("file.py"),
         };
-        assert_eq!(view.stats[&file(Group::Unstaged)], "+1 −1");
+        assert_eq!(view.stat(&file(Group::Unstaged)).unwrap(), "+1 −1");
         let new = Key {
             group: Group::Untracked,
             path: PathBuf::from("new.sh"),
         };
-        assert_eq!(view.stats[&new], "+1 −0");
+        assert_eq!(view.stat(&new).unwrap(), "+1 −0");
         assert_eq!(
-            view.stats[&Key {
+            view.stat(&Key {
                 group: Group::Untracked,
                 path: PathBuf::from("other.unknown-glog")
-            }],
+            })
+            .unwrap(),
             "+2 −0"
         );
         git(&["add", "file.py"]);
         view.refresh().unwrap();
-        assert_eq!(view.stats[&file(Group::Staged)], "+1 −1");
+        view.settle_code_counts();
+        assert_eq!(view.stat(&file(Group::Staged)).unwrap(), "+1 −1");
         fs::write("file.py", "# more docs\nvalue = 2\n").unwrap();
         view.refresh().unwrap();
-        assert_eq!(view.stats[&file(Group::Unstaged)], "+0 −0");
-        assert_eq!(view.stats[&file(Group::Staged)], "+1 −1");
+        view.settle_code_counts();
+        assert_eq!(view.stat(&file(Group::Unstaged)).unwrap(), "+0 −0");
+        assert_eq!(view.stat(&file(Group::Staged)).unwrap(), "+1 −1");
         view.set_code_stats(false);
-        assert_eq!(view.stats[&file(Group::Staged)], "+2 −2");
-        assert_eq!(view.stats[&new], "+2 −0");
+        assert_eq!(view.stat(&file(Group::Staged)).unwrap(), "+2 −2");
+        assert_eq!(view.stat(&new).unwrap(), "+2 −0");
+    }
+
+    #[test]
+    fn code_stats_count_in_the_background() {
+        use std::fs;
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file.py", "# old docs\nvalue = 1\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        fs::write("file.py", "# new docs\nvalue = 2\n").unwrap();
+        let key = Key {
+            group: Group::Unstaged,
+            path: PathBuf::from("file.py"),
+        };
+        let mut view = StatusView::load().unwrap();
+        view.set_code_stats(true);
+        // Ordinary stats remain until the count completes.
+        assert!(view.counting_code());
+        assert_eq!(view.stat(&key).unwrap(), "+2 −2");
+
+        view.settle_code_counts();
+        assert!(!view.counting_code());
+        assert_eq!(view.stat(&key).unwrap(), "+1 −1");
     }
 
     #[test]
@@ -2335,7 +2457,10 @@ mod tests {
             ..StatusView::default()
         };
         view.refresh().unwrap();
-        assert_eq!(view.patch_reads.get(), 3);
+        assert_eq!(
+            view.patch_reads.load(std::sync::atomic::Ordering::Relaxed),
+            3
+        );
         assert!(view.patches.keys().all(|key| key.group != Group::Untracked));
         assert_eq!(
             view.stat_reads.get(),
@@ -2344,7 +2469,7 @@ mod tests {
         );
         view.refresh().unwrap();
         assert_eq!(
-            view.patch_reads.get(),
+            view.patch_reads.load(std::sync::atomic::Ordering::Relaxed),
             3,
             "unchanged refresh must reuse patches and untracked stats"
         );
@@ -2357,7 +2482,7 @@ mod tests {
         std::fs::write(root.join("a"), "after2\n").unwrap();
         view.refresh().unwrap();
         assert_eq!(
-            view.patch_reads.get(),
+            view.patch_reads.load(std::sync::atomic::Ordering::Relaxed),
             4,
             "only the edited file needs a new patch"
         );

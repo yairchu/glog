@@ -1,6 +1,7 @@
 //! Classify full file snapshots, then count only lines touched by Git's patch.
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
+    hash::Hash,
     io::Read,
     ops::Range,
     path::{Path, PathBuf},
@@ -25,7 +26,7 @@ pub struct Counts {
 /// None means the file cannot be classified reliably; retain its ordinary stats.
 #[cfg(test)]
 pub fn count(patch: &str, file: &FileSection, repository: &git::Repository) -> Option<Counts> {
-    count_all(&[(patch, file)], repository).remove(0)
+    count_all(&[(patch, file)], repository, &AtomicBool::new(false)).remove(0)
 }
 
 /// Count each file's patch, reading every snapshot it needs with a fixed
@@ -34,12 +35,9 @@ pub fn count(patch: &str, file: &FileSection, repository: &git::Repository) -> O
 pub fn count_all(
     files: &[(&str, &FileSection)],
     repository: &git::Repository,
+    cancel: &AtomicBool,
 ) -> Vec<Option<Counts>> {
-    count_requests(
-        &requests(files, repository),
-        repository,
-        &AtomicBool::new(false),
-    )
+    count_requests(&requests(files, repository), repository, cancel)
 }
 
 fn requests(files: &[(&str, &FileSection)], repository: &git::Repository) -> Vec<Option<Request>> {
@@ -50,32 +48,45 @@ fn requests(files: &[(&str, &FileSection)], repository: &git::Repository) -> Vec
 }
 
 /// Code-only counts of a Show's files by key, read off the UI thread.
-#[derive(Default)]
-pub struct ShowCounts {
-    counts: HashMap<Vec<u8>, Option<Counts>>,
-    read: Option<ShowRead>,
+pub type ShowCounts = BackgroundCounts<Vec<u8>>;
+
+/// Code-only counts of files by key, read off the UI thread.
+pub struct BackgroundCounts<K> {
+    counts: HashMap<K, Option<Counts>>,
+    read: Option<CountRead<K>>,
 }
 
-struct ShowRead {
-    keys: Vec<Vec<u8>>,
+impl<K> Default for BackgroundCounts<K> {
+    fn default() -> Self {
+        Self {
+            counts: HashMap::new(),
+            read: None,
+        }
+    }
+}
+
+struct CountRead<K> {
+    keys: Vec<K>,
+    /// Files that changed while being counted, to count again.
+    stale: HashSet<K>,
     receiver: mpsc::Receiver<Vec<Option<Counts>>>,
     cancel: Arc<AtomicBool>,
 }
 
-impl Drop for ShowRead {
+impl<K> Drop for CountRead<K> {
     fn drop(&mut self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
 }
 
-impl ShowCounts {
+impl<K: Clone + Eq + Hash> BackgroundCounts<K> {
     /// The counts of a file that could be classified.
-    pub fn get(&self, key: &[u8]) -> Option<Counts> {
+    pub fn get(&self, key: &K) -> Option<Counts> {
         self.counts.get(key).copied().flatten()
     }
 
     /// Whether the file awaits a count, to be requested once none is running.
-    pub fn missing(&self, key: &[u8]) -> bool {
+    pub fn missing(&self, key: &K) -> bool {
         !self.counts.contains_key(key)
     }
 
@@ -83,24 +94,41 @@ impl ShowCounts {
         self.read.is_some()
     }
 
-    /// Count files in the background unless a count is already running.
-    pub fn request(&mut self, files: &[(&str, &FileSection)], repository: git::Repository) {
-        if self.read.is_some() || files.is_empty() {
+    /// Run `count`, which returns counts in the order of `keys`, in the
+    /// background unless a count is already running.
+    pub fn spawn(
+        &mut self,
+        keys: Vec<K>,
+        count: impl FnOnce(&AtomicBool) -> Vec<Option<Counts>> + Send + 'static,
+    ) {
+        if self.read.is_some() || keys.is_empty() {
             return;
         }
-        let keys = files.iter().map(|(_, file)| file.key.clone()).collect();
-        let requests = requests(files, &repository);
         let (sender, receiver) = mpsc::channel();
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = cancel.clone();
         std::thread::spawn(move || {
-            let _ = sender.send(count_requests(&requests, &repository, &worker_cancel));
+            let _ = sender.send(count(&worker_cancel));
         });
-        self.read = Some(ShowRead {
+        self.read = Some(CountRead {
             keys,
+            stale: HashSet::new(),
             receiver,
             cancel,
         });
+    }
+
+    /// Forget the counts of changed files, including any being read now.
+    pub fn invalidate<'a>(&mut self, keys: impl IntoIterator<Item = &'a K>)
+    where
+        K: 'a,
+    {
+        for key in keys {
+            self.counts.remove(key);
+            if let Some(read) = &mut self.read {
+                read.stale.insert(key.clone());
+            }
+        }
     }
 
     /// Whether a running count completed.
@@ -124,7 +152,9 @@ impl ShowCounts {
             .into_iter()
             .chain(std::iter::repeat(None));
         for (key, counts) in read.keys.iter().zip(counts) {
-            self.counts.insert(key.clone(), counts);
+            if !read.stale.contains(key) {
+                self.counts.insert(key.clone(), counts);
+            }
         }
     }
 
@@ -136,6 +166,20 @@ impl ShowCounts {
         let counts = read.receiver.recv().ok();
         self.complete(counts);
         true
+    }
+}
+
+impl ShowCounts {
+    /// Count files in the background unless a count is already running.
+    pub fn request(&mut self, files: &[(&str, &FileSection)], repository: git::Repository) {
+        if self.counting() {
+            return;
+        }
+        let keys = files.iter().map(|(_, file)| file.key.clone()).collect();
+        let requests = requests(files, &repository);
+        self.spawn(keys, move |cancel| {
+            count_requests(&requests, &repository, cancel)
+        });
     }
 }
 
@@ -709,7 +753,10 @@ mod tests {
         assert!(calls.matches("git cat-file").count() <= 2, "{calls}");
 
         let mut view = crate::status::StatusView::load().unwrap();
-        let calls = traced("status-trace", &mut || view.set_code_stats(true));
+        let calls = traced("status-trace", &mut || {
+            view.set_code_stats(true);
+            view.settle_code_counts();
+        });
         assert_eq!(
             view.code_stats_for("file 3 café.py"),
             ["+1 −1", "+1 −1"],
@@ -849,6 +896,7 @@ mod tests {
             );
             let mut status = crate::status::StatusView::load().unwrap();
             status.set_code_stats(true);
+            status.settle_code_counts();
             assert_eq!(status.code_stats_for("script.py"), ["+1 −1"]);
 
             // Normalization must not let a later edit stand in for the snapshot.
