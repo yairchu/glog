@@ -167,8 +167,13 @@ fn app_from_json(output: &[u8]) -> Result<App, String> {
     let results: Vec<SearchResult> = serde_json::from_slice(output)
         .map_err(|error| format!("Could not read gh search code results: {error}"))?;
     let mut files = Vec::new();
+    let mut invalid = None;
     for result in results {
-        result.file.validate()?;
+        // Skip a malformed result rather than discarding the valid ones.
+        if let Err(error) = result.file.validate() {
+            invalid = Some(error);
+            continue;
+        }
         let mut hits = Vec::new();
         for fragment in result
             .fragments
@@ -211,6 +216,9 @@ fn app_from_json(output: &[u8]) -> Result<App, String> {
         }
         files.push((result.file, hits));
     }
+    if let (true, Some(error)) = (files.is_empty(), invalid) {
+        return Err(error);
+    }
     let mut app = App::new(Vec::new());
     app.history = History::GithubSearch;
     app.mode = Mode::Grep;
@@ -251,10 +259,14 @@ impl File {
             .and_then(|rest| rest.split_once('/'))
             .map(|(host, _)| host)
             .filter(|host| {
-                !host.is_empty()
-                    && host
+                // GitHub Enterprise may be served on a port.
+                let (name, port) = host.split_once(':').unwrap_or((host, "1"));
+                !name.is_empty()
+                    && name
                         .bytes()
                         .all(|byte| byte.is_ascii_alphanumeric() || b".-".contains(&byte))
+                    && !port.is_empty()
+                    && port.bytes().all(|byte| byte.is_ascii_digit())
             })
             .ok_or_else(|| "GitHub returned an invalid repository URL".into())
     }
