@@ -1422,6 +1422,9 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
     layout_show_rows(app, area.width);
     app.show_row_origin = area.y;
     app.visible_show_rows = area.height as usize;
+    if area.is_empty() {
+        return;
+    }
     let rows = app.show_rows.len();
     let cursor_line =
         (app.show_cursor < rows).then(|| drawn_show_line(app, app.show_cursor, area.width, true));
