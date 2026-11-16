@@ -430,6 +430,24 @@ mod tests {
     }
 
     #[test]
+    fn line_range_logs_anchor_at_their_revision() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        std::fs::write("file.txt", "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        git(&["checkout", "-qb", "feature"]);
+        std::fs::write("file.txt", "feature\n").unwrap();
+        git(&["commit", "-qam", "feature"]);
+        let feature = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "main"]);
+        let args = ["-L", "1,1:file.txt", "feature"].map(str::to_owned);
+        let request = super::Pending::new(&args, None).request.take().unwrap();
+        assert_eq!(super::anchor(&request), Some(feature));
+    }
+
+    #[test]
     fn batched_bases_match_git_for_criss_cross_and_many_distinct_tips() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
