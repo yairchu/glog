@@ -3660,6 +3660,33 @@ mod tests {
         }
     }
 
+    /// A root that is the base of a side branch and its checked-out sibling.
+    fn interchange_repository() -> (
+        crate::git::tests::TestDirectory,
+        crate::git::tests::CurrentDirGuard,
+        String,
+    ) {
+        use crate::git::tests::{git, CurrentDirGuard, TestDirectory};
+        let directory = TestDirectory::new();
+        let cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        git(&["commit", "--allow-empty", "-qm", "root"]);
+        let root = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-qb", "side"]);
+        git(&["commit", "--allow-empty", "-qm", "side tip"]);
+        git(&["checkout", "-q", "main"]);
+        git(&["commit", "--allow-empty", "-qm", "tip"]);
+        (directory, cwd, root)
+    }
+
+    #[test]
+    fn show_reads_no_interchanges() {
+        let (_directory, _cwd, root) = interchange_repository();
+        // A single commit has no graph to mark.
+        let show = crate::git::load_show_app(std::slice::from_ref(&root)).unwrap();
+        assert!(show.pending_interchanges.is_none());
+    }
+
     #[test]
     fn github_commit_links_keep_line_sides_and_renamed_paths() {
         let mut app = App::new(vec![commit("a")]);

@@ -587,6 +587,20 @@ pub fn load_log_at(
     user_args: &[String],
     repository: Option<&Repository>,
 ) -> Result<LoadedLog, String> {
+    let commits = read_log_at(user_args, repository)?;
+    let interchanges =
+        (!commits.is_empty()).then(|| interchanges::Pending::new(user_args, repository));
+    Ok(LoadedLog {
+        commits,
+        interchanges,
+    })
+}
+
+/// Commits alone, for views that draw no graph and so need no markers.
+fn read_log_at(
+    user_args: &[String],
+    repository: Option<&Repository>,
+) -> Result<Vec<Commit>, String> {
     let output = log_command(user_args, repository)?
         .output()
         .map_err(|error| {
@@ -631,12 +645,7 @@ pub fn load_log_at(
         commit.traversal = traversal;
     }
     empty_commits::mark(&mut commits, repository);
-    let interchanges =
-        (!commits.is_empty()).then(|| interchanges::Pending::new(user_args, repository));
-    Ok(LoadedLog {
-        commits,
-        interchanges,
-    })
+    Ok(commits)
 }
 
 /// Read metadata for pinned revisions without an argument per commit.
@@ -915,7 +924,7 @@ pub fn load_show_app_with(
             return Err(error);
         }
     };
-    let commits = load_log_at(
+    let commits = read_log_at(
         &["-1".to_owned(), hash.clone(), "--".to_owned()],
         repository,
     )?;
