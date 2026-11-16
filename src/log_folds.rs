@@ -1789,6 +1789,7 @@ pub fn unicode_node(node: char) -> char {
     match node {
         '*' => '●',
         '.' => '•',
+        '@' => '⦵',
         'o' => '○',
         marker => marker,
     }

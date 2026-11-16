@@ -12,6 +12,7 @@ const FIELD: char = '\x1f';
 const COAUTHOR: char = '\x1d';
 
 mod empty_commits;
+mod interchanges;
 mod repository;
 
 pub(crate) use repository::Repository;
@@ -115,7 +116,8 @@ pub struct Commit {
     pub parents: Vec<String>,
     /// How the Log that loaded this commit traversed history.
     pub traversal: Traversal,
-    /// Git's node marker, including comparison and excluded-boundary markers.
+    /// Graph node marker, including Git comparisons/boundaries and our empty
+    /// commit (`.`) and branch interchange (`@`) markers.
     pub graph_node: char,
 }
 
@@ -595,6 +597,7 @@ pub fn load_log_at(
         commit.traversal = traversal;
     }
     empty_commits::mark(&mut commits, repository);
+    interchanges::mark(&mut commits, user_args, repository);
     Ok(commits)
 }
 
@@ -3395,7 +3398,7 @@ pub(crate) mod tests {
             [&octopus, &merge, &main, &base]
         );
         assert!(visible.iter().all(
-            |(i, c)| matches!(app.log_folds.graph(*i, c), [row] if row == "* " || row == ". ")
+            |(i, c)| matches!(app.log_folds.graph(*i, c), [row] if row == "* " || row == ". " || row == "@ ")
         ));
 
         // Limited history may omit the first parent. What is folded still
@@ -3453,7 +3456,7 @@ pub(crate) mod tests {
                     .collect()
             })
             .collect();
-        assert_eq!(graph, ["|/ ", ". "]);
+        assert_eq!(graph, ["|/ ", "@ "]);
 
         // Actual watch updates introduce folded merges without moving selection
         // away from the Working tree or overriding an explicitly expanded merge.
@@ -3690,7 +3693,7 @@ pub(crate) mod tests {
             // made filtered logs of long histories hundreds of lanes wide.
             let expected = vec![
                 vec!["● ".to_owned()],
-                vec!["│ ● ".to_owned()],
+                vec!["│ ⦵ ".to_owned()],
                 vec!["● │ ".to_owned()],
                 vec!["├─╯ ".to_owned(), "● ".to_owned()],
             ];
@@ -3854,7 +3857,14 @@ pub(crate) mod tests {
             assert!(crate::ansi::plain(commits[base].graph.last().unwrap()).contains('o'));
             for (i, commit) in commits.iter().enumerate() {
                 let node = crate::ansi::plain(folds.display_graph(i, commit).last().unwrap());
-                assert!(node.contains(if i == base { '○' } else { '●' }), "{node}");
+                let marker = if i == base {
+                    '○'
+                } else if commit.hash == history.side {
+                    '⦵'
+                } else {
+                    '●'
+                };
+                assert!(node.contains(marker), "{node}");
             }
             folds.toggle_merges(&commits).unwrap();
             assert!(

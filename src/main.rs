@@ -385,8 +385,9 @@ Log shows committed history, loaded once unless --watch or W enables refresh.
 Watching preserves revision/path arguments; Logs that name no revision or path
 also include a Working tree item. W toggles watching in Log, Branches, Stashes, Reflog, and Bisect.
 Graphs use rounded paths, ● for commits, • for empty non-merge commits or a
-clean working tree with nothing in progress, and ○ for boundary commits. Merge
-commits stay filled.
+clean working tree with nothing in progress, ⦵ for shared ancestors with other
+local or remote branches, and ○ for boundary commits. Interchanges take
+precedence over empty-commit markers; comparison and boundary markers stay intact.
 ┼ crosses paths without joining them.
 Reflog shows local ref updates with their update times; Enter opens the commit.
 Its graph keeps event order: ▲/▼ and sideways ◀/▶ nodes point from parents
