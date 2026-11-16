@@ -278,6 +278,8 @@ pub struct App {
     pending_github_file: Option<crate::github_search::Pending>,
     pub commits: Vec<Commit>,
     pending_interchanges: Option<git::interchanges::Pending>,
+    /// The last completed marker read, kept so refreshes need not flicker.
+    interchanges: Option<std::sync::Arc<git::interchanges::Bases>>,
     pub history: History,
     pub pending_blame: Option<crate::blame::FileRevision>,
     blame_stack: Vec<BlameFrame>,
@@ -395,6 +397,7 @@ impl App {
             github_file_view: None,
             pending_github_file: None,
             pending_interchanges: interchanges,
+            interchanges: None,
             history: match commits
                 .first()
                 .and_then(|commit| commit.annotation.as_ref())
@@ -1277,7 +1280,10 @@ impl App {
             .as_mut()
             .is_some_and(|pending| pending.poll(&mut self.commits));
         if marked {
-            self.pending_interchanges = None;
+            self.interchanges = self
+                .pending_interchanges
+                .take()
+                .and_then(git::interchanges::Pending::into_result);
             self.layout_log_folds();
         }
         let Some(result) = self.log_folds.poll(&self.commits) else {
@@ -1291,7 +1297,7 @@ impl App {
     #[cfg(test)]
     pub fn settle_log(&mut self) {
         if let Some(pending) = self.pending_interchanges.take() {
-            pending.settle(&mut self.commits);
+            self.interchanges = pending.settle(&mut self.commits);
             self.layout_log_folds();
         }
         if let Some(result) = self.log_folds.settle(&self.commits) {
@@ -1443,9 +1449,12 @@ impl App {
 
     pub fn replace_commits(&mut self, loaded: impl Into<git::LoadedLog>) {
         let git::LoadedLog {
-            commits,
-            interchanges,
+            mut commits,
+            mut interchanges,
         } = loaded.into();
+        if let Some(pending) = &mut interchanges {
+            pending.resume(self.interchanges.as_ref(), &mut commits);
+        }
         self.pending_interchanges = interchanges;
         self.log_date_column = None;
         // Follow progress only while the candidate is selected in the graph;
@@ -3685,6 +3694,43 @@ mod tests {
         // A single commit has no graph to mark.
         let show = crate::git::load_show_app(std::slice::from_ref(&root)).unwrap();
         assert!(show.pending_interchanges.is_none());
+    }
+
+    #[test]
+    fn refreshes_keep_interchanges_until_a_branch_moves() {
+        let (_directory, _cwd, root) = interchange_repository();
+        let node = |app: &App| {
+            let commit = app
+                .commits
+                .iter()
+                .find(|commit| commit.hash == root)
+                .unwrap();
+            (commit.graph_node, commit.graph.last().unwrap().clone())
+        };
+        let mut app = App::new(git::load_log_at(&[], None).unwrap());
+        app.settle_log();
+        let marked = node(&app);
+        assert_eq!(marked.0, '@');
+        let read = app.interchanges.clone().unwrap();
+
+        // Refreshing keeps the markers, and reuses the read while no tip moves.
+        app.replace_commits(git::load_log_at(&[], None).unwrap());
+        assert_eq!(node(&app), marked);
+        app.settle_log();
+        assert_eq!(node(&app), marked);
+        assert!(std::sync::Arc::ptr_eq(
+            &read,
+            app.interchanges.as_ref().unwrap()
+        ));
+
+        // A branch at the base exposes it, so its provisional marker reverts.
+        crate::git::tests::git(&["branch", "-f", "side", &root]);
+        let unmarked = node(&App::new(git::load_log_at(&[], None).unwrap()));
+        app.replace_commits(git::load_log_at(&[], None).unwrap());
+        assert_eq!(node(&app), marked);
+        app.settle_log();
+        assert_eq!(node(&app), unmarked);
+        assert_eq!(unmarked.0, '.');
     }
 
     #[test]

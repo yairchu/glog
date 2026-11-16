@@ -2,7 +2,7 @@
 use std::{
     collections::{HashMap, HashSet},
     process::Command,
-    sync::mpsc,
+    sync::{mpsc, Arc},
 };
 
 use super::{read_command_at, Cancel, Commit, Repository};
@@ -12,16 +12,30 @@ use super::{read_command_at, Cancel, Commit, Repository};
 pub struct Pending {
     request: Option<Request>,
     read: Option<Read>,
+    /// Nodes marked from an earlier read until this one completes, with the
+    /// markers they replaced.
+    provisional: Vec<(usize, char)>,
+    result: Option<Arc<Bases>>,
 }
 
 struct Read {
-    receiver: mpsc::Receiver<HashSet<String>>,
+    receiver: mpsc::Receiver<Arc<Bases>>,
     cancel: Cancel,
 }
 
 struct Request {
     args: Vec<String>,
     command: Command,
+    previous: Option<Arc<Bases>>,
+}
+
+/// A completed read, with the inputs that determine it, so that refreshing
+/// the same history can reuse it.
+pub struct Bases {
+    args: Vec<String>,
+    anchor: String,
+    tips: HashSet<String>,
+    bases: HashSet<String>,
 }
 
 impl Pending {
@@ -53,9 +67,25 @@ impl Pending {
             request: Some(Request {
                 args: args.to_vec(),
                 command,
+                previous: None,
             }),
             read: None,
+            provisional: Vec::new(),
+            result: None,
         }
+    }
+
+    /// Keep showing the markers of an earlier read of the same history while
+    /// this one runs, and reuse that read outright if no branch tip moved.
+    pub fn resume(&mut self, previous: Option<&Arc<Bases>>, commits: &mut [Commit]) {
+        let Some(request) = &mut self.request else {
+            return;
+        };
+        let Some(previous) = previous.filter(|previous| previous.args == request.args) else {
+            return;
+        };
+        self.provisional = mark(commits, &previous.bases);
+        request.previous = Some(previous.clone());
     }
 
     /// Called only after the initial frame, never while loading the history.
@@ -67,31 +97,52 @@ impl Pending {
         let cancel = Cancel::default();
         let worker_cancel = cancel.clone();
         std::thread::spawn(move || {
-            let _ = sender.send(request.bases(&worker_cancel).unwrap_or_default());
+            if let Some(bases) = request.bases(&worker_cancel) {
+                let _ = sender.send(bases);
+            }
         });
         self.read = Some(Read { receiver, cancel });
     }
 
+    /// Whether the read completed, after updating the markers with its result.
     pub fn poll(&mut self, commits: &mut [Commit]) -> bool {
         let Some(read) = &self.read else {
             return false;
         };
         match read.receiver.try_recv() {
-            Ok(bases) => {
-                mark(commits, &bases);
-                true
-            }
-            Err(mpsc::TryRecvError::Empty) => false,
-            Err(mpsc::TryRecvError::Disconnected) => true,
+            Ok(bases) => self.complete(commits, Some(bases)),
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => self.complete(commits, None),
         }
+        true
+    }
+
+    /// Replace provisional markers, so that none outlive a moved branch.
+    fn complete(&mut self, commits: &mut [Commit], bases: Option<Arc<Bases>>) {
+        for (index, node) in std::mem::take(&mut self.provisional) {
+            let commit = &mut commits[index];
+            if let Some(row) = commit.graph.last_mut() {
+                *row = row.replacen('@', &node.to_string(), 1);
+            }
+            commit.graph_node = node;
+        }
+        if let Some(bases) = &bases {
+            mark(commits, &bases.bases);
+        }
+        self.result = bases;
+    }
+
+    /// The completed read, for resuming a refresh of the same history.
+    pub fn into_result(mut self) -> Option<Arc<Bases>> {
+        self.result.take()
     }
 
     #[cfg(test)]
-    pub fn settle(mut self, commits: &mut [Commit]) {
+    pub fn settle(mut self, commits: &mut [Commit]) -> Option<Arc<Bases>> {
         self.start();
-        if let Ok(bases) = self.read.as_ref().unwrap().receiver.recv() {
-            mark(commits, &bases);
-        }
+        let bases = self.read.as_ref().unwrap().receiver.recv().ok();
+        self.complete(commits, bases);
+        self.into_result()
     }
 }
 
@@ -119,7 +170,7 @@ impl Request {
         command
     }
 
-    fn bases(&self, cancel: &Cancel) -> Option<HashSet<String>> {
+    fn bases(&self, cancel: &Cancel) -> Option<Arc<Bases>> {
         let output = self
             .git()
             .args([
@@ -138,13 +189,27 @@ impl Request {
             .lines()
             .map(str::to_owned)
             .collect();
+        // The bases follow from the anchor and branch tips alone.
+        if let Some(previous) = &self.previous {
+            if previous.anchor == anchor && previous.tips == branch_tips {
+                return Some(previous.clone());
+            }
+        }
+        let bases = |bases| {
+            Some(Arc::new(Bases {
+                args: self.args.clone(),
+                anchor: anchor.clone(),
+                tips: branch_tips.clone(),
+                bases,
+            }))
+        };
         let branches: Vec<_> = branch_tips
             .iter()
             .filter(|&tip| tip != &anchor)
             .cloned()
             .collect();
         if branches.is_empty() {
-            return Some(HashSet::new());
+            return bases(HashSet::new());
         }
         // One topological walk reads all branches, with no argument-count limit.
         // In particular, --octopus would find ancestors shared by *every* tip,
@@ -160,11 +225,11 @@ impl Request {
             cancel,
         )?;
         let graph = String::from_utf8(output).ok()?;
-        let mut bases = bases_in_graph(&graph, &anchor, &branches);
+        let mut found = bases_in_graph(&graph, &anchor, &branches);
         // Branch refs already expose these connections. Tags alone do not,
         // so use the branch-tip snapshot rather than displayed decorations.
-        bases.retain(|base| !branch_tips.contains(base));
-        Some(bases)
+        found.retain(|base| !branch_tips.contains(base));
+        bases(found)
     }
 }
 
@@ -228,16 +293,20 @@ fn bases_in_graph(graph: &str, anchor: &str, branches: &[String]) -> HashSet<Str
     bases
 }
 
-fn mark(commits: &mut [Commit], bases: &HashSet<String>) {
-    for commit in commits {
+/// Returns the marked rows with the nodes they replaced.
+fn mark(commits: &mut [Commit], bases: &HashSet<String>) -> Vec<(usize, char)> {
+    let mut marked = Vec::new();
+    for (index, commit) in commits.iter_mut().enumerate() {
         // Keep Git's comparison, patch-equivalence, and boundary markers.
         if matches!(commit.graph_node, '*' | '.') && bases.contains(&commit.hash) {
             if let Some(row) = commit.graph.last_mut() {
                 *row = row.replacen(commit.graph_node, "@", 1);
             }
+            marked.push((index, commit.graph_node));
             commit.graph_node = '@';
         }
     }
+    marked
 }
 
 /// A single positive revision anchors an explicitly opened history, even
@@ -414,7 +483,7 @@ mod tests {
         expected.retain(|base| !tips.contains(base));
         let request = super::Pending::new(&[], None).request.take().unwrap();
         assert_eq!(
-            request.bases(&crate::git::Cancel::default()).unwrap(),
+            request.bases(&crate::git::Cancel::default()).unwrap().bases,
             expected
         );
     }
@@ -509,7 +578,12 @@ mod tests {
         });
         let commits = loaded.commits.clone();
         sender
-            .send(commits.iter().map(|commit| commit.hash.clone()).collect())
+            .send(std::sync::Arc::new(super::Bases {
+                args: Vec::new(),
+                anchor: String::new(),
+                tips: Default::default(),
+                bases: commits.iter().map(|commit| commit.hash.clone()).collect(),
+            }))
             .unwrap();
         loaded.interchanges = Some(pending);
         let mut app = App::new(loaded);
