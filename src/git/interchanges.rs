@@ -510,6 +510,20 @@ mod tests {
     }
 
     #[test]
+    fn message_search_revisions_anchor_at_their_commit() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        git(&["checkout", "-qb", "feature"]);
+        git(&["commit", "--allow-empty", "-qm", "feature work"]);
+        let feature = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "main"]);
+        let request = request(&[":/feature work".to_owned()]);
+        assert_eq!(super::anchor(&request), Some(feature));
+    }
+
+    #[test]
     fn walk_stops_once_displayed_commits_are_processed() {
         let graph = ["anchor base", "branch base", "base root"]
             .into_iter()
