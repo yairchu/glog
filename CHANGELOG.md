@@ -5,6 +5,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+## 0.11.0 - 2026-11-16
+
 ### Added
 
 - Keep the selected commit when switching between Log and Branches when it
@@ -657,7 +659,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Initial release of the interactive `git log` and `git show` browser.
 
-[Unreleased]: https://github.com/yairchu/glog/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/yairchu/glog/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/yairchu/glog/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/yairchu/glog/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/yairchu/glog/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/yairchu/glog/compare/v0.8.0...v0.8.1
