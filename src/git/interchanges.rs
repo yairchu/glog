@@ -313,6 +313,47 @@ mod tests {
     };
 
     #[test]
+    fn branch_refs_keep_regular_nodes_while_tags_keep_interchange_markers() {
+        for empty in [false, true] {
+            let directory = TestDirectory::new();
+            let _cwd = CurrentDirGuard::enter(directory.path());
+            git(&["init", "-qb", "main"]);
+            if !empty {
+                std::fs::write("file.txt", "base\n").unwrap();
+                git(&["add", "."]);
+            }
+            git(&["commit", "--allow-empty", "-qm", "base"]);
+            let base = git(&["rev-parse", "HEAD"]);
+            git(&["checkout", "-qb", "side"]);
+            git(&["commit", "--allow-empty", "-qm", "side tip"]);
+            git(&["checkout", "-q", "main"]);
+            git(&["commit", "--allow-empty", "-qm", "main tip"]);
+            git(&["tag", "base-tag", &base]);
+
+            let node = || {
+                load_log(&[])
+                    .unwrap()
+                    .into_iter()
+                    .find(|commit| commit.hash == base)
+                    .unwrap()
+                    .graph_node
+            };
+            // A tag does not identify the branch connection.
+            assert_eq!(node(), '@');
+            for reference in ["refs/heads/at-base", "refs/remotes/origin/at-base"] {
+                git(&["update-ref", reference, &base]);
+                assert_eq!(
+                    node(),
+                    if empty { '.' } else { '*' },
+                    "empty={empty}, reference={reference}"
+                );
+                git(&["update-ref", "-d", reference]);
+                assert_eq!(node(), '@');
+            }
+        }
+    }
+
+    #[test]
     fn batched_bases_match_git_for_criss_cross_and_many_distinct_tips() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
@@ -584,7 +625,7 @@ mod tests {
                     .find(|c| c.hash == side_base)
                     .unwrap()
                     .graph_node,
-                '@'
+                '.'
             );
         }
     }
