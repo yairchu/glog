@@ -49,27 +49,20 @@ pub fn count_all(
         .collect();
     let blobs = read_blobs(&ids, repository);
     // Git can print a worktree blob's hash without writing the object. Use
-    // the file only when its bytes still match that exact hash.
-    let mut fallbacks: HashMap<PathBuf, Option<Vec<u8>>> = HashMap::new();
-    for request in requests.iter().flatten() {
-        for side in [&request.old, &request.new] {
-            if let Side::Blob(id) = side {
-                if matches!(blobs.get(id.as_str()), Some(Blob::Missing)) {
-                    if let Some(worktree) = &request.worktree {
-                        fallbacks
-                            .entry(worktree.clone())
-                            .or_insert_with(|| read_worktree(worktree));
-                    }
-                }
-            }
-        }
-    }
-    let hashed: Vec<_> = fallbacks
+    // a captured snapshot only when its raw or normalized bytes match it.
+    let paths: Vec<_> = requests
         .iter()
-        .filter(|(_, bytes)| bytes.is_some())
-        .map(|(path, _)| path.clone())
+        .flatten()
+        .filter(|request| {
+            [&request.old, &request.new].iter().any(|side| {
+                matches!(side, Side::Blob(id) if matches!(blobs.get(id.as_str()), Some(Blob::Missing)))
+            })
+        })
+        .filter_map(|request| request.worktree.clone())
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
         .collect();
-    let hashes: HashMap<_, _> = hashed.iter().zip(hash_files(&hashed, repository)).collect();
+    let fallbacks = worktree_blobs(&paths, repository);
     let snapshot = |side: &Side, worktree: &Option<PathBuf>| -> Option<String> {
         let bytes = match side {
             Side::Absent => return Some(String::new()),
@@ -79,11 +72,12 @@ pub fn count_all(
                 Blob::Unusable => return None,
                 Blob::Missing => {
                     let worktree = worktree.as_ref()?;
-                    let hash = hashes.get(worktree)?.as_deref()?;
-                    if !hash.starts_with(id.as_str()) {
-                        return None;
-                    }
-                    fallbacks.get(worktree)?.clone()?
+                    fallbacks
+                        .get(worktree)?
+                        .iter()
+                        .find(|(hash, _)| hash.starts_with(id.as_str()))?
+                        .1
+                        .clone()
                 }
             },
         };
@@ -281,7 +275,56 @@ fn read_blobs<'a>(ids: &[&'a str], repository: &git::Repository) -> HashMap<&'a 
         .collect()
 }
 
-/// Hash each file's exact bytes as Git would store them, in one Git process.
+/// Capture raw and CRLF-normalized candidates, then hash their exact bytes.
+/// Matching a patch's hash decides which representation Git used; this also
+/// supports attributes without running clean filters or trusting a changed file.
+fn worktree_blobs(
+    paths: &[PathBuf],
+    repository: &git::Repository,
+) -> HashMap<PathBuf, Vec<(String, Vec<u8>)>> {
+    if paths.is_empty() {
+        return HashMap::new();
+    }
+    let Ok(directory) = tempfile::tempdir() else {
+        return HashMap::new();
+    };
+    let mut snapshots = Vec::new();
+    for path in paths {
+        let Some(bytes) = read_worktree(path)
+            .filter(|bytes| bytes.len() as u64 <= MAX_BYTES && !bytes.contains(&0))
+        else {
+            continue;
+        };
+        let normalized = bytes.windows(2).any(|pair| pair == b"\r\n").then(|| {
+            bytes
+                .iter()
+                .enumerate()
+                .filter_map(|(index, &byte)| {
+                    (byte != b'\r' || bytes.get(index + 1) != Some(&b'\n')).then_some(byte)
+                })
+                .collect::<Vec<_>>()
+        });
+        for bytes in std::iter::once(bytes).chain(normalized) {
+            let temporary = directory.path().join(snapshots.len().to_string());
+            if std::fs::write(&temporary, &bytes).is_ok() {
+                snapshots.push((path.clone(), temporary, bytes));
+            }
+        }
+    }
+    let temporary_paths: Vec<_> = snapshots.iter().map(|(_, path, _)| path.clone()).collect();
+    let mut blobs: HashMap<_, Vec<_>> = HashMap::new();
+    for ((path, _, bytes), hash) in snapshots
+        .into_iter()
+        .zip(hash_files(&temporary_paths, repository))
+    {
+        if let Some(hash) = hash {
+            blobs.entry(path).or_default().push((hash, bytes));
+        }
+    }
+    blobs
+}
+
+/// Hash each file's exact bytes in one Git process, without applying filters.
 fn hash_files(paths: &[PathBuf], repository: &git::Repository) -> Vec<Option<String>> {
     // The protocol is line-based, so a path spanning lines cannot be hashed.
     let hashable: Vec<_> = paths
