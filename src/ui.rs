@@ -4131,6 +4131,32 @@ mod show_wrapping_tests {
     }
 
     #[test]
+    fn navigation_after_end_in_a_burst_matches_separate_frames() {
+        use crate::input::handle;
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        for next in [KeyCode::Home, KeyCode::Up, KeyCode::PageUp] {
+            let run = |redraw_between| {
+                let mut terminal = Terminal::new(TestBackend::new(10, 6)).unwrap();
+                let mut app = App::new(Vec::new());
+                app.mode = Mode::Show;
+                app.show_text = format!("{}\n{}", "a".repeat(70), "b".repeat(30));
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                let press = |app: &mut App, code| {
+                    handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), app);
+                };
+                press(&mut app, KeyCode::End);
+                if redraw_between {
+                    terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                }
+                press(&mut app, next);
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                (app.show_cursor_screen(), app.show_offset)
+            };
+            assert_eq!(run(false), run(true), "End then {next:?}");
+        }
+    }
+
+    #[test]
     fn editor_columns_exclude_combined_diff_markers_and_submodule_indentation() {
         let mut terminal = Terminal::new(TestBackend::new(10, 8)).unwrap();
         let mut app = App::new(Vec::new());

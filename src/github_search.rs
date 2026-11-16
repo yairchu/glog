@@ -712,6 +712,11 @@ mod tests {
         press(&mut app, KeyCode::Esc);
         assert_eq!(app.mode, Mode::Grep);
         assert_eq!(app.grep_view.as_ref().unwrap().cursor, selected);
+        assert!(
+            app.status.is_none(),
+            "returning from a loaded file must not restore its loading message: {:?}",
+            app.status
+        );
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Esc);
         assert!(
