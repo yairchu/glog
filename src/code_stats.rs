@@ -659,6 +659,44 @@ mod tests {
     }
 
     #[test]
+    fn crlf_worktree_stats_follow_git_line_ending_normalization() {
+        for (autocrlf, attributes) in [
+            ("false", ""),
+            ("true", ""),
+            ("false", "*.py text eol=crlf\n"),
+        ] {
+            let directory = TestDirectory::new();
+            let _cwd = CurrentDirGuard::enter(directory.path());
+            git(&["init", "-q"]);
+            git(&["config", "core.autocrlf", autocrlf]);
+            std::fs::write(".gitattributes", attributes).unwrap();
+            std::fs::write("script.py", "# docs\r\nvalue = 1\r\n").unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-qm", "base"]);
+            std::fs::write("script.py", "# changed docs\r\nvalue = 2\r\n").unwrap();
+
+            let app = git::load_diff_app(&[]).unwrap();
+            let file = crate::diff::file_sections(&app.show_text).remove(0);
+            let repository = git::Repository::main().unwrap();
+            assert_eq!(
+                count(&app.show_text, &file, &repository),
+                Some(Counts {
+                    additions: 1,
+                    deletions: 1
+                }),
+                "autocrlf={autocrlf}, attributes={attributes:?}"
+            );
+            let mut status = crate::status::StatusView::load().unwrap();
+            status.set_code_stats(true);
+            assert_eq!(status.code_stats_for("script.py"), ["+1 −1"]);
+
+            // Normalization must not let a later edit stand in for the snapshot.
+            std::fs::write("script.py", "unrelated = 3\r\n").unwrap();
+            assert!(count(&app.show_text, &file, &repository).is_none());
+        }
+    }
+
+    #[test]
     fn snapshot_stats_handle_additions_renames_and_stale_worktree_data() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
