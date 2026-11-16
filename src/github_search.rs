@@ -74,6 +74,10 @@ impl Location {
             Self::Line(line) => Some(*line),
             Self::File => None,
             Self::Fragment { text, line } => {
+                // Fragments may not keep the file's CRLF line endings, so match
+                // with LF only, which keeps the newlines that count lines.
+                let source = without_carriage_returns(source);
+                let text = without_carriage_returns(text);
                 let mut occurrences = source.match_indices(text.as_ref());
                 let (offset, _) = occurrences.next()?;
                 // Repeated fragments don't identify a unique source position.
@@ -90,6 +94,14 @@ impl Location {
                 )
             }
         }
+    }
+}
+
+fn without_carriage_returns(text: &str) -> std::borrow::Cow<'_, str> {
+    if text.contains("\r\n") {
+        text.replace("\r\n", "\n").into()
+    } else {
+        text.into()
     }
 }
 
