@@ -2519,6 +2519,42 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn opening_reflog_commits_preserves_coauthor_icons() {
+        use crate::{app::Mode, input};
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        for (trailer, icon) in [
+            ("Codex <codex@openai.com>", "꩜"),
+            ("Claude Code <noreply@anthropic.com>", "❋"),
+            ("Gemini CLI <gemini-cli@google.com>", "✦"),
+            (
+                "Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>",
+                "🤖",
+            ),
+        ] {
+            git(&[
+                "commit",
+                "--allow-empty",
+                "-qm",
+                &format!("Assisted commit\n\nCo-authored-by: {trailer}"),
+            ]);
+            let normal = load_log(&["-1".into()]).unwrap().remove(0);
+            let mut app = load_reflog_app(&["-n1".into()]).unwrap();
+            input::handle(
+                Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+                &mut app,
+            );
+            assert_eq!(app.mode, Mode::Show);
+            assert!(crate::ansi::plain(&app.show_text)
+                .contains(&format!("    Co-authored-by: {icon} {trailer}")));
+            assert_eq!(app.commits[0].collaborators, normal.collaborators);
+        }
+    }
+
+    #[test]
     fn reflog_amend_folds_keep_original_versions_available_in_show() {
         use crate::{app::App, input, ui};
         use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
