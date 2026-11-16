@@ -3768,7 +3768,7 @@ pub(crate) mod tests {
             // made filtered logs of long histories hundreds of lanes wide.
             let expected = vec![
                 vec!["● ".to_owned()],
-                vec!["│ ⦵ ".to_owned()],
+                vec!["│ ● ".to_owned()],
                 vec!["● │ ".to_owned()],
                 vec!["├─╯ ".to_owned(), "● ".to_owned()],
             ];
@@ -3932,13 +3932,7 @@ pub(crate) mod tests {
             assert!(crate::ansi::plain(commits[base].graph.last().unwrap()).contains('o'));
             for (i, commit) in commits.iter().enumerate() {
                 let node = crate::ansi::plain(folds.display_graph(i, commit).last().unwrap());
-                let marker = if i == base {
-                    '○'
-                } else if commit.hash == history.side {
-                    '⦵'
-                } else {
-                    '●'
-                };
+                let marker = if i == base { '○' } else { '●' };
                 assert!(node.contains(marker), "{node}");
             }
             folds.toggle_merges(&commits).unwrap();

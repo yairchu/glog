@@ -134,10 +134,14 @@ impl Request {
             return None;
         }
         let anchor = anchor(self)?;
-        let branches: HashSet<_> = String::from_utf8_lossy(&output.stdout)
+        let branch_tips: HashSet<_> = String::from_utf8_lossy(&output.stdout)
             .lines()
-            .filter(|&tip| tip != anchor)
             .map(str::to_owned)
+            .collect();
+        let branches: Vec<_> = branch_tips
+            .iter()
+            .filter(|&tip| tip != &anchor)
+            .cloned()
             .collect();
         if branches.is_empty() {
             return Some(HashSet::new());
@@ -145,7 +149,6 @@ impl Request {
         // One topological walk reads all branches, with no argument-count limit.
         // In particular, --octopus would find ancestors shared by *every* tip,
         // whereas we need the union of each branch's bases with the anchor.
-        let branches: Vec<_> = branches.into_iter().collect();
         let input = std::iter::once(anchor.as_str())
             .chain(branches.iter().map(String::as_str))
             .map(|tip| format!("{tip}\n"))
@@ -157,7 +160,11 @@ impl Request {
             cancel,
         )?;
         let graph = String::from_utf8(output).ok()?;
-        Some(bases_in_graph(&graph, &anchor, &branches))
+        let mut bases = bases_in_graph(&graph, &anchor, &branches);
+        // Branch refs already expose these connections. Tags alone do not,
+        // so use the branch-tip snapshot rather than displayed decorations.
+        bases.retain(|base| !branch_tips.contains(base));
+        Some(bases)
     }
 }
 
@@ -387,7 +394,7 @@ mod tests {
         for (index, tip) in tips.iter().enumerate() {
             git(&["update-ref", &format!("refs/heads/branch{index}"), tip]);
         }
-        let expected: std::collections::HashSet<_> = tips
+        let mut expected: std::collections::HashSet<_> = tips
             .iter()
             .flat_map(|tip| {
                 let mut command = crate::git::read_command();
@@ -404,6 +411,7 @@ mod tests {
             .collect();
         assert!(expected.contains(&a));
         assert!(expected.contains(&b));
+        expected.retain(|base| !tips.contains(base));
         let request = super::Pending::new(&[], None).request.take().unwrap();
         assert_eq!(
             request.bases(&crate::git::Cancel::default()).unwrap(),
@@ -421,7 +429,9 @@ mod tests {
         git(&["init", "-qb", "main"]);
         git(&["commit", "--allow-empty", "-qm", "root"]);
         let root = git(&["rev-parse", "HEAD"]);
-        git(&["branch", "side"]);
+        git(&["checkout", "-qb", "side"]);
+        git(&["commit", "--allow-empty", "-qm", "side tip"]);
+        git(&["checkout", "-q", "main"]);
         git(&["commit", "--allow-empty", "-qm", "tip"]);
         let loaded = load_log_at(&[], None).unwrap();
         assert!(loaded.interchanges.as_ref().unwrap().read.is_none());
@@ -463,7 +473,9 @@ mod tests {
         let _cwd = CurrentDirGuard::enter(directory.path());
         git(&["init", "-qb", "main"]);
         git(&["commit", "--allow-empty", "-qm", "root"]);
-        git(&["branch", "side"]);
+        git(&["checkout", "-qb", "side"]);
+        git(&["commit", "--allow-empty", "-qm", "side tip"]);
+        git(&["checkout", "-q", "main"]);
         git(&["commit", "--allow-empty", "-qm", "tip"]);
         let mut loaded = crate::git::load_log_at(&[], None).unwrap();
         std::env::set_current_dir(other.path()).unwrap();

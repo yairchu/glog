@@ -10,7 +10,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Recognize Copilot Autofix coauthor trailers with a 🤖 badge in Log and Show.
 
 - Mark shared ancestors with other local and remote branches with ⦵ in Log,
-  making branch connections visible even when their tips have moved ahead.
+  making branch connections visible when their tips have moved ahead. Ancestors
+  with a local or remote branch ref retain their ordinary node; tags alone
+  leave the interchange marker visible.
 
 - Browse GitHub code search with `glog gh search code`, grouped by repository,
   folder, and file. Enter opens a remote file without a checkout; `e` opens the
