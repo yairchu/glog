@@ -359,6 +359,50 @@ mod tests {
     }
 
     #[test]
+    fn saved_diff_keeps_wrapped_cursor_and_viewport() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        repository();
+        fs::write("file.txt", format!("{}\n", "abcdefghij".repeat(12))).unwrap();
+
+        for change_code_stats in [false, true] {
+            let mut app = crate::git::load_diff_app(&[]).unwrap();
+            crate::initialize_views(&mut app, crate::Command::Diff, &[]);
+            if let Some(row) = app.show_rows.iter().position(|row| row.folded) {
+                app.show_cursor = row;
+                app.toggle_show_file();
+            }
+            app.show_cursor = app
+                .show_rows
+                .iter()
+                .position(|row| crate::ansi::plain(&row.text).starts_with("+abcdefghij"))
+                .unwrap();
+            let mut terminal = Terminal::new(TestBackend::new(20, 8)).unwrap();
+            terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+            for _ in 0..3 {
+                press(&mut app, KeyCode::Down);
+            }
+            terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+            assert_eq!(app.show_cursor_continuation(), 3);
+            let position = (app.show_cursor, app.show_cursor_screen(), app.show_offset);
+
+            switch(&mut app, View::StatusLog);
+            if change_code_stats {
+                press(&mut app, KeyCode::Char('C'));
+                assert!(app.code_stats);
+            }
+            switch(&mut app, View::Original);
+            terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+            assert_eq!(app.show_cursor_continuation(), 3);
+            assert_eq!(
+                (app.show_cursor, app.show_cursor_screen(), app.show_offset),
+                position,
+                "change_code_stats={change_code_stats}"
+            );
+        }
+    }
+
+    #[test]
     fn menu_shields_navigation_and_mouse_and_renders_on_small_screens() {
         let mut app = App::new(Vec::new());
         app.views.active = View::StatusLog;
