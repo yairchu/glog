@@ -573,6 +573,22 @@ impl StatusView {
         self.snapshot.summary()
     }
 
+    /// The staged then unstaged statistics shown for a path.
+    #[cfg(test)]
+    pub(crate) fn code_stats_for(&self, path: &str) -> Vec<&str> {
+        [Group::Staged, Group::Unstaged]
+            .into_iter()
+            .filter_map(|group| {
+                self.stats
+                    .get(&Key {
+                        group,
+                        path: path.into(),
+                    })
+                    .map(String::as_str)
+            })
+            .collect()
+    }
+
     pub fn load() -> Result<Self, String> {
         let mut view = Self::default();
         view.refresh()?;
@@ -697,21 +713,8 @@ impl StatusView {
             }
         }
         if self.code_stats {
-            let repository = crate::git::Repository::checked_out(self.root.clone());
-            let mut eligible_blobs = HashMap::new();
-            for entry in &snapshot.entries {
-                let Some(raw) = stats.get_mut(&entry.key) else {
-                    continue;
-                };
-                if !self.code_stats_eligible(entry, &mut eligible_blobs) {
-                    continue;
-                }
-                if let Some(counts) = self.patch(entry).ok().and_then(|patch| {
-                    let files = crate::diff::file_sections(&patch);
-                    (files.len() == 1)
-                        .then(|| crate::code_stats::count(&patch, &files[0], &repository))
-                        .flatten()
-                }) {
+            for (key, counts) in self.code_counts(snapshot) {
+                if let Some(raw) = stats.get_mut(&key) {
                     *raw = format!("+{} −{}", counts.additions, counts.deletions);
                 }
             }
@@ -719,33 +722,138 @@ impl StatusView {
         Ok(stats)
     }
 
-    fn code_stats_eligible(&self, entry: &Entry, blobs: &mut HashMap<String, bool>) -> bool {
-        // Combined conflict patches cannot be classified. Check source sizes
-        // before rendering any patch, including collapsed untracked files.
-        if entry.key.group == Group::Conflicts {
-            return false;
-        }
-        if matches!(entry.key.group, Group::Unstaged | Group::Untracked) {
-            match std::fs::symlink_metadata(self.root.join(&entry.raw_path)) {
-                Ok(metadata)
-                    if metadata.is_file() && metadata.len() <= crate::code_stats::MAX_BYTES => {}
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                _ => return false,
+    /// Code-only counts for the entries that can be classified, reading
+    /// tracked patches with one Git process per group rather than per file.
+    fn code_counts(&self, snapshot: &Snapshot) -> Vec<(Key, crate::code_stats::Counts)> {
+        let repository = crate::git::Repository::checked_out(self.root.clone());
+        let entries = self.code_stats_eligible(&snapshot.entries, &repository);
+        let mut patches = Vec::new();
+        for entry in entries
+            .iter()
+            .filter(|entry| entry.key.group == Group::Untracked)
+        {
+            if let Ok(patch) = self.patch(entry) {
+                patches.push((entry.key.clone(), patch));
             }
         }
-        entry.stats_blobs.iter().all(|id| {
-            *blobs.entry(id.clone()).or_insert_with(|| {
-                crate::git::read_command_in(&self.root)
-                    .args(["cat-file", "-s", id])
-                    .env("GIT_NO_LAZY_FETCH", "1")
+        for group in [Group::Staged, Group::Unstaged] {
+            let members: Vec<_> = entries
+                .iter()
+                .filter(|entry| entry.key.group == group)
+                .collect();
+            let Some(first) = members.first() else {
+                continue;
+            };
+            #[cfg(test)]
+            self.patch_reads.set(self.patch_reads.get() + members.len());
+            // Bound each command line, which Windows limits to 32K characters.
+            let mut chunks = vec![Vec::new()];
+            let mut length = 0;
+            for entry in &members {
+                let paths = [Some(&entry.raw_path), entry.raw_original.as_ref()];
+                let size: usize = paths
+                    .iter()
+                    .flatten()
+                    .map(|path| path.as_os_str().len() + 1)
+                    .sum();
+                if length + size > 16 * 1024 && !chunks.last().unwrap().is_empty() {
+                    chunks.push(Vec::new());
+                    length = 0;
+                }
+                length += size;
+                chunks.last_mut().unwrap().push(*entry);
+            }
+            for chunk in chunks {
+                let mut command = self.diff_command(first);
+                command.args(["--no-color", "--full-index", "--submodule=short", "--"]);
+                for entry in &chunk {
+                    command.arg(&entry.raw_path);
+                    if let Some(original) = &entry.raw_original {
+                        command.arg(original);
+                    }
+                }
+                let Some(output) = command
                     .output()
                     .ok()
                     .filter(|output| output.status.success())
-                    .and_then(|output| String::from_utf8(output.stdout).ok())
-                    .and_then(|size| size.trim().parse::<u64>().ok())
-                    .is_some_and(|size| size <= crate::code_stats::MAX_BYTES)
+                else {
+                    continue;
+                };
+                let text = String::from_utf8_lossy(&output.stdout);
+                let lines: Vec<_> = text.lines().collect();
+                let files = crate::diff::file_sections(&text);
+                for entry in chunk {
+                    // Each entry's patch is the one file section at its path.
+                    let mut matching = files
+                        .iter()
+                        .filter(|file| raw_path(&file.path_bytes) == entry.raw_path);
+                    if let (Some(file), None) = (matching.next(), matching.next()) {
+                        patches.push((entry.key.clone(), lines[file.start..file.end].join("\n")));
+                    }
+                }
+            }
+        }
+        let sections: Vec<_> = patches
+            .iter()
+            .map(|(_, patch)| crate::diff::file_sections(patch))
+            .collect();
+        let (keys, requests): (Vec<_>, Vec<_>) = patches
+            .iter()
+            .zip(&sections)
+            .filter_map(|((key, patch), files)| match &files[..] {
+                [file] => Some((key.clone(), (patch.as_str(), file))),
+                _ => None,
             })
-        })
+            .unzip();
+        keys.into_iter()
+            .zip(crate::code_stats::count_all(&requests, &repository))
+            .filter_map(|(key, counts)| Some((key, counts?)))
+            .collect()
+    }
+
+    fn code_stats_eligible<'a>(
+        &self,
+        entries: &'a [Entry],
+        repository: &crate::git::Repository,
+    ) -> Vec<&'a Entry> {
+        // Combined conflict patches cannot be classified. Check source sizes
+        // before rendering any patch, including collapsed untracked files.
+        let entries: Vec<_> = entries
+            .iter()
+            .filter(|entry| entry.key.group != Group::Conflicts)
+            .filter(|entry| {
+                !matches!(entry.key.group, Group::Unstaged | Group::Untracked)
+                    || match std::fs::symlink_metadata(self.root.join(&entry.raw_path)) {
+                        Ok(metadata) => {
+                            metadata.is_file() && metadata.len() <= crate::code_stats::MAX_BYTES
+                        }
+                        Err(error) => error.kind() == io::ErrorKind::NotFound,
+                    }
+            })
+            .collect();
+        let ids: Vec<_> = entries
+            .iter()
+            .flat_map(|entry| &entry.stats_blobs)
+            .map(String::as_str)
+            .collect();
+        let small: HashSet<_> = ids
+            .iter()
+            .zip(crate::code_stats::blob_sizes(&ids, repository))
+            .filter(|(_, size)| {
+                size.as_ref()
+                    .is_some_and(|(_, size)| *size <= crate::code_stats::MAX_BYTES)
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        entries
+            .into_iter()
+            .filter(|entry| {
+                entry
+                    .stats_blobs
+                    .iter()
+                    .all(|id| small.contains(id.as_str()))
+            })
+            .collect()
     }
     pub fn set_code_stats(&mut self, enabled: bool) {
         if self.code_stats == enabled {

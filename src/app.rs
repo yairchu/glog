@@ -2261,16 +2261,29 @@ impl App {
                 .show_repository()
                 .cloned()
                 .or_else(|| git::Repository::main().ok());
-            if let Some(repository) = repository {
+            // Hidden files do not contribute to any total, so count them
+            // only once a filter change reveals them.
+            let pending: Vec<_> = self
+                .show_files
+                .iter()
+                .filter(|file| {
+                    !self.code_counts.contains_key(&file.key) && !self.file_filters.hides(file)
+                })
+                .collect();
+            if let (Some(repository), false) = (repository, pending.is_empty()) {
                 let lines: Vec<_> = self.show_text.lines().collect();
-                for file in &self.show_files {
-                    self.code_counts.entry(file.key.clone()).or_insert_with(|| {
-                        crate::code_stats::count(
-                            &lines[file.start..file.end].join("\n"),
-                            file,
-                            &repository,
-                        )
-                    });
+                let patches: Vec<_> = pending
+                    .iter()
+                    .map(|file| lines[file.start..file.end].join("\n"))
+                    .collect();
+                let requests: Vec<_> = patches
+                    .iter()
+                    .map(String::as_str)
+                    .zip(pending.iter().copied())
+                    .collect();
+                let counts = crate::code_stats::count_all(&requests, &repository);
+                for (file, counts) in pending.iter().zip(counts) {
+                    self.code_counts.insert(file.key.clone(), counts);
                 }
             }
         }

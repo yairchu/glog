@@ -1,5 +1,11 @@
 //! Classify full file snapshots, then count only lines touched by Git's patch.
-use std::{io::Read, ops::Range, path::Path, process::Stdio, sync::OnceLock};
+use std::{
+    collections::HashMap,
+    io::Read,
+    ops::Range,
+    path::{Path, PathBuf},
+    sync::OnceLock,
+};
 
 use mezura_core::{EngineConfig, Languages, SpanKind};
 
@@ -14,103 +20,297 @@ pub struct Counts {
 }
 
 /// None means the file cannot be classified reliably; retain its ordinary stats.
+#[cfg(test)]
 pub fn count(patch: &str, file: &FileSection, repository: &git::Repository) -> Option<Counts> {
-    if file.submodule.is_some() || file.lazy_untracked_path.is_some() {
-        return None;
-    }
-    let patch = ansi::plain(patch);
-    let headers: Vec<_> = crate::hunk::file_headers(&patch).collect();
-    let absent_old = headers.iter().any(|line| line == "--- /dev/null");
-    let absent_new = headers.iter().any(|line| line == "+++ /dev/null");
-    let ids = headers
-        .iter()
-        .find_map(|line| line.strip_prefix("index "))
-        .and_then(|line| line.split_whitespace().next())
-        .and_then(|ids| ids.split_once(".."))
-        // The lazy untracked reader synthesizes an added-file patch without
-        // object IDs. Its body is checked against the worktree below.
-        .or_else(|| absent_old.then_some(("0", "0")))?;
-    let old = snapshot(ids.0, absent_old, file, repository)?;
-    let new = snapshot(ids.1, absent_new, file, repository)?;
-    let path = git::raw_path(&file.path_bytes);
-    let old_path = headers
-        .iter()
-        .find_map(|line| {
-            let (bytes, _) =
-                crate::diff::unquote_path(line.strip_prefix("--- ")?.trim_end_matches('\t'))?;
-            bytes.strip_prefix(b"a/").map(git::raw_path)
-        })
-        .unwrap_or_else(|| path.clone());
-    let old_code = classify(&old_path, &old)?;
-    let new_code = classify(&path, &new)?;
-    count_patch(&patch, &old, &new, &old_code, &new_code)
+    count_all(&[(patch, file)], repository).remove(0)
 }
 
-fn snapshot(
-    id: &str,
-    absent: bool,
-    file: &FileSection,
+/// Count each file's patch, reading every snapshot it needs with a fixed
+/// number of Git processes rather than several per file. None means the file
+/// cannot be classified reliably; retain its ordinary stats.
+pub fn count_all(
+    files: &[(&str, &FileSection)],
     repository: &git::Repository,
-) -> Option<String> {
-    if absent {
-        return Some(String::new());
+) -> Vec<Option<Counts>> {
+    let requests: Vec<_> = files
+        .iter()
+        .map(|(patch, file)| Request::new(patch, file, repository))
+        .collect();
+    let ids: Vec<_> = requests
+        .iter()
+        .flatten()
+        .flat_map(|request| [&request.old, &request.new])
+        .filter_map(|side| match side {
+            Side::Blob(id) => Some(id.as_str()),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let blobs = read_blobs(&ids, repository);
+    // Git can print a worktree blob's hash without writing the object. Use
+    // the file only when its bytes still match that exact hash.
+    let mut fallbacks: HashMap<PathBuf, Option<Vec<u8>>> = HashMap::new();
+    for request in requests.iter().flatten() {
+        for side in [&request.old, &request.new] {
+            if let Side::Blob(id) = side {
+                if matches!(blobs.get(id.as_str()), Some(Blob::Missing)) {
+                    if let Some(worktree) = &request.worktree {
+                        fallbacks
+                            .entry(worktree.clone())
+                            .or_insert_with(|| read_worktree(worktree));
+                    }
+                }
+            }
+        }
     }
-    let bytes = if id.bytes().all(|byte| byte == b'0') {
-        let path = repository
-            .work_tree()
-            .ok()?
-            .join(git::raw_path(&file.path_bytes));
-        // Never follow a changed symlink or read a device as source code.
-        let metadata = std::fs::symlink_metadata(&path).ok()?;
-        if !metadata.is_file() || metadata.len() > MAX_BYTES {
+    let hashed: Vec<_> = fallbacks
+        .iter()
+        .filter(|(_, bytes)| bytes.is_some())
+        .map(|(path, _)| path.clone())
+        .collect();
+    let hashes: HashMap<_, _> = hashed.iter().zip(hash_files(&hashed, repository)).collect();
+    let snapshot = |side: &Side, worktree: &Option<PathBuf>| -> Option<String> {
+        let bytes = match side {
+            Side::Absent => return Some(String::new()),
+            Side::Worktree => read_worktree(worktree.as_ref()?)?,
+            Side::Blob(id) => match blobs.get(id.as_str())? {
+                Blob::Contents(bytes) => bytes.clone(),
+                Blob::Unusable => return None,
+                Blob::Missing => {
+                    let worktree = worktree.as_ref()?;
+                    let hash = hashes.get(worktree)?.as_deref()?;
+                    if !hash.starts_with(id.as_str()) {
+                        return None;
+                    }
+                    fallbacks.get(worktree)?.clone()?
+                }
+            },
+        };
+        if bytes.len() as u64 > MAX_BYTES || bytes.contains(&0) {
             return None;
         }
-        let mut bytes = Vec::new();
-        std::fs::File::open(path)
-            .ok()?
-            .take(MAX_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .ok()?;
-        bytes
-    } else {
-        if !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-            return None; // Combined index headers have several parent IDs.
-        }
-        let mut child = git::read_command_at(Some(repository))
-            .args(["cat-file", "blob", id])
-            .env("GIT_NO_LAZY_FETCH", "1")
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .ok()?;
-        let mut bytes = Vec::new();
-        let read = child
-            .stdout
-            .take()?
-            .take(MAX_BYTES + 1)
-            .read_to_end(&mut bytes);
-        if read.is_err() || bytes.len() as u64 > MAX_BYTES {
-            let _ = child.kill();
-            let _ = child.wait();
-            return None;
-        }
-        if !child.wait().ok()?.success() {
-            // Git can print a worktree blob's hash without writing the object.
-            // Use the file only when its bytes still match that exact hash.
-            let candidate = snapshot("0", false, file, repository)?;
-            let hash = git::pipe_through(
-                git::read_command_at(Some(repository)).args(["hash-object", "--stdin"]),
-                candidate.as_bytes(),
-            )?;
-            return hash.trim().starts_with(id).then_some(candidate);
-        }
-        bytes
+        String::from_utf8(bytes).ok()
     };
-    if bytes.len() as u64 > MAX_BYTES || bytes.contains(&0) {
+    let count = |request: &Option<Request>| {
+        let request = request.as_ref()?;
+        let old = snapshot(&request.old, &request.worktree)?;
+        let new = snapshot(&request.new, &request.worktree)?;
+        let old_code = classify(&request.old_path, &old)?;
+        let new_code = classify(&request.path, &new)?;
+        count_patch(&request.patch, &old, &new, &old_code, &new_code)
+    };
+    // Classification dominates once snapshots are read; files are independent.
+    let threads = std::thread::available_parallelism().map_or(1, usize::from);
+    let chunk = requests.len().div_ceil(threads).max(1);
+    std::thread::scope(|scope| {
+        let workers: Vec<_> = requests
+            .chunks(chunk)
+            .map(|chunk| {
+                let worker = scope.spawn(|| chunk.iter().map(count).collect::<Vec<_>>());
+                (chunk.len(), worker)
+            })
+            .collect();
+        // Keep results aligned with their files even if a worker panics.
+        workers
+            .into_iter()
+            .flat_map(|(len, worker)| worker.join().unwrap_or_else(|_| vec![None; len]))
+            .collect()
+    })
+}
+
+/// Where one side of a patch reads its snapshot from.
+enum Side {
+    Absent,
+    Worktree,
+    Blob(String),
+}
+
+struct Request {
+    patch: String,
+    old: Side,
+    new: Side,
+    path: PathBuf,
+    old_path: PathBuf,
+    /// The file in the checkout, for sides Git describes by worktree contents.
+    worktree: Option<PathBuf>,
+}
+
+impl Request {
+    fn new(patch: &str, file: &FileSection, repository: &git::Repository) -> Option<Self> {
+        if file.submodule.is_some() || file.lazy_untracked_path.is_some() {
+            return None;
+        }
+        let patch = ansi::plain(patch);
+        let headers: Vec<_> = crate::hunk::file_headers(&patch).collect();
+        let absent_old = headers.iter().any(|line| line == "--- /dev/null");
+        let absent_new = headers.iter().any(|line| line == "+++ /dev/null");
+        let ids = headers
+            .iter()
+            .find_map(|line| line.strip_prefix("index "))
+            .and_then(|line| line.split_whitespace().next())
+            .and_then(|ids| ids.split_once(".."))
+            // The lazy untracked reader synthesizes an added-file patch without
+            // object IDs. Its body is checked against the worktree below.
+            .or_else(|| absent_old.then_some(("0", "0")))?;
+        let side = |id: &str, absent: bool| {
+            if absent {
+                Some(Side::Absent)
+            } else if id.bytes().all(|byte| byte == b'0') {
+                Some(Side::Worktree)
+            } else if id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                Some(Side::Blob(id.to_owned()))
+            } else {
+                None // Combined index headers have several parent IDs.
+            }
+        };
+        let old = side(ids.0, absent_old)?;
+        let new = side(ids.1, absent_new)?;
+        let path = git::raw_path(&file.path_bytes);
+        let old_path = headers
+            .iter()
+            .find_map(|line| {
+                let (bytes, _) =
+                    crate::diff::unquote_path(line.strip_prefix("--- ")?.trim_end_matches('\t'))?;
+                bytes.strip_prefix(b"a/").map(git::raw_path)
+            })
+            .unwrap_or_else(|| path.clone());
+        let worktree = repository.work_tree().ok().map(|root| root.join(&path));
+        Some(Self {
+            patch,
+            old,
+            new,
+            path,
+            old_path,
+            worktree,
+        })
+    }
+}
+
+fn read_worktree(path: &Path) -> Option<Vec<u8>> {
+    // Never follow a changed symlink or read a device as source code.
+    let metadata = std::fs::symlink_metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_BYTES {
         return None;
     }
-    String::from_utf8(bytes).ok()
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)
+        .ok()?
+        .take(MAX_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    Some(bytes)
+}
+
+enum Blob {
+    Contents(Vec<u8>),
+    /// Git does not have the object, as for a worktree blob in a diff.
+    Missing,
+    /// Not a blob, or too large to classify.
+    Unusable,
+}
+
+/// The size of each object that exists, in one Git process.
+pub(crate) fn blob_sizes(ids: &[&str], repository: &git::Repository) -> Vec<Option<(String, u64)>> {
+    let queries: Vec<_> = ids.iter().map(|id| id.to_string()).collect();
+    git::batch_check(
+        &queries,
+        "%(objectname) %(objecttype) %(objectsize)",
+        Some(repository),
+    )
+    .into_iter()
+    .map(|answer| match answer?.split(' ').collect::<Vec<_>>()[..] {
+        [name, "blob", size] => Some((name.to_owned(), size.parse().ok()?)),
+        _ => None,
+    })
+    .collect()
+}
+
+fn read_blobs<'a>(ids: &[&'a str], repository: &git::Repository) -> HashMap<&'a str, Blob> {
+    let sizes = blob_sizes(ids, repository);
+    let wanted: Vec<_> = sizes
+        .iter()
+        .flatten()
+        .filter(|(_, size)| *size <= MAX_BYTES)
+        .map(|(name, _)| name.clone())
+        .collect();
+    let input: String = wanted.iter().map(|name| format!("{name}\n")).collect();
+    let output = if wanted.is_empty() {
+        Vec::new()
+    } else {
+        git::pipe_through_bytes(
+            git::read_command_at(Some(repository))
+                .args(["cat-file", "--batch"])
+                .env("GIT_NO_LAZY_FETCH", "1"),
+            input.as_bytes(),
+        )
+        .unwrap_or_default()
+    };
+    let mut contents = HashMap::new();
+    let mut rest = output.as_slice();
+    for name in wanted {
+        let Some(end) = rest.iter().position(|&byte| byte == b'\n') else {
+            break;
+        };
+        let header = String::from_utf8_lossy(&rest[..end]).into_owned();
+        rest = &rest[end + 1..];
+        let fields: Vec<_> = header.split(' ').collect();
+        let [found, "blob", size] = fields[..] else {
+            continue; // A blob that vanished since the size check.
+        };
+        let Some(size) = size.parse::<usize>().ok().filter(|&size| size < rest.len()) else {
+            break;
+        };
+        if found == name {
+            contents.insert(name, rest[..size].to_vec());
+        }
+        rest = &rest[size + 1..];
+    }
+    ids.iter()
+        .zip(sizes)
+        .map(|(&id, size)| {
+            let blob = match size {
+                None => Blob::Missing,
+                Some((name, size)) if size <= MAX_BYTES => contents
+                    .get(name.as_str())
+                    .map_or(Blob::Unusable, |bytes| Blob::Contents(bytes.clone())),
+                Some(_) => Blob::Unusable,
+            };
+            (id, blob)
+        })
+        .collect()
+}
+
+/// Hash each file's exact bytes as Git would store them, in one Git process.
+fn hash_files(paths: &[PathBuf], repository: &git::Repository) -> Vec<Option<String>> {
+    // The protocol is line-based, so a path spanning lines cannot be hashed.
+    let hashable: Vec<_> = paths
+        .iter()
+        .filter(|path| !path.as_os_str().as_encoded_bytes().contains(&b'\n'))
+        .collect();
+    let mut input = Vec::new();
+    for path in &hashable {
+        input.extend_from_slice(path.as_os_str().as_encoded_bytes());
+        input.push(b'\n');
+    }
+    let output = if hashable.is_empty() {
+        String::new()
+    } else {
+        git::pipe_through(
+            git::read_command_at(Some(repository)).args([
+                "hash-object",
+                "--no-filters",
+                "--stdin-paths",
+            ]),
+            &input,
+        )
+        .unwrap_or_default()
+    };
+    let hashes: HashMap<_, _> = hashable.into_iter().zip(output.lines()).collect();
+    paths
+        .iter()
+        .map(|path| hashes.get(path).map(|hash| hash.to_string()))
+        .collect()
 }
 
 fn classify(path: &Path, source: &str) -> Option<Vec<bool>> {
@@ -298,6 +498,70 @@ fn count_patch(
 mod tests {
     use super::*;
     use crate::git::tests::{git, CurrentDirGuard, TestDirectory};
+
+    #[test]
+    fn code_stats_read_snapshots_without_a_git_process_per_file() {
+        struct Trace(Option<std::ffi::OsString>);
+        impl Drop for Trace {
+            fn drop(&mut self) {
+                match self.0.take() {
+                    Some(value) => std::env::set_var("GIT_TRACE", value),
+                    None => std::env::remove_var("GIT_TRACE"),
+                }
+            }
+        }
+        let traced = |name: &str, action: &mut dyn FnMut()| {
+            let path = std::env::current_dir().unwrap().join(name);
+            let trace = Trace(std::env::var_os("GIT_TRACE"));
+            std::env::set_var("GIT_TRACE", &path);
+            action();
+            drop(trace);
+            let calls = std::fs::read_to_string(&path).unwrap();
+            std::fs::remove_file(path).unwrap();
+            calls
+        };
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let names: Vec<_> = (0..30).map(|n| format!("file {n} café.py")).collect();
+        for name in &names {
+            std::fs::write(name, "# docs\nvalue = 1\n").unwrap();
+        }
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        for name in &names {
+            std::fs::write(name, "# new docs\nvalue = 2\n").unwrap();
+        }
+        git(&["commit", "-qam", "edit"]);
+        for name in &names[..15] {
+            std::fs::write(name, "# more docs\nvalue = 3\n").unwrap();
+        }
+        git(&["add", "."]);
+        // Unstaged worktree snapshots are absent from the object store.
+        for name in &names {
+            std::fs::write(name, "# docs again\nvalue = 4\n").unwrap();
+        }
+
+        let mut app = git::load_show_app(&["--stat".into()]).unwrap();
+        let calls = traced("show-trace", &mut || app.toggle_code_stats());
+        assert!(app
+            .show_rows
+            .iter()
+            .any(|row| row.text == "▶ file 7 café.py | +1 −1"));
+        assert!(calls.matches("git cat-file").count() <= 2, "{calls}");
+
+        let mut view = crate::status::StatusView::load().unwrap();
+        let calls = traced("status-trace", &mut || view.set_code_stats(true));
+        assert_eq!(
+            view.code_stats_for("file 3 café.py"),
+            ["+1 −1", "+1 −1"],
+            "staged and unstaged"
+        );
+        assert!(calls.matches("git cat-file").count() <= 3, "{calls}");
+        assert!(calls.matches("git hash-object").count() <= 1, "{calls}");
+        assert!(calls.matches("--full-index").count() <= 2, "{calls}");
+    }
 
     #[test]
     fn code_stats_handle_suppressed_blank_context_lines() {

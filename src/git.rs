@@ -1024,7 +1024,7 @@ pub(crate) fn resolve_objects<'a>(
         matches!(kind, "commit" | "tree" | "blob" | "tag")
             .then(|| (hash.to_owned(), kind.to_owned()))
     };
-    let answers = batch_check(&queries, repository);
+    let answers = batch_check(&queries, "%(objectname) %(objecttype)", repository);
     names
         .into_iter()
         .zip(answers.chunks(2))
@@ -1046,14 +1046,19 @@ pub(crate) fn resolve_objects<'a>(
 /// Git's `cat-file --batch-check` answer to each query, one line per query.
 /// Rather than answer some names, such as `HEAD@{99}`, Git exits; such a
 /// query gets no answer and checking resumes after it.
-fn batch_check(queries: &[String], repository: Option<&Repository>) -> Vec<Option<String>> {
+pub(crate) fn batch_check(
+    queries: &[String],
+    format: &str,
+    repository: Option<&Repository>,
+) -> Vec<Option<String>> {
     let mut answers = Vec::with_capacity(queries.len());
     while answers.len() < queries.len() {
         let rest = &queries[answers.len()..];
         let input: String = rest.iter().map(|query| format!("{query}\n")).collect();
         let Some((output, success)) = pipe_through_with_status(
             read_command_at(repository)
-                .args(["cat-file", "--batch-check=%(objectname) %(objecttype)"])
+                .arg("cat-file")
+                .arg(format!("--batch-check={format}"))
                 .env("GIT_NO_LAZY_FETCH", "1"),
             input.as_bytes(),
             &Cancel::default(),
