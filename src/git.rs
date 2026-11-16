@@ -179,6 +179,7 @@ pub struct Collaborators {
     pub codex: bool,
     pub claude: bool,
     pub gemini: bool,
+    pub copilot: bool,
     pub others: usize,
     /// `Co-authored-by` values crediting an agent, as Git parsed them from the
     /// trailers, so Show can mark them without asking Git again.
@@ -453,6 +454,7 @@ impl Collaborators {
                 Some(Agent::Codex) => result.codex = true,
                 Some(Agent::Claude) => result.claude = true,
                 Some(Agent::Gemini) => result.gemini = true,
+                Some(Agent::Copilot) => result.copilot = true,
                 None => result.others += 1,
             }
         }
@@ -466,6 +468,7 @@ pub enum Agent {
     Codex,
     Claude,
     Gemini,
+    Copilot,
 }
 
 impl Agent {
@@ -475,6 +478,7 @@ impl Agent {
             "noreply@anthropic.com" => Some(Self::Claude),
             "gemini-cli@google.com"
             | "176961590+gemini-code-assist[bot]@users.noreply.github.com" => Some(Self::Gemini),
+            "175728472+copilot@users.noreply.github.com" => Some(Self::Copilot),
             _ => None,
         }
     }
@@ -5884,6 +5888,7 @@ pub(crate) mod tests {
                     codex: true,
                     claude: false,
                     gemini: false,
+                    copilot: false,
                     others: 0,
                     agent_trailers: trailers.into_iter().map(str::to_owned).collect(),
                 }
@@ -6004,6 +6009,7 @@ pub(crate) mod tests {
                 codex: true,
                 claude: true,
                 gemini: false,
+                copilot: false,
                 others: 2,
                 agent_trailers: [
                     "Codex <CODEX@OPENAI.COM>",
@@ -6047,6 +6053,7 @@ pub(crate) mod tests {
                 codex: true,
                 claude: true,
                 gemini: false,
+                copilot: false,
                 others: 1,
                 agent_trailers: [
                     "Codex <codex@openai.com>",

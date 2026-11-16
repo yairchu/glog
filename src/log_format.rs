@@ -697,6 +697,7 @@ fn agent_symbol(agent: Agent) -> (&'static str, Option<(u8, u8, u8)>) {
         Agent::Codex => ("꩜", None),
         Agent::Claude => ("❋", Some((215, 119, 87))),
         Agent::Gemini => ("✦", Some((66, 133, 244))),
+        Agent::Copilot => ("🤖", None),
     }
 }
 
@@ -721,6 +722,7 @@ pub fn coauthor_badge(collaborators: &Collaborators) -> Vec<Span<'static>> {
         (Agent::Codex, collaborators.codex),
         (Agent::Claude, collaborators.claude),
         (Agent::Gemini, collaborators.gemini),
+        (Agent::Copilot, collaborators.copilot),
     ]
     .into_iter()
     .filter_map(|(agent, present)| present.then_some(agent));

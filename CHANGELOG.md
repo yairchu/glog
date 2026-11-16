@@ -7,6 +7,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Recognize Copilot Autofix coauthor trailers with a 🤖 badge in Log and Show.
+
 - Mark shared ancestors with other local and remote branches with ⦵ in Log,
   making branch connections visible even when their tips have moved ahead.
 
