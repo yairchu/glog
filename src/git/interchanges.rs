@@ -28,6 +28,8 @@ struct Read {
 
 struct Request {
     args: Vec<String>,
+    /// The revisions, as given to Git, from which it reached displayed commits.
+    sources: HashSet<String>,
     /// The displayed commits, which alone can show markers.
     wanted: HashSet<String>,
     git: Invocation,
@@ -89,10 +91,16 @@ pub struct Bases {
 }
 
 impl Pending {
-    pub fn new(args: &[String], repository: Option<&Repository>, commits: &[Commit]) -> Self {
+    pub fn new(
+        args: &[String],
+        sources: HashSet<String>,
+        repository: Option<&Repository>,
+        commits: &[Commit],
+    ) -> Self {
         Self {
             request: Some(Request {
                 args: args.to_vec(),
+                sources,
                 wanted: commits.iter().map(|commit| commit.hash.clone()).collect(),
                 git: Invocation::capture(repository),
                 previous: None,
@@ -374,64 +382,18 @@ fn mark(commits: &mut [Commit], bases: &HashSet<String>) -> Vec<(usize, char)> {
     marked
 }
 
-/// A single positive revision anchors an explicitly opened history, even
-/// when filters omit its tip. Multi-revision Logs use the checkout instead.
+/// A single revision from which Git reached the displayed commits anchors
+/// an explicitly opened history, even when filters omit its tip. Taking it
+/// from Git's own traversal avoids reparsing Git's options. Multi-revision
+/// Logs use the checkout instead.
 fn anchor(request: &Request) -> Option<String> {
-    let args = &request.args;
-    let mut revisions = Vec::new();
-    let mut args = args.iter();
-    let mut all = false;
-    while let Some(arg) = args.next() {
-        if arg == "--" {
-            break;
-        }
-        // Unlike git log, rev-parse treats separate option values as paths
-        // and stops resolving revisions there, so consume them first. Only
-        // ref selection changes the endpoints, and rev-parse takes its
-        // values joined, except for --default.
-        if crate::log_format::takes_separate_value(arg) {
-            let Some(value) = args.next() else {
-                break;
-            };
-            match arg.as_str() {
-                "--exclude" | "--glob" | "--exclude-hidden" => {
-                    revisions.push(format!("{arg}={value}"));
-                }
-                "--default" => revisions.extend([arg.clone(), value.clone()]),
-                _ => {}
-            }
-            continue;
-        }
-        all |= arg == "--all";
-        revisions.push(arg.clone());
-    }
-    let output = request
-        .git()
-        // --revs-only also emits traversal flags such as --max-count=10.
-        // Only resolved revisions may participate in choosing the anchor.
-        .args([
-            "rev-parse",
-            "--revs-only",
-            "--no-flags",
-            "--default",
-            "HEAD",
-        ])
-        .args(revisions)
-        .output()
-        .ok()?;
-    // A partial result could anchor at the wrong tip; mark nothing instead.
-    if !output.status.success() {
-        return None;
-    }
-    let text = String::from_utf8_lossy(&output.stdout);
-    let tips: HashSet<_> = text.lines().filter(|line| !line.starts_with('^')).collect();
-    let tip = if !all && tips.len() == 1 {
-        tips.into_iter().next()?
-    } else {
-        "HEAD"
+    let mut sources = request.sources.iter();
+    let tip = match (sources.next(), sources.next()) {
+        (Some(source), None) => source,
+        _ => "HEAD",
     };
-    // rev-parse --revs-only can return an annotated tag object. The graph
-    // contains commits, so seed its peeled commit just as merge-base does.
+    // A source can name an annotated tag. The graph contains commits, so
+    // seed its peeled commit just as merge-base does.
     let output = request
         .git()
         .args(["rev-parse", "--verify", &format!("{tip}^{{commit}}")])
@@ -456,8 +418,8 @@ mod tests {
 
     /// The request to mark the Log of `args`.
     fn request(args: &[String]) -> super::Request {
-        let commits = crate::git::read_log_at(args, None).unwrap();
-        super::Pending::new(args, None, &commits)
+        let (commits, sources) = crate::git::read_log_sources_at(args, None).unwrap();
+        super::Pending::new(args, sources, None, &commits)
             .request
             .take()
             .unwrap()
@@ -527,15 +489,19 @@ mod tests {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         git(&["init", "-qb", "main"]);
-        git(&["commit", "--allow-empty", "-qm", "base"]);
+        std::fs::write("file.txt", "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
         git(&["checkout", "-qb", "feature"]);
-        git(&["commit", "--allow-empty", "-qm", "feature"]);
+        std::fs::write("file.txt", "feature\n").unwrap();
+        git(&["commit", "-qam", "feature"]);
         let feature = git(&["rev-parse", "HEAD"]);
         git(&["checkout", "-q", "main"]);
         for args in [
             &["--exclude", "main", "--branches"][..],
             &["--diff-filter", "M", "feature"],
             &["--max-age", "0", "feature"],
+            &["--color-moved-ws", "ignore-all-space", "feature"],
         ] {
             let args: Vec<_> = args.iter().map(|arg| arg.to_string()).collect();
             let request = request(&args);

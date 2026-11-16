@@ -862,60 +862,6 @@ pub(crate) fn takes_pattern(arg: &str) -> bool {
     )
 }
 
-/// Git log consumes the following argument verbatim as the value of these
-/// options, even when it looks like a revision, flag, or pathspec separator.
-/// Options that accept a value only after `=` are absent.
-pub(crate) fn takes_separate_value(arg: &str) -> bool {
-    takes_pattern(arg)
-        || matches!(
-            arg,
-            "-n" | "-L"
-                | "-O"
-                | "-I"
-                | "-l"
-                | "--max-count"
-                | "--skip"
-                | "--since"
-                | "--after"
-                | "--since-as-filter"
-                | "--until"
-                | "--before"
-                | "--max-age"
-                | "--min-age"
-                | "--date"
-                | "--default"
-                | "--exclude"
-                | "--glob"
-                | "--exclude-hidden"
-                | "--decorate-refs"
-                | "--decorate-refs-exclude"
-                | "--encoding"
-                | "--diff-filter"
-                | "--diff-merges"
-                | "--diff-algorithm"
-                | "--find-object"
-                | "--anchored"
-                | "--ignore-matching-lines"
-                | "--rotate-to"
-                | "--skip-to"
-                | "--orderfile"
-                | "--output"
-                | "--word-diff-regex"
-                | "--src-prefix"
-                | "--dst-prefix"
-                | "--line-prefix"
-                | "--output-indicator-new"
-                | "--output-indicator-old"
-                | "--output-indicator-context"
-                | "--ws-error-highlight"
-                | "--inter-hunk-context"
-                | "--stat-width"
-                | "--stat-name-width"
-                | "--stat-graph-width"
-                | "--stat-count"
-        )
-}
-
 /// Consume display options before `--`, leaving traversal and pathspecs for Git.
 pub fn parse_args(args: &[String]) -> Result<(LogFormat, LogOptions, Vec<String>), String> {
     let mut format = LogFormat::default();

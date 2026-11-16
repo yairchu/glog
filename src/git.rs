@@ -545,7 +545,7 @@ fn log_command(user_args: &[String], repository: Option<&Repository>) -> Result<
         "--decorate=short",
         "--color=always",
         "--no-abbrev-commit",
-        "--pretty=format:%x1e%H%x1f%h%x1f%C(auto)%D%C(reset)%x1f%an%x1f%ae%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)%x1f%P%x1f%s",
+        "--pretty=format:%x1e%H%x1f%h%x1f%C(auto)%D%C(reset)%x1f%an%x1f%ae%x1f%ad%x1f%(trailers:key=Co-authored-by,valueonly,unfold,separator=%x1d)%x1f%P%x1f%m%S%x1f%s",
     ]);
     command.args(user_args);
     Ok(command)
@@ -587,9 +587,9 @@ pub fn load_log_at(
     user_args: &[String],
     repository: Option<&Repository>,
 ) -> Result<LoadedLog, String> {
-    let commits = read_log_at(user_args, repository)?;
-    let interchanges =
-        (!commits.is_empty()).then(|| interchanges::Pending::new(user_args, repository, &commits));
+    let (commits, sources) = read_log_sources_at(user_args, repository)?;
+    let interchanges = (!commits.is_empty())
+        .then(|| interchanges::Pending::new(user_args, sources, repository, &commits));
     Ok(LoadedLog {
         commits,
         interchanges,
@@ -601,6 +601,13 @@ fn read_log_at(
     user_args: &[String],
     repository: Option<&Repository>,
 ) -> Result<Vec<Commit>, String> {
+    Ok(read_log_sources_at(user_args, repository)?.0)
+}
+
+fn read_log_sources_at(
+    user_args: &[String],
+    repository: Option<&Repository>,
+) -> Result<(Vec<Commit>, HashSet<String>), String> {
     let output = log_command(user_args, repository)?
         .output()
         .map_err(|error| {
@@ -610,17 +617,17 @@ fn read_log_at(
                 format!("could not run git log: {error}")
             }
         })?;
-    let mut commits = if !output.status.success() {
+    let (mut commits, sources) = if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.contains("does not have any commits yet")
             || stderr.contains("your current branch appears to be broken")
         {
-            Vec::new()
+            Default::default()
         } else {
             return Err(stderr_message("git log failed", &output.stderr));
         }
     } else {
-        parse_log(&String::from_utf8_lossy(&output.stdout))?
+        parse_log_sources(&String::from_utf8_lossy(&output.stdout))?
     };
     // Patterns and pathspecs can spell traversal flags. Git lets the last
     // first-parent option win, while each --reverse toggles the display order.
@@ -645,7 +652,7 @@ fn read_log_at(
         commit.traversal = traversal;
     }
     empty_commits::mark(&mut commits, repository);
-    Ok(commits)
+    Ok((commits, sources))
 }
 
 /// Read metadata for pinned revisions without an argument per commit.
@@ -1565,6 +1572,12 @@ fn hash_command_at(
 }
 
 fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
+    Ok(parse_log_sources(output)?.0)
+}
+
+/// Commits, with the revisions as given to Git from which it reached them.
+/// Boundary commits are reached from excluded revisions, so they add none.
+fn parse_log_sources(output: &str) -> Result<(Vec<Commit>, HashSet<String>), String> {
     // Inspect dates before splitting into graph lines: a newline in %ad would
     // otherwise split the metadata record and silently discard the commit.
     for record in output.split(RECORD).skip(1) {
@@ -1579,11 +1592,16 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
     }
     let mut pending_graph = Vec::new();
     let mut commits = Vec::new();
+    let mut sources = HashSet::new();
     for line in output.lines() {
         if let Some(marker) = line.find(RECORD) {
-            let fields: Vec<_> = line[marker + 1..].splitn(9, FIELD).collect();
-            if fields.len() == 9 {
+            let fields: Vec<_> = line[marker + 1..].splitn(10, FIELD).collect();
+            if fields.len() == 10 {
                 pending_graph.push(line[..marker].to_owned());
+                let mut source = fields[8].chars();
+                if source.next() != Some('-') {
+                    sources.insert(source.as_str().to_owned());
+                }
                 commits.push(Commit {
                     kind: CommitKind::Revision,
                     annotation: None,
@@ -1596,7 +1614,7 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
                     author_date: fields[5].to_owned(),
                     collaborators: Collaborators::parse(fields[6], fields[4]),
                     parents: fields[7].split_whitespace().map(str::to_owned).collect(),
-                    subject: fields[8].to_owned(),
+                    subject: fields[9].to_owned(),
                     graph: std::mem::take(&mut pending_graph),
                     traversal: Traversal::default(),
                     graph_node: crate::ansi::plain(&line[..marker])
@@ -1609,7 +1627,7 @@ fn parse_log(output: &str) -> Result<Vec<Commit>, String> {
             pending_graph.push(line.to_owned());
         }
     }
-    Ok(commits)
+    Ok((commits, sources))
 }
 
 #[cfg(test)]
@@ -6131,7 +6149,7 @@ pub(crate) mod tests {
 
     #[test]
     fn parses_full_identity_and_graph_lines() {
-        let input = "|\\\n* \u{1e}abcdef\u{1f}abcdef0\u{1f}HEAD -> main\u{1f}Alice\u{1f}alice@example.com\u{1f}2026-09-14\u{1f}\u{1f}123456\u{1f}hello\n| * \u{1e}123456\u{1f}1234567\u{1f}\u{1f}Bob\u{1f}bob@example.com\u{1f}2026-09-13\u{1f}\u{1f}\u{1f}world\n";
+        let input = "|\\\n* \u{1e}abcdef\u{1f}abcdef0\u{1f}HEAD -> main\u{1f}Alice\u{1f}alice@example.com\u{1f}2026-09-14\u{1f}\u{1f}123456\u{1f}>HEAD\u{1f}hello\n| * \u{1e}123456\u{1f}1234567\u{1f}\u{1f}Bob\u{1f}bob@example.com\u{1f}2026-09-13\u{1f}\u{1f}\u{1f}>HEAD\u{1f}world\n";
         let commits = parse_log(input).unwrap();
         assert_eq!(commits.len(), 2);
         assert_eq!(commits[0].hash, "abcdef");
