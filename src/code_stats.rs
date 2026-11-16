@@ -239,26 +239,32 @@ fn count_patch(
     let mut counts = Counts::default();
     for line in patch.lines() {
         if let Some(header) = crate::hunk::header(line) {
-            let [(start, _)] = header.old[..] else {
+            let [(start, old_count)] = header.old[..] else {
                 return None;
             };
             position = Some((
                 start.saturating_sub(1) as usize,
                 header.new.0.saturating_sub(1) as usize,
+                old_count,
+                header.new.1,
             ));
             continue;
         }
-        let Some((a, b)) = &mut position else {
+        let Some((a, b, old_remaining, new_remaining)) = &mut position else {
             continue;
         };
-        let Some(code) = line.get(1..) else { continue };
-        match line.as_bytes()[0] {
+        // diff.suppressBlankEmpty omits the space prefix on blank context
+        // lines. Validate and advance them just like ordinary context.
+        let marker = line.as_bytes().first().copied().unwrap_or(b' ');
+        let code = line.get(1..).unwrap_or("");
+        match marker {
             b'-' => {
                 if old.get(*a).copied()? != code {
                     return None;
                 }
                 counts.deletions += usize::from(*old_code.get(*a)?);
                 *a += 1;
+                *old_remaining = old_remaining.checked_sub(1)?;
             }
             b'+' => {
                 if new.get(*b).copied()? != code {
@@ -266,6 +272,7 @@ fn count_patch(
                 }
                 counts.additions += usize::from(*new_code.get(*b)?);
                 *b += 1;
+                *new_remaining = new_remaining.checked_sub(1)?;
             }
             b' ' => {
                 // Mismatches can indicate textconv, word diffs, an ignored
@@ -275,8 +282,13 @@ fn count_patch(
                 }
                 *a += 1;
                 *b += 1;
+                *old_remaining = old_remaining.checked_sub(1)?;
+                *new_remaining = new_remaining.checked_sub(1)?;
             }
             _ => {}
+        }
+        if *old_remaining == 0 && *new_remaining == 0 {
+            position = None;
         }
     }
     Some(counts)
