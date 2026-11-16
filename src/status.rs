@@ -1398,6 +1398,49 @@ mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     #[test]
+    fn code_stats_skip_oversized_snapshots_before_loading_patches() {
+        use std::fs;
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        let large = format!("{}\n", "x".repeat(1023)).repeat(8193);
+        fs::write("staged deletion.py", large.replace('x', "y")).unwrap();
+        fs::write("unstaged old.py", &large).unwrap();
+        fs::write("unstaged new.py", "value = 1\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        fs::remove_file("staged deletion.py").unwrap();
+        fs::write("staged addition.py", &large).unwrap();
+        git(&["add", "."]);
+        fs::write("unstaged old.py", "value = 1\n").unwrap();
+        fs::write("unstaged new.py", &large).unwrap();
+        fs::write("untracked large.py", &large).unwrap();
+        fs::write("small.py", "# only a comment\n").unwrap();
+        let mut view = StatusView {
+            show_stat: true,
+            ..StatusView::default()
+        };
+        view.refresh().unwrap();
+        let ordinary = view.stats.clone();
+        assert_eq!(view.patch_reads.get(), 0);
+
+        view.set_code_stats(true);
+
+        for (key, counts) in ordinary {
+            if key.path == std::path::Path::new("small.py") {
+                assert_eq!(view.stats[&key], "+0 −0");
+            } else {
+                assert_eq!(view.stats[&key], counts, "{}", key.path.display());
+            }
+        }
+        assert_eq!(
+            view.patch_reads.get(),
+            1,
+            "only the small file should load a patch; oversized old and new snapshots retain ordinary counts"
+        );
+    }
+
+    #[test]
     fn code_stats_cover_staged_unstaged_untracked_and_refresh() {
         use std::fs;
         let directory = TestDirectory::new();
