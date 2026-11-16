@@ -496,6 +496,7 @@ mod tests {
             vec!["--since-as-filter", "2000-01-01", "side"],
             vec!["--until", "2099-01-01", "side"],
             vec!["--before", "2099-01-01", "side"],
+            vec!["--date", "iso", "side"],
             vec!["--skip", "1", "side"],
         ] {
             let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();

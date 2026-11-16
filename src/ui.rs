@@ -4168,6 +4168,37 @@ mod show_wrapping_tests {
     }
 
     #[test]
+    fn code_stats_toggle_preserves_queued_wrapped_navigation() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        for movement in [
+            vec![KeyCode::Down],
+            vec![KeyCode::PageDown],
+            vec![KeyCode::End, KeyCode::Up],
+        ] {
+            let run = |redraw_between| {
+                let mut terminal = Terminal::new(TestBackend::new(10, 6)).unwrap();
+                let mut app = App::new(Vec::new());
+                app.mode = Mode::Show;
+                app.show_text = format!("{}\n{}", "a".repeat(70), "b".repeat(30));
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                for code in std::iter::once(&KeyCode::Char('C')).chain(&movement) {
+                    crate::input::handle(
+                        Event::Key(KeyEvent::new(*code, KeyModifiers::NONE)),
+                        &mut app,
+                    );
+                    if redraw_between {
+                        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                    }
+                }
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                (app.show_cursor_screen(), app.show_offset)
+            };
+            assert_eq!(run(false), run(true), "C then {movement:?}");
+        }
+    }
+
+    #[test]
     fn navigation_after_end_in_a_burst_matches_separate_frames() {
         use crate::input::handle;
         use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
