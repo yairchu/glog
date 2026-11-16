@@ -1,7 +1,9 @@
 //! Mark connections to branches whose tips need not appear in the Log.
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
+    ffi::OsString,
     io::{BufRead, BufReader, Write},
+    path::PathBuf,
     process::{Command, Stdio},
     sync::{mpsc, Arc},
 };
@@ -28,8 +30,52 @@ struct Request {
     args: Vec<String>,
     /// The displayed commits, which alone can show markers.
     wanted: HashSet<String>,
-    command: Command,
+    git: Invocation,
     previous: Option<Arc<Bases>>,
+}
+
+/// Git as the Log ran it, captured before leaving the caller. This keeps
+/// relative GIT_DIR/object paths and test isolation.
+struct Invocation {
+    program: OsString,
+    args: Vec<OsString>,
+    environment: BTreeMap<OsString, OsString>,
+    directory: Option<PathBuf>,
+}
+
+impl Invocation {
+    fn capture(repository: Option<&Repository>) -> Self {
+        let base = read_command_at(repository);
+        let mut environment: BTreeMap<_, _> = std::env::vars_os().collect();
+        for (key, value) in base.get_envs() {
+            match value {
+                Some(value) => environment.insert(key.to_owned(), value.to_owned()),
+                None => environment.remove(key),
+            };
+        }
+        Self {
+            program: base.get_program().to_owned(),
+            args: base.get_args().map(ToOwned::to_owned).collect(),
+            environment,
+            directory: base
+                .get_current_dir()
+                .map(ToOwned::to_owned)
+                .or_else(|| std::env::current_dir().ok()),
+        }
+    }
+
+    fn command(&self) -> Command {
+        let mut command = Command::new(&self.program);
+        command
+            .args(&self.args)
+            .env_clear()
+            .envs(&self.environment)
+            .env("GIT_NO_LAZY_FETCH", "1");
+        if let Some(directory) = &self.directory {
+            command.current_dir(directory);
+        }
+        command
+    }
 }
 
 /// A completed read, with the inputs that determine it, so that refreshing
@@ -44,34 +90,11 @@ pub struct Bases {
 
 impl Pending {
     pub fn new(args: &[String], repository: Option<&Repository>, commits: &[Commit]) -> Self {
-        // Capture both the directory and environment before leaving the caller.
-        // This also preserves relative GIT_DIR/object paths and test isolation.
-        let base = read_command_at(repository);
-        let mut environment: std::collections::BTreeMap<_, _> = std::env::vars_os().collect();
-        for (key, value) in base.get_envs() {
-            match value {
-                Some(value) => {
-                    environment.insert(key.to_owned(), value.to_owned());
-                }
-                None => {
-                    environment.remove(key);
-                }
-            }
-        }
-        let mut command = Command::new(base.get_program());
-        command.args(base.get_args()).env_clear().envs(environment);
-        if let Some(directory) = base
-            .get_current_dir()
-            .map(std::path::Path::to_owned)
-            .or_else(|| std::env::current_dir().ok())
-        {
-            command.current_dir(directory);
-        }
         Self {
             request: Some(Request {
                 args: args.to_vec(),
                 wanted: commits.iter().map(|commit| commit.hash.clone()).collect(),
-                command,
+                git: Invocation::capture(repository),
                 previous: None,
             }),
             read: None,
@@ -161,18 +184,7 @@ impl Drop for Pending {
 
 impl Request {
     fn git(&self) -> Command {
-        let mut command = Command::new(self.command.get_program());
-        command.args(self.command.get_args()).env_clear();
-        for (key, value) in self.command.get_envs() {
-            if let Some(value) = value {
-                command.env(key, value);
-            }
-        }
-        if let Some(directory) = self.command.get_current_dir() {
-            command.current_dir(directory);
-        }
-        command.env("GIT_NO_LAZY_FETCH", "1");
-        command
+        self.git.command()
     }
 
     fn bases(&self, cancel: &Cancel) -> Option<Arc<Bases>> {
