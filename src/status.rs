@@ -1291,6 +1291,14 @@ impl StatusView {
         }
     }
 
+    pub fn pan(&mut self, right: bool) {
+        self.horizontal = if right {
+            self.horizontal.saturating_add(4)
+        } else {
+            self.horizontal.saturating_sub(4)
+        };
+    }
+
     #[cfg(test)]
     pub fn draw(&mut self, frame: &mut Frame, area: Rect) {
         self.draw_with_images(frame, area, &mut crate::images::Images::default());
@@ -1438,6 +1446,76 @@ mod tests {
     use super::*;
     use crate::git::tests::{fail, git, git_command, succeed, CurrentDirGuard, TestDirectory};
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn horizontal_pan_stops_at_content_edges_and_resets_when_lines_fit() {
+        let mut view = StatusView::default();
+        view.rows.push(Row {
+            key: RowKey::Group(Group::Untracked),
+            text: "\x1b[32m界\tabcdefghij\x1b[m".into(),
+            color: None,
+            preview: None,
+        });
+        let mut terminal = Terminal::new(TestBackend::new(16, 5)).unwrap();
+        terminal
+            .draw(|frame| view.draw(frame, frame.area()))
+            .unwrap();
+        for _ in 0..10 {
+            view.pan(true);
+        }
+        assert_eq!(
+            view.horizontal, 2,
+            "wide glyphs and tabs use display columns"
+        );
+        view.pan(false);
+        assert_eq!(view.horizontal, 0);
+        view.pan(true);
+        terminal.backend_mut().resize(20, 5);
+        terminal.autoresize().unwrap();
+        terminal
+            .draw(|frame| view.draw(frame, frame.area()))
+            .unwrap();
+        view.pan(true);
+        assert_eq!(
+            view.horizontal, 0,
+            "resizing must remove obsolete scrolling"
+        );
+        terminal.backend_mut().resize(16, 5);
+        terminal.autoresize().unwrap();
+        terminal
+            .draw(|frame| view.draw(frame, frame.area()))
+            .unwrap();
+        view.pan(true);
+        view.rows[0].text = "short".into();
+        terminal
+            .draw(|frame| view.draw(frame, frame.area()))
+            .unwrap();
+        view.pan(true);
+        assert_eq!(view.horizontal, 0, "shorter content must reset scrolling");
+    }
+
+    #[test]
+    fn status_footer_only_offers_panning_for_overflowing_content() {
+        let mut app = crate::app::App::new(Vec::new());
+        app.mode = crate::app::Mode::Status;
+        app.status_view = Some(StatusView::default());
+        let mut terminal = Terminal::new(TestBackend::new(240, 6)).unwrap();
+        for (text, offers_pan) in [("short".into(), false), ("界".repeat(121), true)] {
+            app.status_view.as_mut().unwrap().rows = vec![Row {
+                key: RowKey::Group(Group::Untracked),
+                text,
+                color: None,
+                preview: None,
+            }];
+            terminal
+                .draw(|frame| crate::ui::draw(frame, &mut app))
+                .unwrap();
+            let footer: String = (0..240)
+                .map(|x| terminal.backend().buffer()[(x, 5)].symbol())
+                .collect();
+            assert_eq!(footer.contains("←/→ pan"), offers_pan, "{footer}");
+        }
+    }
 
     #[test]
     fn code_stats_skip_oversized_snapshots_before_loading_patches() {

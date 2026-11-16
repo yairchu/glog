@@ -178,8 +178,7 @@ fn apply(event: Event, app: &mut App) {
                             KeyCode::PageDown | KeyCode::Char(' ') | KeyCode::Char('f') => {
                                 view.move_by(view.height.max(1) as isize)
                             }
-                            KeyCode::Left => view.horizontal = view.horizontal.saturating_sub(4),
-                            KeyCode::Right => view.horizontal = view.horizontal.saturating_add(4),
+                            KeyCode::Left | KeyCode::Right => view.pan(key.code == KeyCode::Right),
                             KeyCode::Home | KeyCode::Char('g' | '<') => view.cursor = 0,
                             KeyCode::End | KeyCode::Char('G' | '>') => view.bottom(),
                             KeyCode::Enter | KeyCode::Char('z') => view.toggle(),
