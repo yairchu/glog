@@ -449,6 +449,27 @@ mod tests {
     }
 
     #[test]
+    fn separate_option_values_do_not_end_anchor_revisions() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        git(&["commit", "--allow-empty", "-qm", "base"]);
+        git(&["checkout", "-qb", "feature"]);
+        git(&["commit", "--allow-empty", "-qm", "feature"]);
+        let feature = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "main"]);
+        for args in [
+            &["--exclude", "main", "--branches"][..],
+            &["--diff-filter", "M", "feature"],
+            &["--max-age", "0", "feature"],
+        ] {
+            let args: Vec<_> = args.iter().map(|arg| arg.to_string()).collect();
+            let request = super::Pending::new(&args, None).request.take().unwrap();
+            assert_eq!(super::anchor(&request), Some(feature.clone()), "{args:?}");
+        }
+    }
+
+    #[test]
     fn batched_bases_match_git_for_criss_cross_and_many_distinct_tips() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
