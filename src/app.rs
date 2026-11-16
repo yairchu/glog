@@ -320,7 +320,7 @@ pub struct App {
     pub show_stat: bool,
     pub code_stats: bool,
     pub code_stats_button: Option<ratatui::layout::Rect>,
-    code_counts: HashMap<Vec<u8>, Option<crate::code_stats::Counts>>,
+    code_counts: crate::code_stats::ShowCounts,
     // Status shares show_stat, so it can change while Show's rows are hidden.
     show_rows_stat: bool,
     stat_bookmark: Option<(Vec<u8>, usize, Option<crate::images::Row>)>,
@@ -441,7 +441,7 @@ impl App {
             show_stat: false,
             code_stats: false,
             code_stats_button: None,
-            code_counts: HashMap::new(),
+            code_counts: Default::default(),
             show_rows_stat: false,
             stat_bookmark: None,
             stat_submodule_bookmark: None,
@@ -1843,7 +1843,7 @@ impl App {
         }
         self.show_search_location = None;
         self.show_files = diff::file_sections(&self.show_text);
-        self.code_counts.clear();
+        self.code_counts = Default::default();
         self.raw_untracked_files = self
             .show_files
             .iter()
@@ -2294,9 +2294,52 @@ impl App {
         self.rebuild_show_rows();
     }
 
+    /// Show code counts as they complete, in submodules too.
+    pub fn poll_code_counts(&mut self) -> bool {
+        let mut changed = false;
+        for child in self.submodules.values_mut() {
+            changed |= child.poll_code_counts();
+        }
+        if self.code_counts.poll() {
+            self.rebuild_show_rows();
+            changed = true;
+        }
+        changed
+    }
+
+    /// Whether code counts are still running for the displayed patch.
+    pub fn counting_code(&self) -> bool {
+        self.code_counts.counting()
+            || self
+                .submodules
+                .values()
+                .any(|child| child.code_stats && child.counting_code())
+    }
+
+    /// Wait for code counts, as if `poll_code_counts` ran once they completed.
+    #[cfg(test)]
+    pub fn settle_code_counts(&mut self) {
+        loop {
+            let mut settled = false;
+            for child in self.submodules.values_mut() {
+                if child.counting_code() {
+                    child.settle_code_counts();
+                    settled = true;
+                }
+            }
+            if self.code_counts.settle() {
+                self.rebuild_show_rows();
+                settled = true;
+            }
+            if !settled {
+                break;
+            }
+        }
+    }
+
     fn file_counts(&self, file: &FileSection) -> (usize, usize) {
         if self.code_stats {
-            if let Some(Some(counts)) = self.code_counts.get(&file.key) {
+            if let Some(counts) = self.code_counts.get(&file.key) {
                 return (counts.additions, counts.deletions);
             }
         }
@@ -2306,7 +2349,7 @@ impl App {
     fn rebuild_show_rows(&mut self) {
         self.visible_show_paths.clear();
         self.show_rows_stat = self.show_stat;
-        if self.code_stats && self.show_stat {
+        if self.code_stats && self.show_stat && !self.code_counts.counting() {
             let repository = self
                 .show_repository()
                 .cloned()
@@ -2317,7 +2360,7 @@ impl App {
                 .show_files
                 .iter()
                 .filter(|file| {
-                    !self.code_counts.contains_key(&file.key) && !self.file_filters.hides(file)
+                    self.code_counts.missing(&file.key) && !self.file_filters.hides(file)
                 })
                 .collect();
             if let (Some(repository), false) = (repository, pending.is_empty()) {
@@ -2331,10 +2374,7 @@ impl App {
                     .map(String::as_str)
                     .zip(pending.iter().copied())
                     .collect();
-                let counts = crate::code_stats::count_all(&requests, &repository);
-                for (file, counts) in pending.iter().zip(counts) {
-                    self.code_counts.insert(file.key.clone(), counts);
-                }
+                self.code_counts.request(&requests, repository);
             }
         }
         for (key, child) in &mut self.submodules {
@@ -2952,7 +2992,7 @@ impl App {
                     self.show_text = lines.join("\n");
                     self.show_text.push('\n');
                     self.show_files = diff::file_sections(&self.show_text);
-                    self.code_counts.clear();
+                    self.code_counts = Default::default();
                     self.expanded_folds.insert(path.clone());
                     self.status = None;
                     true

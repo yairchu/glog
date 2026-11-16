@@ -4,7 +4,10 @@ use std::{
     io::Read,
     ops::Range,
     path::{Path, PathBuf},
-    sync::OnceLock,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc, OnceLock,
+    },
 };
 
 use mezura_core::{EngineConfig, Languages, SpanKind};
@@ -32,10 +35,115 @@ pub fn count_all(
     files: &[(&str, &FileSection)],
     repository: &git::Repository,
 ) -> Vec<Option<Counts>> {
-    let requests: Vec<_> = files
+    count_requests(
+        &requests(files, repository),
+        repository,
+        &AtomicBool::new(false),
+    )
+}
+
+fn requests(files: &[(&str, &FileSection)], repository: &git::Repository) -> Vec<Option<Request>> {
+    files
         .iter()
         .map(|(patch, file)| Request::new(patch, file, repository))
-        .collect();
+        .collect()
+}
+
+/// Code-only counts of a Show's files by key, read off the UI thread.
+#[derive(Default)]
+pub struct ShowCounts {
+    counts: HashMap<Vec<u8>, Option<Counts>>,
+    read: Option<ShowRead>,
+}
+
+struct ShowRead {
+    keys: Vec<Vec<u8>>,
+    receiver: mpsc::Receiver<Vec<Option<Counts>>>,
+    cancel: Arc<AtomicBool>,
+}
+
+impl Drop for ShowRead {
+    fn drop(&mut self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+}
+
+impl ShowCounts {
+    /// The counts of a file that could be classified.
+    pub fn get(&self, key: &[u8]) -> Option<Counts> {
+        self.counts.get(key).copied().flatten()
+    }
+
+    /// Whether the file awaits a count, to be requested once none is running.
+    pub fn missing(&self, key: &[u8]) -> bool {
+        !self.counts.contains_key(key)
+    }
+
+    pub fn counting(&self) -> bool {
+        self.read.is_some()
+    }
+
+    /// Count files in the background unless a count is already running.
+    pub fn request(&mut self, files: &[(&str, &FileSection)], repository: git::Repository) {
+        if self.read.is_some() || files.is_empty() {
+            return;
+        }
+        let keys = files.iter().map(|(_, file)| file.key.clone()).collect();
+        let requests = requests(files, &repository);
+        let (sender, receiver) = mpsc::channel();
+        let cancel = Arc::new(AtomicBool::new(false));
+        let worker_cancel = cancel.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(count_requests(&requests, &repository, &worker_cancel));
+        });
+        self.read = Some(ShowRead {
+            keys,
+            receiver,
+            cancel,
+        });
+    }
+
+    /// Whether a running count completed.
+    pub fn poll(&mut self) -> bool {
+        let Some(read) = &self.read else {
+            return false;
+        };
+        match read.receiver.try_recv() {
+            Ok(counts) => self.complete(Some(counts)),
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => self.complete(None),
+        }
+        true
+    }
+
+    /// A failed count leaves its files with their ordinary stats.
+    fn complete(&mut self, counts: Option<Vec<Option<Counts>>>) {
+        let read = self.read.take().unwrap();
+        let counts = counts
+            .unwrap_or_default()
+            .into_iter()
+            .chain(std::iter::repeat(None));
+        for (key, counts) in read.keys.iter().zip(counts) {
+            self.counts.insert(key.clone(), counts);
+        }
+    }
+
+    #[cfg(test)]
+    pub fn settle(&mut self) -> bool {
+        let Some(read) = &self.read else {
+            return false;
+        };
+        let counts = read.receiver.recv().ok();
+        self.complete(counts);
+        true
+    }
+}
+
+fn count_requests(
+    requests: &[Option<Request>],
+    repository: &git::Repository,
+    cancel: &AtomicBool,
+) -> Vec<Option<Counts>> {
     let ids: Vec<_> = requests
         .iter()
         .flatten()
@@ -88,6 +196,9 @@ pub fn count_all(
     };
     let count = |request: &Option<Request>| {
         let request = request.as_ref()?;
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
         let old = snapshot(&request.old, &request.worktree)?;
         let new = snapshot(&request.new, &request.worktree)?;
         let old_code = classify(&request.old_path, &old)?;
@@ -587,7 +698,10 @@ mod tests {
         }
 
         let mut app = git::load_show_app(&["--stat".into()]).unwrap();
-        let calls = traced("show-trace", &mut || app.toggle_code_stats());
+        let calls = traced("show-trace", &mut || {
+            app.toggle_code_stats();
+            app.settle_code_counts();
+        });
         assert!(app
             .show_rows
             .iter()
@@ -652,6 +766,10 @@ mod tests {
         git(&["commit", "-qam", "edit"]);
         let mut app = crate::git::load_show_app(&["--stat".into()]).unwrap();
         app.toggle_code_stats();
+        // Counting runs in the background, so input is never blocked on it.
+        assert!(app.counting_code());
+        app.settle_code_counts();
+        assert!(!app.counting_code());
         assert!(app
             .show_rows
             .iter()

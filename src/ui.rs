@@ -1331,7 +1331,9 @@ fn draw_file_filters(
     area: Rect,
     counts: std::collections::BTreeMap<crate::file_filters::Category, usize>,
 ) {
-    let label = if app.code_stats {
+    let label = if app.code_stats && app.counting_code() {
+        "[C code stats…] "
+    } else if app.code_stats {
         "[C code stats] "
     } else {
         "[C all lines] "

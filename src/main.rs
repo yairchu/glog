@@ -531,6 +531,7 @@ fn run<B: ratatui::backend::Backend>(
         changed |= app.poll_github_file();
         changed |= app.poll_browser();
         changed |= app.poll_log();
+        changed |= app.poll_code_counts();
         if changed {
             title.update(app)?;
             terminal.draw(|frame| ui::draw(frame, app))?;
