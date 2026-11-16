@@ -12,7 +12,7 @@ const FIELD: char = '\x1f';
 const COAUTHOR: char = '\x1d';
 
 mod empty_commits;
-mod interchanges;
+pub(crate) mod interchanges;
 mod repository;
 
 pub(crate) use repository::Repository;
@@ -545,14 +545,42 @@ fn log_command(user_args: &[String], repository: Option<&Repository>) -> Result<
     Ok(command)
 }
 
+/// A loaded history and optional marker work that does not delay its first frame.
+pub struct LoadedLog {
+    pub commits: Vec<Commit>,
+    pub interchanges: Option<interchanges::Pending>,
+}
+
+impl From<Vec<Commit>> for LoadedLog {
+    fn from(commits: Vec<Commit>) -> Self {
+        Self {
+            commits,
+            interchanges: None,
+        }
+    }
+}
+
+impl std::ops::Deref for LoadedLog {
+    type Target = [Commit];
+    fn deref(&self) -> &Self::Target {
+        &self.commits
+    }
+}
+
+/// Tests that inspect the final graph without running the event loop.
+#[cfg(test)]
 pub fn load_log(user_args: &[String]) -> Result<Vec<Commit>, String> {
-    load_log_at(user_args, None)
+    let mut loaded = load_log_at(user_args, None)?;
+    if let Some(pending) = loaded.interchanges.take() {
+        pending.settle(&mut loaded.commits);
+    }
+    Ok(loaded.commits)
 }
 
 pub fn load_log_at(
     user_args: &[String],
     repository: Option<&Repository>,
-) -> Result<Vec<Commit>, String> {
+) -> Result<LoadedLog, String> {
     let output = log_command(user_args, repository)?
         .output()
         .map_err(|error| {
@@ -597,8 +625,12 @@ pub fn load_log_at(
         commit.traversal = traversal;
     }
     empty_commits::mark(&mut commits, repository);
-    interchanges::mark(&mut commits, user_args, repository);
-    Ok(commits)
+    let interchanges =
+        (!commits.is_empty()).then(|| interchanges::Pending::new(user_args, repository));
+    Ok(LoadedLog {
+        commits,
+        interchanges,
+    })
 }
 
 /// Read metadata for pinned revisions without an argument per commit.
@@ -724,18 +756,19 @@ pub fn log_ancestry_at(
 /// Watch mode includes one stable working-tree item ahead of committed history.
 #[cfg(test)]
 pub fn load_watch_log() -> Result<Vec<Commit>, String> {
-    load_log_with_working_tree(&[], &Worktree::current()?)
+    Ok(load_log_with_working_tree(&[], &Worktree::current()?)?.commits)
 }
 
 pub fn load_log_with_working_tree(
     args: &[String],
     worktree: &Worktree,
-) -> Result<Vec<Commit>, String> {
-    let commits = load_log(args)?;
+) -> Result<LoadedLog, String> {
+    let mut loaded = load_log_at(args, None)?;
     let summary = crate::status::working_tree_summary(worktree)?;
     let mut entries = vec![working_tree_commit(&summary)];
-    entries.extend(commits);
-    Ok(entries)
+    entries.extend(loaded.commits);
+    loaded.commits = entries;
+    Ok(loaded)
 }
 
 /// Label a simple, explicitly named revision. Complex queries keep a short

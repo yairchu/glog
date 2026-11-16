@@ -677,7 +677,7 @@ mod tests {
                     }));
                     commit
                 })
-                .collect(),
+                .collect::<Vec<_>>(),
         )
     }
 

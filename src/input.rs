@@ -715,7 +715,7 @@ mod tests {
             row: 2,
             modifiers: KeyModifiers::NONE,
         });
-        let commits = (0..8)
+        let commits: Vec<_> = (0..8)
             .map(|i| {
                 let mut commit = crate::log_format::tests::commit();
                 commit.hash = i.to_string();
@@ -747,7 +747,7 @@ mod tests {
     #[test]
     fn log_forward_page_keys_skip_filtered_commits() {
         for code in [KeyCode::Char('f'), KeyCode::Char(' '), KeyCode::PageDown] {
-            let commits = (0..60)
+            let commits: Vec<_> = (0..60)
                 .map(|i| {
                     let mut commit = crate::log_format::tests::commit();
                     commit.hash = i.to_string();

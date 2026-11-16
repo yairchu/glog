@@ -163,16 +163,16 @@ impl WatchSource {
         }
     }
 
-    pub fn load(&self, repository: Option<&git::Repository>) -> Result<Vec<Commit>, String> {
+    pub fn load(&self, repository: Option<&git::Repository>) -> Result<git::LoadedLog, String> {
         Ok(match self {
             Self::Log { args, worktree, .. } if self.shows_working_tree(repository) => {
                 git::load_log_with_working_tree(args, Self::worktree(worktree)?)?
             }
             Self::Log { args, .. } => git::load_log_at(args, repository)?,
-            Self::Branches(args) => crate::branches::load_watched(args)?,
-            Self::Bisect(args) => crate::bisect::load_app(args)?.commits,
-            Self::Stashes(args) => crate::stash::load_app(args)?.commits,
-            Self::Reflog(args) => git::load_reflog(args)?,
+            Self::Branches(args) => crate::branches::load_watched(args)?.into(),
+            Self::Bisect(args) => crate::bisect::load_app(args)?.commits.into(),
+            Self::Stashes(args) => crate::stash::load_app(args)?.commits.into(),
+            Self::Reflog(args) => git::load_reflog(args)?.into(),
             Self::BranchLog { picker, branch } => {
                 let rows = crate::branches::load_graph(picker)?;
                 let args = crate::branches::followed_log_args(&rows, branch)?;
@@ -277,6 +277,7 @@ pub struct App {
     pub github_file_view: Option<crate::github_search::FileView>,
     pending_github_file: Option<crate::github_search::Pending>,
     pub commits: Vec<Commit>,
+    pending_interchanges: Option<git::interchanges::Pending>,
     pub history: History,
     pub pending_blame: Option<crate::blame::FileRevision>,
     blame_stack: Vec<BlameFrame>,
@@ -379,7 +380,11 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(commits: Vec<Commit>) -> Self {
+    pub fn new(loaded: impl Into<git::LoadedLog>) -> Self {
+        let git::LoadedLog {
+            commits,
+            interchanges,
+        } = loaded.into();
         let mut app = Self {
             views: crate::views::Session::default(),
             view_menu: None,
@@ -389,6 +394,7 @@ impl App {
             range_diff_view: None,
             github_file_view: None,
             pending_github_file: None,
+            pending_interchanges: interchanges,
             history: match commits
                 .first()
                 .and_then(|commit| commit.annotation.as_ref())
@@ -1246,11 +1252,25 @@ impl App {
         };
     }
 
-    /// Apply omitted history once its background read completes, returning
-    /// whether it did.
+    /// Start optional marker work after drawing the first frame.
+    pub fn start_interchanges(&mut self) {
+        if let Some(pending) = &mut self.pending_interchanges {
+            pending.start();
+        }
+    }
+
+    /// Apply completed marker and omitted-history reads without moving selection.
     pub fn poll_log(&mut self) -> bool {
+        let marked = self
+            .pending_interchanges
+            .as_mut()
+            .is_some_and(|pending| pending.poll(&mut self.commits));
+        if marked {
+            self.pending_interchanges = None;
+            self.layout_log_folds();
+        }
         let Some(result) = self.log_folds.poll(&self.commits) else {
-            return false;
+            return marked;
         };
         self.log_read(result);
         true
@@ -1259,6 +1279,10 @@ impl App {
     /// Wait for omitted history, as if `poll_log` ran once it was read.
     #[cfg(test)]
     pub fn settle_log(&mut self) {
+        if let Some(pending) = self.pending_interchanges.take() {
+            pending.settle(&mut self.commits);
+            self.layout_log_folds();
+        }
         if let Some(result) = self.log_folds.settle(&self.commits) {
             self.log_read(result);
         }
@@ -1379,7 +1403,7 @@ impl App {
             // refreshes must also invalidate changes hidden by that omission.
             self.cache.clear();
             self.cache_order.clear();
-            fresh.commits
+            fresh.commits.into()
         } else {
             source.load(self.repository.as_ref())?
         };
@@ -1406,7 +1430,12 @@ impl App {
         )
     }
 
-    pub fn replace_commits(&mut self, commits: Vec<Commit>) {
+    pub fn replace_commits(&mut self, loaded: impl Into<git::LoadedLog>) {
+        let git::LoadedLog {
+            commits,
+            interchanges,
+        } = loaded.into();
+        self.pending_interchanges = interchanges;
         self.log_date_column = None;
         // Follow progress only while the candidate is selected in the graph;
         // reading an older result or its patch keeps that commit selected.

@@ -246,11 +246,15 @@ pub fn load_app(args: &[String]) -> Result<crate::app::App, String> {
     let view = StatusView::load()?;
     let summary = view.summary();
     let idle = summary.is_idle();
-    let mut commits = vec![crate::git::working_tree_commit(&summary)];
-    if idle {
-        commits.extend(crate::git::load_log(&[])?);
-    }
-    let mut app = crate::app::App::new(commits);
+    let mut loaded = if idle {
+        crate::git::load_log_at(&[], None)?
+    } else {
+        crate::git::LoadedLog::from(Vec::new())
+    };
+    loaded
+        .commits
+        .insert(0, crate::git::working_tree_commit(&summary));
+    let mut app = crate::app::App::new(loaded);
     app.status_view = Some(view);
     if !idle {
         app.mode = crate::app::Mode::Status;

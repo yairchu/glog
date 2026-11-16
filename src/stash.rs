@@ -190,7 +190,7 @@ fn load_show(args: &[String]) -> Result<App, String> {
         Some(index) => index,
         None => {
             // Git also accepts a stash commit that is no longer in the list.
-            let mut commits = git::load_log(&["-1".into(), hash, "--".into()])?;
+            let mut commits = git::load_revisions(&[hash], &[])?;
             let mut commit = commits.pop().ok_or("could not read stash commit")?;
             commit.annotation = Some(Annotation::Stash(StashEntry {
                 selector: revision,

@@ -107,7 +107,7 @@ fn main() -> ExitCode {
         Command::Blame => blame::load_app(command_args),
         Command::Log => match &watch_source {
             Some(source) if watch => source.load(None),
-            _ => git::load_log(&git_args),
+            _ => git::load_log_at(&git_args, None),
         }
         .map(App::new),
     };
@@ -536,6 +536,7 @@ fn run<B: ratatui::backend::Backend>(
             app.images.flush(&mut io::stdout())?;
             changed = false;
         }
+        app.start_interchanges();
         let first = match deferred.take() {
             Some(click) => Some(click),
             None if event::poll(Duration::from_millis(250))? => Some(event::read()?),

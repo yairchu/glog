@@ -3592,7 +3592,7 @@ mod tests {
             "Longer-author-outside-viewport",
             "李 e\u{301}",
         ];
-        let commits = names
+        let commits: Vec<_> = names
             .iter()
             .enumerate()
             .map(|(index, name)| {
