@@ -102,6 +102,46 @@ mod tests {
     };
 
     #[test]
+    fn counted_branch_logs_keep_the_explicit_interchange_anchor() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        git(&["checkout", "-qb", "main"]);
+        git(&["commit", "--allow-empty", "-qm", "root"]);
+        git(&["checkout", "-qb", "side"]);
+        git(&["commit", "--allow-empty", "-qm", "side base"]);
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-qb", "stacked"]);
+        git(&["commit", "--allow-empty", "-qm", "stacked tip"]);
+        git(&["checkout", "-q", "side"]);
+        git(&["commit", "--allow-empty", "-qm", "side tip"]);
+        git(&["checkout", "-q", "main"]);
+        git(&["commit", "--allow-empty", "-qm", "main tip"]);
+
+        // The stacked branch connects at side's base, while HEAD connects
+        // only at root. Limiting the Log must not change which fork is marked.
+        for args in [
+            vec!["side"],
+            vec!["-n", "10", "side"],
+            vec!["-n10", "side"],
+            vec!["--max-count", "10", "side"],
+            vec!["--max-count=10", "side"],
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            let commits = load_log(&args).unwrap();
+            assert_eq!(
+                commits
+                    .iter()
+                    .find(|commit| commit.hash == base)
+                    .unwrap()
+                    .graph_node,
+                '@',
+                "{args:?}"
+            );
+        }
+    }
+
+    #[test]
     fn all_branch_interchanges_use_one_anchor_and_linear_git_processes() {
         struct Trace(Option<std::ffi::OsString>);
         impl Drop for Trace {
