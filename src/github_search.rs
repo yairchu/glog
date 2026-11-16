@@ -498,6 +498,16 @@ mod tests {
     }
 
     #[test]
+    fn fragments_locate_matches_in_crlf_files() {
+        let mut app = app_from_json(&results()).unwrap();
+        let view = app.grep_view.as_mut().unwrap();
+        assert!(view.find("café", false));
+        let target = view.github_target().unwrap();
+        let crlf = CONTENTS.replace('\n', "\r\n");
+        assert_eq!(target.location.in_file(&crlf), Some(3));
+    }
+
+    #[test]
     fn fragments_keep_byte_offsets_and_do_not_invent_absolute_line_numbers() {
         let mut app = app_from_json(&results()).unwrap();
         let view = app.grep_view.as_mut().unwrap();
