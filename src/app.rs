@@ -3525,6 +3525,36 @@ impl App {
                 return;
             }
         };
+        // Branches and Log share commit identities, even though their rows
+        // and ordering differ. Other views retain independent navigation.
+        if self.mode == Mode::Log
+            && matches!(
+                (self.history, target.history),
+                (History::Log, History::Branches) | (History::Branches, History::Log)
+            )
+            && matches!(target.mode, Mode::Log | Mode::Status)
+        {
+            target.load_history();
+            if let Some(index) = self
+                .commits
+                .get(self.selected)
+                .filter(|commit| commit.kind == CommitKind::Revision)
+                .and_then(|selected| {
+                    target
+                        .commits
+                        .iter()
+                        .position(|commit| commit.hash == selected.hash)
+                })
+            {
+                target.log_folds.reveal(index, &target.commits);
+                if target.log_folds.visible(index) {
+                    target.selected = index;
+                    target.mode = Mode::Log;
+                    target.center_selection = true;
+                    target.search_match = None;
+                }
+            }
+        }
         target.exit_on_esc = self.exit_on_esc;
         self.hand_over(&mut target);
         let previous = std::mem::replace(&mut target.views.active, view);

@@ -207,7 +207,65 @@ mod tests {
         switch(&mut app, View::StatusLog);
         assert_eq!(app.mode, Mode::Log);
         assert!(app.watch);
-        assert_eq!(app.commits[app.selected].subject, "Working tree · Clean");
+        assert_eq!(app.commits[app.selected].subject, "base");
+    }
+
+    #[test]
+    fn switching_between_log_and_branches_keeps_shared_commits() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        repository();
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["branch", "side"]);
+        git(&["commit", "--allow-empty", "-qm", "middle"]);
+        let middle = git(&["rev-parse", "HEAD"]);
+        git(&["branch", "landmark"]);
+        git(&["commit", "--allow-empty", "-qm", "tip"]);
+        let tip = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "side"]);
+        git(&["commit", "--allow-empty", "-qm", "side tip"]);
+        let side = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "-"]);
+
+        let mut app = View::StatusLog.load().unwrap();
+        app.selected = app.commits.iter().position(|c| c.hash == base).unwrap();
+        switch(&mut app, View::Branches);
+        assert_eq!(app.commits[app.selected].hash, base);
+
+        app.selected = app.commits.iter().position(|c| c.hash == middle).unwrap();
+        switch(&mut app, View::StatusLog);
+        assert_eq!(app.mode, Mode::Log);
+        assert_eq!(app.commits[app.selected].hash, middle);
+        assert!(app.log_folds.visible(app.selected));
+        assert!(app.center_selection);
+
+        app.selected = app.commits.iter().position(|c| c.hash == tip).unwrap();
+        switch(&mut app, View::Branches);
+        assert_eq!(app.commits[app.selected].hash, tip);
+
+        // A side tip absent from this Log leaves its saved cursor alone.
+        app.selected = app.commits.iter().position(|c| c.hash == side).unwrap();
+        switch(&mut app, View::StatusLog);
+        assert_eq!(app.commits[app.selected].hash, tip);
+    }
+
+    #[test]
+    fn switching_from_branches_to_a_new_dirty_log_keeps_the_commit() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        repository();
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["branch", "side"]);
+        git(&["commit", "--allow-empty", "-qm", "tip"]);
+        fs::write("file.txt", "dirty\n").unwrap();
+        let mut app = View::Branches.load().unwrap();
+        app.views.active = View::Branches;
+        app.selected = app.commits.iter().position(|c| c.hash == base).unwrap();
+
+        switch(&mut app, View::StatusLog);
+        assert_eq!(app.mode, Mode::Log);
+        assert_eq!(app.commits[app.selected].hash, base);
+        assert!(app.status_view.is_some());
     }
 
     #[test]
@@ -261,7 +319,9 @@ mod tests {
         assert_eq!(app.history, History::Branches);
 
         switch(&mut app, View::StatusLog);
-        assert_eq!(app.mode, Mode::Status);
+        assert_eq!(app.mode, Mode::Log);
+        assert_eq!(app.commits[app.selected].subject, "base");
+        // Carrying the commit into Log leaves Status navigation intact.
         assert_eq!(app.status_view.as_ref().unwrap().cursor, 1);
         assert_eq!(app.status_view.as_ref().unwrap().horizontal, 8);
         assert!(app.watch);

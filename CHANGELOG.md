@@ -7,6 +7,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Keep the selected commit when switching between Log and Branches when it
+  appears in both views.
+
 - Recognize Copilot Autofix coauthor trailers with a 🤖 badge in Log and Show.
 
 - Mark shared ancestors with other local and remote branches with ⦵ in Log,
