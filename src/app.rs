@@ -2338,9 +2338,12 @@ impl App {
         }
     }
 
-    /// Counts change row text, so keep the focused continuation and its screen
-    /// position while remeasuring any summaries whose wrapping changed.
+    /// Keep the focused continuation and its screen position when rebuilding
+    /// the same view, including summaries whose wrapping changed.
     fn rebuild_show_rows_preserving_cursor(&mut self) {
+        // A preceding rebuild may have invalidated wrapping before a frame
+        // could measure it, as when session settings change on view return.
+        self.ensure_show_layout();
         let continuation = self.show_cursor_continuation();
         let position = self.show_cursor_screen() as isize - self.show_offset as isize;
         let measured = !self.show_row_starts.is_empty();
@@ -3488,7 +3491,7 @@ impl App {
             if let Some(status) = &mut view.status_view {
                 status.set_code_stats(self.code_stats);
             }
-            view.rebuild_show_rows();
+            view.rebuild_show_rows_preserving_cursor();
         }
         view.views = std::mem::take(&mut self.views);
         view.images = std::mem::take(&mut self.images);
@@ -3574,7 +3577,7 @@ impl App {
         if let Some(status) = &mut self.status_view {
             status.enable_images(self.images.enabled);
         }
-        self.rebuild_show_rows();
+        self.rebuild_show_rows_preserving_cursor();
         self.redraw = true;
     }
 
