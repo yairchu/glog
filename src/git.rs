@@ -5892,6 +5892,42 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn copilot_autofix_coauthor_uses_an_agent_badge_in_log_and_show() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        let trailer = "Copilot Autofix powered by AI <175728472+Copilot@users.noreply.github.com>";
+        git(&["init", "-q"]);
+        git(&[
+            "commit",
+            "--allow-empty",
+            "-qm",
+            &format!("Update label for C++ ADAA settings in adaa.py\n\nCo-authored-by: {trailer}"),
+        ]);
+        let commit = load_log(&[]).unwrap().remove(0);
+        assert_eq!(commit.collaborators.others, 0);
+        assert_eq!(
+            crate::log_format::coauthor_badge(&commit.collaborators)[1].content,
+            "🤖"
+        );
+        assert!(crate::ansi::plain(&show(&commit, &[]).unwrap())
+            .contains(&format!("    Co-authored-by: 🤖 {trailer}")));
+
+        let repeated = [
+            trailer,
+            "Copilot <175728472+COPILOT@USERS.NOREPLY.GITHUB.COM>",
+        ];
+        let collaborators =
+            Collaborators::parse(&repeated.join(&COAUTHOR.to_string()), "human@example.com");
+        assert_eq!(
+            crate::log_format::coauthor_badge(&collaborators)[1].content,
+            "🤖"
+        );
+        let unrelated = Collaborators::parse("Copilot <human@example.com>", "author@example.com");
+        assert_eq!(unrelated.others, 1);
+        assert!(unrelated.agent_trailers.is_empty());
+    }
+
+    #[test]
     fn gemini_coauthors_use_exact_emails_and_share_one_agent_badge() {
         let recognized = [
             "Gemini CLI <GEMINI-CLI@GOOGLE.COM>",
