@@ -868,6 +868,9 @@ impl App {
                 }
             }
             Mode::Show => {
+                // Explicit movement supersedes a reveal queued by an earlier
+                // key in the same input burst, before the next frame.
+                self.show_scroll = None;
                 let amount = if delta.abs() == 1 { 1 } else { page.max(1) };
                 let screen = self
                     .show_cursor_screen()
