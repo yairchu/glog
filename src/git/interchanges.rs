@@ -326,7 +326,8 @@ fn anchor(request: &Request) -> Option<String> {
         if crate::log_format::takes_pattern(arg)
             || matches!(
                 arg.as_str(),
-                "-n" | "--max-count"
+                "-n" | "-L"
+                    | "--max-count"
                     | "--skip"
                     | "--since"
                     | "--after"
