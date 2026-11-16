@@ -433,6 +433,55 @@ impl Row {
     }
 }
 
+/// Rows along with the widest one's display width. Rows can only be added
+/// through `push`, which keeps the width current, so drawing never has to
+/// render every row to find it.
+#[derive(Default)]
+struct Rows {
+    rows: Vec<Row>,
+    width: usize,
+}
+
+impl Rows {
+    fn push(&mut self, row: Row) {
+        self.width = self.width.max(row.line().width());
+        self.rows.push(row);
+    }
+    fn clear(&mut self) {
+        self.rows.clear();
+        self.width = 0;
+    }
+    fn width(&self) -> usize {
+        self.width
+    }
+}
+
+impl std::ops::Deref for Rows {
+    type Target = [Row];
+    fn deref(&self) -> &[Row] {
+        &self.rows
+    }
+}
+
+impl<'a> IntoIterator for &'a Rows {
+    type Item = &'a Row;
+    type IntoIter = std::slice::Iter<'a, Row>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.rows.iter()
+    }
+}
+
+#[cfg(test)]
+impl From<Vec<Row>> for Rows {
+    fn from(rows: Vec<Row>) -> Self {
+        let mut result = Self::default();
+        for row in rows {
+            result.push(row);
+        }
+        result
+    }
+}
+
 #[derive(Default)]
 pub struct StatusView {
     submodules: HashMap<Key, StatusView>,
@@ -447,7 +496,7 @@ pub struct StatusView {
     patch_reads: std::cell::Cell<usize>,
     #[cfg(test)]
     stat_reads: std::cell::Cell<usize>,
-    rows: Vec<Row>,
+    rows: Rows,
     pub show_stat: bool,
     code_stats: bool,
     stats: HashMap<Key, String>,
@@ -1425,13 +1474,9 @@ impl StatusView {
             self.offset = self.cursor + 1 - self.height.max(1);
         }
         self.offset = self.offset.min(self.rows.len().saturating_sub(self.height));
-        let width = self
+        self.horizontal_max = self
             .rows
-            .iter()
-            .map(|row| row.line().width())
-            .max()
-            .unwrap_or(0);
-        self.horizontal_max = width
+            .width()
             .saturating_sub(usize::from(area.width))
             .min(usize::from(u16::MAX)) as u16;
         self.horizontal = self.horizontal.min(self.horizontal_max);
@@ -1509,7 +1554,13 @@ mod tests {
             .draw(|frame| view.draw(frame, frame.area()))
             .unwrap();
         view.pan(true);
-        view.rows[0].text = "short".into();
+        view.rows = vec![Row {
+            key: RowKey::Group(Group::Untracked),
+            text: "short".into(),
+            color: None,
+            preview: None,
+        }]
+        .into();
         terminal
             .draw(|frame| view.draw(frame, frame.area()))
             .unwrap();
@@ -1529,7 +1580,8 @@ mod tests {
                 text,
                 color: None,
                 preview: None,
-            }];
+            }]
+            .into();
             terminal
                 .draw(|frame| crate::ui::draw(frame, &mut app))
                 .unwrap();
