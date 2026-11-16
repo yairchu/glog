@@ -441,7 +441,7 @@ fn apply(event: Event, app: &mut App) {
                         .find(|(rect, _, _)| rect.contains((mouse.column, mouse.row).into()))
                         .cloned()
                     {
-                        app.click_summary_path(index, target);
+                        app.click_summary_path(index, target, app.show_offset + row);
                         return;
                     }
                     let reference = app

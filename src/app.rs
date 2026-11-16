@@ -289,6 +289,9 @@ pub struct App {
     // Viewport offsets are screen rows; the cursor indexes logical Show rows.
     pub show_offset: usize,
     pub show_cursor: usize,
+    // Associate a wrapped continuation with its logical row so jumps to other
+    // rows cannot accidentally inherit a continuation.
+    show_continuation: (usize, usize),
     pub show_text: String,
     pub show_links: HashMap<usize, Vec<crate::commit_links::Link>>,
     pub show_message_styles: HashMap<usize, crate::message_format::Ranges>,
@@ -404,6 +407,7 @@ impl App {
             log_offset: 0,
             show_offset: 0,
             show_cursor: 0,
+            show_continuation: (0, 0),
             show_text: String::new(),
             show_links: HashMap::new(),
             show_message_styles: HashMap::new(),
@@ -846,15 +850,52 @@ impl App {
             }
             Mode::Show => {
                 let amount = if delta.abs() == 1 { 1 } else { page.max(1) };
-                self.show_cursor = if delta < 0 {
-                    self.show_cursor.saturating_sub(amount)
-                } else {
-                    self.show_cursor
-                        .saturating_add(amount)
-                        .min(self.show_rows.len().saturating_sub(1))
-                };
+                let screen = self
+                    .show_cursor_screen()
+                    .saturating_add_signed(if delta < 0 {
+                        -(amount as isize)
+                    } else {
+                        amount as isize
+                    });
+                self.set_show_cursor_screen(screen);
             }
         }
+    }
+
+    pub fn show_cursor_continuation(&self) -> usize {
+        if self.show_continuation.0 != self.show_cursor {
+            return 0;
+        }
+        let height = self
+            .show_row_starts
+            .get(self.show_cursor + 1)
+            .zip(self.show_row_starts.get(self.show_cursor))
+            .map_or(1, |(end, start)| end - start);
+        self.show_continuation.1.min(height.saturating_sub(1))
+    }
+
+    pub fn show_cursor_screen(&self) -> usize {
+        self.show_row_starts
+            .get(self.show_cursor)
+            .copied()
+            .unwrap_or(self.show_cursor)
+            + self.show_cursor_continuation()
+    }
+
+    pub fn set_show_cursor_screen(&mut self, screen: usize) {
+        let total = self
+            .show_row_starts
+            .last()
+            .copied()
+            .unwrap_or(self.show_rows.len());
+        let screen = screen.min(total.saturating_sub(1));
+        self.show_cursor = self.show_row_at_screen(screen);
+        let start = self
+            .show_row_starts
+            .get(self.show_cursor)
+            .copied()
+            .unwrap_or(self.show_cursor);
+        self.show_continuation = (self.show_cursor, screen.saturating_sub(start));
     }
 
     pub fn scroll_show(&mut self, delta: isize) {
@@ -872,9 +913,10 @@ impl App {
                 .saturating_add(delta as usize)
                 .min(max_offset)
         };
-        let first = self.show_row_at_screen(self.show_offset);
-        let last = self.show_row_at_screen(self.show_offset + height - 1);
-        self.show_cursor = self.show_cursor.clamp(first, last);
+        let screen = self
+            .show_cursor_screen()
+            .clamp(self.show_offset, self.show_offset + height - 1);
+        self.set_show_cursor_screen(screen);
     }
 
     pub fn move_selection(&mut self, delta: isize) -> bool {
@@ -1480,17 +1522,13 @@ impl App {
             return;
         }
         let old_cursor = self.show_cursor;
+        let old_continuation = self.show_cursor_continuation();
         let cursor_row = self.show_rows.get(old_cursor).cloned();
         let cursor_file = cursor_row
             .as_ref()
             .and_then(|row| row.file)
             .map(|index| self.show_files[index].clone());
-        let screen_position = self
-            .show_row_starts
-            .get(old_cursor)
-            .copied()
-            .unwrap_or(old_cursor) as isize
-            - self.show_offset as isize;
+        let screen_position = self.show_cursor_screen() as isize - self.show_offset as isize;
         let expanded = self.expanded_folds.clone();
         let directories = self.collapsed_directories.clone();
         let nested_cursor = self.submodule_rows.get(&old_cursor).cloned();
@@ -1572,6 +1610,7 @@ impl App {
             .or(restored_cursor)
             .unwrap_or(old_cursor.min(self.show_rows.len().saturating_sub(1)));
         self.search_match = None;
+        self.show_continuation = (self.show_cursor, old_continuation);
         self.show_scroll = Some(ShowScroll::PreserveCursorPosition(screen_position));
     }
 
@@ -1598,6 +1637,7 @@ impl App {
             }
             Mode::Show => {
                 self.show_cursor = 0;
+                self.show_continuation = (0, 0);
                 self.show_offset = 0;
             }
         }
@@ -1892,6 +1932,7 @@ impl App {
                 CommitKind::Unstaged | CommitKind::Comparison { worktree: true }
             )
         });
+        let prefix = crate::ui::show_editor_prefix(self, cursor, &selected.patch, selected.line);
         Ok(crate::editor::Target::from_patch(
             root,
             git::raw_path(&file.path_bytes),
@@ -1903,7 +1944,8 @@ impl App {
             } else {
                 crate::editor::Textconv::Disabled
             },
-        ))
+        )
+        .with_column_prefix(prefix))
     }
 
     pub fn enable_images(&mut self) {
@@ -2051,15 +2093,20 @@ impl App {
         self.show_scroll = Some(ShowScroll::Cursor);
     }
 
-    pub fn click_summary_path(&mut self, row: usize, target: crate::summary_paths::Target) {
-        let already_focused = self.show_cursor == row
+    pub fn click_summary_path(
+        &mut self,
+        row: usize,
+        target: crate::summary_paths::Target,
+        screen: usize,
+    ) {
+        let already_focused = self.show_cursor_screen() == screen
             && self
                 .show_rows
                 .get(row)
                 .and_then(|row| row.path.as_ref())
                 .and_then(|path| path.focused(&self.summary_cursor))
                 == Some(&target);
-        self.show_cursor = row;
+        self.set_show_cursor_screen(screen);
         if let Some(path) = self.show_rows.get(row).and_then(|row| row.path.as_ref()) {
             if let Some(component) = path
                 .components
@@ -2521,6 +2568,7 @@ impl App {
         self.show_rows = nested_rows;
         self.show_cursor = self.show_cursor.min(self.show_rows.len().saturating_sub(1));
         self.show_row_starts.clear();
+        self.show_continuation = (self.show_cursor, 0);
     }
 
     pub fn toggle_show_stat(&mut self) {
@@ -3293,8 +3341,8 @@ impl App {
         let clicked = self.show_row_at_screen(screen);
         // Deliberately two-step: a first click only focuses a folded row, and
         // clicking the focused row unfolds it.
-        let already_focused = self.show_cursor == clicked;
-        self.show_cursor = clicked.min(self.show_rows.len().saturating_sub(1));
+        let already_focused = self.show_cursor_screen() == screen;
+        self.set_show_cursor_screen(screen);
         self.summary_cursor = crate::path_groups::Cursor::default();
         if already_focused && self.show_rows.get(clicked).is_some_and(|row| row.folded) {
             self.toggle_show_file();

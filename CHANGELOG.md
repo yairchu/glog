@@ -7,6 +7,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Move through wrapped lines one screen row at a time in Show and Diff. Only
+  the focused row is highlighted; `e` opens the editor at that row's source
+  column, accounting for word wrapping, tabs, and Unicode.
+
 - Press `e` in Grep, Blame, and file views (`glog show REV:path`) to open the
   selected line in your editor. Positions from the index or a revision map to
   the corresponding working-tree line.

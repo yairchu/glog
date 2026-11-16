@@ -628,7 +628,7 @@ const HELP_ROWS: &[HelpRow] = &[
             grep: Some("open working file at matching line in editor"),
             blame: Some("open working file at selected line in editor"),
             file: Some("open working file at selected line in editor"),
-            ..detail("e", "open working file in editor (Show/Status)").1
+            ..detail("e", "open working file at cursor in editor (Show/Status)").1
         },
     ),
     detail(
@@ -1383,16 +1383,16 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
         }
         app.show_row_starts = starts;
         app.show_rows_width = area.width;
+        app.set_show_cursor_screen(app.show_cursor_screen());
     }
     let rows = app.show_rows.len();
     let cursor_line =
-        (app.show_cursor < rows).then(|| styled_show_line(app, app.show_cursor, area.width));
+        (app.show_cursor < rows).then(|| drawn_show_line(app, app.show_cursor, area.width, true));
     let cursor_background = cursor_line
         .as_ref()
-        .and_then(|line| line.spans.last())
-        .and_then(|span| span.style.bg)
+        .map(|(_, background)| *background)
         .unwrap_or(Color::DarkGray);
-    let cursor_line = cursor_line.map(|line| drawn_show_line(app, app.show_cursor, line));
+    let cursor_line = cursor_line.map(|(line, _)| line);
     let cursor_start = app.show_row_starts[app.show_cursor.min(rows)];
     let cursor_end = app
         .show_row_starts
@@ -1418,23 +1418,38 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     match request {
         Some(ShowScroll::PreserveCursorPosition(position)) => {
-            app.show_offset = cursor_start.saturating_add_signed(-position);
+            app.show_offset = app.show_cursor_screen().saturating_add_signed(-position);
         }
-        Some(ShowScroll::Bottom) => app.show_offset = max,
-        Some(ShowScroll::Cursor) => app.show_offset = cursor_start,
+        Some(ShowScroll::Bottom) => {
+            app.set_show_cursor_screen(
+                app.show_row_starts
+                    .last()
+                    .copied()
+                    .unwrap_or(1)
+                    .saturating_sub(1),
+            );
+            app.show_offset = max;
+        }
+        Some(ShowScroll::Cursor) => {
+            app.set_show_cursor_screen(cursor_start);
+            app.show_offset = cursor_start;
+        }
         _ if matched_rows.is_some() => {
             let rows = matched_rows.unwrap();
             let start = cursor_start + rows.start;
             let end = cursor_start + rows.end;
+            app.set_show_cursor_screen(start);
             if start < app.show_offset {
                 app.show_offset = start;
             } else if end > app.show_offset + height {
                 app.show_offset = end.saturating_sub(height).min(start);
             }
         }
-        _ if cursor_end <= app.show_offset => app.show_offset = cursor_start,
-        _ if cursor_start >= app.show_offset + height => {
-            app.show_offset = cursor_start + 1 - height;
+        _ if app.show_cursor_screen() < app.show_offset => {
+            app.show_offset = app.show_cursor_screen()
+        }
+        _ if app.show_cursor_screen() >= app.show_offset + height => {
+            app.show_offset = app.show_cursor_screen() + 1 - height;
         }
         _ => {}
     }
@@ -1537,10 +1552,7 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     let lines: Vec<_> = visible
         .clone()
-        .map(|index| match &cursor_line {
-            Some(line) if index == app.show_cursor => line.clone(),
-            _ => drawn_show_line(app, index, styled_show_line(app, index, area.width)),
-        })
+        .map(|index| drawn_show_line(app, index, area.width, false).0)
         .collect();
     frame.render_widget(
         Paragraph::new(Text::from(lines))
@@ -1548,6 +1560,25 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             .wrap(Wrap { trim: false }),
         area,
     );
+    // Apply cursor styling only to its visual row, using the same wrapping
+    // as the ordinary text. Other continuations retain their diff styles.
+    let cursor_screen = app.show_cursor_screen();
+    if let Some(line) = cursor_line {
+        if cursor_screen >= app.show_offset && cursor_screen < app.show_offset + height {
+            frame.render_widget(
+                Paragraph::new(line).wrap(Wrap { trim: false }).scroll((
+                    app.show_cursor_continuation().min(u16::MAX as usize) as u16,
+                    0,
+                )),
+                Rect::new(
+                    area.x,
+                    area.y + (cursor_screen - app.show_offset) as u16,
+                    area.width,
+                    1,
+                ),
+            );
+        }
+    }
     for index in visible {
         if let Some(preview) = &app.show_rows[index].preview {
             let screen = app.show_row_starts[index];
@@ -1566,10 +1597,9 @@ fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
     }
-    // Fill empty lines and the unused columns of every visible cursor continuation.
-    for screen in cursor_start.max(app.show_offset)
-        ..cursor_end.min(app.show_offset + usize::from(area.height))
-    {
+    // Fill unused columns on the single focused screen row.
+    if rows > 0 && cursor_screen >= app.show_offset && cursor_screen < app.show_offset + height {
+        let screen = cursor_screen;
         let y = area.y + (screen - app.show_offset) as u16;
         for x in area.x..area.right() {
             let cell = &mut frame.buffer_mut()[(x, y)];
@@ -1592,7 +1622,7 @@ fn show_row_line(row: &crate::app::ShowRow, width: u16) -> Line<'static> {
 }
 
 /// A Show row with the styles of its content and the cursor.
-fn styled_show_line(app: &App, index: usize, width: u16) -> Line<'static> {
+fn styled_show_line(app: &App, index: usize, width: u16, selected: bool) -> Line<'static> {
     let row = &app.show_rows[index];
     let mut line = show_row_line(row, width);
     if let Some(ranges) = message_entry(&app.show_message_styles, row) {
@@ -1619,7 +1649,7 @@ fn styled_show_line(app: &App, index: usize, width: u16) -> Line<'static> {
     } else if row.fold_separator {
         line.style = Style::default().fg(Color::Yellow);
     }
-    if index == app.show_cursor {
+    if selected {
         line.style = line.style.bg(Color::DarkGray);
         if row.folded {
             line.style = line.style.fg(Color::LightYellow);
@@ -1634,12 +1664,19 @@ fn styled_show_line(app: &App, index: usize, width: u16) -> Line<'static> {
 }
 
 /// Highlight search matches in a styled Show row, then expand its tabs.
-fn drawn_show_line(app: &App, index: usize, mut line: Line<'static>) -> Line<'static> {
+fn drawn_show_line(app: &App, index: usize, width: u16, selected: bool) -> (Line<'static>, Color) {
+    let mut line = styled_show_line(app, index, width, selected);
+    // Keep the fill colour separate from search and path highlights.
+    let background = line
+        .spans
+        .last()
+        .and_then(|span| span.style.bg)
+        .unwrap_or(Color::DarkGray);
     if let Some(query) = &app.search {
         let current = app.search_match == Some((Mode::Show, index));
         line = highlight_matches(line, query, current);
     }
-    if index == app.show_cursor {
+    if selected {
         if let Some(path) = &app.show_rows[index].path {
             if let Some(component) = app.summary_cursor.index(path.components.len()) {
                 let (range, _) = &path.ranges()[component];
@@ -1658,7 +1695,62 @@ fn drawn_show_line(app: &App, index: usize, mut line: Line<'static>) -> Line<'st
     }
     // Style and search ranges refer to the original bytes; expand only after styling.
     line.spans = ansi::display_spans(std::mem::take(&mut line.spans));
-    line
+    (line, background)
+}
+
+/// Source text before the first character of the focused wrapped row.
+/// IDs travel through Ratatui's word wrapping, including expanded tabs and
+/// wide/combining graphemes, rather than guessing from the terminal width.
+pub(crate) fn show_editor_prefix(app: &App, cursor: usize, patch: &str, row: usize) -> String {
+    use ratatui::{buffer::Buffer, widgets::Widget};
+    let Some(position) = crate::hunk::position(patch, row) else {
+        return String::new();
+    };
+    if !matches!(position.row, crate::hunk::Row::Line { result: true, .. }) {
+        return String::new();
+    }
+    let continuation = app.show_cursor_continuation();
+    if continuation == 0 || app.show_rows_width == 0 {
+        return String::new();
+    }
+    let Some(displayed) = app.show_rows.get(cursor) else {
+        return String::new();
+    };
+    let text = ansi::plain(&displayed.text);
+    let line = Line::raw(text.clone());
+    let mut offsets = Vec::new();
+    let mut bytes = 0;
+    let spans = line
+        .styled_graphemes(Style::default())
+        .map(|grapheme| {
+            offsets.push(bytes);
+            bytes += grapheme.symbol.len();
+            Span::styled(grapheme.symbol.to_owned(), hit_style(offsets.len()))
+        })
+        .collect();
+    let area = Rect::new(0, 0, app.show_rows_width, 1);
+    let mut buffer = Buffer::empty(area);
+    Paragraph::new(Line::from(ansi::display_spans(spans)))
+        .wrap(Wrap { trim: false })
+        .scroll((continuation.min(u16::MAX as usize) as u16, 0))
+        .render(area, &mut buffer);
+    let offset = (0..area.width)
+        .find_map(|x| match buffer[(x, 0)].fg {
+            Color::Rgb(r, g, b) => {
+                let id = (usize::from(r) << 16) | (usize::from(g) << 8) | usize::from(b);
+                id.checked_sub(1).and_then(|id| offsets.get(id)).copied()
+            }
+            _ => None,
+        })
+        .unwrap_or(0);
+    let source = patch.lines().nth(row).map(ansi::plain).unwrap_or_default();
+    let Some(indentation) = text.strip_suffix(&source).map(str::len) else {
+        return String::new();
+    };
+    let start = indentation + position.old.len();
+    text.get(start..offset.max(start))
+        .unwrap_or_default()
+        .to_owned()
 }
 
 pub(crate) fn summary_line(text: &str) -> Line<'static> {
@@ -3919,7 +4011,7 @@ mod show_wrapping_tests {
         );
     }
     #[test]
-    fn wrapped_cursor_continuations_and_blank_rows_have_full_background() {
+    fn only_the_focused_wrapped_screen_row_has_cursor_background() {
         for input in [
             "abcdefghijklmno",
             "界界界界界界",
@@ -3935,20 +4027,146 @@ mod show_wrapping_tests {
             app.show_cursor = 1;
             terminal.draw(|frame| draw(frame, &mut app)).unwrap();
             let end = app.show_row_starts[2];
-            for y in 2..=end as u16 {
-                let mut x = 0;
-                while x < 10 {
-                    let cell = &terminal.backend().buffer()[(x, y)];
-                    assert_eq!(cell.bg, Color::DarkGray, "input={input:?}, x={x}, y={y}");
-                    // A wide glyph's trailing cell is not drawn by the backend.
-                    x += Span::raw(cell.symbol()).width().max(1) as u16;
+            for selected in 1..end {
+                app.set_show_cursor_screen(selected);
+                terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+                for screen in 0..=end {
+                    let mut x = 0;
+                    while x < 10 {
+                        let cell = &terminal.backend().buffer()[(x, screen as u16 + 1)];
+                        assert_eq!(
+                            cell.bg,
+                            if screen == selected {
+                                Color::DarkGray
+                            } else {
+                                Color::Reset
+                            },
+                            "input={input:?}, selected={selected}, x={x}, screen={screen}"
+                        );
+                        x += Span::raw(cell.symbol()).width().max(1) as u16;
+                    }
                 }
             }
-            assert_eq!(
-                terminal.backend().buffer()[(0, end as u16 + 1)].bg,
-                Color::Reset
-            );
         }
+    }
+
+    #[test]
+    fn cursor_keys_traverse_every_wrapped_row_and_keep_one_highlight_visible() {
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        let mut terminal = Terminal::new(TestBackend::new(10, 6)).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = format!("{}\n{}", "a".repeat(70), "b".repeat(30));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let key = |app: &mut App, code| {
+            crate::input::handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), app)
+        };
+        for screen in 0..10 {
+            if screen > 0 {
+                key(&mut app, KeyCode::Down);
+            }
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            assert_eq!(app.show_cursor_screen(), screen);
+            assert_eq!(app.show_cursor, usize::from(screen >= 7));
+            for y in 1..5 {
+                assert_eq!(
+                    terminal.backend().buffer()[(9, y)].bg,
+                    if usize::from(y - 1) == screen - app.show_offset {
+                        Color::DarkGray
+                    } else {
+                        Color::Reset
+                    }
+                );
+            }
+        }
+        for screen in (0..9).rev() {
+            key(&mut app, KeyCode::Char('k'));
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            assert_eq!(app.show_cursor_screen(), screen);
+        }
+        key(&mut app, KeyCode::PageDown);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.show_cursor_screen(), 4);
+        assert_eq!(app.show_cursor, 0);
+        app.click_show_row(2);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.show_cursor_continuation(), 6);
+        key(&mut app, KeyCode::End);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.show_cursor_screen(), 9);
+        assert_eq!(app.show_cursor_continuation(), 2);
+        key(&mut app, KeyCode::Home);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.show_cursor_screen(), 0);
+        for (delta, expected) in [(3, 3), (3, 6), (-3, 6), (-3, 3)] {
+            app.scroll_show(delta);
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            assert_eq!(app.show_cursor_screen(), expected);
+        }
+    }
+
+    #[test]
+    fn editor_columns_exclude_combined_diff_markers_and_submodule_indentation() {
+        let mut terminal = Terminal::new(TestBackend::new(10, 8)).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        let patch = "diff --cc f\nindex aaaa,bbbb..cccc\n@@@ -1 -1 +1 @@@\n++abcdefghijklmnopqrst";
+        app.show_text = "  ++abcdefghijklmnopqrst".into();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        app.move_by(1, 1);
+        assert_eq!(show_editor_prefix(&app, 0, patch, 3), "abcdef");
+    }
+
+    #[test]
+    fn clicking_a_wrapped_summary_path_focuses_that_screen_row_before_folding() {
+        use crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+        let mut terminal = Terminal::new(TestBackend::new(10, 8)).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_stat = true;
+        app.show_text = "diff --git a/abcdefghijklmnopqrstuvwxyz.txt b/abcdefghijklmnopqrstuvwxyz.txt\n--- a/abcdefghijklmnopqrstuvwxyz.txt\n+++ b/abcdefghijklmnopqrstuvwxyz.txt\n@@ -1 +1 @@\n-old\n+new".into();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let (rect, index, _) = app
+            .visible_show_paths
+            .iter()
+            .find(|(rect, _, _)| rect.y > app.show_row_origin)
+            .unwrap()
+            .clone();
+        let click = Event::Mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: rect.x,
+            row: rect.y,
+            modifiers: KeyModifiers::NONE,
+        });
+        crate::input::handle(click.clone(), &mut app);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(
+            app.show_cursor_screen(),
+            app.show_offset + usize::from(rect.y - app.show_row_origin)
+        );
+        assert!(app.show_rows[index].folded);
+        crate::input::handle(click, &mut app);
+        assert!(app
+            .show_rows
+            .iter()
+            .any(|row| ansi::plain(&row.text) == "+new"));
+    }
+
+    #[test]
+    fn wrapped_diff_continuations_keep_their_background_except_at_the_cursor() {
+        let mut terminal = Terminal::new(TestBackend::new(10, 6)).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = format!("\x1b[48;2;0;40;0m+{}\x1b[0m\nnext", "a".repeat(24));
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        app.move_by(1, 1);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(terminal.backend().buffer()[(0, 1)].bg, Color::Rgb(0, 40, 0));
+        assert_eq!(
+            terminal.backend().buffer()[(0, 2)].bg,
+            Color::Rgb(32, 72, 32)
+        );
+        assert_eq!(terminal.backend().buffer()[(0, 3)].bg, Color::Rgb(0, 40, 0));
     }
 
     #[test]

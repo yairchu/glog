@@ -12,6 +12,7 @@ pub struct Target {
     root: PathBuf,
     path: PathBuf,
     line: Option<u32>,
+    column_prefix: String,
     /// The result-side blob, when the displayed file is not the working tree.
     blob: Option<String>,
     textconv: Textconv,
@@ -73,6 +74,7 @@ impl Target {
             root,
             path: git::raw_path(path),
             line,
+            column_prefix: String::new(),
             blob,
             textconv,
         })
@@ -107,9 +109,15 @@ impl Target {
             root,
             path,
             line,
+            column_prefix: String::new(),
             blob,
             textconv,
         }
+    }
+
+    pub fn with_column_prefix(mut self, prefix: String) -> Self {
+        self.column_prefix = prefix;
+        self
     }
 
     fn working_line(&self) -> Result<Option<u32>, String> {
@@ -210,14 +218,35 @@ impl Target {
         let line = self.working_line()?;
         let editor = editor_command::Editor::new()
             .map_err(|error| format!("Could not load editor; set VISUAL or EDITOR: {error}"))?;
-        Ok(command_for(&editor, &self.root.join(self.path), line))
+        let path = self.root.join(self.path);
+        let program = editor.open(&path);
+        let program = std::path::Path::new(program.get_program())
+            .file_stem()
+            .and_then(|name| name.to_str());
+        let units = match program {
+            Some("vi" | "vim" | "nvim") => self.column_prefix.len(),
+            Some("code" | "code-insiders" | "codium") => self.column_prefix.encode_utf16().count(),
+            _ => self.column_prefix.chars().count(),
+        };
+        let column = u32::try_from(units).unwrap_or(u32::MAX).saturating_add(1);
+        Ok(command_at(&editor, &path, line, column))
     }
 }
 
+#[cfg(test)]
 fn command_for(
     editor: &editor_command::Editor,
     path: &std::path::Path,
     line: Option<u32>,
+) -> Command {
+    command_at(editor, path, line, 1)
+}
+
+fn command_at(
+    editor: &editor_command::Editor,
+    path: &std::path::Path,
+    line: Option<u32>,
+    column: u32,
 ) -> Command {
     #[cfg(target_os = "macos")]
     if let Some(line) = line {
@@ -231,7 +260,7 @@ fn command_for(
         }
     }
     let mut command = match line {
-        Some(line) => editor.open_at(path, line, 1),
+        Some(line) => editor.open_at(path, line, column),
         None => editor.open(path),
     };
     // The crate's generic path:line:column formatter uses Path::display(),
@@ -240,10 +269,10 @@ fn command_for(
         let args: Vec<_> = command.get_args().map(std::ffi::OsStr::to_owned).collect();
         if args
             .last()
-            .is_some_and(|arg| arg == format!("{}:{line}:1", path.display()).as_str())
+            .is_some_and(|arg| arg == format!("{}:{line}:{column}", path.display()).as_str())
         {
             let mut exact = path.as_os_str().to_owned();
-            exact.push(format!(":{line}:1"));
+            exact.push(format!(":{line}:{column}"));
             let mut corrected = Command::new(command.get_program());
             corrected.args(&args[..args.len() - 1]).arg(exact);
             command = corrected;
@@ -485,6 +514,82 @@ mod tests {
                 Textconv::Disabled,
             );
             assert_eq!(target.working_line().unwrap(), Some(3), "{raw_args:?}");
+        }
+    }
+
+    #[test]
+    fn wrapped_show_editor_targets_source_columns_after_historical_line_mapping() {
+        use crate::git::tests::{git, CurrentDirGuard, TestDirectory};
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::{backend::TestBackend, Terminal};
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        for (source, width, utf16_column, byte_column) in [
+            ("abcdefghijklmnopqrst", 10, 10, 10),
+            ("hello world again", 14, 13, 13),
+            ("\tabcdefghijklmnop", 10, 2, 2),
+            ("界界界界界界界", 10, 5, 13),
+            ("😀😀😀😀😀😀", 10, 9, 17),
+            ("éééééééé", 6, 11, 16),
+        ] {
+            std::fs::write("file space.txt", format!("{source}\n")).unwrap();
+            git(&["add", "."]);
+            git(&["commit", "-qm", "snapshot"]);
+            let mut app = crate::git::load_show_app(&[]).unwrap();
+            if let Some(folded) = app.show_rows.iter().position(|row| row.folded) {
+                app.show_cursor = folded;
+                app.toggle_show_file();
+            }
+            app.show_cursor = app
+                .show_rows
+                .iter()
+                .position(|row| ansi::plain(&row.text) == format!("+{source}"))
+                .unwrap_or_else(|| panic!("source={source:?} rows={:?}", app.show_rows));
+            let mut terminal = Terminal::new(TestBackend::new(width, 9)).unwrap();
+            terminal
+                .draw(|frame| crate::ui::draw(frame, &mut app))
+                .unwrap();
+            app.move_by(1, 1);
+            terminal
+                .draw(|frame| crate::ui::draw(frame, &mut app))
+                .unwrap();
+            assert_eq!(app.show_cursor_continuation(), 1, "{source:?}");
+            std::fs::write("file space.txt", format!("inserted\n{source}\n")).unwrap();
+            for (program, column) in [("code", utf16_column), ("vim", byte_column)] {
+                let previous_visual = std::env::var_os("VISUAL");
+                std::env::set_var("VISUAL", program);
+                crate::input::handle(
+                    Event::Key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)),
+                    &mut app,
+                );
+                match previous_visual {
+                    Some(value) => std::env::set_var("VISUAL", value),
+                    None => std::env::remove_var("VISUAL"),
+                }
+                let command = app
+                    .pending_editor
+                    .take()
+                    .unwrap_or_else(|| panic!("{:?}", app.status));
+                let mut path = crate::git::repository_root()
+                    .unwrap()
+                    .join("file space.txt")
+                    .into_os_string();
+                if program == "code" {
+                    path.push(format!(":2:{column}"));
+                    assert!(
+                        command.get_args().any(|arg| arg == path),
+                        "source={source:?}: {command:?}"
+                    );
+                } else {
+                    assert!(
+                        command
+                            .get_args()
+                            .any(|arg| arg == format!("+call cursor(2, {column})").as_str()),
+                        "source={source:?}: {command:?}"
+                    );
+                }
+            }
         }
     }
 
