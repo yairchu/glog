@@ -4977,6 +4977,112 @@ mod tests {
     }
 
     #[test]
+    fn background_code_counts_refresh_expanded_submodule_rows() {
+        for depth in [1, 2] {
+            let mut app = App::new(Vec::new());
+            app.show_stat = true;
+            app.show_text = "diff --git a/file.rs b/file.rs\n--- /dev/null\n+++ b/file.rs\n@@ -0,0 +1,2 @@\n+// comment\n+fn main() {}\n".into();
+            app.ensure_show_rows();
+            app.code_stats = true;
+            let key = app.show_files[0].key.clone();
+            // Supply a completed count without depending on Git or worker timing.
+            // It is applied only when the active outer view polls its children.
+            app.code_counts.spawn(vec![key], |_| {
+                vec![Some(crate::code_stats::Counts {
+                    additions: 1,
+                    deletions: 0,
+                })]
+            });
+            for _ in 0..depth {
+                let mut parent = App::new(Vec::new());
+                parent.code_stats = true;
+                parent.show_text = format!(
+                    "diff --git a/module b/module\nindex {}..{} 160000\n",
+                    "1".repeat(40),
+                    "2".repeat(40)
+                );
+                parent.ensure_show_rows();
+                parent.submodules.insert(b"module".to_vec(), Box::new(app));
+                parent.expanded_folds.insert(b"module".to_vec());
+                parent.rebuild_show_rows();
+                app = parent;
+            }
+            assert!(app
+                .show_rows
+                .iter()
+                .any(|row| row.text.contains("file.rs | +2 −0")));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while app.counting_code() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "code counts did not complete"
+                );
+                app.poll_code_counts();
+                std::thread::yield_now();
+            }
+            assert!(
+                app.show_rows
+                    .iter()
+                    .any(|row| row.text.contains("file.rs | +1 −0")),
+                "depth={depth}: completed child counts must reach the displayed parent"
+            );
+            assert!(app
+                .show_rows
+                .iter()
+                .any(|row| row.text.contains("1 insertion(+)")));
+        }
+    }
+
+    #[test]
+    fn background_code_counts_preserve_wrapped_cursor() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_stat = true;
+        app.show_text = "diff --git a/file.rs b/file.rs\n--- /dev/null\n+++ b/file.rs\n@@ -0,0 +1 @@\n+fn long_function_name_for_wrapping() {}\n".into();
+        app.ensure_show_rows();
+        app.toggle_show_file();
+        app.code_stats = true;
+        let key = app.show_files[0].key.clone();
+        app.code_counts.spawn(vec![key], |_| {
+            vec![Some(crate::code_stats::Counts {
+                additions: 1,
+                deletions: 0,
+            })]
+        });
+        let mut terminal = Terminal::new(TestBackend::new(12, 8)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let row = app
+            .show_rows
+            .iter()
+            .position(|row| row.text.contains("+fn long"))
+            .unwrap();
+        app.set_show_cursor_screen(app.show_row_starts[row] + 1);
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        let position = (app.show_cursor_screen(), app.show_offset);
+        assert_eq!(app.show_cursor_continuation(), 1);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while app.counting_code() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "code counts did not complete"
+            );
+            app.poll_code_counts();
+            std::thread::yield_now();
+        }
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        assert_eq!(app.show_cursor, row);
+        assert_eq!(app.show_cursor_continuation(), 1);
+        assert_eq!((app.show_cursor_screen(), app.show_offset), position);
+    }
+
+    #[test]
     fn stat_hotkey_preserves_nested_submodule_reading_lines() {
         fn wrap(child: App) -> App {
             let mut app = App::new(Vec::new());

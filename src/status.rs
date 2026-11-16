@@ -1888,6 +1888,62 @@ mod tests {
     }
 
     #[test]
+    fn background_code_counts_refresh_expanded_submodule_rows() {
+        for depth in [1, 2] {
+            let mut view = StatusView {
+                snapshot: parse(b"? file.rs\0").unwrap(),
+                code_stats: true,
+                show_stat: true,
+                ..StatusView::default()
+            };
+            let key = view.snapshot.entries[0].key.clone();
+            view.stats.insert(key.clone(), "+2 −0".into());
+            view.rebuild();
+            // The active outer view must apply this result to its copied rows.
+            view.code_counts.spawn(vec![key], |_| {
+                vec![Some(crate::code_stats::Counts {
+                    additions: 1,
+                    deletions: 0,
+                })]
+            });
+            for _ in 0..depth {
+                let mut parent = StatusView {
+                    snapshot: parse(b"1 .M S.M. 160000 160000 160000 11111111 11111111 module\0")
+                        .unwrap(),
+                    code_stats: true,
+                    show_stat: true,
+                    ..StatusView::default()
+                };
+                let key = parent.snapshot.entries[0].key.clone();
+                parent.patches.insert(key.clone(), String::new());
+                parent.expanded_folds.insert(key.clone());
+                parent.submodules.insert(key, view);
+                parent.rebuild();
+                view = parent;
+            }
+            assert!(view
+                .rows
+                .iter()
+                .any(|row| row.text.contains("file.rs | +2 −0")));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while view.counting_code() {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "code counts did not complete"
+                );
+                view.poll_code_counts();
+                std::thread::yield_now();
+            }
+            assert!(
+                view.rows
+                    .iter()
+                    .any(|row| row.text.contains("file.rs | +1 −0")),
+                "depth={depth}: completed child counts must reach the displayed parent"
+            );
+        }
+    }
+
+    #[test]
     fn code_stats_count_in_the_background() {
         use std::fs;
         let directory = TestDirectory::new();
