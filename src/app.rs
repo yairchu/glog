@@ -1658,6 +1658,7 @@ impl App {
                 self.show_cursor = 0;
                 self.show_continuation = (0, 0);
                 self.show_offset = 0;
+                self.show_scroll = None;
             }
         }
     }
@@ -1676,8 +1677,18 @@ impl App {
                     .unwrap_or(0)
             }
             Mode::Show => {
-                self.show_cursor = self.show_rows.len().saturating_sub(1);
-                self.show_scroll = Some(ShowScroll::Bottom);
+                if let Some(&total) = self.show_row_starts.last() {
+                    // Apply navigation now so later keys in the same burst
+                    // start at the final wrapped row, without needing a frame.
+                    self.set_show_cursor_screen(total.saturating_sub(1));
+                    self.show_offset = total.saturating_sub(self.visible_show_rows.max(1));
+                    self.show_scroll = None;
+                } else {
+                    // The first layout must measure wrapping before finding
+                    // the final screen row.
+                    self.show_cursor = self.show_rows.len().saturating_sub(1);
+                    self.show_scroll = Some(ShowScroll::Bottom);
+                }
             }
         }
     }
@@ -3046,6 +3057,7 @@ impl App {
         match loaded {
             Err(error) => self.status = Some(error),
             Ok(crate::github_search::Outcome::Open(loaded)) => {
+                self.status = None;
                 self.enter_followed(Ok(loaded.into_app()))
             }
             Ok(crate::github_search::Outcome::Browse(url)) => {
