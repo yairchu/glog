@@ -4322,6 +4322,27 @@ mod show_wrapping_tests {
     }
 
     #[test]
+    fn show_survives_zero_height_resize_and_restores_the_cursor() {
+        let mut terminal = Terminal::new(TestBackend::new(20, 6)).unwrap();
+        let mut app = App::new(Vec::new());
+        app.mode = Mode::Show;
+        app.show_text = "first\nselected\nafter".to_owned();
+        app.ensure_show_rows();
+        app.show_cursor = 1;
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+
+        terminal.backend_mut().resize(20, 0);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.show_cursor, 1);
+
+        terminal.backend_mut().resize(20, 6);
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        assert_eq!(app.show_cursor, 1);
+        assert_eq!(terminal.backend().buffer()[(0, 2)].symbol(), "s");
+        assert_eq!(terminal.backend().buffer()[(0, 2)].bg, Color::DarkGray);
+    }
+
+    #[test]
     fn resizing_recomputes_wrapping_and_keeps_cursor_visible() {
         let mut terminal = Terminal::new(TestBackend::new(20, 6)).unwrap();
         let mut app = App::new(Vec::new());
