@@ -413,6 +413,26 @@ struct Row {
     text: String,
     color: Option<Color>,
 }
+
+impl Row {
+    fn line(&self) -> Line<'static> {
+        let mut line = match (&self.key, self.color) {
+            (RowKey::Commit(commit), _) => {
+                Line::from([vec![Span::raw("  ")], commit.label.spans()].concat())
+            }
+            (key, Some(color)) => if key.is_file() {
+                crate::ui::summary_line(&self.text)
+            } else {
+                Line::raw(self.text.clone())
+            }
+            .style(Style::default().fg(color)),
+            (_, None) => crate::ansi::normalized_line(&self.text),
+        };
+        line.spans = crate::ansi::display_spans(line.spans);
+        line
+    }
+}
+
 #[derive(Default)]
 pub struct StatusView {
     submodules: HashMap<Key, StatusView>,
@@ -437,6 +457,7 @@ pub struct StatusView {
     pub cursor: usize,
     offset: usize,
     pub horizontal: u16,
+    horizontal_max: u16,
     pub height: usize,
     pub origin: u16,
     pub bisect_button: Option<Rect>,
@@ -1293,10 +1314,14 @@ impl StatusView {
 
     pub fn pan(&mut self, right: bool) {
         self.horizontal = if right {
-            self.horizontal.saturating_add(4)
+            self.horizontal.saturating_add(4).min(self.horizontal_max)
         } else {
             self.horizontal.saturating_sub(4)
         };
+    }
+
+    pub fn can_pan(&self) -> bool {
+        self.horizontal_max > 0
     }
 
     #[cfg(test)]
@@ -1400,6 +1425,16 @@ impl StatusView {
             self.offset = self.cursor + 1 - self.height.max(1);
         }
         self.offset = self.offset.min(self.rows.len().saturating_sub(self.height));
+        let width = self
+            .rows
+            .iter()
+            .map(|row| row.line().width())
+            .max()
+            .unwrap_or(0);
+        self.horizontal_max = width
+            .saturating_sub(usize::from(area.width))
+            .min(usize::from(u16::MAX)) as u16;
+        self.horizontal = self.horizontal.min(self.horizontal_max);
         for (screen, row) in self
             .rows
             .iter()
@@ -1407,22 +1442,10 @@ impl StatusView {
             .take(self.height)
             .enumerate()
         {
-            let mut line = match (&row.key, row.color) {
-                (RowKey::Commit(commit), _) => {
-                    Line::from([vec![Span::raw("  ")], commit.label.spans()].concat())
-                }
-                (key, Some(color)) => if key.is_file() {
-                    crate::ui::summary_line(&row.text)
-                } else {
-                    Line::raw(row.text.clone())
-                }
-                .style(Style::default().fg(color)),
-                (_, None) => crate::ansi::normalized_line(&row.text),
-            };
+            let mut line = row.line();
             if self.offset + screen == self.cursor {
                 line.style = line.style.bg(Color::DarkGray);
             }
-            line.spans = crate::ansi::display_spans(line.spans);
             let row_area = Rect::new(area.x, self.origin + screen as u16, area.width, 1);
             if self.offset + screen == self.cursor {
                 frame.render_widget(

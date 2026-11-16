@@ -26,6 +26,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Fixed
 
+- Limit horizontal panning in Status to overflowing content, and only offer
+  the pan shortcut when lines extend beyond the screen.
+
 - Wrap long help descriptions and allow scrolling through every shortcut on
   smaller terminals with pager keys and the mouse wheel.
 

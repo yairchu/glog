@@ -166,7 +166,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         })
         .flatten();
     let mut help = if app.mode == Mode::Status {
-        status_error.clone().unwrap_or_else(|| "h help  q quit  ↑/k ↓/j  e edit  Enter show/fold  s summary  C code stats  Shift-←/→ commit  ←/→ pan  Tab Log  Esc Log  Ctrl-L redraw · WATCH".to_owned())
+        status_error.clone().unwrap_or_else(|| {
+            let pan = if app.status_view.as_ref().is_some_and(|view| view.can_pan()) {
+                "  ←/→ pan"
+            } else {
+                ""
+            };
+            format!("h help  q quit  ↑/k ↓/j  e edit  Enter show/fold  s summary  C code stats  Shift-←/→ commit{pan}  Tab Log  Esc Log  Ctrl-L redraw · WATCH")
+        })
     } else if let Some(input) = &app.search_input {
         let prefix = if app.search_reverse { '?' } else { '/' };
         format!("{prefix}{input}█")

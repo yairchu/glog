@@ -4771,7 +4771,11 @@ pub(crate) mod tests {
                 &mut app,
             );
             assert_eq!(app.mode, Mode::Status);
-            assert_eq!(app.status_view.as_ref().unwrap().horizontal, 4);
+            assert_eq!(
+                app.status_view.as_ref().unwrap().horizontal,
+                0,
+                "clean Status has no content to pan"
+            );
         }
     }
 
