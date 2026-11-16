@@ -1394,29 +1394,34 @@ fn hit_style(id: usize) -> Style {
     Style::default().fg(Color::Rgb((id >> 16) as u8, (id >> 8) as u8, id as u8))
 }
 
-fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
+/// Measure wrapping for both drawing and navigation between frames.
+pub(crate) fn layout_show_rows(app: &mut App, width: u16) {
     app.ensure_show_rows();
-    app.show_row_origin = area.y;
-    app.visible_show_rows = area.height as usize;
     // Rows only change when rebuilt, which clears their starts, so wrap
     // them once per width rather than on every frame.
-    if app.show_row_starts.len() != app.show_rows.len() + 1 || app.show_rows_width != area.width {
+    if app.show_row_starts.len() != app.show_rows.len() + 1 || app.show_rows_width != width {
         // Use Ratatui's own wrapping rules, including word boundaries and wide glyphs.
         let mut starts = Vec::with_capacity(app.show_rows.len() + 1);
         starts.push(0);
         for row in &app.show_rows {
-            let mut line = show_row_line(row, area.width);
+            let mut line = show_row_line(row, width);
             line.spans = ansi::display_spans(line.spans);
             let height = Paragraph::new(line)
                 .wrap(Wrap { trim: false })
-                .line_count(area.width)
+                .line_count(width)
                 .max(1);
             starts.push(starts.last().unwrap() + height);
         }
         app.show_row_starts = starts;
-        app.show_rows_width = area.width;
+        app.show_rows_width = width;
         app.set_show_cursor_screen(app.show_cursor_screen());
     }
+}
+
+fn draw_show(frame: &mut Frame, app: &mut App, area: Rect) {
+    layout_show_rows(app, area.width);
+    app.show_row_origin = area.y;
+    app.visible_show_rows = area.height as usize;
     let rows = app.show_rows.len();
     let cursor_line =
         (app.show_cursor < rows).then(|| drawn_show_line(app, app.show_cursor, area.width, true));

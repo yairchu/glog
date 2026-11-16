@@ -874,6 +874,7 @@ impl App {
                 }
             }
             Mode::Show => {
+                self.ensure_show_layout();
                 // Explicit movement supersedes a reveal queued by an earlier
                 // key in the same input burst, before the next frame.
                 self.show_scroll = None;
@@ -887,6 +888,15 @@ impl App {
                     });
                 self.set_show_cursor_screen(screen);
             }
+        }
+    }
+
+    /// Rebuild wrapping invalidated by an earlier input in the same burst,
+    /// using the last drawn width until the next frame supplies a new one.
+    fn ensure_show_layout(&mut self) {
+        let width = self.show_rows_width;
+        if width > 0 {
+            crate::ui::layout_show_rows(self, width);
         }
     }
 
@@ -927,6 +937,7 @@ impl App {
     }
 
     pub fn scroll_show(&mut self, delta: isize) {
+        self.ensure_show_layout();
         let height = self.visible_show_rows.max(1);
         let total = self
             .show_row_starts
@@ -1709,6 +1720,7 @@ impl App {
                     .unwrap_or(0)
             }
             Mode::Show => {
+                self.ensure_show_layout();
                 if let Some(&total) = self.show_row_starts.last() {
                     // Apply navigation now so later keys in the same burst
                     // start at the final wrapped row, without needing a frame.

@@ -257,6 +257,7 @@ fn anchor(request: &Request) -> Option<String> {
                     | "--since-as-filter"
                     | "--until"
                     | "--before"
+                    | "--date"
             )
         {
             args.next();
