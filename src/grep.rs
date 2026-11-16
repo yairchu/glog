@@ -42,6 +42,7 @@ struct File {
     source: usize,
     path: Vec<u8>,
     extension: Vec<u8>,
+    editor_source: crate::editor::Source,
     hits: Vec<Hit>,
     number_width: usize,
 }
@@ -339,6 +340,15 @@ impl View {
                     source,
                     path: path.to_vec(),
                     extension: extension(path),
+                    editor_source: crate::editor::Source::capture(
+                        &repository,
+                        path,
+                        &match &sources[source] {
+                            Source::Worktree => git::Version::Worktree,
+                            Source::Index => git::Version::Index,
+                            Source::Revision { hash, .. } => git::Version::Revision(hash.clone()),
+                        },
+                    ),
                     hits: Vec::new(),
                     number_width: 1,
                 });
@@ -773,18 +783,13 @@ impl View {
             _ => return Err("No file selected".into()),
         };
         let file = &self.files[file];
-        let version = match &self.sources[file.source] {
-            Source::Worktree => git::Version::Worktree,
-            Source::Index => git::Version::Index,
-            Source::Revision { hash, .. } => git::Version::Revision(hash.clone()),
-        };
         crate::editor::Target::from_file(
             &self.repository,
             &file.path,
             line.map(u32::try_from)
                 .transpose()
                 .map_err(|_| "Line number is too large")?,
-            &version,
+            &file.editor_source,
             crate::editor::Textconv::Disabled,
         )
     }

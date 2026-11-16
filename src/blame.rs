@@ -502,7 +502,7 @@ pub struct BlameFile {
     date: String,
     pub textconv: bool,
     path: Vec<u8>,
-    version: Version,
+    editor_source: crate::editor::Source,
     hash_width: usize,
     date_width: usize,
     author_width: usize,
@@ -531,7 +531,7 @@ impl BlameLine {
             &self.file.repository,
             &self.file.path,
             Some(u32::try_from(self.number).map_err(|_| "Line number is too large")?),
-            &self.file.version,
+            &self.file.editor_source,
             if self.file.textconv {
                 crate::editor::Textconv::Allowed
             } else {
@@ -871,11 +871,11 @@ fn render_lines(
     let mut highlighted = highlight(&crate::diff::display_path(path), &lines).map(Vec::into_iter);
     let width = |text: &str| Span::raw(text).width();
     let file = Arc::new(BlameFile {
+        editor_source: crate::editor::Source::capture(&repository, path, &version),
         repository,
         date: date.to_owned(),
         textconv,
         path: path.to_vec(),
-        version,
         hash_width: details
             .values()
             .map(|d| d.short_hash.len())

@@ -8,6 +8,65 @@ pub enum Textconv {
     Disabled,
 }
 
+/// The source used for editor line mapping. Index blobs are captured when
+/// the view loads, so later staging cannot change the meaning of its line numbers.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Source {
+    Worktree,
+    Revision(String),
+    Index(Result<String, String>),
+}
+
+impl Source {
+    pub fn capture(repository: &git::Repository, path: &[u8], version: &git::Version) -> Self {
+        match version {
+            git::Version::Revision(revision) => Self::Revision(revision.clone()),
+            git::Version::Index => Self::Index(file_blob(repository, path, "")),
+            git::Version::Worktree | git::Version::Untracked => Self::Worktree,
+        }
+    }
+}
+
+fn file_blob(repository: &git::Repository, path: &[u8], revision: &str) -> Result<String, String> {
+    let path = git::raw_path(path);
+    let relative = if path.is_absolute() {
+        path.canonicalize()
+            .map_err(|error| error.to_string())?
+            .strip_prefix(
+                repository
+                    .work_tree()?
+                    .canonicalize()
+                    .map_err(|error| error.to_string())?,
+            )
+            .map_err(|_| "file path is outside the repository")?
+            .to_owned()
+    } else {
+        path
+    };
+    let mut spec = revision.as_bytes().to_vec();
+    spec.push(b':');
+    let source_path = git::path_bytes(&relative);
+    // Git tree paths always use forward slashes.
+    #[cfg(windows)]
+    let source_path = source_path
+        .iter()
+        .map(|&byte| if byte == b'\\' { b'/' } else { byte })
+        .collect::<Vec<_>>();
+    spec.extend_from_slice(&source_path);
+    let output = git::read_command_at(Some(repository))
+        .args(["rev-parse", "--verify"])
+        .arg(git::raw_path(&spec))
+        .output()
+        .map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(git::stderr_message(
+            "Could not resolve the matched file",
+            &output.stderr,
+        ));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
 pub struct Target {
     root: PathBuf,
     path: PathBuf,
@@ -25,51 +84,15 @@ impl Target {
         repository: &git::Repository,
         path: &[u8],
         line: Option<u32>,
-        version: &git::Version,
+        source: &Source,
         textconv: Textconv,
     ) -> Result<Self, String> {
-        let revision = match version {
-            git::Version::Revision(revision) => Some(revision.as_str()),
-            git::Version::Index => Some(""),
-            git::Version::Worktree | git::Version::Untracked => None,
-        };
         let root = repository.work_tree()?.to_owned();
-        let blob = revision
-            .map(|revision| {
-                let path = git::raw_path(path);
-                let relative = if path.is_absolute() {
-                    path.canonicalize()
-                        .map_err(|error| error.to_string())?
-                        .strip_prefix(root.canonicalize().map_err(|error| error.to_string())?)
-                        .map_err(|_| "file path is outside the repository")?
-                        .to_owned()
-                } else {
-                    path
-                };
-                let mut spec = revision.as_bytes().to_vec();
-                spec.push(b':');
-                let source_path = git::path_bytes(&relative);
-                // Git tree paths always use forward slashes.
-                #[cfg(windows)]
-                let source_path = source_path
-                    .iter()
-                    .map(|&byte| if byte == b'\\' { b'/' } else { byte })
-                    .collect::<Vec<_>>();
-                spec.extend_from_slice(&source_path);
-                let output = git::read_command_at(Some(repository))
-                    .args(["rev-parse", "--verify"])
-                    .arg(git::raw_path(&spec))
-                    .output()
-                    .map_err(|error| error.to_string())?;
-                if !output.status.success() {
-                    return Err(git::stderr_message(
-                        "Could not resolve the matched file",
-                        &output.stderr,
-                    ));
-                }
-                Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
-            })
-            .transpose()?;
+        let blob = match source {
+            Source::Worktree => None,
+            Source::Revision(revision) => Some(file_blob(repository, path, revision)?),
+            Source::Index(blob) => Some(blob.clone()?),
+        };
         Ok(Self {
             root,
             path: git::raw_path(path),
