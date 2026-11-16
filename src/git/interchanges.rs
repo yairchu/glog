@@ -69,7 +69,10 @@ fn anchor(args: &[String], repository: Option<&Repository>) -> Option<String> {
         if arg == "--" {
             break;
         }
-        if crate::log_format::takes_pattern(arg) {
+        // rev-parse understands attached count limits, but unlike git log it
+        // treats the separate operand of --max-count as a path. Consume these
+        // option/value pairs before asking it to resolve revision endpoints.
+        if crate::log_format::takes_pattern(arg) || matches!(arg.as_str(), "-n" | "--max-count") {
             args.next();
             continue;
         }
@@ -77,7 +80,15 @@ fn anchor(args: &[String], repository: Option<&Repository>) -> Option<String> {
         revisions.push(arg);
     }
     let output = read_command_at(repository)
-        .args(["rev-parse", "--revs-only", "--default", "HEAD"])
+        // --revs-only also emits traversal flags such as --max-count=10.
+        // Only resolved revisions may participate in choosing the anchor.
+        .args([
+            "rev-parse",
+            "--revs-only",
+            "--no-flags",
+            "--default",
+            "HEAD",
+        ])
         .args(revisions)
         .env("GIT_NO_LAZY_FETCH", "1")
         .output()
