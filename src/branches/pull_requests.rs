@@ -889,6 +889,56 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_base_keeps_the_badges_it_would_have_refreshed() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "topic"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "base",
+        ]);
+        git(&["remote", "add", "origin", "https://github.com/me/repo.git"]);
+        git(&[
+            "remote",
+            "add",
+            "upstream",
+            "https://github.com/base/repo.git",
+        ]);
+        let previous = Badge {
+            number: 3,
+            state: Status::Open,
+            is_draft: false,
+            url: "https://github.com/base/repo/pull/3".into(),
+        };
+        let (sender, receiver) = mpsc::channel();
+        let mut state = State {
+            pending: Some(receiver),
+            checked: None,
+            badges: HashMap::from([("topic".to_owned(), previous.clone())]),
+        };
+        // upstream holds the PR but is unreachable; origin has none of its own.
+        let repository = Repository::main().unwrap();
+        sender
+            .send(load_with(
+                &repository,
+                targets(&repository),
+                |base, branches, _| {
+                    (base == "https://github.com/me/repo")
+                        .then(|| response("me/repo", branches, &[]))
+                },
+            ))
+            .unwrap();
+        state.poll(&mut [], false);
+        assert_eq!(state.badges.get("topic"), Some(&previous));
+    }
+
+    #[test]
     fn renamed_repositories_match_their_canonical_name() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
