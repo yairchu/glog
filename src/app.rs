@@ -3191,15 +3191,20 @@ impl App {
             .get(self.selected)
             .ok_or("No branch selected")?;
         let node = commit.branch().ok_or("No branch selected")?;
-        let branch = node
+        let mut candidates = node
             .branches
             .iter()
             .filter(|branch| branch.current)
             .chain(node.branches.iter().filter(|branch| !branch.current))
-            .find(|branch| branch.remote_name().is_some())
+            .filter(|branch| branch.remote_name().is_some())
+            .peekable();
+        let first = *candidates
+            .peek()
             .ok_or("No stored remote counterpart for the selected branch")?;
-        branch.remote_diff_name()?;
-        Ok(branch)
+        // Another branch at this tip may still have a diverged counterpart.
+        candidates
+            .find(|branch| branch.remote_diff_name().is_ok())
+            .ok_or_else(|| first.remote_diff_name().unwrap_err())
     }
 
     pub fn request_branch_diff(&mut self) {
