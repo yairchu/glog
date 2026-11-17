@@ -196,6 +196,7 @@ fn heads(
     if !output.status.success() {
         return None;
     }
+    let configured_upstreams = super::configured_upstreams(Some(repository)).ok()?;
     let mut heads = HashMap::new();
     for line in String::from_utf8(output.stdout).ok()?.lines() {
         let fields: Vec<_> = line.split('\0').collect();
@@ -203,6 +204,9 @@ fn heads(
             return None;
         };
         let (remote, branch) = if remote.is_empty() {
+            if configured_upstreams.contains(*local) {
+                continue;
+            }
             ("origin", *local)
         } else {
             let Some(branch) = reference.strip_prefix("refs/heads/") else {
@@ -511,6 +515,47 @@ mod tests {
         .unwrap()
         .is_none());
         assert!(matching_badge(b"invalid", &head, "https://github.com/base/repo").is_none());
+    }
+
+    #[test]
+    fn unresolved_upstream_mappings_do_not_attach_origin_pull_requests() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "base",
+        ]);
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/base/repo.git",
+        ]);
+        git(&[
+            "remote",
+            "add",
+            "upstream",
+            "https://github.com/me/repo.git",
+        ]);
+        git(&["config", "branch.main.remote", "upstream"]);
+        git(&["config", "branch.main.merge", "refs/heads/topic"]);
+        git(&[
+            "config",
+            "remote.upstream.fetch",
+            "+refs/heads/main:refs/remotes/upstream/main",
+        ]);
+        let badges = load_with(&Repository::main().unwrap(), |_, _| {
+            panic!("an unresolved upstream must not query origin's same-named branch")
+        })
+        .unwrap();
+        assert!(badges.is_empty());
     }
 
     #[test]

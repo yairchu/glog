@@ -433,6 +433,67 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_upstream_fetch_mappings_do_not_fall_back_to_origin() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        init();
+        let base = commit("base.txt", "base");
+        git(&["checkout", "-qb", "topic"]);
+        let tip = commit("topic.txt", "topic");
+        git(&["update-ref", "refs/remotes/origin/topic", &base]);
+        git(&[
+            "remote",
+            "add",
+            "upstream",
+            "https://example.invalid/upstream.git",
+        ]);
+        git(&["config", "branch.topic.remote", "upstream"]);
+        git(&["config", "branch.topic.merge", "refs/heads/topic"]);
+        // A single-branch fetch mapping cannot resolve topic's upstream,
+        // even when a remote-tracking ref remains from an earlier fetch.
+        git(&[
+            "config",
+            "remote.upstream.fetch",
+            "+refs/heads/main:refs/remotes/upstream/main",
+        ]);
+        git(&["update-ref", "refs/remotes/upstream/topic", &tip]);
+        let mut app = super::super::load_picker().unwrap();
+        select(&mut app, "topic");
+        assert!(app.selected_branch_for_diff().is_err());
+        press(&mut app, KeyCode::Char('r'));
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap()
+            .contains("No stored remote counterpart"));
+        assert_eq!(app.history, History::Branches);
+        assert!(!app.poll_branch_diff());
+
+        // Once the mapping is restored, honor the configured upstream.
+        git(&[
+            "config",
+            "remote.upstream.fetch",
+            "+refs/heads/*:refs/remotes/upstream/*",
+        ]);
+        git(&["update-ref", "refs/remotes/upstream/topic", &base]);
+        app.commits = super::super::load_watched(&[]).unwrap();
+        select(&mut app, "topic");
+        assert_eq!(
+            app.selected_branch_for_diff().unwrap().remote_name(),
+            Some("upstream/topic")
+        );
+
+        // Removing the upstream configuration permits the origin fallback.
+        git(&["config", "--remove-section", "branch.topic"]);
+        app.commits = super::super::load_watched(&[]).unwrap();
+        select(&mut app, "topic");
+        assert_eq!(
+            app.selected_branch_for_diff().unwrap().remote_name(),
+            Some("origin/topic")
+        );
+    }
+
+    #[test]
     fn missing_upstreams_and_unresolved_bases_leave_the_picker_intact() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
