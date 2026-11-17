@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Task {
     GithubFile,
+    RangeDiff,
     PullRequests,
     PatchMatches,
     CodeStats,
@@ -17,6 +18,7 @@ impl Task {
     fn label(self) -> &'static str {
         match self {
             Self::GithubFile => "Loading GitHub file…",
+            Self::RangeDiff => "Loading range-diff…",
             Self::PullRequests => "Loading PRs…",
             Self::PatchMatches => "Comparing patches…",
             Self::CodeStats => "Counting code…",

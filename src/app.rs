@@ -279,6 +279,8 @@ pub struct App {
     pending_github_file: Option<crate::github_search::Pending>,
     pub(crate) branch_pull_requests: crate::branches::pull_requests::State,
     pub(crate) branch_similarity: crate::branches::similarity::State,
+    pending_branch_diff: Option<crate::branches::remote_diff::Pending>,
+    pub branch_diff_button: Option<ratatui::layout::Rect>,
     pub commits: Vec<Commit>,
     pending_interchanges: Option<git::interchanges::Pending>,
     /// The last completed marker read, kept so refreshes need not flicker.
@@ -403,6 +405,8 @@ impl App {
             pending_github_file: None,
             branch_pull_requests: Default::default(),
             branch_similarity: Default::default(),
+            pending_branch_diff: None,
+            branch_diff_button: None,
             pending_interchanges: interchanges,
             interchanges: None,
             history: match commits
@@ -1287,6 +1291,9 @@ impl App {
         let mut tasks = Vec::new();
         if self.pending_github_file.is_some() {
             tasks.push(Task::GithubFile);
+        }
+        if self.pending_branch_diff.is_some() {
+            tasks.push(Task::RangeDiff);
         }
         if self.history == History::Branches && self.branch_pull_requests.loading() {
             tasks.push(Task::PullRequests);
@@ -3176,6 +3183,84 @@ impl App {
             Ok(target)
         });
         self.enter_followed(loaded);
+    }
+
+    pub fn selected_branch_for_diff(&self) -> Result<&crate::branches::Branch, String> {
+        let commit = self
+            .commits
+            .get(self.selected)
+            .ok_or("No branch selected")?;
+        let node = commit.branch().ok_or("No branch selected")?;
+        let branch = node
+            .branches
+            .iter()
+            .filter(|branch| branch.current)
+            .chain(node.branches.iter().filter(|branch| !branch.current))
+            .find(|branch| branch.remote_name().is_some())
+            .ok_or("No stored remote counterpart for the selected branch")?;
+        branch.remote_diff_name(&commit.hash)?;
+        Ok(branch)
+    }
+
+    pub fn request_branch_diff(&mut self) {
+        let branch = match self.selected_branch_for_diff().cloned() {
+            Ok(branch) => branch,
+            Err(error) => {
+                self.status = Some(error);
+                return;
+            }
+        };
+        let repository = self
+            .repository
+            .clone()
+            .map(Ok)
+            .unwrap_or_else(git::Repository::main);
+        let pending = repository.and_then(|repository| {
+            crate::branches::remote_diff::Pending::start(
+                &self.commits[self.selected],
+                &branch,
+                &self.commits,
+                repository,
+            )
+        });
+        match pending {
+            Ok(pending) => {
+                self.pending_branch_diff = Some(pending);
+                self.status = Some("Loading range-diff… Esc cancels".into());
+            }
+            Err(error) => self.status = Some(error),
+        }
+    }
+
+    pub fn cancel_branch_diff(&mut self) -> bool {
+        if self.pending_branch_diff.take().is_some() {
+            self.status = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn poll_branch_diff(&mut self) -> bool {
+        use std::sync::mpsc::TryRecvError;
+        let Some(pending) = &self.pending_branch_diff else {
+            return false;
+        };
+        let result = match pending.receiver.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => Err("Could not load range-diff".into()),
+        };
+        self.pending_branch_diff = None;
+        self.status = None;
+        let loaded = result.map(|loaded| {
+            let mut target = App::range_diff(loaded.view);
+            self.prepare_followed(&mut target);
+            target.context = loaded.context;
+            target
+        });
+        self.enter_followed(loaded);
+        true
     }
 
     pub fn grep_action(&mut self, action: crate::grep::Action) {

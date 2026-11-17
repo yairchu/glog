@@ -71,6 +71,9 @@ fn apply(event: Event, app: &mut App) {
             }
             return;
         }
+        if key.code == KeyCode::Esc && app.cancel_branch_diff() {
+            return;
+        }
         if app.mode == Mode::Grep {
             match key.code {
                 KeyCode::Esc if app.cancel_github_file() => {}
@@ -102,6 +105,10 @@ fn apply(event: Event, app: &mut App) {
             return;
         }
         if app.mode == Mode::RangeDiff {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Backspace) && app.has_reference_back() {
+                app.reference_back();
+                return;
+            }
             pager_key(key.code, app);
             return;
         }
@@ -247,6 +254,7 @@ fn apply(event: Event, app: &mut App) {
         match key.code {
             KeyCode::Tab => app.switch_mode(),
             KeyCode::Enter if app.history == History::Branches => app.open_branch(),
+            KeyCode::Char('r') if app.history == History::Branches => app.request_branch_diff(),
             KeyCode::Enter if app.mode == Mode::Log => app.switch_mode(),
             KeyCode::Char('p') if app.mode == Mode::Log && app.history == History::Blame => {
                 app.blame_parent()
@@ -398,6 +406,13 @@ fn apply(event: Event, app: &mut App) {
             MouseEventKind::ScrollUp => app.move_by(-1, 3),
             MouseEventKind::ScrollDown => app.move_by(1, 3),
             MouseEventKind::Down(MouseButton::Left) if mouse.row == 0 => {
+                if app
+                    .branch_diff_button
+                    .is_some_and(|rect| rect.contains((mouse.column, mouse.row).into()))
+                {
+                    app.request_branch_diff();
+                    return;
+                }
                 if (app.log_tab_start..app.log_tab_end).contains(&mouse.column) {
                     if app.mode != Mode::Log {
                         app.switch_mode();

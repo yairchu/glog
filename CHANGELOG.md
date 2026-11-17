@@ -7,6 +7,12 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Press `r` or click the Range-diff button in Branches to compare the selected
+  branch with its stored remote counterpart when their tips differ. Resolve the
+  remote series by replacing the local tip in the branch graph, preserving
+  independent bases for rebased or diverged histories. Load in the background,
+  show both ranges above the comparison, and return with Escape or Backspace.
+
 - Show compact patch-equivalence summaries in Branches, such as “4 equivalent
   patches across 2 other branches”. Comparisons run in the background, reuse
   fingerprints during watch refreshes, and exclude shared ancestry, merge

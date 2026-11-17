@@ -12,6 +12,7 @@ use crate::{
 };
 
 pub(crate) mod pull_requests;
+pub(crate) mod remote_diff;
 pub(crate) mod similarity;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,9 +27,24 @@ pub struct Branch {
     pub current: bool,
     merged_into: Option<String>,
     kind: BranchKind,
+    counterpart: Option<remote_diff::Counterpart>,
 }
 
 impl Branch {
+    pub fn remote_name(&self) -> Option<&str> {
+        self.counterpart.as_ref().map(|remote| remote.name.as_str())
+    }
+
+    pub fn remote_diff_name(&self, local_hash: &str) -> Result<&str, String> {
+        let remote = self
+            .counterpart
+            .as_ref()
+            .ok_or_else(|| format!("No stored remote counterpart for {}", self.name))?;
+        if remote.hash == local_hash {
+            return Err(format!("{} already matches {}", self.name, remote.name));
+        }
+        Ok(&remote.name)
+    }
     /// Local and remote branches can share a name.
     pub fn same_ref(&self, other: &Branch) -> bool {
         self.kind == other.kind && self.name == other.name
@@ -177,8 +193,9 @@ fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
             // A branch can point to an annotated tag. Name the commit it tags,
             // as the traversal does.
             "--format=%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end)\
-              %00%(refname:strip=2)%00%(HEAD)",
+              %00%(refname)%00%(HEAD)%00%(upstream)",
             "refs/heads/",
+            "refs/remotes/",
         ])
         .output()
         .map_err(|error| format!("could not list branches: {error}"))?;
@@ -189,16 +206,46 @@ fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
         ));
     }
     let mut tips: HashMap<String, Vec<Branch>> = HashMap::new();
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let fields: Vec<_> = line.split('\0').collect();
-        let [hash, name, head] = fields.as_slice() else {
+    let text = String::from_utf8_lossy(&output.stdout);
+    let records: Vec<_> = text
+        .lines()
+        .map(|line| line.split('\0').collect::<Vec<_>>())
+        .collect();
+    let remotes: HashMap<_, _> = records
+        .iter()
+        .filter_map(|fields| {
+            let [hash, reference, _, _] = fields.as_slice() else {
+                return None;
+            };
+            reference
+                .starts_with("refs/remotes/")
+                .then_some((*reference, *hash))
+        })
+        .collect();
+    for fields in &records {
+        let [hash, reference, head, upstream] = fields.as_slice() else {
             return Err("invalid Git branch list output".into());
         };
+        let Some(name) = reference.strip_prefix("refs/heads/") else {
+            continue;
+        };
+        let remote = if upstream.is_empty() {
+            format!("refs/remotes/origin/{name}")
+        } else {
+            (*upstream).to_owned()
+        };
+        let counterpart = remotes
+            .get(remote.as_str())
+            .map(|hash| remote_diff::Counterpart {
+                name: remote.strip_prefix("refs/remotes/").unwrap().to_owned(),
+                hash: (*hash).to_owned(),
+            });
         let branch = Branch {
-            name: (*name).into(),
+            name: name.into(),
             current: *head == "*",
             merged_into: None,
             kind: BranchKind::Local,
+            counterpart,
         };
         tips.entry((*hash).into()).or_default().push(branch);
     }
@@ -228,6 +275,7 @@ fn graph_rows(mut tips: HashMap<String, Vec<Branch>>) -> Result<Vec<Commit>, Str
             current: false,
             merged_into: None,
             kind: BranchKind::Remote,
+            counterpart: None,
         });
     }
     compact_tips(tips, primary.as_deref())
@@ -254,22 +302,35 @@ fn compact_tips(
     )
 }
 
-fn read_ancestry(mut hashes: Vec<String>) -> Result<String, String> {
+fn read_ancestry(hashes: Vec<String>) -> Result<String, String> {
+    read_ancestry_at(hashes, None, &git::Cancel::default())
+}
+
+fn read_ancestry_at(
+    mut hashes: Vec<String>,
+    repository: Option<&git::Repository>,
+    cancel: &git::Cancel,
+) -> Result<String, String> {
+    if cancel.is_cancelled() {
+        return Err("Branch comparison cancelled".into());
+    }
     // Pin the refs before traversal so concurrent changes cannot mix snapshots.
     hashes.sort();
     let mut input = hashes.join("\n") + "\n";
-    for base in history_cutoffs(&hashes) {
+    for base in history_cutoffs_at(&hashes, repository) {
         input += &format!("^{base}^@\n");
     }
     if hashes.is_empty() {
         Ok(String::new())
     } else {
-        git::pipe_through(
-            git::read_command()
+        git::pipe_through_cancellable(
+            git::read_command_at(repository)
                 .args(["rev-list", "--topo-order", "--parents", "--stdin"])
                 .env("GIT_NO_LAZY_FETCH", "1"),
             input.as_bytes(),
+            cancel,
         )
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
         .ok_or_else(|| "could not read commit ancestry".into())
     }
 }
@@ -401,38 +462,51 @@ impl BranchNode {
 pub fn log_args(node: &Commit, rows: &[Commit]) -> Vec<String> {
     let mut args = vec![node.hash.clone()];
     if !node.branch().is_some_and(BranchNode::merged) {
-        let index: HashMap<_, _> = rows.iter().map(|row| (row.hash.as_str(), row)).collect();
-        let mut todo = node.parents.clone();
-        let mut seen = HashSet::new();
-        let mut bases = BTreeSet::new();
-        while let Some(hash) = todo.pop() {
-            if !seen.insert(hash.clone()) {
-                continue;
-            }
-            match index.get(hash.as_str()) {
-                Some(parent)
-                    if parent
-                        .branch()
-                        .is_some_and(|branch| branch.merged() && !branch.shared_ancestor) =>
-                {
-                    todo.extend(parent.parents.iter().cloned());
-                }
-                _ => {
-                    bases.insert(hash);
-                }
-            }
-        }
-        args.extend(bases.into_iter().map(|hash| format!("^{hash}")));
+        args.extend(
+            log_bases(node, rows)
+                .into_iter()
+                .map(|hash| format!("^{hash}")),
+        );
     }
     args.push("--".into());
     args
 }
 
+fn log_bases(node: &Commit, rows: &[Commit]) -> BTreeSet<String> {
+    let index: HashMap<_, _> = rows.iter().map(|row| (row.hash.as_str(), row)).collect();
+    let mut todo = node.parents.clone();
+    let mut seen = HashSet::new();
+    let mut bases = BTreeSet::new();
+    while let Some(hash) = todo.pop() {
+        if !seen.insert(hash.clone()) {
+            continue;
+        }
+        match index.get(hash.as_str()) {
+            Some(parent)
+                if parent
+                    .branch()
+                    .is_some_and(|branch| branch.merged() && !branch.shared_ancestor) =>
+            {
+                todo.extend(parent.parents.iter().cloned());
+            }
+            _ => {
+                bases.insert(hash);
+            }
+        }
+    }
+    bases
+}
+
 /// Commits below which no tip's history forks, to stop the ancestry walk.
+#[cfg(test)]
 fn history_cutoffs(hashes: &[String]) -> Vec<String> {
+    history_cutoffs_at(hashes, None)
+}
+
+fn history_cutoffs_at(hashes: &[String], repository: Option<&git::Repository>) -> Vec<String> {
     // Everything below a common ancestor of every tip is shared by all of
     // them, so no fork can appear there.
-    if let Some(base) = merge_base(&["--octopus"], hashes) {
+    if let Some(base) = merge_base(&["--octopus"], hashes, repository) {
         return vec![base];
     }
     // Unrelated histories have no such ancestor. Group the tips around an
@@ -440,7 +514,7 @@ fn history_cutoffs(hashes: &[String]) -> Vec<String> {
     // with the anchor, the other tips share nothing. A tip can share history
     // with several anchors, so each group considers every tip.
     // Tips share history exactly when they share a root commit.
-    let roots = git::read_concurrently(hashes, |hash| root_commits(hash));
+    let roots = git::read_concurrently(hashes, |hash| root_commits(hash, repository));
     let mut cutoffs = Vec::new();
     let mut ungrouped: Vec<_> = (0..hashes.len()).collect();
     while let Some(&anchor) = ungrouped.first() {
@@ -450,14 +524,14 @@ fn history_cutoffs(hashes: &[String]) -> Vec<String> {
         ungrouped.retain(|tip| !group.contains(tip));
         let group: Vec<_> = group.into_iter().map(|tip| &hashes[tip]).collect();
         // Tips can share history with the anchor through unrelated roots.
-        cutoffs.extend(merge_base(&["--octopus"], &group));
+        cutoffs.extend(merge_base(&["--octopus"], &group, repository));
     }
     cutoffs
 }
 
 /// The commits without parents in `hash`'s history.
-fn root_commits(hash: &str) -> HashSet<String> {
-    let Some(output) = git::read_command()
+fn root_commits(hash: &str, repository: Option<&git::Repository>) -> HashSet<String> {
+    let Some(output) = git::read_command_at(repository)
         .args(["rev-list", "--max-parents=0", hash, "--"])
         .env("GIT_NO_LAZY_FETCH", "1")
         .output()
@@ -473,8 +547,12 @@ fn root_commits(hash: &str) -> HashSet<String> {
 }
 
 /// The merge base Git reports for `args` and `hashes`, if any.
-fn merge_base(args: &[&str], hashes: &[impl AsRef<std::ffi::OsStr>]) -> Option<String> {
-    let output = git::read_command()
+fn merge_base(
+    args: &[&str],
+    hashes: &[impl AsRef<std::ffi::OsStr>],
+    repository: Option<&git::Repository>,
+) -> Option<String> {
+    let output = git::read_command_at(repository)
         .arg("merge-base")
         .args(args)
         .args(hashes)
@@ -893,6 +971,7 @@ mod tests {
                                 current: false,
                                 merged_into: None,
                                 kind: BranchKind::Local,
+                                counterpart: None,
                             })
                             .collect(),
                     )
@@ -1050,6 +1129,7 @@ mod tests {
                     current: false,
                     merged_into: None,
                     kind: BranchKind::Remote,
+                    counterpart: None,
                 }),
                 _ => {}
             }

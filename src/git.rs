@@ -2339,7 +2339,7 @@ pub(crate) fn pipe_through_bytes(command: &mut Command, input: &[u8]) -> Option<
     pipe_through_cancellable(command, input, &Cancel::default())
 }
 
-fn pipe_through_cancellable(
+pub(crate) fn pipe_through_cancellable(
     command: &mut Command,
     input: &[u8],
     cancel: &Cancel,

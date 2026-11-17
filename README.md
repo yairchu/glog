@@ -99,6 +99,10 @@ state. Click a badge or press `e` to open its PR on GitHub.
 Branches also summarize equivalent patches on other shown branches, recognizing
 rebased or cherry-picked changes without counting shared ancestry.
 
+Press `r` or click **Range-diff with origin/…** to compare a branch with its
+stored remote counterpart. Each side uses its own resolved branching point;
+Escape or Backspace returns to Branches.
+
 ### Folding merge histories
 
 In Log, select a merge and press `z` to collapse or expand the commits it brought

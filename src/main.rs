@@ -427,6 +427,10 @@ submodule-recursion output modes are not supported.
 Range-diff compares two versions of a commit series using Git's colored output.
 Use glog range-diff OLD_BASE..OLD_TIP NEW_BASE..NEW_TIP, or Git's other forms
 and options. Scroll with the mouse wheel or paging keys; / and ? search.
+In Branches, r or the Range-diff button compares the selected branch with its
+stored upstream, or origin's same-named branch when no upstream is configured.
+Both series require a single resolved branching point. The remote range is
+resolved with its tip replacing the local branch; no fetch is performed.
 Show opens HEAD or the specified commit, with history available via Tab.
 Breaking-change markers, section headings, and footer labels are emphasized.
 Patches highlight moved blocks using diff.colorMoved, or zebra if unset.
@@ -530,6 +534,7 @@ fn run<B: ratatui::backend::Backend>(
         }
         changed |= app.images.poll();
         changed |= app.poll_github_file();
+        changed |= app.poll_branch_diff();
         if app.history == app::History::Branches {
             changed |= app.branch_pull_requests.poll(&mut app.commits, app.watch);
             changed |= app.branch_similarity.poll(&mut app.commits);

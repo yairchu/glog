@@ -9,28 +9,45 @@ use ratatui::{
 };
 
 pub fn load_app(args: &[String]) -> Result<App, String> {
-    let output = git::patch_command()
+    let output = command(args, None)
+        .output()
+        .map_err(|error| format!("could not run git range-diff: {error}"))?;
+    if !output.status.success() {
+        return Err(git::stderr_message("git range-diff failed", &output.stderr));
+    }
+    Ok(App::range_diff(View::new(&String::from_utf8_lossy(
+        &output.stdout,
+    ))))
+}
+
+fn command(args: &[String], repository: Option<&git::Repository>) -> std::process::Command {
+    let mut command = git::patch_command_at(repository);
+    command
         .args([
             "--no-pager",
             "range-diff",
             "--color=always",
             "--no-ext-diff",
         ])
-        .args(args)
-        .output()
-        .map_err(|error| format!("could not run git range-diff: {error}"))?;
-    if !output.status.success() {
-        return Err(git::stderr_message("git range-diff failed", &output.stderr));
-    }
+        .args(args);
+    command
+}
+
+pub(crate) fn load_view(
+    args: &[String],
+    repository: &git::Repository,
+    cancel: &git::Cancel,
+) -> Result<View, String> {
+    let output = git::pipe_through_cancellable(&mut command(args, Some(repository)), b"", cancel)
+        .ok_or("git range-diff failed")?;
     // Keep Git's dual coloring; passing this diff of patches through a patch
     // formatter or file-fold parser would change its meaning and layout.
-    Ok(App::range_diff(View::new(&String::from_utf8_lossy(
-        &output.stdout,
-    ))))
+    Ok(View::new(&String::from_utf8_lossy(&output)))
 }
 
 /// Git's colored lines, wrapped to the screen, with a line cursor for search.
 pub struct View {
+    heading: Option<String>,
     lines: Vec<String>,
     /// Each line's first screen row at `width`, then the total row count.
     starts: Vec<usize>,
@@ -50,6 +67,7 @@ enum Reveal {
 impl View {
     pub fn new(text: &str) -> Self {
         Self {
+            heading: None,
             lines: text.lines().map(str::to_owned).collect(),
             starts: Vec::new(),
             width: 0,
@@ -59,6 +77,9 @@ impl View {
             origin: 0,
             reveal: None,
         }
+    }
+    pub(crate) fn set_heading(&mut self, heading: String) {
+        self.heading = Some(heading);
     }
     fn last(&self) -> usize {
         self.lines.len().saturating_sub(1)
@@ -134,7 +155,22 @@ impl PagerView for View {
         }
         false
     }
-    fn draw(&mut self, frame: &mut Frame, area: Rect, query: Option<&str>, current: Option<usize>) {
+    fn draw(
+        &mut self,
+        frame: &mut Frame,
+        mut area: Rect,
+        query: Option<&str>,
+        current: Option<usize>,
+    ) {
+        if let Some(heading) = &self.heading {
+            let paragraph = Paragraph::new(heading.as_str()).wrap(Wrap { trim: false });
+            let height = paragraph
+                .line_count(area.width)
+                .min(area.height.saturating_sub(1) as usize) as u16;
+            frame.render_widget(paragraph, Rect::new(area.x, area.y, area.width, height));
+            area.y += height;
+            area.height -= height;
+        }
         self.origin = area.y;
         self.height = usize::from(area.height);
         if self.width != area.width || self.starts.len() != self.lines.len() + 1 {

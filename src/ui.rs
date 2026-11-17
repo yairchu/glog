@@ -15,6 +15,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.type_buttons.clear();
     app.file_filter_buttons.clear();
     app.code_stats_button = None;
+    app.branch_diff_button = None;
     app.visible_show_links.clear();
     app.visible_log_urls.clear();
     app.visible_show_paths.clear();
@@ -129,6 +130,27 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     );
     if app.mode == Mode::Log && app.history == History::Log {
         draw_type_controls(frame, app, header[2]);
+    } else if app.mode == Mode::Log && app.history == History::Branches {
+        if let Some(remote) = app
+            .selected_branch_for_diff()
+            .ok()
+            .and_then(|branch| branch.remote_name())
+        {
+            let label = format!(" r Range-diff with {remote} ");
+            let width = Span::raw(&label).width().min(header[2].width as usize) as u16;
+            if width > 0 {
+                let rect = Rect::new(header[2].x, header[2].y, width, 1);
+                frame.render_widget(
+                    Paragraph::new(label).style(
+                        header_style
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::UNDERLINED),
+                    ),
+                    rect,
+                );
+                app.branch_diff_button = Some(rect);
+            }
+        }
     } else if app.mode == Mode::Log && app.history == History::Bisect {
         if let Some(steps) = app
             .bisect_graph
@@ -209,10 +231,19 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.mode == Mode::Grep {
         "h help  q quit  ←/→ path/pan  Enter open/fold  z fold  m fold all  t hide extension  T reset  / ? search".to_owned()
     } else if app.mode == Mode::RangeDiff {
-        "h help  q quit  ↑/k ↓/j  wheel scroll  Space/b page  / ? search".to_owned()
+        let back = if app.has_reference_back() {
+            "  Esc/Backspace back"
+        } else {
+            ""
+        };
+        format!("h help  q quit  ↑/k ↓/j  wheel scroll  Space/b page  / ? search{back}")
     } else if app.history == History::Branches {
-        "h help  q quit  ↑/k ↓/j  Enter/click branch log  e/click badge PR  d date  / ? search"
-            .to_owned()
+        let remote = if app.selected_branch_for_diff().is_ok() {
+            "  r remote range-diff"
+        } else {
+            ""
+        };
+        format!("h help  q quit  ↑/k ↓/j  Enter/click branch log{remote}  e PR  d date  / ? search")
     } else if app.mode == Mode::Log && app.history == History::Bisect {
         "h help  q quit  ↑/k ↓/j select  ←/→ gap  Shift-←/→ commit  Enter show/expand  z expand/fold  / ? search"
             .to_owned()
@@ -669,6 +700,7 @@ const HELP_ROWS: &[HelpRow] = &[
             detail: Some("return after opening blame"),
             file: Some("return to the previous blame, if any"),
             github_file: Some("return to GitHub search results (also Esc)"),
+            range_diff: Some("return to the previous view, if any (also Esc)"),
             branches: Some("return here from a branch Log"),
             ..NO_HELP
         },
@@ -710,11 +742,11 @@ const HELP_ROWS: &[HelpRow] = &[
             blame: Some("return to Blame (Show) / previous blame or review / cancel"),
             stash: Some("return to Stash / cancel"),
             file: Some("close help / cancel search"),
-            range_diff: Some("close help / cancel search"),
+            range_diff: Some("return to previous view / close help / cancel search"),
             grep: Some("close help / cancel search"),
             github_search: Some("cancel file loading / close help / cancel search"),
             github_file: Some("return to search results / close help / cancel search"),
-            branches: Some("return here from a branch Log / cancel"),
+            branches: Some("cancel range-diff loading / return here from a branch Log / cancel"),
             ..NO_HELP
         },
     ),
@@ -740,6 +772,14 @@ const HELP_ROWS: &[HelpRow] = &[
     branches("", ""),
     branches("", "  Refs use the same decorations as Log."),
     branches("", "  Branches at the same commit share a node."),
+    branches(
+        "r",
+        "range-diff with the stored remote counterpart (current branch first at shared tips)",
+    ),
+    branches(
+        "",
+        "  Remote ranges replace the local branch in branching-point resolution.",
+    ),
     branches(
         "",
         "  Patch summaries count distinct equivalent patches on shown branches.",
