@@ -165,6 +165,77 @@ mod tests {
         })
     }
 
+    fn init(remote: &str) {
+        git(&["init", "-qb", "main"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "base",
+        ]);
+        git(&["remote", "add", remote, "https://example.invalid/repo.git"]);
+    }
+
+    #[test]
+    fn an_unconfigured_branch_uses_the_only_remote_even_when_it_is_not_origin() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        init("fork");
+        git(&["config", "push.default", "current"]);
+        assert_eq!(
+            load(None).unwrap().get("main").cloned(),
+            target("fork", "main", Some("refs/remotes/fork/main"))
+        );
+    }
+
+    #[test]
+    fn explicit_push_refspecs_override_default_modes_and_resolve_destination_names() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        init("origin");
+        git(&["branch", "excluded"]);
+        git(&["config", "branch.main.remote", "origin"]);
+        git(&["config", "branch.main.merge", "refs/heads/base"]);
+        git(&[
+            "config",
+            "remote.origin.push",
+            "+refs/heads/main:refs/heads/published",
+        ]);
+        for mode in ["current", "simple", "upstream", "nothing"] {
+            git(&["config", "push.default", mode]);
+            let targets = load(None).unwrap();
+            assert_eq!(
+                targets.get("main").cloned(),
+                target("origin", "published", Some("refs/remotes/origin/published")),
+                "push.default={mode}"
+            );
+            assert_eq!(targets.get("excluded"), None);
+        }
+        // A destination can still identify PRs without a matching fetch ref.
+        git(&[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/base:refs/remotes/origin/base",
+        ]);
+        assert_eq!(
+            load(None).unwrap().get("main").cloned(),
+            target("origin", "published", None)
+        );
+        git(&[
+            "config",
+            "remote.origin.push",
+            "refs/heads/*:refs/heads/review/*",
+        ]);
+        assert_eq!(
+            load(None).unwrap().get("main").cloned(),
+            target("origin", "review/main", None)
+        );
+    }
+
     #[test]
     fn branches_created_from_another_remote_branch_push_to_their_own_name() {
         let directory = TestDirectory::new();
