@@ -421,6 +421,22 @@ mod tests {
     }
 
     #[test]
+    fn negative_fetch_refspecs_exclude_tracking_refs() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        init("origin");
+        git(&["config", "push.default", "current"]);
+        git(&["config", "--add", "remote.origin.fetch", "^refs/heads/m*"]);
+        git(&["branch", "topic"]);
+        let targets = load(None).unwrap();
+        assert_eq!(targets.get("main").cloned(), target("origin", "main", None));
+        assert_eq!(
+            targets.get("topic").cloned(),
+            target("origin", "topic", Some("refs/remotes/origin/topic"))
+        );
+    }
+
+    #[test]
     fn shorthand_push_refspecs_resolve_branch_destinations() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
