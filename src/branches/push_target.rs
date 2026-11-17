@@ -12,7 +12,7 @@ use crate::git::{self, Repository};
 pub(super) struct Target {
     pub remote: String,
     pub branch: String,
-    /// The remote-tracking ref, unless the remote's fetch mapping excludes it.
+    /// The tracking ref, when fetch and push identify the same repository.
     pub tracking: Option<String>,
 }
 
@@ -216,6 +216,46 @@ fn fallback_target(
     None
 }
 
+/// Fetch refspecs describe the fetch repository, even when Git's push atoms
+/// map a different push URL into the same tracking namespace. Only reuse those
+/// refs when the resolved transport URLs identify the same repository.
+fn fetch_tracks_push(repository: Option<&Repository>, remote: &str) -> bool {
+    if remote == "." {
+        return true;
+    }
+    let urls = |push| {
+        let mut command = git::read_command_at(repository);
+        command.args(["remote", "get-url"]);
+        if push {
+            command.arg("--push");
+        }
+        let output = command.args(["--all", remote]).output().ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        String::from_utf8(output.stdout).ok()
+    };
+    let (Some(fetch), Some(push)) = (urls(false), urls(true)) else {
+        return false;
+    };
+    let Some(fetch) = fetch.lines().next() else {
+        return false;
+    };
+    let same_repository = |push: &str| {
+        fetch == push
+            || match (
+                git::github_repository_url(fetch),
+                git::github_repository_url(push),
+            ) {
+                (Some(fetch), Some(push)) => fetch.eq_ignore_ascii_case(&push),
+                _ => false,
+            }
+    };
+    // Multiple push URLs all receive the update; none may borrow another
+    // repository's stored history. Fetching only reads the first fetch URL.
+    !push.is_empty() && push.lines().all(same_repository)
+}
+
 /// Push targets of local branches, keyed by branch name. Branches that a
 /// plain `git push` would refuse to push are omitted rather than guessed.
 pub(super) fn load(repository: Option<&Repository>) -> Result<HashMap<String, Target>, String> {
@@ -313,6 +353,18 @@ pub(super) fn load(repository: Option<&Repository>) -> Result<HashMap<String, Ta
         };
         if let Some(target) = target {
             targets.insert(name.to_owned(), target);
+        }
+    }
+    let mut identities = HashMap::new();
+    for target in targets
+        .values_mut()
+        .filter(|target| target.tracking.is_some())
+    {
+        let same_repository = identities
+            .entry(target.remote.clone())
+            .or_insert_with(|| fetch_tracks_push(repository, &target.remote));
+        if !*same_repository {
+            target.tracking = None;
         }
     }
     Ok(targets)

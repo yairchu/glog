@@ -259,9 +259,20 @@ struct BaseRepository {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct Connection {
     nodes: Vec<PullRequest>,
+    page_info: PageInfo,
 }
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PageInfo {
+    has_next_page: bool,
+    end_cursor: Option<String>,
+}
+
+type Cursors<'a> = HashMap<&'a str, String>;
 
 /// Branches looked up per GraphQL request.
 const BATCH: usize = 50;
@@ -269,12 +280,14 @@ const BATCH: usize = 50;
 /// One GraphQL query finds the PRs of a batch of head branch names, passed as
 /// variables `$h0`, `$h1`, ... alongside `$owner` and `$name`.
 fn graphql_query(count: usize) -> String {
-    let variables: String = (0..count).map(|i| format!(",$h{i}:String!")).collect();
+    let variables: String = (0..count)
+        .map(|i| format!(",$h{i}:String!,$c{i}:String"))
+        .collect();
     let fields: String = (0..count)
         .map(|i| {
             format!(
-                " h{i}:pullRequests(headRefName:$h{i},states:[OPEN,CLOSED,MERGED],first:100)\
-                 {{nodes{{number state isDraft url headRefName headRepository{{nameWithOwner}}}}}}"
+                " h{i}:pullRequests(headRefName:$h{i},states:[OPEN,CLOSED,MERGED],first:100,after:$c{i})\
+                 {{nodes{{number state isDraft url headRefName headRepository{{nameWithOwner}}}}pageInfo{{hasNextPage endCursor}}}}"
             )
         })
         .collect();
@@ -289,17 +302,33 @@ fn graphql_query(count: usize) -> String {
 fn base_pull_requests(
     base: &str,
     branches: &[&str],
-    query: &mut impl FnMut(&str, &[&str]) -> Option<Vec<u8>>,
+    query: &mut impl FnMut(&str, &[&str], &Cursors<'_>) -> Option<Vec<u8>>,
 ) -> Option<(String, Vec<PullRequest>)> {
     let mut name = None;
     let mut prs = Vec::new();
     for batch in branches.chunks(BATCH) {
-        let response: Response = serde_json::from_slice(&query(base, batch)?).ok()?;
-        let repository = response.data.repository;
-        for (_, connection) in repository.heads {
-            prs.extend(connection.nodes);
+        let mut pending = batch.to_vec();
+        let mut cursors = Cursors::new();
+        while !pending.is_empty() {
+            let response: Response =
+                serde_json::from_slice(&query(base, &pending, &cursors)?).ok()?;
+            let mut repository = response.data.repository;
+            let mut next = Vec::new();
+            for (index, branch) in pending.into_iter().enumerate() {
+                let connection = repository.heads.remove(&format!("h{index}"))?;
+                prs.extend(connection.nodes);
+                if connection.page_info.has_next_page {
+                    let cursor = connection.page_info.end_cursor?;
+                    if cursor.is_empty() || cursors.get(branch) == Some(&cursor) {
+                        return None;
+                    }
+                    cursors.insert(branch, cursor);
+                    next.push(branch);
+                }
+            }
+            name = Some(repository.name_with_owner);
+            pending = next;
         }
-        name = Some(repository.name_with_owner);
     }
     Some((name?, prs))
 }
@@ -323,7 +352,7 @@ fn best_match<'a>(
 }
 
 fn load(repository: &Repository) -> Option<Badges> {
-    load_with(repository, |base, branches| {
+    load_with(repository, |base, branches, cursors| {
         let (owner, name) = owner_and_name(base)?.split_once('/')?;
         let mut command = Command::new("gh");
         command
@@ -338,6 +367,9 @@ fn load(repository: &Repository) -> Option<Badges> {
             ]);
         for (index, branch) in branches.iter().enumerate() {
             command.args(["-f", &format!("h{index}={branch}")]);
+            if let Some(cursor) = cursors.get(branch) {
+                command.args(["-f", &format!("c{index}={cursor}")]);
+            }
         }
         let output = command
             .env("GH_PROMPT_DISABLED", "1")
@@ -350,10 +382,10 @@ fn load(repository: &Repository) -> Option<Badges> {
 }
 
 /// Badges keyed by local branch. `query` returns the raw GraphQL response for
-/// a base repository URL and a batch of head branch names.
+/// a base repository URL, head branch names, and their continuation cursors.
 fn load_with(
     repository: &Repository,
-    mut query: impl FnMut(&str, &[&str]) -> Option<Vec<u8>>,
+    mut query: impl FnMut(&str, &[&str], &Cursors<'_>) -> Option<Vec<u8>>,
 ) -> Option<Badges> {
     let remotes = remotes(repository)?;
     let heads = heads(repository, &remotes)?;
@@ -576,11 +608,12 @@ mod tests {
         let (_, prs) = base_pull_requests(
             "https://github.com/base/repo",
             &["done", "main"],
-            &mut |_, branches| {
+            &mut |_, branches, cursors| {
                 calls += 1;
                 let (nodes, next) = match calls {
                     1 => {
                         assert_eq!(branches, &["done", "main"]);
+                        assert!(cursors.is_empty());
                         let mut nodes: Vec<_> = (1..100)
                             .map(|n| pr(n, "other/repo", "main", "OPEN", false))
                             .collect();
@@ -589,6 +622,7 @@ mod tests {
                     }
                     2 => {
                         assert_eq!(branches, &["main"]);
+                        assert_eq!(cursors.get("main").map(String::as_str), Some("first-page"));
                         let mut nodes: Vec<_> = (101..200)
                             .map(|n| pr(n, "other/repo", "main", "OPEN", false))
                             .collect();
@@ -597,6 +631,7 @@ mod tests {
                     }
                     3 => {
                         assert_eq!(branches, &["main"]);
+                        assert_eq!(cursors.get("main").map(String::as_str), Some("second-page"));
                         (vec![pr(201, "me/repo", "main", "OPEN", true)], None)
                     }
                     _ => panic!("unexpected extra page"),
@@ -628,7 +663,7 @@ mod tests {
         let result = base_pull_requests(
             "https://github.com/base/repo",
             &["main"],
-            &mut |_, branches| {
+            &mut |_, branches, _| {
                 calls += 1;
                 if calls > 1 {
                     return None;
@@ -700,7 +735,7 @@ mod tests {
             "git@github.com:old/repo.git",
         ]);
         let mut queried = BTreeSet::new();
-        let badges = load_with(&Repository::main().unwrap(), |base, branches| {
+        let badges = load_with(&Repository::main().unwrap(), |base, branches, _| {
             queried.insert(base.to_owned());
             Some(if base == "https://github.com/base/repo" {
                 response(
@@ -734,7 +769,7 @@ mod tests {
             "origin",
             "https://example.invalid/repo.git",
         ]);
-        let badges = load_with(&Repository::main().unwrap(), |_, _| {
+        let badges = load_with(&Repository::main().unwrap(), |_, _, _| {
             panic!("a non-GitHub push target must not query the fetch repository")
         })
         .unwrap();
@@ -758,7 +793,7 @@ mod tests {
         ]);
         git(&["remote", "add", "origin", "https://github.com/old/repo.git"]);
         let mut queries = 0;
-        let badges = load_with(&Repository::main().unwrap(), |base, branches| {
+        let badges = load_with(&Repository::main().unwrap(), |base, branches, _| {
             queries += 1;
             assert_eq!(base, "https://github.com/old/repo");
             Some(response(
@@ -806,7 +841,7 @@ mod tests {
             "remote.upstream.fetch",
             "+refs/heads/main:refs/remotes/upstream/main",
         ]);
-        let badges = load_with(&Repository::main().unwrap(), |_, _| {
+        let badges = load_with(&Repository::main().unwrap(), |_, _, _| {
             panic!("an unresolved upstream must not query origin's same-named branch")
         })
         .unwrap();
@@ -845,7 +880,7 @@ mod tests {
         git(&["config", "branch.topic.merge", "refs/heads/topic"]);
         // Tracking refs can be gone after a PR was merged and its branch deleted.
         let repository = Repository::main().unwrap();
-        let badges = load_with(&repository, |base, branches| {
+        let badges = load_with(&repository, |base, branches, _| {
             if base != "https://github.com/base/repo" {
                 return None; // An inaccessible remote must not hide another remote's PRs.
             }
