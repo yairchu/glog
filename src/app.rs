@@ -3198,7 +3198,7 @@ impl App {
             .chain(node.branches.iter().filter(|branch| !branch.current))
             .find(|branch| branch.remote_name().is_some())
             .ok_or("No stored remote counterpart for the selected branch")?;
-        branch.remote_diff_name(&commit.hash)?;
+        branch.remote_diff_name()?;
         Ok(branch)
     }
 

@@ -14,41 +14,75 @@ use crate::{
 pub(super) struct Counterpart {
     pub name: String,
     pub hash: String,
-    pub linear: bool,
+    /// Why there is no comparison to offer, resolved with the picker's graph.
+    pub unavailable: Option<Unavailable>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Unavailable {
+    /// Both refs name the same commit.
+    Matches,
+    /// One history contains the other, so there are no two series.
+    Linear,
+    /// The default branch is the trunk other series fork from; its remote
+    /// copy has no branching point that would delimit a series.
+    Default,
+}
+
+impl Unavailable {
+    pub(super) fn message(self, local: &str, remote: &str) -> String {
+        match self {
+            Self::Matches => format!("{local} already matches {remote}"),
+            Self::Linear => format!("{local} and {remote} have no diverged history to compare"),
+            Self::Default => {
+                format!("{local} is the default branch, with no series to compare to {remote}")
+            }
+        }
+    }
 }
 
 // Resolve availability from the same pinned ancestry as the picker, including
 // counterparts that are not themselves displayed as branch tips.
-pub(super) fn mark_linear_counterparts(
+pub(super) fn mark_unavailable_counterparts(
     graph: &crate::compact_graph::Graph,
     tips: &mut HashMap<String, Vec<Branch>>,
+    primary: Option<&str>,
 ) {
     for (hash, branches) in tips {
-        for remote in branches
-            .iter_mut()
-            .filter_map(|branch| branch.counterpart.as_mut())
-        {
-            let (Some(&local), Some(&other)) =
-                (graph.indices.get(hash), graph.indices.get(&remote.hash))
-            else {
+        for branch in branches.iter_mut() {
+            let Some(remote) = branch.counterpart.as_mut() else {
                 continue;
             };
-            // Topological order puts descendants before their ancestors.
-            let (start, target) = (local.min(other), local.max(other));
-            let mut todo = vec![start];
-            let mut seen = std::collections::HashSet::new();
-            remote.linear = false;
-            while let Some(index) = todo.pop() {
-                if index == target {
-                    remote.linear = true;
-                    break;
-                }
-                if index < target && seen.insert(index) {
-                    todo.extend(graph.nodes[index].parents.iter().copied());
-                }
-            }
+            remote.unavailable = if remote.hash == *hash {
+                Some(Unavailable::Matches)
+            } else if linear(graph, hash, &remote.hash) {
+                Some(Unavailable::Linear)
+            } else if branch.kind == BranchKind::Local && primary == Some(branch.name.as_str()) {
+                Some(Unavailable::Default)
+            } else {
+                None
+            };
         }
     }
+}
+
+fn linear(graph: &crate::compact_graph::Graph, local: &str, other: &str) -> bool {
+    let (Some(&local), Some(&other)) = (graph.indices.get(local), graph.indices.get(other)) else {
+        return false;
+    };
+    // Topological order puts descendants before their ancestors.
+    let (start, target) = (local.min(other), local.max(other));
+    let mut todo = vec![start];
+    let mut seen = std::collections::HashSet::new();
+    while let Some(index) = todo.pop() {
+        if index == target {
+            return true;
+        }
+        if index < target && seen.insert(index) {
+            todo.extend(graph.nodes[index].parents.iter().copied());
+        }
+    }
+    false
 }
 
 struct Range {
@@ -95,7 +129,7 @@ fn range(node: &Commit, rows: &[Commit], name: String) -> Result<Range, String> 
 
 impl Request {
     fn new(node: &Commit, branch: &Branch, rows: &[Commit]) -> Result<Self, String> {
-        branch.remote_diff_name(&node.hash)?;
+        branch.remote_diff_name()?;
         let remote = branch
             .counterpart
             .clone()

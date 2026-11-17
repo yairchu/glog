@@ -38,21 +38,15 @@ impl Branch {
         self.counterpart.as_ref().map(|remote| remote.name.as_str())
     }
 
-    pub fn remote_diff_name(&self, local_hash: &str) -> Result<&str, String> {
+    pub fn remote_diff_name(&self) -> Result<&str, String> {
         let remote = self
             .counterpart
             .as_ref()
             .ok_or_else(|| format!("No stored remote counterpart for {}", self.name))?;
-        if remote.hash == local_hash {
-            return Err(format!("{} already matches {}", self.name, remote.name));
+        match remote.unavailable {
+            Some(reason) => Err(reason.message(&self.name, &remote.name)),
+            None => Ok(&remote.name),
         }
-        if remote.linear {
-            return Err(format!(
-                "{} and {} have no diverged history to compare",
-                self.name, remote.name
-            ));
-        }
-        Ok(&remote.name)
     }
     /// Local and remote branches can share a name.
     pub fn same_ref(&self, other: &Branch) -> bool {
@@ -252,7 +246,7 @@ fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
                     .unwrap_or(remote)
                     .to_owned(),
                 hash: (*hash).to_owned(),
-                linear: false,
+                unavailable: None,
             });
         let branch = Branch {
             name: name.into(),
@@ -618,7 +612,7 @@ fn compact(
     primary: Option<&str>,
 ) -> Result<Vec<Commit>, String> {
     let graph = std::sync::Arc::new(crate::compact_graph::Graph::parse(ancestry)?);
-    remote_diff::mark_linear_counterparts(&graph, &mut tips);
+    remote_diff::mark_unavailable_counterparts(&graph, &mut tips, primary);
     let similarity_source = similarity::Source::new(graph.clone(), &tips);
     let nodes = &graph.nodes;
     let indices = &graph.indices;
