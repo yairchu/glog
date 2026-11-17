@@ -459,6 +459,35 @@ mod tests {
     }
 
     #[test]
+    fn leaving_the_picker_cancels_a_pending_comparison() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        init();
+        commit("base.txt", "base");
+        git(&["checkout", "-qb", "topic"]);
+        commit("local.txt", "local");
+        git(&["checkout", "-qb", "temporary", "main"]);
+        let remote = commit("remote.txt", "remote");
+        git(&["checkout", "-q", "topic"]);
+        git(&["branch", "-D", "temporary"]);
+        git(&["update-ref", "refs/remotes/origin/topic", &remote]);
+        git(&["config", "branch.topic.remote", "origin"]);
+        git(&["config", "branch.topic.merge", "refs/heads/topic"]);
+        let mut app = super::super::load_picker().unwrap();
+        select(&mut app, "topic");
+        press(&mut app, KeyCode::Char('r'));
+        press(&mut app, KeyCode::Enter);
+        assert_ne!(app.history, History::Branches);
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.history, History::Branches);
+        assert!(app.status.is_none(), "{:?}", app.status);
+        assert!(
+            !app.cancel_branch_diff(),
+            "a comparison left behind must not open on return"
+        );
+    }
+
+    #[test]
     fn ahead_and_behind_counterparts_hide_and_reject_the_action() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
