@@ -587,6 +587,7 @@ mod tests {
     fn pr(number: u64, owner: &str, branch: &str, state: &str, draft: bool) -> serde_json::Value {
         json!({
             "number": number, "state": state, "isDraft": draft,
+            "createdAt": format!("2026-01-{number:02}T00:00:00Z"),
             "url": format!("https://github.com/base/repo/pull/{number}"),
             "headRefName": branch, "headRepository": {"nameWithOwner": owner}
         })
@@ -708,6 +709,24 @@ mod tests {
         let mut deleted = prs[0].clone();
         deleted["headRepository"] = serde_json::Value::Null;
         assert!(parse(&[deleted]).is_none());
+    }
+
+    #[test]
+    fn prs_into_different_bases_prefer_the_latest_rather_than_the_highest_number() {
+        // PR numbers are per base repository, so they cannot order PRs from a
+        // fork into itself and into its upstream.
+        let mut upstream = pr(3, "me/repo", "topic", "CLOSED", false);
+        upstream["url"] = json!("https://github.com/upstream/repo/pull/3");
+        upstream["createdAt"] = json!("2026-02-01T00:00:00Z");
+        let prs: Vec<PullRequest> = serde_json::from_value(json!([
+            pr(12, "me/repo", "topic", "MERGED", false),
+            upstream,
+        ]))
+        .unwrap();
+        assert_eq!(
+            best_match(&prs, "topic", "me/repo").unwrap().label(),
+            "#3 closed"
+        );
     }
 
     #[test]
