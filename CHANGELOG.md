@@ -5,6 +5,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+## 0.11.1 - 2026-11-17
+
 ### Added
 
 - Show a concise command overview with `glog --help` and command-specific
@@ -690,7 +692,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Initial release of the interactive `git log` and `git show` browser.
 
-[Unreleased]: https://github.com/yairchu/glog/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/yairchu/glog/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/yairchu/glog/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/yairchu/glog/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/yairchu/glog/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/yairchu/glog/compare/v0.8.1...v0.9.0
