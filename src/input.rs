@@ -130,7 +130,8 @@ fn apply(event: Event, app: &mut App) {
         }
         if key.code == KeyCode::Char('e')
             && (matches!(app.mode, Mode::Show | Mode::Status)
-                || app.mode == Mode::Log && app.history == History::Blame)
+                || app.mode == Mode::Log
+                    && matches!(app.history, History::Blame | History::Branches))
         {
             app.request_editor();
             return;
@@ -419,6 +420,15 @@ fn apply(event: Event, app: &mut App) {
                     .cloned()
                 {
                     app.click_bisect_gap(row, edge);
+                    return;
+                }
+                if let Some(url) = app
+                    .visible_log_urls
+                    .iter()
+                    .find(|(rect, _)| rect.contains((mouse.column, mouse.row).into()))
+                    .map(|(_, url)| url.clone())
+                {
+                    app.follow_link(&crate::commit_links::Target::Url(url));
                     return;
                 }
                 if let Some(link) = app

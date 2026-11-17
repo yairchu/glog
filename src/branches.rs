@@ -11,6 +11,8 @@ use crate::{
     git::{self, Annotation, Collaborators, Commit, CommitKind},
 };
 
+pub(crate) mod pull_requests;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BranchKind {
     Local,
@@ -40,6 +42,7 @@ pub struct BranchNode {
     shared_ancestor: bool,
     updated_at: Option<String>,
     update_width: usize,
+    pull_requests: Vec<(String, pull_requests::Badge)>,
 }
 
 pub enum Launch {
@@ -574,6 +577,7 @@ fn compact(
                     shared_ancestor: shared_ancestor[index],
                     updated_at: None,
                     update_width: 0,
+                    pull_requests: Vec::new(),
                 })),
                 hash: node.hash.clone(),
                 short_hash: node.hash[..node.hash.len().min(7)].into(),
@@ -770,8 +774,17 @@ pub fn spans(
     node: &BranchNode,
     format: &crate::log_format::LogFormat,
 ) -> Vec<Span<'static>> {
+    row(commit, node, format).spans
+}
+
+pub fn row(
+    commit: &Commit,
+    node: &BranchNode,
+    format: &crate::log_format::LogFormat,
+) -> crate::log_format::Row {
     use crate::log_format::{field_span, pad, Field};
     let mut spans = Vec::new();
+    let mut urls = Vec::new();
     if format.shows(Field::Date) && node.update_width > 0 {
         let date = node.updated_at.as_deref().unwrap_or("");
         spans.push(field_span(Field::Date, pad(date, node.update_width)));
@@ -795,6 +808,23 @@ pub fn spans(
             Style::default().fg(Color::Gray),
         ));
     }
+    for (branch, badge) in &node.pull_requests {
+        let prefix = if node.branches.len() > 1 {
+            format!(" · {branch} ")
+        } else {
+            " · ".into()
+        };
+        spans.push(Span::raw(prefix));
+        let start: usize = spans.iter().map(|span| span.content.len()).sum();
+        let label = badge.label();
+        urls.push((start..start + label.len(), badge.url().to_owned()));
+        spans.push(Span::styled(
+            label,
+            Style::default()
+                .fg(badge.color())
+                .add_modifier(Modifier::UNDERLINED),
+        ));
+    }
     if node.merged() {
         spans.push(Span::styled(
             format!(
@@ -813,7 +843,14 @@ pub fn spans(
             }
         }
     }
-    spans
+    let mut stand_ins = crate::ui::StandIns::default();
+    stand_ins.push_undrawn(commit.hash.clone());
+    crate::log_format::Row {
+        spans,
+        stand_ins,
+        links: Vec::new(),
+        urls,
+    }
 }
 
 #[cfg(test)]

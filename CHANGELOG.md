@@ -5,6 +5,12 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Show GitHub PR numbers and open, draft, merged, or closed badges in Branches,
+  using `gh` authentication. Click a badge or press `e` to open a branch's PR.
+  Badges load in the background and refresh once a minute while watching.
+
 ## 0.11.0 - 2026-11-16
 
 ### Added

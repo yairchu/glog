@@ -689,6 +689,7 @@ pub fn prefix(entry: &Entry, columns: Option<&Columns>) -> crate::log_format::Ro
         columns.map_or(0, |columns| columns.decision.saturating_sub(width)) + 1,
     )));
     crate::log_format::Row {
+        urls: Vec::new(),
         spans,
         stand_ins,
         links: Vec::new(),

@@ -276,6 +276,7 @@ pub struct App {
     pub range_diff_view: Option<crate::range_diff::View>,
     pub github_file_view: Option<crate::github_search::FileView>,
     pending_github_file: Option<crate::github_search::Pending>,
+    pub(crate) branch_pull_requests: crate::branches::pull_requests::State,
     pub commits: Vec<Commit>,
     pending_interchanges: Option<git::interchanges::Pending>,
     /// The last completed marker read, kept so refreshes need not flicker.
@@ -306,6 +307,7 @@ pub struct App {
     reference_back: Option<Box<App>>,
     log_back: Vec<LogBookmark>,
     pub visible_log_links: Vec<(ratatui::layout::Rect, LogLink)>,
+    pub visible_log_urls: Vec<(ratatui::layout::Rect, String)>,
     /// Remotes rarely change during a session, so look up issue links once.
     github_repository: Option<Option<String>>,
     // Explicit repository for views reached across a submodule boundary.
@@ -396,6 +398,7 @@ impl App {
             range_diff_view: None,
             github_file_view: None,
             pending_github_file: None,
+            branch_pull_requests: Default::default(),
             pending_interchanges: interchanges,
             interchanges: None,
             history: match commits
@@ -430,6 +433,7 @@ impl App {
             reference_back: None,
             log_back: Vec::new(),
             visible_log_links: Vec::new(),
+            visible_log_urls: Vec::new(),
             github_repository: None,
             repository: None,
             browser_results: Vec::new(),
@@ -1860,6 +1864,18 @@ impl App {
     }
 
     pub fn request_editor(&mut self) {
+        if self.history == History::Branches {
+            if let Some(url) = self
+                .commits
+                .get(self.selected)
+                .and_then(crate::branches::pull_requests::selected_url)
+            {
+                self.follow_link(&crate::commit_links::Target::Url(url));
+            } else {
+                self.status = Some("No PR found for this branch".into());
+            }
+            return;
+        }
         if self.history == History::GithubSearch {
             if let Some(view) = &self.github_file_view {
                 let url = view.url();

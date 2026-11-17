@@ -1229,6 +1229,7 @@ pub fn row(
         spans,
         stand_ins,
         links: Vec::new(),
+        urls: Vec::new(),
     }
 }
 

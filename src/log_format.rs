@@ -259,7 +259,7 @@ impl LogFormat {
             Some(Annotation::Blame(line)) => {
                 return crate::blame::row(commit, line, line.starts_chunk, self);
             }
-            Some(Annotation::Branch(node)) => crate::branches::spans(commit, node, self),
+            Some(Annotation::Branch(node)) => return crate::branches::row(commit, node, self),
             Some(Annotation::Bisect(entry)) => {
                 let mut row = self.commit_row(commit, columns, hash_style, None);
                 let prefix = crate::bisect::prefix(
@@ -283,6 +283,7 @@ impl LogFormat {
             spans,
             stand_ins,
             links: Vec::new(),
+            urls: Vec::new(),
         }
     }
 
@@ -306,6 +307,7 @@ impl LogFormat {
                 spans,
                 stand_ins: Default::default(),
                 links: Vec::new(),
+                urls: Vec::new(),
             };
         }
         let mut spans = Vec::new();
@@ -498,6 +500,7 @@ impl LogFormat {
             spans,
             stand_ins,
             links,
+            urls: Vec::new(),
         }
     }
 
@@ -531,6 +534,8 @@ impl LogFormat {
 /// A Log row's spans, and the texts that values it shows shortened stand
 /// for, which search matches.
 pub struct Row {
+    /// Byte ranges of clickable external links in the rendered spans.
+    pub urls: Vec<(std::ops::Range<usize>, String)>,
     /// Byte ranges of inserted fixup target hashes and their Log row indices.
     pub links: Vec<(std::ops::Range<usize>, usize)>,
     pub spans: Vec<Span<'static>>,

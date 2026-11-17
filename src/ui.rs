@@ -15,6 +15,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     app.file_filter_buttons.clear();
     app.code_stats_button = None;
     app.visible_show_links.clear();
+    app.visible_log_urls.clear();
     app.visible_show_paths.clear();
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -188,7 +189,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.mode == Mode::RangeDiff {
         "h help  q quit  ↑/k ↓/j  wheel scroll  Space/b page  / ? search".to_owned()
     } else if app.history == History::Branches {
-        "h help  q quit  ↑/k ↓/j  Enter/click branch log  d date  / ? search".to_owned()
+        "h help  q quit  ↑/k ↓/j  Enter/click branch log  e/click badge PR  d date  / ? search"
+            .to_owned()
     } else if app.mode == Mode::Log && app.history == History::Bisect {
         "h help  q quit  ↑/k ↓/j select  ←/→ gap  Shift-←/→ commit  Enter show/expand  z expand/fold  / ? search"
             .to_owned()
@@ -655,6 +657,7 @@ const HELP_ROWS: &[HelpRow] = &[
             grep: Some("open working file at matching line in editor"),
             github_search: Some("open selected result on GitHub"),
             github_file: Some("open selected line on GitHub"),
+            branches: Some("open branch PR on GitHub (current branch first for shared tips)"),
             blame: Some("open working file at selected line in editor"),
             file: Some("open working file at selected line in editor"),
             ..detail("e", "open working file at cursor in editor (Show/Status)").1
@@ -715,6 +718,14 @@ const HELP_ROWS: &[HelpRow] = &[
     branches("", ""),
     branches("", "  Refs use the same decorations as Log."),
     branches("", "  Branches at the same commit share a node."),
+    branches(
+        "",
+        "  PR badges load using gh authentication; click a badge or e to open.",
+    ),
+    branches(
+        "",
+        "  Badges match the upstream, or origin's same-named branch.",
+    ),
     branches(
         "",
         "  Dates show the latest ref update, or the commit date.",
@@ -1103,6 +1114,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             || fixup(index) == Some(crate::fixups::Target::Commit(selection))
     };
     let mut log_links = Vec::new();
+    let mut log_urls = Vec::new();
     let mut lines = Vec::new();
     let show_hash = app.log_format.shows(crate::log_format::Field::Hash);
     let hash_style = |index: usize| {
@@ -1226,6 +1238,9 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                         ),
                     };
                     log_links.extend(placed_links(row.links, index, lines.len(), start));
+                    log_urls.extend(row.urls.into_iter().map(|(range, url)| {
+                        (lines.len(), range.start + start..range.end + start, url)
+                    }));
                     line.spans.extend(row.spans);
                     stand_ins = row.stand_ins.shifted(start);
                     line.spans.push(Span::styled(
@@ -1302,27 +1317,33 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
         }
     }
     for (row, range, link) in log_links {
-        let text: String = lines[row]
-            .spans
-            .iter()
-            .map(|span| span.content.as_ref())
-            .collect();
-        let x = Span::raw(&text[..range.start]).width();
-        let width = Span::raw(&text[range]).width();
-        let visible_width = width.min((area.width as usize).saturating_sub(x));
-        if visible_width > 0 {
-            app.visible_log_links.push((
-                Rect::new(
-                    area.x + x as u16,
-                    area.y + row as u16,
-                    visible_width as u16,
-                    1,
-                ),
-                link,
-            ));
+        if let Some(rect) = log_link_rect(&lines[row], row, range, area) {
+            app.visible_log_links.push((rect, link));
+        }
+    }
+    for (row, range, url) in log_urls {
+        if let Some(rect) = log_link_rect(&lines[row], row, range, area) {
+            app.visible_log_urls.push((rect, url));
         }
     }
     frame.render_widget(Paragraph::new(Text::from(lines)), area);
+}
+
+fn log_link_rect(
+    line: &Line<'_>,
+    row: usize,
+    range: std::ops::Range<usize>,
+    area: Rect,
+) -> Option<Rect> {
+    let text: String = line
+        .spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect();
+    let x = Span::raw(&text[..range.start]).width();
+    let width = Span::raw(&text[range]).width();
+    let visible = width.min((area.width as usize).saturating_sub(x));
+    (visible > 0).then(|| Rect::new(area.x + x as u16, area.y + row as u16, visible as u16, 1))
 }
 
 fn draw_file_filters(

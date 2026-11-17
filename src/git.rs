@@ -1002,7 +1002,7 @@ pub(crate) fn github_repository_at(repository: Option<&Repository>) -> Option<St
         .flatten()
 }
 
-fn github_repository_url(remote: &str) -> Option<String> {
+pub(crate) fn github_repository_url(remote: &str) -> Option<String> {
     let path = if let Some((scheme, rest)) = remote.split_once("://") {
         if !matches!(scheme, "https" | "http" | "ssh" | "git") {
             return None;

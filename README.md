@@ -93,6 +93,9 @@ Use `glog branch --watch`, or press `W` in the picker, to refresh it as you
 clean up branches in another terminal. `W` toggles watching off again.
 After quitting, the full branch graph stays in the terminal so you can copy branch names.
 
+With GitHub CLI (`gh`) authenticated, PR badges show each branch's PR number and
+state. Click a badge or press `e` to open its PR on GitHub.
+
 ### Folding merge histories
 
 In Log, select a merge and press `z` to collapse or expand the commits it brought
