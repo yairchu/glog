@@ -57,6 +57,8 @@ impl Badge {
 struct PullRequest {
     #[serde(flatten)]
     badge: Badge,
+    /// UTC timestamps in a fixed format, so they sort as text.
+    created_at: String,
     head_ref_name: String,
     head_repository: Option<HeadRepository>,
 }
@@ -289,7 +291,7 @@ fn graphql_query(count: usize) -> String {
         .map(|i| {
             format!(
                 " h{i}:pullRequests(headRefName:$h{i},states:[OPEN,CLOSED,MERGED],first:100,after:$c{i})\
-                 {{nodes{{number state isDraft url headRefName headRepository{{nameWithOwner}}}}pageInfo{{hasNextPage endCursor}}}}"
+                 {{nodes{{number state isDraft url createdAt headRefName headRepository{{nameWithOwner}}}}pageInfo{{hasNextPage endCursor}}}}"
             )
         })
         .collect();
@@ -348,8 +350,10 @@ fn best_match<'a>(
                     .as_ref()
                     .is_some_and(|head| head.name_with_owner.eq_ignore_ascii_case(repository))
         })
-        // An open PR takes precedence when a branch name was reused.
-        .max_by_key(|pr| (pr.badge.state == Status::Open, pr.badge.number))
+        // An open PR takes precedence when a branch name was reused. Numbers
+        // are per base repository, so only creation orders PRs into a fork
+        // and into its upstream.
+        .max_by_key(|pr| (pr.badge.state == Status::Open, &pr.created_at))
         .map(|pr| pr.badge.clone())
 }
 
