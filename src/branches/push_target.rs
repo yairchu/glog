@@ -4,7 +4,7 @@
 //! pushed: `git checkout -b feature origin/main` tracks `origin/main`, and fork
 //! workflows pull from one remote and push to another. Pull requests and the
 //! remote copy of a branch's series live at the push target.
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::git::{self, Repository};
 
@@ -26,6 +26,8 @@ struct BranchConfig {
 struct Config {
     push_default: String,
     push_remote: Option<String>,
+    default_remote: String,
+    explicit_push: HashSet<String>,
     branches: HashMap<String, BranchConfig>,
 }
 
@@ -35,7 +37,7 @@ fn read_config(repository: Option<&Repository>) -> Result<Config, String> {
             "config",
             "--null",
             "--get-regexp",
-            r"^(branch\..*\.(remote|pushremote|merge)|push\.default|remote\.pushdefault)$",
+            r"^(branch\..*\.(remote|pushremote|merge)|push\.default|remote\.pushdefault|remote\..*\.push)$",
         ])
         .output()
         .map_err(|error| format!("could not read push configuration: {error}"))?;
@@ -46,9 +48,28 @@ fn read_config(repository: Option<&Repository>) -> Result<Config, String> {
             &output.stderr,
         ));
     }
+    let remotes = git::read_command_at(repository)
+        .arg("remote")
+        .output()
+        .map_err(|error| format!("could not list remotes: {error}"))?;
+    if !remotes.status.success() {
+        return Err(git::stderr_message(
+            "could not list remotes",
+            &remotes.stderr,
+        ));
+    }
+    let remote_names = String::from_utf8_lossy(&remotes.stdout);
+    let mut remote_names = remote_names.lines();
+    let first = remote_names.next();
+    let default_remote = match (first, remote_names.next()) {
+        (Some(only), None) => only.to_owned(),
+        _ => "origin".into(),
+    };
     let mut config = Config {
         push_default: "simple".into(),
         push_remote: None,
+        default_remote,
+        explicit_push: HashSet::new(),
         branches: HashMap::new(),
     };
     for entry in String::from_utf8_lossy(&output.stdout).split_terminator('\0') {
@@ -59,6 +80,13 @@ fn read_config(repository: Option<&Repository>) -> Result<Config, String> {
         }
         if key == "remote.pushdefault" {
             config.push_remote = Some(value.into());
+            continue;
+        }
+        if let Some(remote) = key
+            .strip_prefix("remote.")
+            .and_then(|key| key.strip_suffix(".push"))
+        {
+            config.explicit_push.insert(remote.to_owned());
             continue;
         }
         let Some(key) = key.strip_prefix("branch.") else {
@@ -84,14 +112,16 @@ fn non_empty(text: &str) -> Option<String> {
 pub(super) fn load(repository: Option<&Repository>) -> Result<HashMap<String, Target>, String> {
     let config = read_config(repository)?;
     // Under `current`, `%(push)` maps the same-named branch through the push
-    // remote's fetch refspecs. Git cannot resolve `%(push)` under `simple` in
-    // triangular workflows, so the configured mode is applied below instead.
+    // remote's fetch refspecs, or honors explicit push refspecs when present.
+    // Git cannot resolve `%(push)` under `simple` in triangular workflows,
+    // so the configured mode is applied below instead. `push:remoteref`
+    // supplies explicit destinations even without a matching fetch refspec.
     let output = git::read_command_at(repository)
         .args([
             "-c",
             "push.default=current",
             "for-each-ref",
-            "--format=%(refname:strip=2)%00%(push)%00%(upstream)",
+            "--format=%(refname:strip=2)%00%(push)%00%(upstream)%00%(push:remoteref)",
             "refs/heads/",
         ])
         .output()
@@ -104,7 +134,7 @@ pub(super) fn load(repository: Option<&Repository>) -> Result<HashMap<String, Ta
     }
     let mut targets = HashMap::new();
     for line in String::from_utf8_lossy(&output.stdout).lines() {
-        let [name, same_name_tracking, upstream_tracking] =
+        let [name, push_tracking, upstream_tracking, push_ref] =
             line.split('\0').collect::<Vec<_>>()[..]
         else {
             return Err("invalid Git push target output".into());
@@ -112,12 +142,27 @@ pub(super) fn load(repository: Option<&Repository>) -> Result<HashMap<String, Ta
         let branch = config.branches.get(name);
         let fetch_remote = branch
             .and_then(|branch| branch.remote.as_deref())
-            .unwrap_or("origin");
+            .unwrap_or(&config.default_remote);
         // The precedence `git push` uses to choose a remote.
         let remote = branch
             .and_then(|branch| branch.push_remote.as_deref())
             .or(config.push_remote.as_deref())
             .unwrap_or(fetch_remote);
+        // Explicit refspecs take precedence over push.default. Let Git map
+        // force prefixes and wildcards, and omit branches they do not push.
+        if config.explicit_push.contains(remote) {
+            if let Some(destination) = push_ref.strip_prefix("refs/heads/") {
+                targets.insert(
+                    name.to_owned(),
+                    Target {
+                        remote: remote.to_owned(),
+                        branch: destination.to_owned(),
+                        tracking: non_empty(push_tracking),
+                    },
+                );
+            }
+            continue;
+        }
         let upstream = branch
             .and_then(|branch| branch.merge.as_deref())
             .map(|merge| merge.strip_prefix("refs/heads/"));
@@ -125,7 +170,7 @@ pub(super) fn load(repository: Option<&Repository>) -> Result<HashMap<String, Ta
         let same_name = Target {
             remote: remote.to_owned(),
             branch: name.to_owned(),
-            tracking: non_empty(same_name_tracking),
+            tracking: non_empty(push_tracking),
         };
         let target = match config.push_default.as_str() {
             "nothing" => None,
