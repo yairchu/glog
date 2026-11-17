@@ -658,6 +658,29 @@ mod tests {
     }
 
     #[test]
+    fn a_matching_branch_does_not_hide_a_diverged_one_at_the_same_tip() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        init();
+        commit("base.txt", "base");
+        git(&["checkout", "-qb", "other"]);
+        let remote = commit("remote.txt", "remote");
+        git(&["checkout", "-q", "main"]);
+        git(&["checkout", "-qb", "topic"]);
+        let tip = commit("topic.txt", "topic");
+        git(&["update-ref", "refs/heads/other", &tip]);
+        git(&["update-ref", "refs/remotes/origin/topic", &tip]);
+        git(&["update-ref", "refs/remotes/origin/other", &remote]);
+        let mut app = super::super::load_picker().unwrap();
+        select(&mut app, "topic");
+        assert_eq!(
+            app.selected_branch_for_diff()
+                .map(|branch| branch.name.as_str()),
+            Ok("other")
+        );
+    }
+
+    #[test]
     fn unresolved_upstream_fetch_mappings_do_not_fall_back_to_origin() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
