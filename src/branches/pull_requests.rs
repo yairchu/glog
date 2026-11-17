@@ -202,42 +202,112 @@ fn heads(
     Some(heads)
 }
 
-fn matching_badge(output: &[u8], head: &Head, base: &str) -> Option<Option<Badge>> {
-    let prs: Vec<PullRequest> = serde_json::from_slice(output).ok()?;
-    Some(
-        prs.into_iter()
-            .filter(|pr| {
-                pr.head_ref_name == head.branch
-                    && pr.head_repository.as_ref().is_some_and(|repository| {
-                        head.repository.eq_ignore_ascii_case(&format!(
-                            "https://github.com/{}",
-                            repository.name_with_owner
-                        ))
-                    })
-                    && pr
-                        .badge
-                        .url
-                        .eq_ignore_ascii_case(&format!("{base}/pull/{}", pr.badge.number))
-            })
-            // An open PR takes precedence when a branch name was reused.
-            .max_by_key(|pr| (pr.badge.state == Status::Open, pr.badge.number))
-            .map(|pr| pr.badge),
+/// The `owner/name` of a GitHub repository URL from [`git::github_repository_url`].
+fn owner_and_name(url: &str) -> Option<&str> {
+    url.strip_prefix("https://github.com/")
+}
+
+#[derive(Deserialize)]
+struct Response {
+    data: Data,
+}
+
+#[derive(Deserialize)]
+struct Data {
+    repository: BaseRepository,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BaseRepository {
+    /// Canonical, following renames and transfers that remote URLs predate.
+    name_with_owner: String,
+    #[serde(flatten)]
+    heads: HashMap<String, Connection>,
+}
+
+#[derive(Deserialize)]
+struct Connection {
+    nodes: Vec<PullRequest>,
+}
+
+/// Branches looked up per GraphQL request.
+const BATCH: usize = 50;
+
+/// One GraphQL query finds the PRs of a batch of head branch names, passed as
+/// variables `$h0`, `$h1`, ... alongside `$owner` and `$name`.
+fn graphql_query(count: usize) -> String {
+    let variables: String = (0..count).map(|i| format!(",$h{i}:String!")).collect();
+    let fields: String = (0..count)
+        .map(|i| {
+            format!(
+                " h{i}:pullRequests(headRefName:$h{i},states:[OPEN,CLOSED,MERGED],first:100)\
+                 {{nodes{{number state isDraft url headRefName headRepository{{nameWithOwner}}}}}}"
+            )
+        })
+        .collect();
+    format!(
+        "query($owner:String!,$name:String!{variables})\
+         {{repository(owner:$owner,name:$name){{nameWithOwner{fields}}}}}"
     )
 }
 
+/// The canonical name of `base` and its PRs from any of `branches`, or `None`
+/// when any request fails.
+fn base_pull_requests(
+    base: &str,
+    branches: &[&str],
+    query: &mut impl FnMut(&str, &[&str]) -> Option<Vec<u8>>,
+) -> Option<(String, Vec<PullRequest>)> {
+    let mut name = None;
+    let mut prs = Vec::new();
+    for batch in branches.chunks(BATCH) {
+        let response: Response = serde_json::from_slice(&query(base, batch)?).ok()?;
+        let repository = response.data.repository;
+        for (_, connection) in repository.heads {
+            prs.extend(connection.nodes);
+        }
+        name = Some(repository.name_with_owner);
+    }
+    Some((name?, prs))
+}
+
+fn best_match<'a>(
+    prs: impl IntoIterator<Item = &'a PullRequest>,
+    branch: &str,
+    repository: &str,
+) -> Option<Badge> {
+    prs.into_iter()
+        .filter(|pr| {
+            pr.head_ref_name == branch
+                && pr
+                    .head_repository
+                    .as_ref()
+                    .is_some_and(|head| head.name_with_owner.eq_ignore_ascii_case(repository))
+        })
+        // An open PR takes precedence when a branch name was reused.
+        .max_by_key(|pr| (pr.badge.state == Status::Open, pr.badge.number))
+        .map(|pr| pr.badge.clone())
+}
+
 fn load(repository: &Repository) -> Option<Badges> {
-    load_with(repository, |base, head| {
-        let output = Command::new("gh")
+    load_with(repository, |base, branches| {
+        let (owner, name) = owner_and_name(base)?.split_once('/')?;
+        let mut command = Command::new("gh");
+        command
             .current_dir(repository.directory())
-            .args(["pr", "list", "--repo", base, "--head", &head.branch])
+            .args(["api", "graphql", "-f"])
+            .arg(format!("query={}", graphql_query(branches.len())))
             .args([
-                "--state",
-                "all",
-                "--limit",
-                "100",
-                "--json",
-                "number,state,isDraft,url,headRefName,headRepository",
-            ])
+                "-f",
+                &format!("owner={owner}"),
+                "-f",
+                &format!("name={name}"),
+            ]);
+        for (index, branch) in branches.iter().enumerate() {
+            command.args(["-f", &format!("h{index}={branch}")]);
+        }
+        let output = command
             .env("GH_PROMPT_DISABLED", "1")
             .stdin(Stdio::null())
             .stderr(Stdio::null())
@@ -247,44 +317,48 @@ fn load(repository: &Repository) -> Option<Badges> {
     })
 }
 
+/// Badges keyed by local branch. `query` returns the raw GraphQL response for
+/// a base repository URL and a batch of head branch names.
 fn load_with(
     repository: &Repository,
-    mut query: impl FnMut(&str, &Head) -> Option<Vec<u8>>,
+    mut query: impl FnMut(&str, &[&str]) -> Option<Vec<u8>>,
 ) -> Option<Badges> {
     let remotes = remotes(repository)?;
     let heads = heads(repository, &remotes)?;
-    let bases: BTreeSet<_> = remotes.values().collect();
-    let unique: BTreeSet<_> = heads.values().cloned().collect();
-    let mut found = HashMap::new();
-    let mut successful = unique.is_empty();
-    for head in unique {
-        let mut matches = Vec::new();
-        // Searching configured base repositories also finds PRs from a fork
-        // (origin) into its upstream. Verify the head repository, not just its name.
-        for base in &bases {
-            let Some(output) = query(base, &head) else {
-                continue;
-            };
-            let Some(badge) = matching_badge(&output, &head, base) else {
-                continue;
-            };
-            successful = true;
-            if let Some(badge) = badge {
-                matches.push(badge);
-            }
-        }
-        if let Some(badge) = matches
-            .into_iter()
-            .max_by_key(|badge| (badge.state == Status::Open, badge.number))
-        {
-            for (local, candidate) in &heads {
-                if *candidate == head {
-                    found.insert(local.clone(), badge.clone());
-                }
-            }
+    if heads.is_empty() {
+        return Some(HashMap::new());
+    }
+    let branches: Vec<&str> = heads
+        .values()
+        .map(|head| head.branch.as_str())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    // Searching configured base repositories also finds PRs from a fork
+    // (origin) into its upstream. Verify the head repository, not just its name.
+    let mut canonical = HashMap::new();
+    let mut prs = Vec::new();
+    for base in remotes.values().collect::<BTreeSet<_>>() {
+        // An inaccessible remote must not hide another remote's PRs.
+        if let Some((name, found)) = base_pull_requests(base, &branches, &mut query) {
+            canonical.insert(base.to_ascii_lowercase(), name);
+            prs.extend(found);
         }
     }
-    successful.then_some(found)
+    if canonical.is_empty() {
+        return None;
+    }
+    let found = heads
+        .into_iter()
+        .filter_map(|(local, head)| {
+            let repository = match canonical.get(&head.repository.to_ascii_lowercase()) {
+                Some(name) => name.as_str(),
+                None => owner_and_name(&head.repository)?,
+            };
+            Some((local, best_match(&prs, &head.branch, repository)?))
+        })
+        .collect();
+    Some(found)
 }
 
 #[cfg(test)]
@@ -446,12 +520,21 @@ mod tests {
         })
     }
 
+    /// A GraphQL response from `base`, renamed to `name_with_owner`.
+    fn response(name_with_owner: &str, branches: &[&str], prs: &[serde_json::Value]) -> Vec<u8> {
+        let mut repository = json!({ "nameWithOwner": name_with_owner });
+        for (index, branch) in branches.iter().enumerate() {
+            let nodes: Vec<_> = prs
+                .iter()
+                .filter(|pr| pr["headRefName"] == *branch)
+                .collect();
+            repository[format!("h{index}")] = json!({ "nodes": nodes });
+        }
+        serde_json::to_vec(&json!({ "data": { "repository": repository } })).unwrap()
+    }
+
     #[test]
     fn reused_branch_names_prefer_open_prs_and_verify_fork_identity() {
-        let head = Head {
-            repository: "https://github.com/me/repo".into(),
-            branch: "topic".into(),
-        };
         let prs = vec![
             pr(1, "ME/repo", "topic", "OPEN", true),
             pr(2, "me/repo", "topic", "MERGED", false),
@@ -459,37 +542,45 @@ mod tests {
             pr(4, "me/repo", "different", "OPEN", false),
         ];
         let parse = |prs: &[serde_json::Value]| {
-            matching_badge(
-                &serde_json::to_vec(prs).unwrap(),
-                &head,
-                "https://github.com/base/repo",
-            )
-            .unwrap()
-            .unwrap()
+            let prs: Vec<PullRequest> = serde_json::from_value(json!(prs)).unwrap();
+            best_match(&prs, "topic", "me/repo")
         };
-        assert_eq!(parse(&prs).label(), "#1 draft");
-        assert_eq!(
-            matching_badge(
-                &serde_json::to_vec(&prs).unwrap(),
-                &head,
-                "https://github.com/Base/Repo"
-            )
-            .unwrap()
-            .unwrap()
-            .label(),
-            "#1 draft"
-        );
-        assert_eq!(parse(&prs[1..]).label(), "#2 merged");
+        assert_eq!(parse(&prs).unwrap().label(), "#1 draft");
+        assert_eq!(parse(&prs[1..]).unwrap().label(), "#2 merged");
         let mut deleted = prs[0].clone();
         deleted["headRepository"] = serde_json::Value::Null;
-        assert!(matching_badge(
-            &serde_json::to_vec(&vec![deleted]).unwrap(),
-            &head,
-            "https://github.com/base/repo"
-        )
-        .unwrap()
-        .is_none());
-        assert!(matching_badge(b"invalid", &head, "https://github.com/base/repo").is_none());
+        assert!(parse(&[deleted]).is_none());
+    }
+
+    #[test]
+    fn renamed_repositories_match_their_canonical_name() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "base",
+        ]);
+        git(&["remote", "add", "origin", "https://github.com/old/repo.git"]);
+        let mut queries = 0;
+        let badges = load_with(&Repository::main().unwrap(), |base, branches| {
+            queries += 1;
+            assert_eq!(base, "https://github.com/old/repo");
+            Some(response(
+                "new/repo",
+                branches,
+                &[pr(5, "new/repo", "main", "OPEN", false)],
+            ))
+        })
+        .unwrap();
+        assert_eq!(queries, 1);
+        assert_eq!(badges["main"].label(), "#5 open");
     }
 
     #[test]
@@ -565,18 +656,15 @@ mod tests {
         git(&["config", "branch.topic.merge", "refs/heads/topic"]);
         // Tracking refs can be gone after a PR was merged and its branch deleted.
         let repository = Repository::main().unwrap();
-        let badges = load_with(&repository, |base, head| {
+        let badges = load_with(&repository, |base, branches| {
             if base != "https://github.com/base/repo" {
                 return None; // An inaccessible remote must not hide another remote's PRs.
             }
-            Some(
-                serde_json::to_vec(&if head.branch == "topic" {
-                    vec![pr(10, "me/repo", "topic", "OPEN", false)]
-                } else {
-                    vec![]
-                })
-                .unwrap(),
-            )
+            Some(response(
+                "base/repo",
+                branches,
+                &[pr(10, "me/repo", "topic", "OPEN", false)],
+            ))
         })
         .unwrap();
         assert_eq!(badges.len(), 2);
