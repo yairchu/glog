@@ -104,8 +104,9 @@ impl State {
             _ => false,
         };
         if !same {
+            // Keep showing the previous summaries until their replacement
+            // arrives, so watch reloads do not make them flicker.
             self.pending = None;
-            self.summaries.clear();
             if let (Some(source), Ok(repository)) = (&source, Repository::main()) {
                 let source = source.clone();
                 let cache = self.cache.clone();
@@ -116,6 +117,8 @@ impl State {
                     let _ = sender.send(compare(&source, &repository, cache, &worker_cancel));
                 });
                 self.pending = Some(Pending { receiver, cancel });
+            } else {
+                self.summaries.clear();
             }
         }
         // Remember the new Arc even for identical watch reloads, so ordinary
@@ -124,9 +127,12 @@ impl State {
         if let Some(pending) = &self.pending {
             match pending.receiver.try_recv() {
                 Ok(result) => {
-                    if let Some(loaded) = result {
-                        self.summaries = loaded.summaries;
-                        self.cache = loaded.cache;
+                    match result {
+                        Some(loaded) => {
+                            self.summaries = loaded.summaries;
+                            self.cache = loaded.cache;
+                        }
+                        None => self.summaries.clear(),
                     }
                     self.pending = None;
                 }
