@@ -292,8 +292,8 @@ Use glog range-diff OLD_BASE..OLD_TIP NEW_BASE..NEW_TIP, or Git's other forms
 and options. Scroll with the mouse wheel or paging keys; / and ? search.";
 
 const BRANCH_RANGE_DIFF: &str =
-    "In Branches, r or the Range-diff button compares the selected branch with its
-stored upstream, or origin's same-named branch when no upstream is configured.
+    "In Branches, r or the Range-diff button compares the selected branch with the
+remote branch git push sends it to, using its remote-tracking ref.
 Both series require a single resolved branching point. The remote range is
 resolved with its tip replacing the local branch; no fetch is performed.";
 

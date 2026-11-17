@@ -185,45 +185,20 @@ fn heads(
     repository: &Repository,
     remotes: &HashMap<String, String>,
 ) -> Option<HashMap<String, Head>> {
-    let output = git::read_command_at(Some(repository))
-        .args([
-            "for-each-ref",
-            "--format=%(refname:strip=2)%00%(upstream:remotename)%00%(upstream:remoteref)",
-            "refs/heads/",
-        ])
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let configured_upstreams = super::configured_upstreams(Some(repository)).ok()?;
-    let mut heads = HashMap::new();
-    for line in String::from_utf8(output.stdout).ok()?.lines() {
-        let fields: Vec<_> = line.split('\0').collect();
-        let [local, remote, reference] = fields.as_slice() else {
-            return None;
-        };
-        let (remote, branch) = if remote.is_empty() {
-            if configured_upstreams.contains(*local) {
-                continue;
-            }
-            ("origin", *local)
-        } else {
-            let Some(branch) = reference.strip_prefix("refs/heads/") else {
-                continue;
-            };
-            (*remote, branch)
-        };
-        if let Some(repository) = remotes.get(remote) {
-            heads.insert(
-                (*local).to_owned(),
+    let heads = super::push_target::load(Some(repository))
+        .ok()?
+        .into_iter()
+        .filter_map(|(local, target)| {
+            let repository = remotes.get(&target.remote)?.clone();
+            Some((
+                local,
                 Head {
-                    repository: repository.clone(),
-                    branch: branch.to_owned(),
+                    repository,
+                    branch: target.branch,
                 },
-            );
-        }
-    }
+            ))
+        })
+        .collect();
     Some(heads)
 }
 
@@ -584,6 +559,10 @@ mod tests {
         ]);
         git(&["config", "branch.local-topic.remote", "origin"]);
         git(&["config", "branch.local-topic.merge", "refs/heads/topic"]);
+        // Only `upstream` pushes to a differently named upstream branch.
+        git(&["config", "push.default", "upstream"]);
+        git(&["config", "branch.topic.remote", "origin"]);
+        git(&["config", "branch.topic.merge", "refs/heads/topic"]);
         // Tracking refs can be gone after a PR was merged and its branch deleted.
         let repository = Repository::main().unwrap();
         let badges = load_with(&repository, |base, head| {

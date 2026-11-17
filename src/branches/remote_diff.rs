@@ -256,11 +256,11 @@ mod tests {
         git(&["checkout", "-qb", "temporary"]);
         git(&["cherry-pick", &local]);
         let remote = git(&["rev-parse", "HEAD"]);
-        git(&["update-ref", "refs/remotes/origin/server-topic", &remote]);
+        git(&["update-ref", "refs/remotes/origin/topic", &remote]);
         git(&["checkout", "-q", "topic"]);
         git(&["branch", "-D", "temporary"]);
         git(&["config", "branch.topic.remote", "origin"]);
-        git(&["config", "branch.topic.merge", "refs/heads/server-topic"]);
+        git(&["config", "branch.topic.merge", "refs/heads/topic"]);
         let mut app = super::super::load_picker().unwrap();
         select(&mut app, "topic");
         let selected = app.selected;
@@ -272,9 +272,9 @@ mod tests {
             .unwrap();
         assert_eq!(other.base, remote_base);
         assert_eq!(other.tip, remote);
-        assert_eq!(other.name, "origin/server-topic");
+        assert_eq!(other.name, "origin/topic");
         // The action uses the displayed snapshot even if refs move meanwhile.
-        git(&["update-ref", "refs/remotes/origin/server-topic", &local]);
+        git(&["update-ref", "refs/remotes/origin/topic", &local]);
         press(&mut app, KeyCode::Char('r'));
         let now = Instant::now();
         app.poll_activity(now);
@@ -291,7 +291,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect();
         assert!(screen.contains(&format!(
-            "Remote origin/server-topic: {}..{}",
+            "Remote origin/topic: {}..{}",
             &remote_base[..12],
             &remote[..12]
         )));
@@ -303,7 +303,7 @@ mod tests {
             .map(|x| terminal.backend().buffer()[(x, 1)].symbol())
             .collect();
         assert!(
-            first_row.contains("Remote origin/server-topic"),
+            first_row.contains("Remote origin/topic"),
             "comparison ranges should remain visible while scrolling"
         );
         terminal.backend_mut().resize(20, 4);

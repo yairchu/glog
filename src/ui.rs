@@ -794,7 +794,7 @@ const HELP_ROWS: &[HelpRow] = &[
     ),
     branches(
         "",
-        "  Badges match the upstream, or origin's same-named branch.",
+        "  Badges match the remote branch that git push targets.",
     ),
     branches(
         "",

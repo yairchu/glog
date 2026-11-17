@@ -12,6 +12,7 @@ use crate::{
 };
 
 pub(crate) mod pull_requests;
+mod push_target;
 pub(crate) mod remote_diff;
 pub(crate) mod similarity;
 
@@ -185,32 +186,6 @@ fn parse_args(args: &[String]) -> Result<(bool, Option<String>), String> {
     Ok((watch, date))
 }
 
-/// An unresolved tracking ref can still have an explicitly configured upstream.
-fn configured_upstreams(repository: Option<&git::Repository>) -> Result<HashSet<String>, String> {
-    let output = git::read_command_at(repository)
-        .args([
-            "config",
-            "--null",
-            "--name-only",
-            "--get-regexp",
-            r"^branch\..*\.merge$",
-        ])
-        .output()
-        .map_err(|error| format!("could not read branch upstreams: {error}"))?;
-    // git config returns 1 when no matching keys exist.
-    if !output.status.success() && output.status.code() != Some(1) {
-        return Err(git::stderr_message(
-            "could not read branch upstreams",
-            &output.stderr,
-        ));
-    }
-    Ok(String::from_utf8_lossy(&output.stdout)
-        .split('\0')
-        .filter_map(|key| key.strip_prefix("branch.")?.strip_suffix(".merge"))
-        .map(str::to_owned)
-        .collect())
-}
-
 fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
     let output = git::read_command()
         .args([
@@ -219,7 +194,7 @@ fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
             // A branch can point to an annotated tag. Name the commit it tags,
             // as the traversal does.
             "--format=%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end)\
-              %00%(refname)%00%(HEAD)%00%(upstream)",
+              %00%(refname)%00%(HEAD)",
             "refs/heads/",
             "refs/remotes/",
         ])
@@ -231,7 +206,8 @@ fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
             &output.stderr,
         ));
     }
-    let configured_upstreams = configured_upstreams(None)?;
+    // Push targets only annotate branches; listing them must not depend on it.
+    let push_targets = push_target::load(None).unwrap_or_default();
     let mut tips: HashMap<String, Vec<Branch>> = HashMap::new();
     let text = String::from_utf8_lossy(&output.stdout);
     let records: Vec<_> = text
@@ -241,7 +217,7 @@ fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
     let remotes: HashMap<_, _> = records
         .iter()
         .filter_map(|fields| {
-            let [hash, reference, _, _] = fields.as_slice() else {
+            let [hash, reference, _] = fields.as_slice() else {
                 return None;
             };
             reference
@@ -250,20 +226,17 @@ fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
         })
         .collect();
     for fields in &records {
-        let [hash, reference, head, upstream] = fields.as_slice() else {
+        let [hash, reference, head] = fields.as_slice() else {
             return Err("invalid Git branch list output".into());
         };
         let Some(name) = reference.strip_prefix("refs/heads/") else {
             continue;
         };
-        let remote = if upstream.is_empty() && !configured_upstreams.contains(name) {
-            format!("refs/remotes/origin/{name}")
-        } else {
-            (*upstream).to_owned()
-        };
-        let counterpart = remotes
-            .get(remote.as_str())
-            .map(|hash| remote_diff::Counterpart {
+        let counterpart = push_targets
+            .get(name)
+            .and_then(|target| target.tracking.as_deref())
+            .and_then(|remote| Some((remote, *remotes.get(remote)?)))
+            .map(|(remote, hash)| remote_diff::Counterpart {
                 name: remote.strip_prefix("refs/remotes/").unwrap().to_owned(),
                 hash: (*hash).to_owned(),
             });

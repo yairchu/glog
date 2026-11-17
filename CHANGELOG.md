@@ -12,7 +12,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   such as `glog stash show --help` and `glog bisect log --help`.
 
 - Press `r` or click the Range-diff button in Branches to compare the selected
-  branch with its stored remote counterpart when their tips differ. Resolve the
+  branch with the remote branch it pushes to when their tips differ. Resolve the
   remote series by replacing the local tip in the branch graph, preserving
   independent bases for rebased or diverged histories. Load in the background,
   show both ranges above the comparison, and return with Escape or Backspace.
