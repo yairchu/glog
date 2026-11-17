@@ -459,6 +459,36 @@ mod tests {
     }
 
     #[test]
+    fn the_default_branch_hides_the_action_since_it_has_no_series() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        init();
+        commit("base.txt", "base");
+        git(&["checkout", "-qb", "feature"]);
+        commit("feature.txt", "feature");
+        git(&["checkout", "-q", "main"]);
+        let remote = commit("remote.txt", "remote");
+        git(&["reset", "-q", "--hard", "HEAD~"]);
+        commit("local.txt", "local");
+        git(&["update-ref", "refs/remotes/origin/main", &remote]);
+        git(&["config", "branch.main.remote", "origin"]);
+        git(&["config", "branch.main.merge", "refs/heads/main"]);
+        let mut app = super::super::load_picker().unwrap();
+        select(&mut app, "main");
+        let mut terminal = Terminal::new(TestBackend::new(130, 12)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        assert!(app.branch_diff_button.is_none());
+        press(&mut app, KeyCode::Char('r'));
+        assert!(
+            app.status.as_deref().unwrap().contains("default branch"),
+            "{:?}",
+            app.status
+        );
+        assert!(!app.poll_branch_diff());
+        assert_eq!(app.history, History::Branches);
+    }
+
+    #[test]
     fn leaving_the_picker_cancels_a_pending_comparison() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
