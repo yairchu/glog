@@ -205,11 +205,11 @@ fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
               %00%(refname)%00%(HEAD)",
             "refs/heads/",
         ])
-        .args(
+        .args(tracking_namespaces(
             push_targets
                 .values()
                 .filter_map(|target| target.tracking.as_deref()),
-        )
+        ))
         .output()
         .map_err(|error| format!("could not list branches: {error}"))?;
     if !output.status.success() {
@@ -262,6 +262,27 @@ fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
         tips.entry((*hash).into()).or_default().push(branch);
     }
     Ok(tips)
+}
+
+/// The folders holding the given refs, so the command line grows with the
+/// fetch namespaces rather than with the number of branches.
+fn tracking_namespaces<'a>(refs: impl Iterator<Item = &'a str>) -> Vec<&'a str> {
+    let folders: BTreeSet<_> = refs
+        .filter_map(|reference| Some(reference.rsplit_once('/')?.0))
+        .collect();
+    // Patterns match whole path components, so a folder covers its subfolders.
+    let mut namespaces: Vec<&str> = Vec::new();
+    for folder in folders {
+        let covered = namespaces.iter().any(|namespace| {
+            folder
+                .strip_prefix(namespace)
+                .is_some_and(|rest| rest.starts_with('/'))
+        });
+        if !covered {
+            namespaces.push(folder);
+        }
+    }
+    namespaces
 }
 
 fn rows(tips: HashMap<String, Vec<Branch>>, date: Option<String>) -> Result<Vec<Commit>, String> {
