@@ -569,6 +569,8 @@ mod tests {
         )
         .unwrap();
         let output = Command::new(env::current_exe().unwrap())
+            // Other tests can change and delete the process working directory.
+            .current_dir(directory.path())
             .args([
                 "--exact",
                 "branches::pull_requests::tests::keyboard_and_badge_clicks_open_the_correct_pr",
