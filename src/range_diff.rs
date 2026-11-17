@@ -38,11 +38,14 @@ pub(crate) fn load_view(
     repository: &git::Repository,
     cancel: &git::Cancel,
 ) -> Result<View, String> {
-    let output = git::pipe_through_cancellable(&mut command(args, Some(repository)), b"", cancel)
-        .ok_or("git range-diff failed")?;
+    let output = git::output_cancellable(&mut command(args, Some(repository)), cancel)
+        .map_err(|error| format!("could not run git range-diff: {error}"))?;
+    if !output.status.success() {
+        return Err(git::stderr_message("git range-diff failed", &output.stderr));
+    }
     // Keep Git's dual coloring; passing this diff of patches through a patch
     // formatter or file-fold parser would change its meaning and layout.
-    Ok(View::new(&String::from_utf8_lossy(&output)))
+    Ok(View::new(&String::from_utf8_lossy(&output.stdout)))
 }
 
 /// Git's colored lines, wrapped to the screen, with a line cursor for search.

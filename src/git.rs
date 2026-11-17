@@ -2348,6 +2348,42 @@ pub(crate) fn pipe_through_cancellable(
         .and_then(|(output, success)| success.then_some(output))
 }
 
+/// Like [`Command::output`] without input, but cancellable.
+pub(crate) fn output_cancellable(
+    command: &mut Command,
+    cancel: &Cancel,
+) -> std::io::Result<std::process::Output> {
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let pipes = child.stdout.take().zip(child.stderr.take());
+    cancel.register(child);
+    let (mut stdout, mut stderr) = pipes.ok_or_else(|| std::io::Error::other("missing pipes"))?;
+    std::thread::scope(|scope| {
+        let errors = scope.spawn(move || {
+            let mut errors = Vec::new();
+            stderr.read_to_end(&mut errors).map(|_| errors)
+        });
+        let mut output = Vec::new();
+        let read = stdout.read_to_end(&mut output);
+        let errors = errors
+            .join()
+            .map_err(|_| std::io::Error::other("stderr reader panicked"))?;
+        let status = cancel
+            .take()
+            .ok_or_else(|| std::io::Error::other("cancelled"))?
+            .wait()?;
+        read?;
+        Ok(std::process::Output {
+            status,
+            stdout: output,
+            stderr: errors?,
+        })
+    })
+}
+
 /// The output, even where the command failed, and whether it succeeded.
 fn pipe_through_with_status(
     command: &mut Command,
