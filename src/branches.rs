@@ -29,6 +29,8 @@ pub struct Branch {
     merged_into: Option<String>,
     kind: BranchKind,
     counterpart: Option<remote_diff::Counterpart>,
+    /// Where `git push` sends a local branch, for matching its PRs.
+    push: Option<push_target::Target>,
 }
 
 impl Branch {
@@ -194,7 +196,7 @@ fn parse_args(args: &[String]) -> Result<(bool, Option<String>), String> {
 
 fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
     // Push targets only annotate branches; listing them must not depend on it.
-    let push_targets = push_target::load(None).unwrap_or_default();
+    let mut push_targets = push_target::load(None).unwrap_or_default();
     let output = git::read_command()
         .args([
             "for-each-ref",
@@ -258,6 +260,7 @@ fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
             merged_into: None,
             kind: BranchKind::Local,
             counterpart,
+            push: push_targets.remove(name),
         };
         tips.entry((*hash).into()).or_default().push(branch);
     }
@@ -309,6 +312,7 @@ fn graph_rows(mut tips: HashMap<String, Vec<Branch>>) -> Result<Vec<Commit>, Str
             merged_into: None,
             kind: BranchKind::Remote,
             counterpart: None,
+            push: None,
         });
     }
     compact_tips(tips, primary.as_deref())
@@ -1017,6 +1021,7 @@ mod tests {
                                 merged_into: None,
                                 kind: BranchKind::Local,
                                 counterpart: None,
+                                push: None,
                             })
                             .collect(),
                     )
@@ -1175,6 +1180,7 @@ mod tests {
                     merged_into: None,
                     kind: BranchKind::Remote,
                     counterpart: None,
+                    push: None,
                 }),
                 _ => {}
             }

@@ -107,7 +107,7 @@ impl State {
             }
         }
         let mut changed = false;
-        for row in rows {
+        for row in rows.iter_mut() {
             if let Some(Annotation::Branch(node)) = &mut row.annotation {
                 let badges: Vec<_> = node
                     .branches
@@ -128,10 +128,11 @@ impl State {
         {
             self.checked = Some(Instant::now());
             if let Ok(repository) = Repository::main() {
+                let targets = push_targets(rows);
                 let (sender, receiver) = mpsc::channel();
                 self.pending = Some(receiver);
                 std::thread::spawn(move || {
-                    let _ = sender.send(load(&repository));
+                    let _ = sender.send(load(&repository, targets));
                 });
             }
         }
@@ -158,14 +159,36 @@ struct Remote {
     push: Option<String>,
 }
 
-fn remote_repository(repository: &Repository, remote: &str, push: bool) -> Option<String> {
-    let stored_url = |key| {
-        git::read_command_at(Some(repository))
-            .args(["config", "--get", &format!("remote.{remote}.{key}")])
-            .output()
-            .ok()
-            .filter(|output| output.status.success())
-    };
+/// Every remote's configured URLs, keyed like `remote.NAME.url`. As with
+/// `git config --get`, the last value of a key wins.
+fn stored_urls(repository: &Repository) -> HashMap<String, String> {
+    git::read_command_at(Some(repository))
+        .args([
+            "config",
+            "--null",
+            "--get-regexp",
+            r"^remote\..*\.(url|pushurl)$",
+        ])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .map(|output| {
+            String::from_utf8_lossy(&output.stdout)
+                .split_terminator('\0')
+                .filter_map(|entry| entry.split_once('\n'))
+                .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn remote_repository(
+    repository: &Repository,
+    stored_urls: &HashMap<String, String>,
+    remote: &str,
+    push: bool,
+) -> Option<String> {
+    let stored_url = |key| stored_urls.get(&format!("remote.{remote}.{key}"));
     // An explicit non-GitHub push URL must not inherit the fetch identity.
     let stored = push
         .then(|| stored_url("pushurl"))
@@ -187,8 +210,7 @@ fn remote_repository(repository: &Repository, remote: &str, push: bool) -> Optio
         })
         .or_else(|| {
             // Preserve the stored GitHub identity for local transport rewrites.
-            let stored = stored?;
-            git::github_repository_url(String::from_utf8_lossy(&stored.stdout).trim())
+            git::github_repository_url(stored?.trim())
         })
 }
 
@@ -200,6 +222,7 @@ fn remotes(repository: &Repository) -> Option<HashMap<String, Remote>> {
     if !output.status.success() {
         return None;
     }
+    let stored = stored_urls(repository);
     Some(
         String::from_utf8(output.stdout)
             .ok()?
@@ -208,8 +231,8 @@ fn remotes(repository: &Repository) -> Option<HashMap<String, Remote>> {
                 (
                     remote.to_owned(),
                     Remote {
-                        fetch: remote_repository(repository, remote, false),
-                        push: remote_repository(repository, remote, true),
+                        fetch: remote_repository(repository, &stored, remote, false),
+                        push: remote_repository(repository, &stored, remote, true),
                     },
                 )
             })
@@ -217,12 +240,19 @@ fn remotes(repository: &Repository) -> Option<HashMap<String, Remote>> {
     )
 }
 
-fn heads(
-    repository: &Repository,
-    remotes: &HashMap<String, Remote>,
-) -> Option<HashMap<String, Head>> {
-    let heads = super::push_target::load(Some(repository))
-        .ok()?
+/// The picker already resolved where each local branch pushes.
+fn push_targets(rows: &[Commit]) -> Targets {
+    rows.iter()
+        .filter_map(Commit::branch)
+        .flat_map(|node| &node.branches)
+        .filter_map(|branch| Some((branch.name.clone(), branch.push.clone()?)))
+        .collect()
+}
+
+type Targets = HashMap<String, super::push_target::Target>;
+
+fn heads(targets: Targets, remotes: &HashMap<String, Remote>) -> HashMap<String, Head> {
+    targets
         .into_iter()
         .filter_map(|(local, target)| {
             let repository = remotes.get(&target.remote)?.push.clone()?;
@@ -234,8 +264,7 @@ fn heads(
                 },
             ))
         })
-        .collect();
-    Some(heads)
+        .collect()
 }
 
 /// The `owner/name` of a GitHub repository URL from [`git::github_repository_url`].
@@ -357,8 +386,8 @@ fn best_match<'a>(
         .map(|pr| pr.badge.clone())
 }
 
-fn load(repository: &Repository) -> Option<Badges> {
-    load_with(repository, |base, branches, cursors| {
+fn load(repository: &Repository, targets: Targets) -> Option<Badges> {
+    load_with(repository, targets, |base, branches, cursors| {
         let (owner, name) = owner_and_name(base)?.split_once('/')?;
         let mut command = Command::new("gh");
         command
@@ -391,10 +420,11 @@ fn load(repository: &Repository) -> Option<Badges> {
 /// a base repository URL, head branch names, and their continuation cursors.
 fn load_with(
     repository: &Repository,
+    targets: Targets,
     mut query: impl FnMut(&str, &[&str], &Cursors<'_>) -> Option<Vec<u8>>,
 ) -> Option<Badges> {
     let remotes = remotes(repository)?;
-    let heads = heads(repository, &remotes)?;
+    let heads = heads(targets, &remotes);
     if heads.is_empty() {
         return Some(HashMap::new());
     }
@@ -588,6 +618,10 @@ mod tests {
         assert!(output.status.success(), "{output:?}");
     }
 
+    fn targets(repository: &Repository) -> Targets {
+        super::super::push_target::load(Some(repository)).unwrap()
+    }
+
     fn pr(number: u64, owner: &str, branch: &str, state: &str, draft: bool) -> serde_json::Value {
         json!({
             "number": number, "state": state, "isDraft": draft,
@@ -762,7 +796,7 @@ mod tests {
                 git(&["remote", "get-url", "--push", "origin"]),
                 "https://github.com/me/repo.git"
             );
-            let badges = load_with(&repository, |base, branches, _| {
+            let badges = load_with(&repository, targets(&repository), |base, branches, _| {
                 Some(response(
                     owner_and_name(base).unwrap(),
                     branches,
@@ -807,22 +841,26 @@ mod tests {
             "git@github.com:old/repo.git",
         ]);
         let mut queried = BTreeSet::new();
-        let badges = load_with(&Repository::main().unwrap(), |base, branches, _| {
-            queried.insert(base.to_owned());
-            Some(if base == "https://github.com/base/repo" {
-                response(
-                    "base/repo",
-                    branches,
-                    &[
-                        pr(10, "me/repo", "topic", "OPEN", false),
-                        pr(20, "base/repo", "topic", "OPEN", false),
-                    ],
-                )
-            } else {
-                assert_eq!(base, "https://github.com/old/repo");
-                response("me/repo", branches, &[])
-            })
-        })
+        let badges = load_with(
+            &Repository::main().unwrap(),
+            targets(&Repository::main().unwrap()),
+            |base, branches, _| {
+                queried.insert(base.to_owned());
+                Some(if base == "https://github.com/base/repo" {
+                    response(
+                        "base/repo",
+                        branches,
+                        &[
+                            pr(10, "me/repo", "topic", "OPEN", false),
+                            pr(20, "base/repo", "topic", "OPEN", false),
+                        ],
+                    )
+                } else {
+                    assert_eq!(base, "https://github.com/old/repo");
+                    response("me/repo", branches, &[])
+                })
+            },
+        )
         .unwrap();
         assert_eq!(badges["topic"].label(), "#10 open");
         assert_eq!(
@@ -841,9 +879,11 @@ mod tests {
             "origin",
             "https://example.invalid/repo.git",
         ]);
-        let badges = load_with(&Repository::main().unwrap(), |_, _, _| {
-            panic!("a non-GitHub push target must not query the fetch repository")
-        })
+        let badges = load_with(
+            &Repository::main().unwrap(),
+            targets(&Repository::main().unwrap()),
+            |_, _, _| panic!("a non-GitHub push target must not query the fetch repository"),
+        )
         .unwrap();
         assert!(badges.is_empty());
     }
@@ -865,15 +905,19 @@ mod tests {
         ]);
         git(&["remote", "add", "origin", "https://github.com/old/repo.git"]);
         let mut queries = 0;
-        let badges = load_with(&Repository::main().unwrap(), |base, branches, _| {
-            queries += 1;
-            assert_eq!(base, "https://github.com/old/repo");
-            Some(response(
-                "new/repo",
-                branches,
-                &[pr(5, "new/repo", "main", "OPEN", false)],
-            ))
-        })
+        let badges = load_with(
+            &Repository::main().unwrap(),
+            targets(&Repository::main().unwrap()),
+            |base, branches, _| {
+                queries += 1;
+                assert_eq!(base, "https://github.com/old/repo");
+                Some(response(
+                    "new/repo",
+                    branches,
+                    &[pr(5, "new/repo", "main", "OPEN", false)],
+                ))
+            },
+        )
         .unwrap();
         assert_eq!(queries, 1);
         assert_eq!(badges["main"].label(), "#5 open");
@@ -913,9 +957,11 @@ mod tests {
             "remote.upstream.fetch",
             "+refs/heads/main:refs/remotes/upstream/main",
         ]);
-        let badges = load_with(&Repository::main().unwrap(), |_, _, _| {
-            panic!("an unresolved upstream must not query origin's same-named branch")
-        })
+        let badges = load_with(
+            &Repository::main().unwrap(),
+            targets(&Repository::main().unwrap()),
+            |_, _, _| panic!("an unresolved upstream must not query origin's same-named branch"),
+        )
         .unwrap();
         assert!(badges.is_empty());
     }
@@ -952,7 +998,7 @@ mod tests {
         git(&["config", "branch.topic.merge", "refs/heads/topic"]);
         // Tracking refs can be gone after a PR was merged and its branch deleted.
         let repository = Repository::main().unwrap();
-        let badges = load_with(&repository, |base, branches, _| {
+        let badges = load_with(&repository, targets(&repository), |base, branches, _| {
             if base != "https://github.com/base/repo" {
                 return None; // An inaccessible remote must not hide another remote's PRs.
             }
