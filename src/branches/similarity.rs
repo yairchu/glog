@@ -418,6 +418,31 @@ mod tests {
     }
 
     #[test]
+    fn commits_no_branch_reaches_are_not_fingerprinted() {
+        // Remote counterparts add x to the ancestry without owning it.
+        let source = Source {
+            graph: Arc::new(Graph::parse("a r\nb r\nx r\nr\n").unwrap()),
+            tips: ["a", "b"]
+                .into_iter()
+                .map(|hash| Tip {
+                    hash: hash.into(),
+                    branches: 1,
+                })
+                .collect(),
+        };
+        let cache: Cache = [("a".into(), None), ("b".into(), None)].into();
+        // The repository does not exist, so any patch-id read fails.
+        let loaded = compare(
+            &source,
+            &Repository::checked_out(PathBuf::new()),
+            Arc::new(cache),
+            &[git::Cancel::default(), git::Cancel::default()],
+        )
+        .expect("only commits branches reach need fingerprints");
+        assert!(!loaded.cache.contains_key("x"));
+    }
+
+    #[test]
     fn binary_patches_match_but_empty_commits_and_equal_messages_do_not() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
