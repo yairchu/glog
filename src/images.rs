@@ -1,7 +1,7 @@
 //! Inline Kitty graphics. Unicode placeholders participate in Ratatui's normal
 //! cell diffing, so clipping, overlays and scrolling do not need cursor escapes.
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     io::{self, Cursor, Read, Write},
     path::{Path, PathBuf},
@@ -142,6 +142,7 @@ type Response = (Source, Option<Decoded>);
 
 #[derive(Default)]
 pub struct Images {
+    visible: HashSet<Source>,
     pub enabled: bool,
     pub root: PathBuf,
     tmux: bool,
@@ -154,6 +155,16 @@ pub struct Images {
 }
 
 impl Images {
+    pub fn begin_frame(&mut self) {
+        self.visible.clear();
+    }
+
+    pub fn loading(&self) -> bool {
+        self.visible
+            .iter()
+            .any(|source| self.entries.get(source).is_none_or(|entry| entry.pending))
+    }
+
     pub fn from_env() -> Self {
         let setting = std::env::var("GLOG_IMAGES").unwrap_or_default();
         let tmux = std::env::var_os("TMUX").is_some();
@@ -225,6 +236,7 @@ impl Images {
             return;
         }
         self.start_worker();
+        self.visible.insert(row.source.clone());
         self.clock += 1;
         if !self.entries.contains_key(&row.source) {
             if self

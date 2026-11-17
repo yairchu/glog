@@ -268,6 +268,7 @@ struct LogBookmark {
 }
 
 pub struct App {
+    pub activity: crate::activity::Indicator,
     pub(crate) views: crate::views::Session,
     pub view_menu: Option<usize>,
     pub images: crate::images::Images,
@@ -390,6 +391,7 @@ impl App {
             interchanges,
         } = loaded.into();
         let mut app = Self {
+            activity: Default::default(),
             views: crate::views::Session::default(),
             view_menu: None,
             images: crate::images::Images::default(),
@@ -1275,6 +1277,48 @@ impl App {
         if let Some(pending) = &mut self.pending_interchanges {
             pending.start();
         }
+    }
+
+    /// Only the current view contributes work; saved views keep their own state.
+    pub fn poll_activity(&mut self, now: Instant) -> bool {
+        use crate::activity::Task;
+        let mut tasks = Vec::new();
+        if self.pending_github_file.is_some() {
+            tasks.push(Task::GithubFile);
+        }
+        if self.history == History::Branches && self.branch_pull_requests.loading() {
+            tasks.push(Task::PullRequests);
+        }
+        let counting = match self.mode {
+            Mode::Show => self.code_stats && self.counting_code(),
+            Mode::Status => self
+                .status_view
+                .as_ref()
+                .is_some_and(crate::status::StatusView::counting_code),
+            _ => false,
+        };
+        if counting {
+            tasks.push(Task::CodeStats);
+        }
+        if matches!(self.mode, Mode::Log | Mode::Show) {
+            if self.log_folds.loading() {
+                tasks.push(Task::History);
+            }
+            if self
+                .pending_interchanges
+                .as_ref()
+                .is_some_and(git::interchanges::Pending::reading)
+            {
+                tasks.push(Task::BranchConnections);
+            }
+        }
+        if matches!(self.mode, Mode::Show | Mode::Status) && self.images.loading() {
+            tasks.push(Task::Images);
+        }
+        if !self.browser_results.is_empty() {
+            tasks.push(Task::Browser);
+        }
+        self.activity.poll(&tasks, now)
     }
 
     /// Apply completed marker and omitted-history reads without moving selection.
@@ -3749,6 +3793,50 @@ impl App {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn activity_follows_pending_requests_through_cancel_failure_and_view_changes() {
+        use super::*;
+        use std::sync::mpsc;
+        let mut app = App::new(Vec::new());
+        app.history = History::GithubSearch;
+        app.mode = Mode::Grep;
+        let now = Instant::now();
+        for failure in [false, true] {
+            let (sender, receiver) = mpsc::channel();
+            app.pending_github_file = Some(crate::github_search::Pending { receiver });
+            assert!(!app.poll_activity(now));
+            assert!(app.poll_activity(now + Duration::from_millis(200)));
+            assert!(app
+                .activity
+                .text()
+                .unwrap()
+                .contains("Loading GitHub file…"));
+            if failure {
+                sender.send(Err("fixture request denied".into())).unwrap();
+                assert!(app.poll_github_file());
+                assert_eq!(app.status.as_deref(), Some("fixture request denied"));
+            } else {
+                assert!(app.cancel_github_file());
+            }
+            assert!(app.poll_activity(now + Duration::from_secs(1)));
+            assert!(app.activity.text().is_none());
+        }
+        let (_sender, receiver) = mpsc::channel();
+        app.pending_github_file = Some(crate::github_search::Pending { receiver });
+        app.poll_activity(now);
+        app.poll_activity(now + Duration::from_millis(200));
+        let mut other = App::new(Vec::new());
+        other
+            .views
+            .saved
+            .insert(crate::views::View::Original, Box::new(app));
+        other.poll_activity(now + Duration::from_secs(1));
+        assert!(
+            other.activity.text().is_none(),
+            "a saved view must not make the current view busy"
+        );
+    }
+
     use super::*;
     use std::fmt::Write;
 

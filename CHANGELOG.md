@@ -7,6 +7,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Show a shared activity indicator in the top bar for background PR lookups,
+  GitHub files, code statistics, history reads, image previews, and browser
+  launches. Brief tasks stay quiet; longer tasks show an animated label scoped
+  to the current view.
+
 - Show GitHub PR numbers and open, draft, merged, or closed badges in Branches,
   using `gh` authentication. Click a badge or press `e` to open a branch's PR.
   Badges load in the background and refresh once a minute while watching.

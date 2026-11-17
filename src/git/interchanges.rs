@@ -91,6 +91,10 @@ pub struct Bases {
 }
 
 impl Pending {
+    pub fn reading(&self) -> bool {
+        self.read.is_some()
+    }
+
     pub fn new(
         args: &[String],
         sources: HashSet<String>,

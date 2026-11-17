@@ -1,3 +1,4 @@
+mod activity;
 mod ansi;
 mod app;
 mod bisect;
@@ -535,6 +536,7 @@ fn run<B: ratatui::backend::Backend>(
         changed |= app.poll_browser();
         changed |= app.poll_log();
         changed |= app.poll_code_counts();
+        changed |= app.poll_activity(Instant::now());
         if changed {
             title.update(app)?;
             terminal.draw(|frame| ui::draw(frame, app))?;

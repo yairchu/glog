@@ -83,6 +83,10 @@ pub(crate) struct State {
 }
 
 impl State {
+    pub(crate) fn loading(&self) -> bool {
+        self.pending.is_some()
+    }
+
     pub(crate) fn poll(&mut self, rows: &mut [Commit], watch: bool) -> bool {
         if let Some(receiver) = &self.pending {
             match receiver.try_recv() {

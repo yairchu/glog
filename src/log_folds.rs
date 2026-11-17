@@ -315,7 +315,11 @@ impl LogFolds {
 
     /// Whether the choices wait for omitted history being read.
     pub fn reading(&self) -> bool {
-        self.view.pending && matches!(self.read, Read::Running(_))
+        self.view.pending && self.loading()
+    }
+
+    pub fn loading(&self) -> bool {
+        matches!(self.read, Read::Running(_))
     }
 
     /// Whether only the history of older revisions is read, as after a

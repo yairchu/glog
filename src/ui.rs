@@ -11,6 +11,7 @@ use ratatui::{
 };
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    app.images.begin_frame();
     app.type_buttons.clear();
     app.file_filter_buttons.clear();
     app.code_stats_button = None;
@@ -65,7 +66,8 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     let width = |label: &&str| label.len() as u16 + 2;
     let log_width = labels.first().map_or(0, width);
     let detail_width = labels.get(1).map_or(0, width);
-    let tab_width = labels.iter().map(|label| width(label) + 1).sum();
+    let tab_width: u16 = labels.iter().map(|label| width(label) + 1).sum();
+    let tab_width = tab_width.min(chunks[0].width);
     let tabs = Tabs::new(labels.to_vec())
         .select(selected)
         .style(header_style)
@@ -82,22 +84,38 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         format!(" glog {} ", app.context)
     };
     let live = app.watch || app.mode == Mode::Status;
-    let reserved = tab_width + if live { 8 } else { 0 };
-    let command_width =
-        (command.chars().count() as u16).min(chunks[0].width.saturating_sub(reserved));
+    let watch_width = if live {
+        8.min(chunks[0].width.saturating_sub(tab_width))
+    } else {
+        0
+    };
+    let activity = app.activity.text().unwrap_or("");
+    let activity_width = Span::raw(activity)
+        .width()
+        .min(chunks[0].width.saturating_sub(tab_width + watch_width) as usize)
+        as u16;
+    let reserved = tab_width + watch_width + activity_width;
+    let command_width = Span::raw(&command)
+        .width()
+        .min(chunks[0].width.saturating_sub(reserved) as usize) as u16;
     let header = Layout::horizontal([
         Constraint::Length(command_width),
         Constraint::Length(tab_width),
         Constraint::Min(0),
-        Constraint::Length(if live { 8 } else { 0 }),
+        Constraint::Length(activity_width),
+        Constraint::Length(watch_width),
     ])
     .split(chunks[0]);
     app.log_tab_start = header[1].x;
-    app.log_tab_end = header[1].x.saturating_add(log_width);
+    app.log_tab_end = header[1].x.saturating_add(log_width).min(header[1].right());
     app.show_tab_start = header[1]
         .x
-        .saturating_add(if has_log { log_width + 1 } else { 0 });
-    app.show_tab_end = app.show_tab_start.saturating_add(detail_width);
+        .saturating_add(if has_log { log_width + 1 } else { 0 })
+        .min(header[1].right());
+    app.show_tab_end = app
+        .show_tab_start
+        .saturating_add(detail_width)
+        .min(header[1].right());
     frame.render_widget(
         Paragraph::new(command).style(header_style.add_modifier(Modifier::BOLD)),
         header[0],
@@ -105,6 +123,10 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if has_log {
         frame.render_widget(tabs, header[1]);
     }
+    frame.render_widget(
+        Paragraph::new(activity).style(header_style.fg(Color::Yellow)),
+        header[3],
+    );
     if app.mode == Mode::Log && app.history == History::Log {
         draw_type_controls(frame, app, header[2]);
     } else if app.mode == Mode::Log && app.history == History::Bisect {
@@ -136,7 +158,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                     .fg(Color::LightGreen)
                     .add_modifier(Modifier::BOLD),
             ),
-            header[3],
+            header[4],
         );
     }
     match app.mode {
@@ -4032,6 +4054,46 @@ mod tests {
             .concat();
         assert!(header.contains("origin/main.. -- src/"));
         assert!(app.log_tab_start > 7);
+    }
+
+    #[test]
+    fn activity_header_preserves_tabs_and_watch_when_resized() {
+        use crate::activity::Task;
+        use std::time::{Duration, Instant};
+        let mut app = App::new(vec![commit("example", 1)]);
+        app.context = "log 界 -- a very long path with spaces".into();
+        app.watch = true;
+        let now = Instant::now();
+        app.activity.poll(&[Task::PullRequests, Task::History], now);
+        app.activity.poll(
+            &[Task::PullRequests, Task::History],
+            now + Duration::from_millis(200),
+        );
+        for width in 0..=80 {
+            let mut terminal = Terminal::new(TestBackend::new(width, 6)).unwrap();
+            terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+            let header: String = (0..width)
+                .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+                .collect();
+            assert!(app.log_tab_end <= width);
+            assert!(app.show_tab_end <= width);
+            if width >= 21 {
+                assert!(header.contains("Log"), "{width}: {header}");
+                assert!(header.contains("Show"), "{width}: {header}");
+                assert!(header.contains("WATCH"), "{width}: {header}");
+            }
+            if width >= 50 {
+                assert!(header.contains("Loading PRs… +1"), "{width}: {header}");
+            }
+        }
+        app.activity.poll(&[], now + Duration::from_secs(1));
+        let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+        terminal.draw(|frame| draw(frame, &mut app)).unwrap();
+        let header: String = (0..80)
+            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
+            .collect();
+        assert!(!header.contains("Loading PRs"));
+        assert!(header.contains("a very long path with spaces"));
     }
 }
 #[cfg(test)]
