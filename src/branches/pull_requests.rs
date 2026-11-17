@@ -169,22 +169,24 @@ fn remote_repository(repository: &Repository, remote: &str, push: bool) -> Optio
         .then(|| stored_url("pushurl"))
         .flatten()
         .or_else(|| stored_url("url"));
-    // Preserve GitHub identity when transport URLs are rewritten locally.
-    stored
+    let mut command = git::read_command_at(Some(repository));
+    command.args(["remote", "get-url"]);
+    if push {
+        command.arg("--push");
+    }
+    // Rewrites can change the GitHub repository, not just its transport.
+    command
+        .arg(remote)
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
         .and_then(|output| {
             git::github_repository_url(String::from_utf8_lossy(&output.stdout).trim())
         })
         .or_else(|| {
-            let mut command = git::read_command_at(Some(repository));
-            command.args(["remote", "get-url"]);
-            if push {
-                command.arg("--push");
-            }
-            let resolved = command.arg(remote).output().ok()?;
-            if !resolved.status.success() {
-                return None;
-            }
-            git::github_repository_url(String::from_utf8_lossy(&resolved.stdout).trim())
+            // Preserve the stored GitHub identity for local transport rewrites.
+            let stored = stored?;
+            git::github_repository_url(String::from_utf8_lossy(&stored.stdout).trim())
         })
 }
 
