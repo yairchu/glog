@@ -27,7 +27,8 @@ struct Config {
     push_default: String,
     push_remote: Option<String>,
     default_remote: String,
-    explicit_push: HashSet<String>,
+    explicit_push: HashMap<String, Vec<String>>,
+    fetch: HashMap<String, Vec<String>>,
     branches: HashMap<String, BranchConfig>,
 }
 
@@ -37,7 +38,7 @@ fn read_config(repository: Option<&Repository>) -> Result<Config, String> {
             "config",
             "--null",
             "--get-regexp",
-            r"^(branch\..*\.(remote|pushremote|merge)|push\.default|remote\.pushdefault|remote\..*\.push)$",
+            r"^(branch\..*\.(remote|pushremote|merge)|push\.default|remote\.pushdefault|remote\..*\.(push|fetch))$",
         ])
         .output()
         .map_err(|error| format!("could not read push configuration: {error}"))?;
@@ -69,7 +70,8 @@ fn read_config(repository: Option<&Repository>) -> Result<Config, String> {
         push_default: "simple".into(),
         push_remote: None,
         default_remote,
-        explicit_push: HashSet::new(),
+        explicit_push: HashMap::new(),
+        fetch: HashMap::new(),
         branches: HashMap::new(),
     };
     for entry in String::from_utf8_lossy(&output.stdout).split_terminator('\0') {
@@ -86,7 +88,22 @@ fn read_config(repository: Option<&Repository>) -> Result<Config, String> {
             .strip_prefix("remote.")
             .and_then(|key| key.strip_suffix(".push"))
         {
-            config.explicit_push.insert(remote.to_owned());
+            config
+                .explicit_push
+                .entry(remote.to_owned())
+                .or_default()
+                .push(value.into());
+            continue;
+        }
+        if let Some(remote) = key
+            .strip_prefix("remote.")
+            .and_then(|key| key.strip_suffix(".fetch"))
+        {
+            config
+                .fetch
+                .entry(remote.to_owned())
+                .or_default()
+                .push(value.into());
             continue;
         }
         let Some(key) = key.strip_prefix("branch.") else {
@@ -105,6 +122,98 @@ fn read_config(repository: Option<&Repository>) -> Result<Config, String> {
 
 fn non_empty(text: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_owned())
+}
+
+/// Map a full remote ref through its fetch refspec, including wildcard renames.
+fn tracking_ref(config: &Config, remote: &str, reference: &str) -> Option<String> {
+    config.fetch.get(remote)?.iter().find_map(|spec| {
+        let (source, destination) = spec.trim_start_matches('+').split_once(':')?;
+        if let Some((prefix, suffix)) = source.split_once('*') {
+            let matched = reference.strip_prefix(prefix)?.strip_suffix(suffix)?;
+            Some(destination.replacen('*', matched, 1))
+        } else {
+            (source == reference).then(|| destination.to_owned())
+        }
+    })
+}
+
+/// Git's push atoms only map fully qualified sources, and do not expand `:`.
+/// Resolve shorthand sources with Git so HEAD and ambiguous names obey its rules.
+fn fallback_target(
+    config: &Config,
+    remote: &str,
+    name: &str,
+    repository: Option<&Repository>,
+    sources: &mut HashMap<String, Option<String>>,
+    stored_refs: &mut Option<HashSet<String>>,
+) -> Option<Target> {
+    let local = format!("refs/heads/{name}");
+    for spec in config.explicit_push.get(remote)? {
+        let spec = spec.strip_prefix('+').unwrap_or(spec);
+        if spec == ":" {
+            let Some(tracking) = tracking_ref(config, remote, &local) else {
+                continue;
+            };
+            let refs = stored_refs.get_or_insert_with(|| {
+                git::read_command_at(repository)
+                    .args(["for-each-ref", "--format=%(refname)"])
+                    .output()
+                    .ok()
+                    .filter(|output| output.status.success())
+                    .map(|output| {
+                        String::from_utf8_lossy(&output.stdout)
+                            .lines()
+                            .map(str::to_owned)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            });
+            if refs.contains(&tracking) {
+                return Some(Target {
+                    remote: remote.to_owned(),
+                    branch: name.to_owned(),
+                    tracking: Some(tracking),
+                });
+            }
+            continue;
+        }
+        let (source, destination) = spec
+            .split_once(':')
+            .map_or((spec, None), |(source, destination)| {
+                (source, Some(destination))
+            });
+        if source.is_empty() || source.contains('*') {
+            continue;
+        }
+        let resolved = sources.entry(source.to_owned()).or_insert_with(|| {
+            let output = git::read_command_at(repository)
+                .args(["rev-parse", "--symbolic-full-name", "--verify", source])
+                .output()
+                .ok()?;
+            output
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+        });
+        if resolved.as_deref() != Some(&local) {
+            continue;
+        }
+        // With no destination, Git updates the source branch's full refname.
+        let destination = destination.unwrap_or(&local);
+        let destination = if destination.starts_with("refs/") {
+            destination.to_owned()
+        } else {
+            format!("refs/heads/{destination}")
+        };
+        if let Some(branch) = destination.strip_prefix("refs/heads/") {
+            return Some(Target {
+                remote: remote.to_owned(),
+                branch: branch.to_owned(),
+                tracking: tracking_ref(config, remote, &destination),
+            });
+        }
+    }
+    None
 }
 
 /// Push targets of local branches, keyed by branch name. Branches that a
@@ -133,6 +242,8 @@ pub(super) fn load(repository: Option<&Repository>) -> Result<HashMap<String, Ta
         ));
     }
     let mut targets = HashMap::new();
+    let mut sources = HashMap::new();
+    let mut stored_refs = None;
     for line in String::from_utf8_lossy(&output.stdout).lines() {
         let [name, push_tracking, upstream_tracking, push_ref] =
             line.split('\0').collect::<Vec<_>>()[..]
@@ -150,16 +261,26 @@ pub(super) fn load(repository: Option<&Repository>) -> Result<HashMap<String, Ta
             .unwrap_or(fetch_remote);
         // Explicit refspecs take precedence over push.default. Let Git map
         // force prefixes and wildcards, and omit branches they do not push.
-        if config.explicit_push.contains(remote) {
-            if let Some(destination) = push_ref.strip_prefix("refs/heads/") {
-                targets.insert(
-                    name.to_owned(),
-                    Target {
-                        remote: remote.to_owned(),
-                        branch: destination.to_owned(),
-                        tracking: non_empty(push_tracking),
-                    },
-                );
+        if config.explicit_push.contains_key(remote) {
+            let target = push_ref
+                .strip_prefix("refs/heads/")
+                .map(|destination| Target {
+                    remote: remote.to_owned(),
+                    branch: destination.to_owned(),
+                    tracking: non_empty(push_tracking),
+                })
+                .or_else(|| {
+                    fallback_target(
+                        &config,
+                        remote,
+                        name,
+                        repository,
+                        &mut sources,
+                        &mut stored_refs,
+                    )
+                });
+            if let Some(target) = target {
+                targets.insert(name.to_owned(), target);
             }
             continue;
         }
