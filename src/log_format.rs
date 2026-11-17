@@ -250,16 +250,18 @@ impl LogFormat {
         hash_style: Style,
         fixup: Option<&crate::fixups::Label>,
     ) -> Row {
-        let spans = match &commit.annotation {
+        let (spans, urls) = match &commit.annotation {
             None => return self.commit_row(commit, columns, hash_style, fixup),
             Some(Annotation::Reflog(_)) => {
                 return self.commit_row(commit, columns, hash_style, None)
             }
-            Some(Annotation::Stash(entry)) => crate::stash::spans(commit, entry, self),
+            Some(Annotation::Stash(entry)) => {
+                (crate::stash::spans(commit, entry, self), Vec::new())
+            }
             Some(Annotation::Blame(line)) => {
                 return crate::blame::row(commit, line, line.starts_chunk, self);
             }
-            Some(Annotation::Branch(node)) => return crate::branches::row(commit, node, self),
+            Some(Annotation::Branch(node)) => crate::branches::spans(commit, node, self),
             Some(Annotation::Bisect(entry)) => {
                 let mut row = self.commit_row(commit, columns, hash_style, None);
                 let prefix = crate::bisect::prefix(
@@ -283,7 +285,7 @@ impl LogFormat {
             spans,
             stand_ins,
             links: Vec::new(),
-            urls: Vec::new(),
+            urls,
         }
     }
 

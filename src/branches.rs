@@ -88,7 +88,7 @@ pub fn summary(app: &App) -> Vec<Line<'static>> {
             if part + 1 == graph.len() {
                 if let Some(node) = commit.branch() {
                     line = node.style_graph(line, commit.graph_node, false);
-                    line.spans.extend(spans(commit, node, &app.log_format));
+                    line.spans.extend(spans(commit, node, &app.log_format).0);
                 }
             }
             lines.push(line);
@@ -902,19 +902,12 @@ fn latest_update(branches: &[Branch], hash: &str, date: &str) -> Result<Option<S
     Ok(updated)
 }
 
+/// A branch row's text, with the byte ranges of its clickable PR badges.
 pub fn spans(
     commit: &Commit,
     node: &BranchNode,
     format: &crate::log_format::LogFormat,
-) -> Vec<Span<'static>> {
-    row(commit, node, format).spans
-}
-
-pub fn row(
-    commit: &Commit,
-    node: &BranchNode,
-    format: &crate::log_format::LogFormat,
-) -> crate::log_format::Row {
+) -> (Vec<Span<'static>>, Vec<(std::ops::Range<usize>, String)>) {
     use crate::log_format::{field_span, pad, Field};
     let mut spans = Vec::new();
     let mut urls = Vec::new();
@@ -982,14 +975,7 @@ pub fn row(
             }
         }
     }
-    let mut stand_ins = crate::ui::StandIns::default();
-    stand_ins.push_undrawn(commit.hash.clone());
-    crate::log_format::Row {
-        spans,
-        stand_ins,
-        links: Vec::new(),
-        urls,
-    }
+    (spans, urls)
 }
 
 #[cfg(test)]
