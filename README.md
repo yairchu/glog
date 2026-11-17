@@ -23,8 +23,8 @@ Install the `glog-tui` package from crates.io; the executable is named `glog`:
 cargo install glog-tui
 ```
 
-Use `glog --help` for command-line help and `glog --version` to print the
-installed version.
+Use `glog --help` for an overview, `glog <command> --help` for command details,
+and `glog --version` to print the installed version.
 
 ### Oh My Zsh
 

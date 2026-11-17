@@ -7,6 +7,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Show a concise command overview with `glog --help` and command-specific
+  options and details with `glog <command> --help`, including nested commands
+  such as `glog stash show --help` and `glog bisect log --help`.
+
 - Press `r` or click the Range-diff button in Branches to compare the selected
   branch with its stored remote counterpart when their tips differ. Resolve the
   remote series by replacing the local tip in the branch graph, preserving
