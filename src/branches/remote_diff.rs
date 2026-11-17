@@ -14,6 +14,41 @@ use crate::{
 pub(super) struct Counterpart {
     pub name: String,
     pub hash: String,
+    pub linear: bool,
+}
+
+// Resolve availability from the same pinned ancestry as the picker, including
+// counterparts that are not themselves displayed as branch tips.
+pub(super) fn mark_linear_counterparts(
+    graph: &crate::compact_graph::Graph,
+    tips: &mut HashMap<String, Vec<Branch>>,
+) {
+    for (hash, branches) in tips {
+        for remote in branches
+            .iter_mut()
+            .filter_map(|branch| branch.counterpart.as_mut())
+        {
+            let (Some(&local), Some(&other)) =
+                (graph.indices.get(hash), graph.indices.get(&remote.hash))
+            else {
+                continue;
+            };
+            // Topological order puts descendants before their ancestors.
+            let (start, target) = (local.min(other), local.max(other));
+            let mut todo = vec![start];
+            let mut seen = std::collections::HashSet::new();
+            remote.linear = false;
+            while let Some(index) = todo.pop() {
+                if index == target {
+                    remote.linear = true;
+                    break;
+                }
+                if index < target && seen.insert(index) {
+                    todo.extend(graph.nodes[index].parents.iter().copied());
+                }
+            }
+        }
+    }
 }
 
 struct Range {
@@ -339,11 +374,11 @@ mod tests {
     }
 
     #[test]
-    fn ahead_and_behind_counterparts_do_not_truncate_the_commit_series() {
+    fn ahead_and_behind_counterparts_hide_and_reject_the_action() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         init();
-        let base = commit("base.txt", "base");
+        commit("base.txt", "base");
         git(&["checkout", "-qb", "topic"]);
         let first = commit("first.txt", "first");
         let second = commit("second.txt", "second");
@@ -353,17 +388,25 @@ mod tests {
             git(&["update-ref", "refs/remotes/origin/topic", remote]);
             let mut app = super::super::load_picker().unwrap();
             select(&mut app, "topic");
-            let plan = request(&app);
-            assert_eq!(plan.local.base, base);
-            assert_eq!(
-                plan.remote_range(&Repository::main().unwrap(), &git::Cancel::default())
-                    .unwrap()
-                    .base,
-                base
-            );
+            let mut terminal = Terminal::new(TestBackend::new(130, 12)).unwrap();
+            terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+            assert!(app.branch_diff_button.is_none());
+            let screen: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(!screen.contains("remote range-diff"));
             press(&mut app, KeyCode::Char('r'));
-            wait(&mut app);
-            press(&mut app, KeyCode::Esc);
+            assert!(app
+                .status
+                .as_deref()
+                .unwrap()
+                .contains("no diverged history"));
+            assert!(!app.poll_branch_diff());
+            assert_eq!(app.history, History::Branches);
         }
     }
 
@@ -376,6 +419,10 @@ mod tests {
         git(&["checkout", "-qb", "topic"]);
         let first = commit("first.txt", "first");
         let second = commit("second.txt", "second");
+        git(&["checkout", "-qb", "old-topic", &first]);
+        let remote = commit("remote.txt", "remote");
+        git(&["checkout", "-q", "topic"]);
+        git(&["branch", "-D", "old-topic"]);
         git(&["update-ref", "refs/remotes/origin/topic", &second]);
         let mut app = super::super::load_picker().unwrap();
         select(&mut app, "topic");
@@ -404,7 +451,7 @@ mod tests {
         );
         assert_eq!(app.history, History::Branches);
 
-        git(&["update-ref", "refs/remotes/origin/topic", &first]);
+        git(&["update-ref", "refs/remotes/origin/topic", &remote]);
         app.commits = super::super::load_watched(&[]).unwrap();
         app.status = None;
         select(&mut app, "topic");
@@ -437,10 +484,13 @@ mod tests {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         init();
-        let base = commit("base.txt", "base");
+        commit("base.txt", "base");
         git(&["checkout", "-qb", "topic"]);
         let tip = commit("topic.txt", "topic");
-        git(&["update-ref", "refs/remotes/origin/topic", &base]);
+        git(&["checkout", "-q", "main"]);
+        let remote = commit("remote.txt", "remote");
+        git(&["checkout", "-q", "topic"]);
+        git(&["update-ref", "refs/remotes/origin/topic", &remote]);
         git(&[
             "remote",
             "add",
@@ -475,7 +525,7 @@ mod tests {
             "remote.upstream.fetch",
             "+refs/heads/*:refs/remotes/upstream/*",
         ]);
-        git(&["update-ref", "refs/remotes/upstream/topic", &base]);
+        git(&["update-ref", "refs/remotes/upstream/topic", &remote]);
         app.commits = super::super::load_watched(&[]).unwrap();
         select(&mut app, "topic");
         assert_eq!(
@@ -494,7 +544,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_upstreams_and_unresolved_bases_leave_the_picker_intact() {
+    fn missing_upstreams_and_linear_histories_leave_the_picker_intact() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         init();
@@ -525,7 +575,7 @@ mod tests {
             .status
             .as_deref()
             .unwrap()
-            .contains("Cannot resolve a single branching point"));
+            .contains("no diverged history"));
         assert_eq!(app.history, History::Branches);
     }
 }

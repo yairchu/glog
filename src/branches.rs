@@ -44,6 +44,12 @@ impl Branch {
         if remote.hash == local_hash {
             return Err(format!("{} already matches {}", self.name, remote.name));
         }
+        if remote.linear {
+            return Err(format!(
+                "{} and {} have no diverged history to compare",
+                self.name, remote.name
+            ));
+        }
         Ok(&remote.name)
     }
     /// Local and remote branches can share a name.
@@ -239,6 +245,7 @@ fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
             .map(|(remote, hash)| remote_diff::Counterpart {
                 name: remote.strip_prefix("refs/remotes/").unwrap().to_owned(),
                 hash: (*hash).to_owned(),
+                linear: false,
             });
         let branch = Branch {
             name: name.into(),
@@ -296,7 +303,17 @@ fn compact_tips(
     primary: Option<&str>,
 ) -> Result<Vec<Commit>, String> {
     compact(
-        &read_ancestry(tips.keys().cloned().collect())?,
+        &read_ancestry(
+            tips.keys()
+                .cloned()
+                .chain(tips.values().flatten().filter_map(|branch| {
+                    branch
+                        .counterpart
+                        .as_ref()
+                        .map(|remote| remote.hash.clone())
+                }))
+                .collect(),
+        )?,
         tips,
         primary,
     )
@@ -316,6 +333,7 @@ fn read_ancestry_at(
     }
     // Pin the refs before traversal so concurrent changes cannot mix snapshots.
     hashes.sort();
+    hashes.dedup();
     let mut input = hashes.join("\n") + "\n";
     for base in history_cutoffs_at(&hashes, repository) {
         input += &format!("^{base}^@\n");
@@ -570,6 +588,7 @@ fn compact(
     primary: Option<&str>,
 ) -> Result<Vec<Commit>, String> {
     let graph = std::sync::Arc::new(crate::compact_graph::Graph::parse(ancestry)?);
+    remote_diff::mark_linear_counterparts(&graph, &mut tips);
     let similarity_source = similarity::Source::new(graph.clone(), &tips);
     let nodes = &graph.nodes;
     let indices = &graph.indices;
