@@ -564,9 +564,92 @@ mod tests {
                 .iter()
                 .filter(|pr| pr["headRefName"] == *branch)
                 .collect();
-            repository[format!("h{index}")] = json!({ "nodes": nodes });
+            repository[format!("h{index}")] =
+                json!({ "nodes": nodes, "pageInfo": { "hasNextPage": false, "endCursor": null } });
         }
         serde_json::to_vec(&json!({ "data": { "repository": repository } })).unwrap()
+    }
+
+    #[test]
+    fn pr_connections_follow_all_pages_without_reloading_finished_branches() {
+        let mut calls = 0;
+        let (_, prs) = base_pull_requests(
+            "https://github.com/base/repo",
+            &["done", "main"],
+            &mut |_, branches| {
+                calls += 1;
+                let (nodes, next) = match calls {
+                    1 => {
+                        assert_eq!(branches, &["done", "main"]);
+                        let mut nodes: Vec<_> = (1..100)
+                            .map(|n| pr(n, "other/repo", "main", "OPEN", false))
+                            .collect();
+                        nodes.push(pr(100, "me/repo", "main", "CLOSED", false));
+                        (nodes, Some("first-page"))
+                    }
+                    2 => {
+                        assert_eq!(branches, &["main"]);
+                        let mut nodes: Vec<_> = (101..200)
+                            .map(|n| pr(n, "other/repo", "main", "OPEN", false))
+                            .collect();
+                        nodes.push(pr(200, "me/repo", "main", "MERGED", false));
+                        (nodes, Some("second-page"))
+                    }
+                    3 => {
+                        assert_eq!(branches, &["main"]);
+                        (vec![pr(201, "me/repo", "main", "OPEN", true)], None)
+                    }
+                    _ => panic!("unexpected extra page"),
+                };
+                let mut page: serde_json::Value =
+                    serde_json::from_slice(&response("base/repo", branches, &nodes)).unwrap();
+                let index = branches
+                    .iter()
+                    .position(|branch| *branch == "main")
+                    .unwrap();
+                page["data"]["repository"][format!("h{index}")]["pageInfo"] = json!({
+                    "hasNextPage": next.is_some(), "endCursor": next
+                });
+                Some(serde_json::to_vec(&page).unwrap())
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            best_match(&prs, "main", "me/repo").unwrap().label(),
+            "#201 draft"
+        );
+        assert_eq!(calls, 3);
+        assert_eq!(prs.len(), 201);
+    }
+
+    #[test]
+    fn a_failed_pr_page_does_not_publish_partial_badges() {
+        let mut calls = 0;
+        let result = base_pull_requests(
+            "https://github.com/base/repo",
+            &["main"],
+            &mut |_, branches| {
+                calls += 1;
+                if calls > 1 {
+                    return None;
+                }
+                let mut page: serde_json::Value = serde_json::from_slice(&response(
+                    "base/repo",
+                    branches,
+                    &[pr(1, "me/repo", "main", "CLOSED", false)],
+                ))
+                .unwrap();
+                page["data"]["repository"]["h0"]["pageInfo"] = json!({
+                    "hasNextPage": true, "endCursor": "first-page"
+                });
+                Some(serde_json::to_vec(&page).unwrap())
+            },
+        );
+        assert!(
+            result.is_none(),
+            "an incomplete response must not look like a complete lookup"
+        );
+        assert_eq!(calls, 2);
     }
 
     #[test]

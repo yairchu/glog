@@ -221,6 +221,52 @@ mod tests {
         time::{Duration, Instant},
     };
 
+    #[test]
+    fn a_distinct_push_repository_does_not_use_the_fetch_tracking_ref() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        init();
+        commit("base.txt", "base");
+        git(&["checkout", "-qb", "topic"]);
+        commit("local.txt", "local");
+        git(&["checkout", "-qb", "temporary", "main"]);
+        let fetch_tip = commit("upstream.txt", "fetch repository only");
+        git(&["checkout", "-q", "topic"]);
+        git(&["branch", "-D", "temporary"]);
+        git(&["config", "push.default", "current"]);
+        git(&[
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/upstream/repo.git",
+        ]);
+        git(&[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "git@github.com:fork/repo.git",
+        ]);
+        git(&["update-ref", "refs/remotes/origin/topic", &fetch_tip]);
+
+        let mut app = super::super::load_picker().unwrap();
+        select(&mut app, "topic");
+        assert!(
+            app.selected_branch_for_diff().is_err(),
+            "upstream's fetched topic does not identify the fork's pushed topic"
+        );
+        let mut terminal = Terminal::new(TestBackend::new(120, 10)).unwrap();
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        assert!(app.branch_diff_button.is_none());
+        press(&mut app, KeyCode::Char('r'));
+        assert_eq!(app.history, History::Branches);
+        assert!(app
+            .status
+            .as_deref()
+            .unwrap()
+            .contains("No stored remote counterpart"));
+    }
+
     fn init() {
         git(&["init", "-qb", "main"]);
         git(&["config", "user.name", "Test"]);
