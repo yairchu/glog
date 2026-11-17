@@ -193,6 +193,8 @@ fn parse_args(args: &[String]) -> Result<(bool, Option<String>), String> {
 }
 
 fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
+    // Push targets only annotate branches; listing them must not depend on it.
+    let push_targets = push_target::load(None).unwrap_or_default();
     let output = git::read_command()
         .args([
             "for-each-ref",
@@ -202,8 +204,12 @@ fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
             "--format=%(if)%(*objectname)%(then)%(*objectname)%(else)%(objectname)%(end)\
               %00%(refname)%00%(HEAD)",
             "refs/heads/",
-            "refs/remotes/",
         ])
+        .args(
+            push_targets
+                .values()
+                .filter_map(|target| target.tracking.as_deref()),
+        )
         .output()
         .map_err(|error| format!("could not list branches: {error}"))?;
     if !output.status.success() {
@@ -212,23 +218,19 @@ fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
             &output.stderr,
         ));
     }
-    // Push targets only annotate branches; listing them must not depend on it.
-    let push_targets = push_target::load(None).unwrap_or_default();
     let mut tips: HashMap<String, Vec<Branch>> = HashMap::new();
     let text = String::from_utf8_lossy(&output.stdout);
     let records: Vec<_> = text
         .lines()
         .map(|line| line.split('\0').collect::<Vec<_>>())
         .collect();
-    let remotes: HashMap<_, _> = records
+    let stored_refs: HashMap<_, _> = records
         .iter()
         .filter_map(|fields| {
             let [hash, reference, _] = fields.as_slice() else {
                 return None;
             };
-            reference
-                .starts_with("refs/remotes/")
-                .then_some((*reference, *hash))
+            Some((*reference, *hash))
         })
         .collect();
     for fields in &records {
@@ -241,9 +243,12 @@ fn local_tips() -> Result<HashMap<String, Vec<Branch>>, String> {
         let counterpart = push_targets
             .get(name)
             .and_then(|target| target.tracking.as_deref())
-            .and_then(|remote| Some((remote, *remotes.get(remote)?)))
+            .and_then(|remote| Some((remote, *stored_refs.get(remote)?)))
             .map(|(remote, hash)| remote_diff::Counterpart {
-                name: remote.strip_prefix("refs/remotes/").unwrap().to_owned(),
+                name: remote
+                    .strip_prefix("refs/remotes/")
+                    .unwrap_or(remote)
+                    .to_owned(),
                 hash: (*hash).to_owned(),
                 linear: false,
             });

@@ -151,7 +151,44 @@ pub(crate) fn selected_url(commit: &Commit) -> Option<String> {
         })
 }
 
-fn remotes(repository: &Repository) -> Option<HashMap<String, String>> {
+struct Remote {
+    fetch: Option<String>,
+    push: Option<String>,
+}
+
+fn remote_repository(repository: &Repository, remote: &str, push: bool) -> Option<String> {
+    let stored_url = |key| {
+        git::read_command_at(Some(repository))
+            .args(["config", "--get", &format!("remote.{remote}.{key}")])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+    };
+    // An explicit non-GitHub push URL must not inherit the fetch identity.
+    let stored = push
+        .then(|| stored_url("pushurl"))
+        .flatten()
+        .or_else(|| stored_url("url"));
+    // Preserve GitHub identity when transport URLs are rewritten locally.
+    stored
+        .and_then(|output| {
+            git::github_repository_url(String::from_utf8_lossy(&output.stdout).trim())
+        })
+        .or_else(|| {
+            let mut command = git::read_command_at(Some(repository));
+            command.args(["remote", "get-url"]);
+            if push {
+                command.arg("--push");
+            }
+            let resolved = command.arg(remote).output().ok()?;
+            if !resolved.status.success() {
+                return None;
+            }
+            git::github_repository_url(String::from_utf8_lossy(&resolved.stdout).trim())
+        })
+}
+
+fn remotes(repository: &Repository) -> Option<HashMap<String, Remote>> {
     let output = git::read_command_at(Some(repository))
         .args(["remote"])
         .output()
@@ -159,37 +196,32 @@ fn remotes(repository: &Repository) -> Option<HashMap<String, String>> {
     if !output.status.success() {
         return None;
     }
-    let mut remotes = HashMap::new();
-    for remote in String::from_utf8(output.stdout).ok()?.lines() {
-        // Preserve GitHub identity when transport URLs are rewritten locally.
-        let stored = git::read_command_at(Some(repository))
-            .args(["config", "--get", &format!("remote.{remote}.url")])
-            .output()
-            .ok()?;
-        let url = git::github_repository_url(String::from_utf8_lossy(&stored.stdout).trim())
-            .or_else(|| {
-                let resolved = git::read_command_at(Some(repository))
-                    .args(["remote", "get-url", remote])
-                    .output()
-                    .ok()?;
-                git::github_repository_url(String::from_utf8_lossy(&resolved.stdout).trim())
-            });
-        if let Some(url) = url {
-            remotes.insert(remote.to_owned(), url);
-        }
-    }
-    Some(remotes)
+    Some(
+        String::from_utf8(output.stdout)
+            .ok()?
+            .lines()
+            .map(|remote| {
+                (
+                    remote.to_owned(),
+                    Remote {
+                        fetch: remote_repository(repository, remote, false),
+                        push: remote_repository(repository, remote, true),
+                    },
+                )
+            })
+            .collect(),
+    )
 }
 
 fn heads(
     repository: &Repository,
-    remotes: &HashMap<String, String>,
+    remotes: &HashMap<String, Remote>,
 ) -> Option<HashMap<String, Head>> {
     let heads = super::push_target::load(Some(repository))
         .ok()?
         .into_iter()
         .filter_map(|(local, target)| {
-            let repository = remotes.get(&target.remote)?.clone();
+            let repository = remotes.get(&target.remote)?.push.clone()?;
             Some((
                 local,
                 Head {
@@ -338,7 +370,11 @@ fn load_with(
     // (origin) into its upstream. Verify the head repository, not just its name.
     let mut canonical = HashMap::new();
     let mut prs = Vec::new();
-    for base in remotes.values().collect::<BTreeSet<_>>() {
+    for base in remotes
+        .values()
+        .flat_map(|remote| remote.fetch.iter().chain(remote.push.iter()))
+        .collect::<BTreeSet<_>>()
+    {
         // An inaccessible remote must not hide another remote's PRs.
         if let Some((name, found)) = base_pull_requests(base, &branches, &mut query) {
             canonical.insert(base.to_ascii_lowercase(), name);
