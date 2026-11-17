@@ -3567,6 +3567,7 @@ impl App {
         self.hand_over(&mut target);
         target.rebuild_show_rows();
         let mut origin = std::mem::replace(self, target);
+        origin.suspend();
         // Keep the views behind a chain of references small. Returning
         // restores the displayed text; only other commits reload.
         origin.cache.clear();
@@ -3631,6 +3632,13 @@ impl App {
             }
             self.redraw = true;
         }
+    }
+
+    /// Saved views are not polled, so a request they started would otherwise
+    /// complete unseen and take over the view when the user returns to it.
+    fn suspend(&mut self) {
+        self.cancel_branch_diff();
+        self.cancel_github_file();
     }
 
     /// Move state that belongs to the session, rather than to a view, into the
@@ -3722,7 +3730,8 @@ impl App {
         target.exit_on_esc = self.exit_on_esc;
         self.hand_over(&mut target);
         let previous = std::mem::replace(&mut target.views.active, view);
-        let origin = std::mem::replace(self, target);
+        let mut origin = std::mem::replace(self, target);
+        origin.suspend();
         self.views.saved.insert(previous, Box::new(origin));
         if let Some(status) = &mut self.status_view {
             status.enable_images(self.images.enabled);

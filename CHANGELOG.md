@@ -31,6 +31,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
   using `gh` authentication. Click a badge or press `e` to open a branch's PR.
   Badges load in the background and refresh once a minute while watching.
 
+### Fixed
+
+- Switching views while a GitHub search result is loading no longer opens the
+  file later on return.
+
 ## 0.11.0 - 2026-11-16
 
 ### Added
