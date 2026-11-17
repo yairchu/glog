@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 pub enum Task {
     GithubFile,
     PullRequests,
+    PatchMatches,
     CodeStats,
     History,
     BranchConnections,
@@ -17,6 +18,7 @@ impl Task {
         match self {
             Self::GithubFile => "Loading GitHub file…",
             Self::PullRequests => "Loading PRs…",
+            Self::PatchMatches => "Comparing patches…",
             Self::CodeStats => "Counting code…",
             Self::History => "Reading history…",
             Self::BranchConnections => "Reading branch connections…",

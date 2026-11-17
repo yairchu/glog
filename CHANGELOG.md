@@ -7,6 +7,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Show compact patch-equivalence summaries in Branches, such as “4 equivalent
+  patches across 2 other branches”. Comparisons run in the background, reuse
+  fingerprints during watch refreshes, and exclude shared ancestry, merge
+  commits, and empty commits.
+
 - Show a shared activity indicator in the top bar for background PR lookups,
   GitHub files, code statistics, history reads, image previews, and browser
   launches. Brief tasks stay quiet; longer tasks show an animated label scoped

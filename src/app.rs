@@ -278,6 +278,7 @@ pub struct App {
     pub github_file_view: Option<crate::github_search::FileView>,
     pending_github_file: Option<crate::github_search::Pending>,
     pub(crate) branch_pull_requests: crate::branches::pull_requests::State,
+    pub(crate) branch_similarity: crate::branches::similarity::State,
     pub commits: Vec<Commit>,
     pending_interchanges: Option<git::interchanges::Pending>,
     /// The last completed marker read, kept so refreshes need not flicker.
@@ -401,6 +402,7 @@ impl App {
             github_file_view: None,
             pending_github_file: None,
             branch_pull_requests: Default::default(),
+            branch_similarity: Default::default(),
             pending_interchanges: interchanges,
             interchanges: None,
             history: match commits
@@ -1288,6 +1290,9 @@ impl App {
         }
         if self.history == History::Branches && self.branch_pull_requests.loading() {
             tasks.push(Task::PullRequests);
+        }
+        if self.history == History::Branches && self.branch_similarity.loading() {
+            tasks.push(Task::PatchMatches);
         }
         let counting = match self.mode {
             Mode::Show => self.code_stats && self.counting_code(),

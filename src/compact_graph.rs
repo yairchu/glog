@@ -1,11 +1,13 @@
 //! Shared ancestry projection for compact graphs and expandable connections.
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct Node {
     pub hash: String,
     pub parents: Vec<usize>,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub struct Graph {
     pub nodes: Vec<Node>,
     pub indices: HashMap<String, usize>,

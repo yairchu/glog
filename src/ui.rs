@@ -742,6 +742,14 @@ const HELP_ROWS: &[HelpRow] = &[
     branches("", "  Branches at the same commit share a node."),
     branches(
         "",
+        "  Patch summaries count distinct equivalent patches on shown branches.",
+    ),
+    branches(
+        "",
+        "  Shared commits, merges, and empty commits do not count.",
+    ),
+    branches(
+        "",
         "  PR badges load using gh authentication; click a badge or e to open.",
     ),
     branches(

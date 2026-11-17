@@ -1,5 +1,5 @@
 use std::{
-    collections::{hash_map::DefaultHasher, HashSet},
+    collections::{hash_map::DefaultHasher, HashMap, HashSet},
     env, fs,
     hash::Hasher,
     io::{Read, Write},
@@ -690,6 +690,9 @@ struct Cancelled {
 }
 
 impl Cancel {
+    pub(crate) fn is_cancelled(&self) -> bool {
+        self.0.lock().unwrap().cancelled
+    }
     pub fn cancel(&self) {
         let mut state = self.0.lock().unwrap();
         state.cancelled = true;
@@ -2250,6 +2253,86 @@ pub(crate) fn run_delta(input: &[u8]) -> Option<String> {
 
 pub(crate) fn pipe_through(command: &mut Command, input: &[u8]) -> Option<String> {
     pipe_through_bytes(command, input).map(|output| String::from_utf8_lossy(&output).into_owned())
+}
+
+/// Stream canonical patches into patch-id without keeping diff contents in
+/// memory. Each process is cancellable when its branch snapshot is replaced.
+pub(crate) fn patch_ids(
+    repository: &Repository,
+    hashes: &[String],
+    cancel: &[Cancel; 2],
+) -> Option<HashMap<String, String>> {
+    use std::collections::HashMap;
+    if hashes.is_empty() {
+        return Some(HashMap::new());
+    }
+    let input = hashes.join("\n") + "\n";
+    let mut diff = read_command_at(Some(repository))
+        .args([
+            "-c",
+            "core.quotePath=true",
+            "diff-tree",
+            "--stdin",
+            "--root",
+            "-p",
+            "--no-renames",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-color",
+            "--full-index",
+            "--binary",
+            "--diff-algorithm=myers",
+            "--no-indent-heuristic",
+            "--unified=3",
+            "--inter-hunk-context=0",
+            "--ignore-submodules=none",
+            "--submodule=short",
+            "--output-indicator-new=+",
+            "--output-indicator-old=-",
+            "--output-indicator-context= ",
+        ])
+        .args(DIFF_PREFIX_ARGS)
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let mut stdin = diff.stdin.take()?;
+    let stdout = diff.stdout.take()?;
+    cancel[0].register(diff);
+    let output = std::thread::scope(|scope| {
+        let writer = scope.spawn(move || stdin.write_all(input.as_bytes()));
+        let read = (|| {
+            let mut patch = read_command_at(Some(repository))
+                .args(["-c", "patchid.verbatim=false", "patch-id", "--stable"])
+                .stdin(stdout)
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .ok()?;
+            let mut output = patch.stdout.take()?;
+            cancel[1].register(patch);
+            let mut text = String::new();
+            output.read_to_string(&mut text).ok()?;
+            cancel[1].take()?.wait().ok()?.success().then_some(text)
+        })();
+        if read.is_none() {
+            cancel[0].cancel();
+        }
+        let success = cancel[0]
+            .take()
+            .and_then(|mut child| child.wait().ok())
+            .is_some_and(|status| status.success());
+        let written = matches!(writer.join(), Ok(Ok(())));
+        (success && written).then_some(read).flatten()
+    })?;
+    let mut ids = HashMap::new();
+    for line in output.lines() {
+        let (patch, hash) = line.split_once(' ')?;
+        ids.insert(hash.to_owned(), patch.to_owned());
+    }
+    Some(ids)
 }
 
 pub(crate) fn pipe_through_bytes(command: &mut Command, input: &[u8]) -> Option<Vec<u8>> {

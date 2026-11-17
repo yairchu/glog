@@ -12,6 +12,7 @@ use crate::{
 };
 
 pub(crate) mod pull_requests;
+pub(crate) mod similarity;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BranchKind {
@@ -43,6 +44,8 @@ pub struct BranchNode {
     updated_at: Option<String>,
     update_width: usize,
     pull_requests: Vec<(String, pull_requests::Badge)>,
+    similarity_source: Option<std::sync::Arc<similarity::Source>>,
+    similarity: Option<similarity::Summary>,
 }
 
 pub enum Launch {
@@ -488,7 +491,8 @@ fn compact(
     mut tips: HashMap<String, Vec<Branch>>,
     primary: Option<&str>,
 ) -> Result<Vec<Commit>, String> {
-    let graph = crate::compact_graph::Graph::parse(ancestry)?;
+    let graph = std::sync::Arc::new(crate::compact_graph::Graph::parse(ancestry)?);
+    let similarity_source = similarity::Source::new(graph.clone(), &tips);
     let nodes = &graph.nodes;
     let indices = &graph.indices;
     let tip_indices = tips
@@ -578,6 +582,8 @@ fn compact(
                     updated_at: None,
                     update_width: 0,
                     pull_requests: Vec::new(),
+                    similarity_source: similarity_source.clone(),
+                    similarity: None,
                 })),
                 hash: node.hash.clone(),
                 short_hash: node.hash[..node.hash.len().min(7)].into(),
@@ -823,6 +829,12 @@ pub fn row(
             Style::default()
                 .fg(badge.color())
                 .add_modifier(Modifier::UNDERLINED),
+        ));
+    }
+    if let Some(summary) = &node.similarity {
+        spans.push(Span::styled(
+            format!(" · {}", summary.label()),
+            Style::default().fg(Color::Gray),
         ));
     }
     if node.merged() {

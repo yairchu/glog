@@ -532,6 +532,7 @@ fn run<B: ratatui::backend::Backend>(
         changed |= app.poll_github_file();
         if app.history == app::History::Branches {
             changed |= app.branch_pull_requests.poll(&mut app.commits, app.watch);
+            changed |= app.branch_similarity.poll(&mut app.commits);
         }
         changed |= app.poll_browser();
         changed |= app.poll_log();
