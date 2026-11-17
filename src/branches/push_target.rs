@@ -491,6 +491,31 @@ mod tests {
         }
     }
 
+    #[test]
+    fn matching_push_default_excludes_branches_missing_from_the_remote() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        init_push_remote();
+        git(&["config", "push.default", "matching"]);
+        for namespace in ["refs/remotes/origin", "refs/vendor"] {
+            git(&[
+                "config",
+                "remote.origin.fetch",
+                &format!("+refs/heads/*:{namespace}/*"),
+            ]);
+            git(&["fetch", "-q", "origin"]);
+            let pushed = git(&["push", "--dry-run", "--porcelain"]);
+            assert!(pushed.contains("refs/heads/main:refs/heads/main"));
+            assert!(!pushed.contains("refs/heads/excluded"));
+            let targets = load(None).unwrap();
+            assert_eq!(
+                targets.get("main").cloned(),
+                target("origin", "main", Some(&format!("{namespace}/main")))
+            );
+            assert_eq!(targets.get("excluded"), None, "{namespace}");
+        }
+    }
+
     fn init_push_remote() {
         init("origin");
         git(&["init", "--bare", "-q", "remote.git"]);

@@ -707,6 +707,51 @@ mod tests {
     }
 
     #[test]
+    fn github_url_rewrites_match_prs_from_the_effective_push_repository() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "topic"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "base",
+        ]);
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/base/repo.git",
+        ]);
+        let repository = Repository::main().unwrap();
+        for mode in ["pushInsteadOf", "insteadOf"] {
+            let key = format!("url.https://github.com/me/repo.git.{mode}");
+            git(&["config", &key, "https://github.com/base/repo.git"]);
+            assert_eq!(
+                git(&["remote", "get-url", "--push", "origin"]),
+                "https://github.com/me/repo.git"
+            );
+            let badges = load_with(&repository, |base, branches, _| {
+                Some(response(
+                    owner_and_name(base).unwrap(),
+                    branches,
+                    &[
+                        pr(10, "me/repo", "topic", "OPEN", false),
+                        pr(20, "base/repo", "topic", "OPEN", false),
+                    ],
+                ))
+            })
+            .unwrap();
+            assert_eq!(badges["topic"].label(), "#10 open", "{mode}");
+            git(&["config", "--unset", &key]);
+        }
+    }
+
+    #[test]
     fn push_urls_match_fork_prs_without_losing_fetch_bases() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
