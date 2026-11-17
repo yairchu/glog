@@ -166,13 +166,18 @@ fn compare(
             parents[0].extend(children[index].iter().copied());
         }
     }
-    // Common ancestry cannot supply a match absent from another branch.
+    // Common ancestry cannot supply a match absent from another branch, and
+    // commits only remote counterparts reach supply none to any branch.
     // Merge patches and empty commits do not have a single comparable change.
     let candidates: Vec<_> = graph
         .nodes
         .iter()
         .enumerate()
-        .filter(|(index, node)| node.parents.len() < 2 && owners[*index].len() < source.tips.len())
+        .filter(|(index, node)| {
+            node.parents.len() < 2
+                && !owners[*index].is_empty()
+                && owners[*index].len() < source.tips.len()
+        })
         .map(|(index, _)| index)
         .collect();
     let missing: Vec<_> = candidates
