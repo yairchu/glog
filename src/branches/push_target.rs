@@ -238,6 +238,95 @@ mod tests {
     }
 
     #[test]
+    fn shorthand_push_refspecs_resolve_branch_destinations() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        init_push_remote();
+        for spec in [
+            "main:published",
+            "+main:published",
+            "main:refs/heads/published",
+        ] {
+            git(&["config", "remote.origin.push", spec]);
+            assert!(git(&["push", "--dry-run", "--porcelain"])
+                .contains("refs/heads/main:refs/heads/published"));
+            let targets = load(None).unwrap();
+            assert_eq!(
+                targets.get("main").cloned(),
+                target("origin", "published", Some("refs/remotes/origin/published")),
+                "refspec={spec}"
+            );
+            assert_eq!(targets.get("excluded"), None);
+        }
+        // Fetch mappings may rename or exclude the configured destination.
+        git(&[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/remotes/review/*",
+        ]);
+        assert_eq!(
+            load(None).unwrap().get("main").cloned(),
+            target("origin", "published", Some("refs/remotes/review/published"))
+        );
+        git(&[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/main:refs/remotes/origin/main",
+        ]);
+        assert_eq!(
+            load(None).unwrap().get("main").cloned(),
+            target("origin", "published", None)
+        );
+    }
+
+    #[test]
+    fn head_push_refspecs_follow_the_checked_out_branch() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        init_push_remote();
+        git(&["config", "remote.origin.push", "HEAD:refs/heads/published"]);
+        for branch in ["main", "excluded"] {
+            git(&["checkout", "-q", branch]);
+            assert!(
+                git(&["push", "--dry-run", "--porcelain"]).contains("HEAD:refs/heads/published")
+            );
+            let targets = load(None).unwrap();
+            assert_eq!(targets.len(), 1);
+            assert_eq!(
+                targets.get(branch).cloned(),
+                target("origin", "published", Some("refs/remotes/origin/published"))
+            );
+        }
+    }
+
+    #[test]
+    fn matching_push_refspecs_use_stored_remote_branches() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        init_push_remote();
+        for spec in [":", "+:"] {
+            git(&["config", "remote.origin.push", spec]);
+            assert!(git(&["push", "--dry-run", "--porcelain"])
+                .contains("refs/heads/main:refs/heads/main"));
+            let targets = load(None).unwrap();
+            assert_eq!(
+                targets.get("main").cloned(),
+                target("origin", "main", Some("refs/remotes/origin/main")),
+                "refspec={spec}"
+            );
+            assert_eq!(targets.get("excluded"), None);
+        }
+    }
+
+    fn init_push_remote() {
+        init("origin");
+        git(&["init", "--bare", "-q", "remote.git"]);
+        git(&["remote", "set-url", "origin", "remote.git"]);
+        git(&["push", "-q", "origin", "main", "main:published"]);
+        git(&["branch", "excluded"]);
+    }
+
+    #[test]
     fn explicit_push_refspecs_override_default_modes_and_resolve_destination_names() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
