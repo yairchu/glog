@@ -124,16 +124,36 @@ fn non_empty(text: &str) -> Option<String> {
     (!text.is_empty()).then(|| text.to_owned())
 }
 
+/// The part of `reference` a refspec pattern's wildcard matches, or all of it
+/// for an exact match.
+fn match_pattern<'a>(pattern: &str, reference: &'a str) -> Option<&'a str> {
+    match pattern.split_once('*') {
+        Some((prefix, suffix)) => reference.strip_prefix(prefix)?.strip_suffix(suffix),
+        None => (pattern == reference).then_some(reference),
+    }
+}
+
 /// Map a full remote ref through its fetch refspec, including wildcard renames.
 fn tracking_ref(config: &Config, remote: &str, reference: &str) -> Option<String> {
     config.fetch.get(remote)?.iter().find_map(|spec| {
         let (source, destination) = spec.trim_start_matches('+').split_once(':')?;
-        if let Some((prefix, suffix)) = source.split_once('*') {
-            let matched = reference.strip_prefix(prefix)?.strip_suffix(suffix)?;
-            Some(destination.replacen('*', matched, 1))
+        let matched = match_pattern(source, reference)?;
+        Some(if source.contains('*') {
+            destination.replacen('*', matched, 1)
         } else {
-            (source == reference).then(|| destination.to_owned())
-        }
+            destination.to_owned()
+        })
+    })
+}
+
+/// Git does not fetch, and so stops updating, refs a negative refspec
+/// excludes, although its `%(push)` and `%(upstream)` atoms still name them.
+fn fetch_excludes(config: &Config, remote: &str, reference: &str) -> bool {
+    config.fetch.get(remote).is_some_and(|specs| {
+        specs.iter().any(|spec| {
+            spec.strip_prefix('^')
+                .is_some_and(|pattern| match_pattern(pattern, reference).is_some())
+        })
     })
 }
 
@@ -370,6 +390,14 @@ pub(super) fn load(repository: Option<&Repository>) -> Result<HashMap<String, Ta
         .values_mut()
         .filter(|target| target.tracking.is_some())
     {
+        if fetch_excludes(
+            &config,
+            &target.remote,
+            &format!("refs/heads/{}", target.branch),
+        ) {
+            target.tracking = None;
+            continue;
+        }
         let same_repository = identities
             .entry(target.remote.clone())
             .or_insert_with(|| fetch_tracks_push(repository, &target.remote));
