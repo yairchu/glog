@@ -278,6 +278,45 @@ mod tests {
     }
 
     #[test]
+    fn custom_fetch_namespaces_keep_remote_series_available() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        init();
+        let base = commit("base.txt", "base");
+        git(&["checkout", "-qb", "topic"]);
+        let local = commit("local.txt", "local");
+        git(&["checkout", "-qb", "temporary", "main"]);
+        let remote = commit("remote.txt", "remote");
+        git(&["checkout", "-q", "topic"]);
+        git(&["branch", "-D", "temporary"]);
+        git(&["config", "push.default", "current"]);
+        git(&[
+            "config",
+            "remote.origin.fetch",
+            "+refs/heads/*:refs/vendor/*",
+        ]);
+        git(&["update-ref", "refs/vendor/topic", &remote]);
+        assert_eq!(
+            git(&["for-each-ref", "--format=%(push)", "refs/heads/topic"]),
+            "refs/vendor/topic"
+        );
+        let mut app = super::super::load_picker().unwrap();
+        select(&mut app, "topic");
+        let plan = request(&app);
+        assert_eq!(plan.local.base, base);
+        assert_eq!(plan.local.tip, local);
+        let other = plan
+            .remote_range(&Repository::main().unwrap(), &git::Cancel::default())
+            .unwrap();
+        assert_eq!(other.name, "refs/vendor/topic");
+        assert_eq!(other.base, base);
+        assert_eq!(other.tip, remote);
+        press(&mut app, KeyCode::Char('r'));
+        wait(&mut app);
+        assert!(app.context.contains("refs/vendor/topic"));
+    }
+
+    #[test]
     fn remote_rebases_use_independent_bases_and_button_and_shortcut_return_to_branches() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());

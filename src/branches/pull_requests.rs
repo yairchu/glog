@@ -553,6 +553,76 @@ mod tests {
     }
 
     #[test]
+    fn push_urls_match_fork_prs_without_losing_fetch_bases() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "topic"]);
+        git(&[
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "--allow-empty",
+            "-qm",
+            "base",
+        ]);
+        git(&[
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/base/repo.git",
+        ]);
+        git(&[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "git@github.com:old/repo.git",
+        ]);
+        let mut queried = BTreeSet::new();
+        let badges = load_with(&Repository::main().unwrap(), |base, branches| {
+            queried.insert(base.to_owned());
+            Some(if base == "https://github.com/base/repo" {
+                response(
+                    "base/repo",
+                    branches,
+                    &[
+                        pr(10, "me/repo", "topic", "OPEN", false),
+                        pr(20, "base/repo", "topic", "OPEN", false),
+                    ],
+                )
+            } else {
+                assert_eq!(base, "https://github.com/old/repo");
+                response("me/repo", branches, &[])
+            })
+        })
+        .unwrap();
+        assert_eq!(badges["topic"].label(), "#10 open");
+        assert_eq!(
+            queried,
+            BTreeSet::from([
+                "https://github.com/base/repo".to_owned(),
+                "https://github.com/old/repo".to_owned(),
+            ])
+        );
+
+        // A push outside GitHub must not inherit the fetch repository's PRs.
+        git(&[
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "https://example.invalid/repo.git",
+        ]);
+        let badges = load_with(&Repository::main().unwrap(), |_, _| {
+            panic!("a non-GitHub push target must not query the fetch repository")
+        })
+        .unwrap();
+        assert!(badges.is_empty());
+    }
+
+    #[test]
     fn renamed_repositories_match_their_canonical_name() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
