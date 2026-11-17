@@ -52,7 +52,7 @@ impl Badge {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct PullRequest {
     #[serde(flatten)]
@@ -63,7 +63,7 @@ struct PullRequest {
     head_repository: Option<HeadRepository>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct HeadRepository {
     name_with_owner: String,
@@ -77,10 +77,29 @@ struct Head {
 
 type Badges = HashMap<String, Badge>;
 
+/// A base repository's canonical name and the PRs found in it.
+#[derive(Clone)]
+struct Base {
+    name: String,
+    prs: Vec<PullRequest>,
+}
+
+/// Bases keyed by lowercase repository URL.
+type Bases = HashMap<String, Base>;
+
+/// A refresh's badges and the bases they were matched against. A base that
+/// could not be read keeps its previous PRs, so its badges neither vanish nor
+/// lose to a worse match from a base that could be read.
+struct Lookup {
+    bases: Bases,
+    badges: Badges,
+}
+
 #[derive(Default)]
 pub(crate) struct State {
-    pending: Option<Receiver<Option<Badges>>>,
+    pending: Option<Receiver<Option<Lookup>>>,
     checked: Option<Instant>,
+    bases: Bases,
     badges: Badges,
 }
 
@@ -92,9 +111,10 @@ impl State {
     pub(crate) fn poll(&mut self, rows: &mut [Commit], watch: bool) -> bool {
         if let Some(receiver) = &self.pending {
             match receiver.try_recv() {
-                Ok(result) => {
-                    if let Some(badges) = result {
-                        self.badges = badges;
+                Ok(lookup) => {
+                    if let Some(lookup) = lookup {
+                        self.bases = lookup.bases;
+                        self.badges = lookup.badges;
                     }
                     self.pending = None;
                     self.checked = Some(Instant::now());
@@ -129,10 +149,11 @@ impl State {
             self.checked = Some(Instant::now());
             if let Ok(repository) = Repository::main() {
                 let targets = push_targets(rows);
+                let previous = self.bases.clone();
                 let (sender, receiver) = mpsc::channel();
                 self.pending = Some(receiver);
                 std::thread::spawn(move || {
-                    let _ = sender.send(load(&repository, targets));
+                    let _ = sender.send(load(&repository, targets, previous));
                 });
             }
         }
@@ -386,8 +407,8 @@ fn best_match<'a>(
         .map(|pr| pr.badge.clone())
 }
 
-fn load(repository: &Repository, targets: Targets) -> Option<Badges> {
-    load_with(repository, targets, |base, branches, cursors| {
+fn load(repository: &Repository, targets: Targets, previous: Bases) -> Option<Lookup> {
+    load_with(repository, targets, previous, |base, branches, cursors| {
         let (owner, name) = owner_and_name(base)?.split_once('/')?;
         let mut command = Command::new("gh");
         command
@@ -416,17 +437,23 @@ fn load(repository: &Repository, targets: Targets) -> Option<Badges> {
     })
 }
 
-/// Badges keyed by local branch. `query` returns the raw GraphQL response for
-/// a base repository URL, head branch names, and their continuation cursors.
+/// Badges keyed by local branch, or `None` when the remotes cannot be read.
+/// `previous` stands in for bases that cannot be read. `query` returns the raw
+/// GraphQL response for a base repository URL, head branch names, and their
+/// continuation cursors.
 fn load_with(
     repository: &Repository,
     targets: Targets,
+    mut previous: Bases,
     mut query: impl FnMut(&str, &[&str], &Cursors<'_>) -> Option<Vec<u8>>,
-) -> Option<Badges> {
+) -> Option<Lookup> {
     let remotes = remotes(repository)?;
     let heads = heads(targets, &remotes);
     if heads.is_empty() {
-        return Some(HashMap::new());
+        return Some(Lookup {
+            bases: Bases::new(),
+            badges: Badges::new(),
+        });
     }
     let branches: Vec<&str> = heads
         .values()
@@ -436,33 +463,33 @@ fn load_with(
         .collect();
     // Searching configured base repositories also finds PRs from a fork
     // (origin) into its upstream. Verify the head repository, not just its name.
-    let mut canonical = HashMap::new();
-    let mut prs = Vec::new();
+    let mut bases = Bases::new();
     for base in remotes
         .values()
         .flat_map(|remote| remote.fetch.iter().chain(remote.push.iter()))
         .collect::<BTreeSet<_>>()
     {
+        let key = base.to_ascii_lowercase();
         // An inaccessible remote must not hide another remote's PRs.
-        if let Some((name, found)) = base_pull_requests(base, &branches, &mut query) {
-            canonical.insert(base.to_ascii_lowercase(), name);
-            prs.extend(found);
+        let found = base_pull_requests(base, &branches, &mut query)
+            .map(|(name, prs)| Base { name, prs })
+            .or_else(|| previous.remove(&key));
+        if let Some(found) = found {
+            bases.insert(key, found);
         }
     }
-    if canonical.is_empty() {
-        return None;
-    }
-    let found = heads
+    let badges = heads
         .into_iter()
         .filter_map(|(local, head)| {
-            let repository = match canonical.get(&head.repository.to_ascii_lowercase()) {
-                Some(name) => name.as_str(),
+            let repository = match bases.get(&head.repository.to_ascii_lowercase()) {
+                Some(base) => base.name.as_str(),
                 None => owner_and_name(&head.repository)?,
             };
-            Some((local, best_match(&prs, &head.branch, repository)?))
+            let prs = bases.values().flat_map(|base| &base.prs);
+            Some((local, best_match(prs, &head.branch, repository)?))
         })
         .collect();
-    Some(found)
+    Some(Lookup { bases, badges })
 }
 
 #[cfg(test)]
@@ -796,17 +823,23 @@ mod tests {
                 git(&["remote", "get-url", "--push", "origin"]),
                 "https://github.com/me/repo.git"
             );
-            let badges = load_with(&repository, targets(&repository), |base, branches, _| {
-                Some(response(
-                    owner_and_name(base).unwrap(),
-                    branches,
-                    &[
-                        pr(10, "me/repo", "topic", "OPEN", false),
-                        pr(20, "base/repo", "topic", "OPEN", false),
-                    ],
-                ))
-            })
-            .unwrap();
+            let badges = load_with(
+                &repository,
+                targets(&repository),
+                Bases::new(),
+                |base, branches, _| {
+                    Some(response(
+                        owner_and_name(base).unwrap(),
+                        branches,
+                        &[
+                            pr(10, "me/repo", "topic", "OPEN", false),
+                            pr(20, "base/repo", "topic", "OPEN", false),
+                        ],
+                    ))
+                },
+            )
+            .unwrap()
+            .badges;
             assert_eq!(badges["topic"].label(), "#10 open", "{mode}");
             git(&["config", "--unset", &key]);
         }
@@ -844,6 +877,7 @@ mod tests {
         let badges = load_with(
             &Repository::main().unwrap(),
             targets(&Repository::main().unwrap()),
+            Bases::new(),
             |base, branches, _| {
                 queried.insert(base.to_owned());
                 Some(if base == "https://github.com/base/repo" {
@@ -861,7 +895,8 @@ mod tests {
                 })
             },
         )
-        .unwrap();
+        .unwrap()
+        .badges;
         assert_eq!(badges["topic"].label(), "#10 open");
         assert_eq!(
             queried,
@@ -882,14 +917,16 @@ mod tests {
         let badges = load_with(
             &Repository::main().unwrap(),
             targets(&Repository::main().unwrap()),
+            Bases::new(),
             |_, _, _| panic!("a non-GitHub push target must not query the fetch repository"),
         )
-        .unwrap();
+        .unwrap()
+        .badges;
         assert!(badges.is_empty());
     }
 
     #[test]
-    fn a_failed_base_keeps_the_badges_it_would_have_refreshed() {
+    fn a_failed_base_keeps_its_previous_pull_requests() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
         git(&["init", "-qb", "topic"]);
@@ -910,32 +947,46 @@ mod tests {
             "upstream",
             "https://github.com/base/repo.git",
         ]);
-        let previous = Badge {
-            number: 3,
-            state: Status::Open,
-            is_draft: false,
-            url: "https://github.com/base/repo/pull/3".into(),
-        };
-        let (sender, receiver) = mpsc::channel();
-        let mut state = State {
-            pending: Some(receiver),
-            checked: None,
-            badges: HashMap::from([("topic".to_owned(), previous.clone())]),
-        };
-        // upstream holds the PR but is unreachable; origin has none of its own.
+        git(&["config", "branch.topic.remote", "origin"]);
+        git(&["config", "branch.topic.merge", "refs/heads/topic"]);
         let repository = Repository::main().unwrap();
-        sender
-            .send(load_with(
-                &repository,
-                targets(&repository),
-                |base, branches, _| {
-                    (base == "https://github.com/me/repo")
-                        .then(|| response("me/repo", branches, &[]))
-                },
-            ))
-            .unwrap();
-        state.poll(&mut [], false);
-        assert_eq!(state.badges.get("topic"), Some(&previous));
+        let mut state = State::default();
+        let refresh = |state: &mut State, upstream_readable: bool| {
+            let (sender, receiver) = mpsc::channel();
+            state.pending = Some(receiver);
+            let previous = state.bases.clone();
+            sender
+                .send(load_with(
+                    &repository,
+                    targets(&repository),
+                    previous,
+                    |base, branches, _| match base {
+                        // An old PR into the fork itself, closed long ago.
+                        "https://github.com/me/repo" => Some(response(
+                            "me/repo",
+                            branches,
+                            &[pr(1, "me/repo", "topic", "CLOSED", false)],
+                        )),
+                        "https://github.com/base/repo" if upstream_readable => Some(response(
+                            "base/repo",
+                            branches,
+                            &[pr(3, "me/repo", "topic", "OPEN", false)],
+                        )),
+                        _ => None,
+                    },
+                ))
+                .unwrap();
+            state.poll(&mut [], false);
+        };
+        refresh(&mut state, true);
+        assert_eq!(state.badges["topic"].label(), "#3 open");
+        // upstream is unreachable: its open PR must not lose to origin's closed one.
+        refresh(&mut state, false);
+        assert_eq!(state.badges["topic"].label(), "#3 open");
+        // A failing base must not keep badges for branches that no longer match.
+        git(&["config", "branch.topic.merge", "refs/heads/renamed"]);
+        refresh(&mut state, false);
+        assert!(!state.badges.contains_key("topic"));
     }
 
     #[test]
@@ -958,6 +1009,7 @@ mod tests {
         let badges = load_with(
             &Repository::main().unwrap(),
             targets(&Repository::main().unwrap()),
+            Bases::new(),
             |base, branches, _| {
                 queries += 1;
                 assert_eq!(base, "https://github.com/old/repo");
@@ -968,7 +1020,8 @@ mod tests {
                 ))
             },
         )
-        .unwrap();
+        .unwrap()
+        .badges;
         assert_eq!(queries, 1);
         assert_eq!(badges["main"].label(), "#5 open");
     }
@@ -1010,9 +1063,11 @@ mod tests {
         let badges = load_with(
             &Repository::main().unwrap(),
             targets(&Repository::main().unwrap()),
+            Bases::new(),
             |_, _, _| panic!("an unresolved upstream must not query origin's same-named branch"),
         )
-        .unwrap();
+        .unwrap()
+        .badges;
         assert!(badges.is_empty());
     }
 
@@ -1048,17 +1103,23 @@ mod tests {
         git(&["config", "branch.topic.merge", "refs/heads/topic"]);
         // Tracking refs can be gone after a PR was merged and its branch deleted.
         let repository = Repository::main().unwrap();
-        let badges = load_with(&repository, targets(&repository), |base, branches, _| {
-            if base != "https://github.com/base/repo" {
-                return None; // An inaccessible remote must not hide another remote's PRs.
-            }
-            Some(response(
-                "base/repo",
-                branches,
-                &[pr(10, "me/repo", "topic", "OPEN", false)],
-            ))
-        })
-        .unwrap();
+        let badges = load_with(
+            &repository,
+            targets(&repository),
+            Bases::new(),
+            |base, branches, _| {
+                if base != "https://github.com/base/repo" {
+                    return None; // An inaccessible remote must not hide another remote's PRs.
+                }
+                Some(response(
+                    "base/repo",
+                    branches,
+                    &[pr(10, "me/repo", "topic", "OPEN", false)],
+                ))
+            },
+        )
+        .unwrap()
+        .badges;
         assert_eq!(badges.len(), 2);
         assert_eq!(badges["local-topic"].label(), "#10 open");
         assert_eq!(badges["topic"].label(), "#10 open");
@@ -1070,7 +1131,12 @@ mod tests {
             ..Default::default()
         };
         assert!(!app.branch_pull_requests.poll(&mut app.commits, false));
-        sender.send(Some(badges)).unwrap();
+        sender
+            .send(Some(Lookup {
+                bases: Bases::new(),
+                badges,
+            }))
+            .unwrap();
         assert!(app.branch_pull_requests.poll(&mut app.commits, false));
         let rendered: String = crate::branches::summary(&app)
             .into_iter()
@@ -1091,7 +1157,12 @@ mod tests {
         assert!(!app.branch_pull_requests.poll(&mut app.commits, false));
         let (sender, receiver) = mpsc::channel();
         app.branch_pull_requests.pending = Some(receiver);
-        sender.send(Some(HashMap::new())).unwrap();
+        sender
+            .send(Some(Lookup {
+                bases: Bases::new(),
+                badges: Badges::new(),
+            }))
+            .unwrap();
         assert!(app.branch_pull_requests.poll(&mut app.commits, false));
         assert!(selected_url(&app.commits[0]).is_none());
     }
