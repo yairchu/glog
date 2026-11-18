@@ -5,6 +5,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Flash the screen and briefly suggest checking the keyboard layout when a
+  non-ASCII letter is pressed outside search input.
+
 ## 0.11.1 - 2026-11-17
 
 ### Added

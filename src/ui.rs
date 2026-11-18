@@ -281,6 +281,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.search_input.is_none() && status_error.is_none() && app.message().is_none() {
         help = format!("V views  {help}");
     }
+    if let Some(hint) = app.keyboard_layout_hint {
+        help = format!(
+            "Unrecognized key ‘{}’ — check your keyboard layout",
+            hint.letter
+        );
+    }
     frame.render_widget(
         Paragraph::new(help).style(Style::default().fg(Color::Gray)),
         chunks[2],
@@ -307,6 +313,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     }
     if let Some(selected) = app.view_menu {
         draw_view_menu(frame, app, selected);
+    }
+    if app.keyboard_layout_hint.is_some_and(|hint| hint.flashing) {
+        for cell in &mut frame.buffer_mut().content {
+            cell.modifier.toggle(Modifier::REVERSED);
+        }
     }
 }
 

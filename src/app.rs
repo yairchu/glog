@@ -267,6 +267,23 @@ struct LogBookmark {
     shown_merges: bool,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct KeyboardLayoutHint {
+    pub letter: char,
+    pub since: Instant,
+    pub flashing: bool,
+}
+
+impl KeyboardLayoutHint {
+    pub fn new(letter: char) -> Self {
+        Self {
+            letter,
+            since: Instant::now(),
+            flashing: true,
+        }
+    }
+}
+
 pub struct App {
     pub activity: crate::activity::Indicator,
     pub(crate) views: crate::views::Session,
@@ -338,6 +355,7 @@ pub struct App {
     pub show_rows_width: u16,
     pub show_scroll: Option<ShowScroll>,
     pub status: Option<String>,
+    pub(crate) keyboard_layout_hint: Option<KeyboardLayoutHint>,
     pub search: Option<String>,
     pub search_input: Option<String>,
     pub search_reverse: bool,
@@ -462,6 +480,7 @@ impl App {
             show_rows_width: 0,
             show_scroll: None,
             status: None,
+            keyboard_layout_hint: None,
             search: None,
             search_input: None,
             search_reverse: false,
@@ -1282,6 +1301,22 @@ impl App {
     pub fn start_interchanges(&mut self) {
         if let Some(pending) = &mut self.pending_interchanges {
             pending.start();
+        }
+    }
+
+    pub fn poll_keyboard_layout_hint(&mut self, now: Instant) -> bool {
+        let Some(hint) = &mut self.keyboard_layout_hint else {
+            return false;
+        };
+        let elapsed = now.saturating_duration_since(hint.since);
+        if elapsed >= Duration::from_secs(3) {
+            self.keyboard_layout_hint = None;
+            true
+        } else if hint.flashing && elapsed >= Duration::from_millis(150) {
+            hint.flashing = false;
+            true
+        } else {
+            false
         }
     }
 

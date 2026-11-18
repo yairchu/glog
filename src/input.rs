@@ -13,6 +13,9 @@ pub fn handle(event: Event, app: &mut App) -> bool {
         _ => false,
     };
     if !ignored {
+        if matches!(event, Event::Key(_)) {
+            app.keyboard_layout_hint = None;
+        }
         apply(event, app);
     }
     !ignored
@@ -41,6 +44,13 @@ fn apply(event: Event, app: &mut App) {
                 _ => {}
             }
             return;
+        }
+        // Command bindings use ASCII; text entry above accepts every script.
+        if let KeyCode::Char(c) = key.code {
+            if !c.is_ascii() && c.is_alphabetic() {
+                app.keyboard_layout_hint = Some(crate::app::KeyboardLayoutHint::new(c));
+                return;
+            }
         }
         if let Some(index) = &mut app.view_menu {
             match key.code {
@@ -551,6 +561,86 @@ mod tests {
 
     fn key(code: KeyCode) -> Event {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn layout_hint_is_visible_in_navigation_and_expires_without_losing_status() {
+        use ratatui::{backend::TestBackend, Terminal};
+        use std::time::Duration;
+
+        for mode in [
+            Mode::Log,
+            Mode::Show,
+            Mode::Status,
+            Mode::Grep,
+            Mode::GithubFile,
+            Mode::RangeDiff,
+        ] {
+            let mut app = App::new(Vec::new());
+            app.mode = mode;
+            app.status = Some("Existing error".into());
+            handle(key(KeyCode::Char('ש')), &mut app);
+            let hint = app.keyboard_layout_hint.unwrap();
+            let since = hint.since;
+            assert_eq!(hint.letter, 'ש');
+            let mut terminal = Terminal::new(TestBackend::new(80, 6)).unwrap();
+            terminal
+                .draw(|frame| crate::ui::draw(frame, &mut app))
+                .unwrap();
+            let footer: String = (0..80)
+                .map(|x| terminal.backend().buffer()[(x, 5)].symbol())
+                .collect();
+            assert!(
+                footer.contains("check your keyboard layout"),
+                "{mode:?}: {footer}"
+            );
+            assert!(!app.poll_keyboard_layout_hint(since + Duration::from_millis(100)));
+            let flashed = terminal.backend().buffer().clone();
+            assert!(app.poll_keyboard_layout_hint(since + Duration::from_millis(150)));
+            terminal
+                .draw(|frame| crate::ui::draw(frame, &mut app))
+                .unwrap();
+            // The visual bell inverts every cell, including the footer, and
+            // restores its colors without changing the rendered text.
+            for (flashed, restored) in flashed
+                .content
+                .iter()
+                .zip(&terminal.backend().buffer().content)
+            {
+                assert_eq!(flashed.symbol(), restored.symbol());
+                assert_eq!(flashed.fg, restored.fg);
+                assert_eq!(flashed.bg, restored.bg);
+                assert_eq!(
+                    flashed.modifier ^ ratatui::style::Modifier::REVERSED,
+                    restored.modifier
+                );
+            }
+            assert!(!app.poll_keyboard_layout_hint(since + Duration::from_secs(2)));
+            assert!(app.poll_keyboard_layout_hint(since + Duration::from_secs(3)));
+            assert_eq!(app.status.as_deref(), Some("Existing error"));
+            assert!(app.keyboard_layout_hint.is_none());
+        }
+    }
+
+    #[test]
+    fn layout_hint_clears_on_the_next_key_and_search_keeps_unicode() {
+        let mut app = App::new(Vec::new());
+        handle(key(KeyCode::Char('ש')), &mut app);
+        let mut release = KeyEvent::new(KeyCode::Char('ש'), KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        assert!(!handle(Event::Key(release), &mut app));
+        assert!(app.keyboard_layout_hint.is_some());
+        handle(key(KeyCode::Char('/')), &mut app);
+        assert!(app.keyboard_layout_hint.is_none());
+        for c in "שלום 界".chars() {
+            handle(key(KeyCode::Char(c)), &mut app);
+            assert!(app.keyboard_layout_hint.is_none());
+        }
+        assert_eq!(app.search_input.as_deref(), Some("שלום 界"));
+        handle(key(KeyCode::Esc), &mut app);
+        handle(key(KeyCode::Char('ש')), &mut app);
+        handle(key(KeyCode::Down), &mut app);
+        assert!(app.keyboard_layout_hint.is_none());
     }
 
     #[test]

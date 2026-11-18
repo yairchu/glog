@@ -369,6 +369,7 @@ fn run<B: ratatui::backend::Backend>(
         changed |= app.poll_browser();
         changed |= app.poll_log();
         changed |= app.poll_code_counts();
+        changed |= app.poll_keyboard_layout_hint(Instant::now());
         changed |= app.poll_activity(Instant::now());
         if changed {
             title.update(app)?;
@@ -377,9 +378,15 @@ fn run<B: ratatui::backend::Backend>(
             changed = false;
         }
         app.start_interchanges();
+        // Restore a visual bell promptly even when no more input arrives.
+        let timeout = if app.keyboard_layout_hint.is_some_and(|hint| hint.flashing) {
+            Duration::from_millis(25)
+        } else {
+            Duration::from_millis(250)
+        };
         let first = match deferred.take() {
             Some(click) => Some(click),
-            None if event::poll(Duration::from_millis(250))? => Some(event::read()?),
+            None if event::poll(timeout)? => Some(event::read()?),
             None => None,
         };
         if let Some(first) = first {
