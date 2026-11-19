@@ -112,7 +112,7 @@ merge displays a `▶` and the number of folded commits; its first-parent histor
 remains visible.
 Commits that another shown branch still reaches stay visible, so a merge whose
 branch continued past it may have nothing to fold and shows no marker.
-Nested merges can be folded independently. Press `m` to fold all merge histories,
+Nested merges can be folded independently. Press `Z` to fold all merge histories,
 or expand them when all are folded. If folding hides the selected commit, selection
 moves to its containing merge.
 
@@ -134,7 +134,7 @@ so use `--fold-merges` instead when you want to expand that history later.
 When a filter such as `--grep` omits commits, glog reads how the loaded commits
 connect through them, without loading them, before it hides anything. Until
 then, a merge whose side branch starts in omitted history shows no `▼`, though
-`z` still folds it. `m` and `--fold-merges` read this ancestry only when some
+`z` still folds it. `Z` and `--fold-merges` read this ancestry only when some
 merge's side branch was loaded, so under `--first-parent` they stop without
 walking the side history.
 
@@ -274,7 +274,7 @@ glog grep -F needle HEAD -- src/
 ```
 
 Click a path to focus it, then click it again or press `z` to fold the file or
-folder. Use `m` to fold or expand all; Left/Right choose which folder in the
+folder. Use `Z` to fold or expand all; Left/Right choose which folder in the
 path to fold. Enter opens a match in Blame, and Backspace returns to the results. Press `t` to hide the
 selected file's extension, `T` to clear filters, or click the extension
 buttons. `/` and `?` search within the results, including inside folds.
@@ -502,7 +502,7 @@ Press `M` or click **[M hide merges]** to hide all merge commits, regardless of
 their subjects. The button appears when a merge is selected or while the filter
 is enabled; `M` works anywhere in Log. The merges' branch commits stay visible.
 Press `M` again or click **[M show merges]** to restore merges while keeping
-type filters. This differs from `m` / `z`, which fold the branch history
+type filters. This differs from `Z` / `z`, which fold the branch history
 beneath merge commits; existing merge folds stay folded.
 
 ### Behavior
@@ -543,7 +543,7 @@ so graph edges may span them.
 | `e` | — | open working file at the selected line in your editor |
 | `O` | open commit on GitHub | open commit on GitHub at the selected file/line |
 | `W` | toggle watch | toggle watch for the current Log |
-| `m` | expand/fold all merge histories | — |
+| `Z` | expand/fold all merge histories | — |
 | `M` | hide/show merge commits | — |
 | `t`, `T` | hide selected commit type / clear filters | hide focused file category or folder / clear filters |
 | `s` | toggle subject | toggle file summary / patch |

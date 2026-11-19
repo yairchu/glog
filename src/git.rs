@@ -2645,7 +2645,7 @@ pub(crate) mod tests {
         };
         key(KeyCode::Char('G'), &mut app);
         assert_eq!(app.selected, 2);
-        for code in ['t', 'M', 'm', 'z'] {
+        for code in ['t', 'M', 'Z', 'z'] {
             key(KeyCode::Char(code), &mut app);
         }
         assert!(app.status.is_none());
@@ -3581,7 +3581,7 @@ pub(crate) mod tests {
 
         // The global shortcut collapses mixed/nested folds and selects the
         // containing visible merge, then expands every fold on the next press.
-        key(&mut app, KeyCode::Char('m'));
+        key(&mut app, KeyCode::Char('Z'));
         assert_eq!(app.selected, index(&merge));
         for hash in [&inner, &nested, &feature, &tip, &x, &y] {
             assert!(!app.log_folds.visible(index(hash)));
@@ -3589,7 +3589,7 @@ pub(crate) mod tests {
         app.replace_commits(commits.clone());
         assert_eq!(app.selected, index(&merge));
         assert!(!app.log_folds.visible(index(&inner)));
-        key(&mut app, KeyCode::Char('m'));
+        key(&mut app, KeyCode::Char('Z'));
         assert!((0..commits.len()).all(|i| app.log_folds.visible(i)));
         let subject = app.log_format.text(&commits[index(&merge)]);
         key(&mut app, KeyCode::Char('s'));

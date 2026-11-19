@@ -280,7 +280,7 @@ const GREP: &str = "Grep searches tracked text files, --cached searches the inde
 also searches untracked files. Accept matching options such as -i, -w, -F, -E,
 -e and -f, compound expressions, and commit revisions. Binary files are skipped.
 Results group by folder and file: Enter opens a match in Blame or toggles a
-group; z folds the current group or a match's file, and m folds/expands all.
+group; z folds the current group or a match's file, and Z folds/expands all.
 t hides the selected file extension; T clears filters. Click extension buttons
 to toggle filters. Left/right pan; / and ? search within results and reveal folds.
 Grep supplies the output layout; context, count, file-only, textconv, and

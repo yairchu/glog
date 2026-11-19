@@ -3151,7 +3151,7 @@ mod tests {
 
     #[test]
     fn a_fold_that_hides_nothing_draws_like_an_unfolded_merge() {
-        // The topic merged m1 back in with sync. m folds sync inside m3, but
+        // The topic merged m1 back in with sync. Z folds sync inside m3, but
         // once m3 is expanded, sync's fold hides nothing.
         let commits = vec![
             commit("m4", &["m3", "o"]),
@@ -3946,7 +3946,7 @@ mod tests {
                 assert!((0..rows.len()).all(|r| !visible[r] || revealing.visible(r)));
             }
 
-            // m folds until nothing is foldable, and if that is already so,
+            // Z folds until nothing is foldable, and if that is already so,
             // expands everything.
             let selected = random(rows.len() as u32) as usize;
             let folded = |folds: &LogFolds| {

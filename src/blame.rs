@@ -3046,7 +3046,7 @@ mod tests {
             &mut app,
         );
         assert_eq!(app.selected, 3);
-        for code in ['t', 'M', 'z', 'm', 'r', 's'] {
+        for code in ['t', 'M', 'z', 'Z', 'r', 's'] {
             key(KeyCode::Char(code), &mut app);
         }
         assert!(app.status.is_none());

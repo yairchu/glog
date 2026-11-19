@@ -530,7 +530,7 @@ mod tests {
         app.search_input = Some("first saved work".into());
         app.submit_search();
         assert_eq!(app.selected, 1);
-        for action in ['t', 'M', 'z', 'm'] {
+        for action in ['t', 'M', 'z', 'Z'] {
             key(&mut app, KeyCode::Char(action));
         }
         assert!(app.log_folds.visible(1));

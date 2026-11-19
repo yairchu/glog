@@ -227,9 +227,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.mode == Mode::GithubFile {
         "h help  q quit  ↑/k ↓/j  e GitHub  Esc/Backspace back  / ? search".to_owned()
     } else if app.mode == Mode::Grep && app.history == History::GithubSearch {
-        "h help  q quit  ←/→ path/pan  Enter file/fold  e GitHub  z fold  m fold all  t hide extension  T reset  / ? search".to_owned()
+        "h help  q quit  ←/→ path/pan  Enter file/fold  e GitHub  z fold  Z fold all  t hide extension  T reset  / ? search".to_owned()
     } else if app.mode == Mode::Grep {
-        "h help  q quit  ←/→ path/pan  Enter open/fold  z fold  m fold all  t hide extension  T reset  / ? search".to_owned()
+        "h help  q quit  ←/→ path/pan  Enter open/fold  z fold  Z fold all  t hide extension  T reset  / ? search".to_owned()
     } else if app.mode == Mode::RangeDiff {
         let back = if app.has_reference_back() {
             "  Esc/Backspace back"
@@ -260,7 +260,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if app.mode == Mode::Log {
         // Keep the hint short by omitting the row format toggles (x hash,
         // s subject); the help screen lists every key.
-        "h help  q quit  ↑/k ↓/j  Shift-←/→ commit  Enter show  t hide type  z fold merge  m fold all  a author  d date  r refs  / ? search".to_owned()
+        "h help  q quit  ↑/k ↓/j  Shift-←/→ commit  Enter show  t hide type  z fold merge  Z fold all  a author  d date  r refs  / ? search".to_owned()
     } else if !has_log {
         "h help  q quit  ↑/k ↓/j  [/ ] file  B blame  e edit  Enter/z fold  t hide type  T reset  s summary  / ? search"
             .to_owned()
@@ -647,7 +647,7 @@ const HELP_ROWS: &[HelpRow] = &[
         },
     ),
     (
-        "m",
+        "Z",
         HelpTexts {
             log: Some("expand / fold all merges (Log)"),
             grep: Some("expand / fold all files and folders"),

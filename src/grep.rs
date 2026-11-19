@@ -1632,7 +1632,7 @@ mod tests {
         key(&mut app, KeyCode::Home);
         terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
         assert_eq!(app.grep_view.as_ref().unwrap().offset, 0);
-        key(&mut app, KeyCode::Char('m'));
+        key(&mut app, KeyCode::Char('Z'));
         key(&mut app, KeyCode::Char('/'));
         for c in "needle two".chars() {
             key(&mut app, KeyCode::Char(c));
