@@ -363,7 +363,11 @@ impl LogFolds {
         if commit.parents.len() > 1 || self.reflog.is_some() {
             return self.toggle(index, commits).map(|()| true);
         }
-        self.prepare_request(commits);
+        // Retry a failed read only once there is a merge to act on, so a
+        // key that does nothing keeps the choices that a refresh may apply.
+        if self.view.graph.rows != commits.len() {
+            self.relayout(commits);
+        }
         if self.view.graph.on_trunk(index, commits) {
             return Ok(false);
         }
@@ -371,6 +375,7 @@ impl LogFolds {
             if merges(commits).next().is_none() {
                 return Ok(false);
             }
+            self.prepare_request(commits);
             self.keep_shown = None;
             self.pending_fold = Some(commit.hash.clone());
             self.relayout(commits);
@@ -385,6 +390,8 @@ impl LogFolds {
 
     fn enclosing_merge(&self, index: usize, commits: &[Commit]) -> Option<usize> {
         let graph = &self.view.graph;
+        // Toggling clears the choices of a failed read, which it shows unfolded.
+        let failed = matches!(self.read, Read::Failed(_));
         let mut descendants = vec![false; graph.parents.len()];
         *descendants.get_mut(index)? = true;
         // Parents before children visits an inner merge before any enclosing
@@ -394,7 +401,7 @@ impl LogFolds {
                 .iter()
                 .any(|&(parent, _)| descendants[parent]);
             if node >= commits.len()
-                || self.collapsed.contains(&commits[node].hash)
+                || (!failed && self.collapsed.contains(&commits[node].hash))
                 || commits[node].parents.len() < 2
             {
                 continue;
@@ -3104,6 +3111,16 @@ mod tests {
         failed.toggle_at(3, &commits).unwrap();
         assert_eq!(failed.settle(&commits).unwrap().unwrap_err(), "no Git");
         assert!((0..commits.len()).all(|index| failed.visible(index)));
+
+        // A trunk row has nothing to fold, so it keeps the failed read's
+        // choices for a refresh to apply.
+        let mut failed = folds_with(None);
+        failed.refresh(&commits).unwrap();
+        failed.toggle(0, &commits).unwrap();
+        assert_eq!(failed.settle(&commits).unwrap().unwrap_err(), "no Git");
+        assert!(!failed.toggle_at(5, &commits).unwrap());
+        assert!(failed.collapsed.contains("outer"));
+        assert_eq!(failed.status().unwrap_err(), "no Git");
     }
 
     #[test]
