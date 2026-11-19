@@ -1242,17 +1242,15 @@ impl App {
     }
 
     fn toggle_log_merge(&mut self) {
-        // Other rows have nothing to fold, so keep whatever the status says.
         // When filters hide every commit, the selection is not shown.
-        if !self.log_folds.visible(self.selected)
-            || self
-                .commits
-                .get(self.selected)
-                .is_none_or(|commit| commit.parents.len() < 2)
-        {
+        if !self.log_folds.visible(self.selected) {
             return;
         }
-        self.status = self.log_folds.toggle(self.selected, &self.commits).err();
+        let result = self.log_folds.toggle_at(self.selected, &self.commits);
+        if matches!(result, Ok(false)) {
+            return;
+        }
+        self.status = result.err();
         // An expanded merge may itself be filtered out.
         self.ensure_log_selection();
         self.search_match = None;
@@ -4190,6 +4188,53 @@ mod tests {
         assert_eq!(app.selected, 0);
         app.move_by(2, 20);
         assert_eq!(app.selected, 1);
+    }
+
+    #[test]
+    fn folding_inside_a_merged_branch_selects_the_innermost_merge() {
+        let row = |name: &str, parents: &[&str]| {
+            let mut row = commit(name);
+            row.hash = name.into();
+            row.parents = parents.iter().map(|hash| (*hash).into()).collect();
+            row.decorations.clear();
+            row
+        };
+        let mut app = App::new(vec![
+            row("outer", &["main2", "topic2"]),
+            row("topic2", &["inner"]),
+            row("inner", &["topic1", "side2"]),
+            row("side2", &["side1"]),
+            row("side1", &["topic1"]),
+            row("topic1", &["base"]),
+            row("main2", &["main1"]),
+            row("main1", &["base"]),
+            row("base", &[]),
+        ]);
+        app.refresh_log_folds();
+        app.selected = 4;
+        app.apply_log_action(LogAction::Fold);
+        assert_eq!(app.selected, 2);
+        assert!(!app.log_folds.visible(3));
+        assert!(!app.log_folds.visible(4));
+        assert!(app.log_folds.visible(1));
+        assert!(app.log_folds.visible(5));
+        app.apply_log_action(LogAction::Fold);
+        assert!((0..app.commits.len()).all(|index| app.log_folds.visible(index)));
+        // The inner merge's mainline still belongs to the outer side branch.
+        app.selected = 5;
+        app.apply_log_action(LogAction::Fold);
+        assert_eq!(app.selected, 0);
+        assert!((1..=5).all(|index| !app.log_folds.visible(index)));
+        assert!((6..=8).all(|index| app.log_folds.visible(index)));
+        app.apply_log_action(LogAction::Fold);
+        app.status = Some("Keep this message".into());
+        for selected in [7, 8] {
+            app.selected = selected;
+            app.apply_log_action(LogAction::Fold);
+            assert_eq!(app.selected, selected);
+            assert_eq!(app.status.as_deref(), Some("Keep this message"));
+            assert!((0..app.commits.len()).all(|index| app.log_folds.visible(index)));
+        }
     }
 
     #[test]

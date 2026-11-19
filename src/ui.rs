@@ -629,7 +629,7 @@ const HELP_ROWS: &[HelpRow] = &[
     (
         "z",
         HelpTexts {
-            log: Some("fold merge (Log) / file (Show)"),
+            log: Some("toggle merge or fold enclosing merged branch (Log) / file (Show)"),
             reflog: Some("fold rebase, rebase chain, amend chain, or visits / file (Show)"),
             bisect: Some("expand / collapse a commit gap (Bisect) / file (Show)"),
             grep: Some("fold file or folder highlighted by the path cursor"),

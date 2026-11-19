@@ -109,6 +109,9 @@ pub struct LogFolds {
     read: Read,
     // A row to keep shown once the history being read is applied.
     keep_shown: Option<String>,
+    // An interior fold request waits until omitted ancestry can identify
+    // its innermost enclosing merge safely.
+    pending_fold: Option<String>,
     // Merges already offered to --fold-merges.
     seen: HashSet<String>,
     // The user's choices, which requests change and nothing undoes.
@@ -134,6 +137,7 @@ impl Default for LogFolds {
             known: None,
             read: Read::Idle,
             keep_shown: None,
+            pending_fold: None,
             seen: HashSet::new(),
             collapsed: HashSet::new(),
             tentative: HashSet::new(),
@@ -350,9 +354,70 @@ impl LogFolds {
             .is_some_and(|folds| folds.contains(index))
     }
 
+    /// Toggle a merge, or fold the innermost merge hiding an interior row.
+    pub fn toggle_at(&mut self, index: usize, commits: &[Commit]) -> Result<bool, String> {
+        self.pending_fold = None;
+        let Some(commit) = commits.get(index) else {
+            return Ok(false);
+        };
+        if commit.parents.len() > 1 || self.reflog.is_some() {
+            return self.toggle(index, commits).map(|()| true);
+        }
+        self.prepare_request(commits);
+        if self.view.graph.unknown_below.is_some() {
+            self.keep_shown = None;
+            self.pending_fold = Some(commit.hash.clone());
+            self.relayout(commits);
+            return self.status().map(|()| true);
+        }
+        if let Some(merge) = self.enclosing_merge(index, commits) {
+            self.toggle(merge, commits).map(|()| true)
+        } else {
+            Ok(false)
+        }
+    }
+
+    fn enclosing_merge(&self, index: usize, commits: &[Commit]) -> Option<usize> {
+        let graph = &self.view.graph;
+        let mut descendants = vec![false; graph.parents.len()];
+        *descendants.get_mut(index)? = true;
+        let mut folded: Vec<_> = commits
+            .iter()
+            .map(|commit| self.collapsed.contains(&commit.hash) && commit.parents.len() > 1)
+            .collect();
+        // Parents before children visits an inner merge before any enclosing
+        // merge, regardless of how Git interleaves their rows on screen.
+        for &node in graph.order.iter().rev() {
+            descendants[node] |= graph.parents[node]
+                .iter()
+                .any(|&(parent, _)| descendants[parent]);
+            if node >= commits.len() || folded[node] || commits[node].parents.len() < 2 {
+                continue;
+            }
+            let side = graph.parents[node]
+                .iter()
+                .any(|&(parent, side)| side && descendants[parent]);
+            let mainline = graph.parents[node]
+                .iter()
+                .any(|&(parent, side)| !side && descendants[parent]);
+            if !side || mainline {
+                continue;
+            }
+            folded[node] = true;
+            let hides_row = !Layout::with_folds(graph, &folded).0.visible[index];
+            folded[node] = false;
+            // Another unfolded tip or merge may independently show the row.
+            if hides_row {
+                return Some(node);
+            }
+        }
+        None
+    }
+
     /// Fold or expand a merge. While omitted history is read, what a fold
     /// hides is unknown, so this flips the choice its marker shows.
     pub fn toggle(&mut self, index: usize, commits: &[Commit]) -> Result<(), String> {
+        self.pending_fold = None;
         if let Some(folds) = &mut self.reflog {
             folds.toggle(index);
             self.view.layout = folds.layout(commits);
@@ -393,6 +458,7 @@ impl LogFolds {
     /// Fold every merge that hides something, or expand all if they already
     /// are. Returns the selection, moved to its fold if that hides it.
     pub fn toggle_all(&mut self, selected: usize, commits: &[Commit]) -> Result<usize, String> {
+        self.pending_fold = None;
         self.prepare_request(commits);
         self.keep_shown = None;
         let all: HashSet<_> = merges(commits).map(str::to_owned).collect();
@@ -437,6 +503,7 @@ impl LogFolds {
     /// Expand the folds hiding a row, now and once the history being read
     /// is applied, which may fold it anew.
     pub fn reveal(&mut self, index: usize, commits: &[Commit]) {
+        self.pending_fold = None;
         if let Some(folds) = &mut self.reflog {
             folds.reveal(index);
             self.view.layout = folds.layout(commits);
@@ -533,11 +600,20 @@ impl LogFolds {
                 self.read = Read::Failed(error);
             }
         }
+        let pending_fold = self.pending_fold.take();
         self.relayout(commits);
         if let Some(index) = (self.keep_shown.take())
             .and_then(|hash| commits.iter().position(|commit| commit.hash == hash))
         {
             self.reveal(index, commits);
+        }
+        if let Some(index) =
+            pending_fold.and_then(|hash| commits.iter().position(|commit| commit.hash == hash))
+        {
+            if let Read::Failed(error) = &self.read {
+                return Err(error.clone());
+            }
+            self.toggle_at(index, commits)?;
         }
         self.status()
     }
@@ -577,6 +653,13 @@ impl LogFolds {
             self.read_omitted_in_background(commits);
         }
         let hashes: HashSet<_> = commits.iter().map(|c| c.hash.as_str()).collect();
+        if self
+            .pending_fold
+            .as_ref()
+            .is_some_and(|hash| !hashes.contains(hash.as_str()))
+        {
+            self.pending_fold = None;
+        }
         for chosen in [&mut self.collapsed, &mut self.tentative, &mut self.seen] {
             chosen.retain(|hash| hashes.contains(hash.as_str()));
         }
@@ -595,7 +678,8 @@ impl LogFolds {
         // whose side parents a filter omitted, as under --first-parent:
         // that could walk the whole repository.
         let pending = graph.unknown_below.is_some()
-            && (layout.visible.contains(&false)
+            && (self.pending_fold.is_some()
+                || layout.visible.contains(&false)
                 || !self.hidden_types.is_empty()
                 || self.hide_merges
                 || self
@@ -2939,6 +3023,55 @@ mod tests {
         settled(&mut expected, &commits, |f| f.refresh(&commits)).unwrap();
         expected.toggle_type(Some("nonexistent"), &commits).unwrap();
         assert_same_layout(&folds, &expected, &commits);
+    }
+
+    #[test]
+    fn interior_folding_preserves_commits_reached_from_another_tip() {
+        let commits = vec![
+            commit("merge", &["main", "side"]),
+            commit("other", &["middle"]),
+            commit("side", &["middle"]),
+            commit("middle", &["base"]),
+            commit("main", &["base"]),
+            commit("base", &[]),
+        ];
+        let mut folds = LogFolds::default();
+        folds.refresh(&commits).unwrap();
+        assert!(!folds.toggle_at(3, &commits).unwrap());
+        assert!((0..commits.len()).all(|index| folds.visible(index)));
+        assert!(folds.toggle_at(2, &commits).unwrap());
+        assert!(!folds.visible(2));
+        assert!(folds.visible(3));
+    }
+
+    #[test]
+    fn interior_folding_waits_for_omitted_ancestry_and_reports_read_failures() {
+        let commits = vec![
+            commit("outer", &["main", "omitted"]),
+            commit("inner", &["topic", "side"]),
+            commit("side", &["middle"]),
+            commit("middle", &["topic"]),
+            commit("topic", &["base"]),
+            commit("main", &["base"]),
+            commit("base", &[]),
+        ];
+        let ancestry = Ancestry::from([("omitted".into(), vec!["inner".into()])]);
+        let mut folds = folds_with(Some(ancestry));
+        folds.refresh(&commits).unwrap();
+        assert!(folds.toggle_at(3, &commits).unwrap());
+        assert!(folds.reading());
+        assert!(folds.visible(3));
+        folds.settle(&commits).unwrap().unwrap();
+        assert_eq!(folds.shown_or_containing(3), 1);
+        assert!(!folds.visible(3));
+        assert!(folds.visible(4));
+        assert!(folds.visible(0));
+
+        let mut failed = folds_with(None);
+        failed.refresh(&commits).unwrap();
+        failed.toggle_at(3, &commits).unwrap();
+        assert_eq!(failed.settle(&commits).unwrap().unwrap_err(), "no Git");
+        assert!((0..commits.len()).all(|index| failed.visible(index)));
     }
 
     #[test]

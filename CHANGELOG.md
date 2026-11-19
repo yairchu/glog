@@ -7,6 +7,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Press `z` on a commit inside a merged branch to fold its innermost enclosing
+  merge and move the cursor to that merge commit.
+
 - Switching from Blame to Branches selects the branching point or branch tip
   containing the blamed commit, even when that commit is hidden by the compact
   graph.

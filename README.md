@@ -106,8 +106,10 @@ Escape or Backspace returns to Branches.
 ### Folding merge histories
 
 In Log, select a merge and press `z` to collapse or expand the commits it brought
-in. Enter still opens the merge's Show view. A collapsed merge displays a `▶`
-and the number of folded commits; its first-parent history remains visible.
+in. From a commit inside a merged branch, `z` collapses its innermost enclosing
+merge and selects that merge. Enter still opens the merge's Show view. A collapsed
+merge displays a `▶` and the number of folded commits; its first-parent history
+remains visible.
 Commits that another shown branch still reaches stay visible, so a merge whose
 branch continued past it may have nothing to fold and shows no marker.
 Nested merges can be folded independently. Press `m` to fold all merge histories,
