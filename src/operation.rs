@@ -773,7 +773,9 @@ mod tests {
         assert_eq!(operations(), Vec::<String>::new());
 
         git(&["checkout", "-q", "feature"]);
-        stop(&["rebase", "main"]);
+        // This case asserts the progress of a linear rebase, independently
+        // of the user's rebase.rebaseMerges setting. Merge rebases follow below.
+        stop(&["rebase", "--no-rebase-merges", "main"]);
         let head = git(&["rev-parse", "HEAD"]);
         let state = reader.state(Some(&head));
         assert_eq!(state.detached_at, Some(short("HEAD")));
