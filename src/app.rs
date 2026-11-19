@@ -3720,19 +3720,13 @@ impl App {
         let Some(view) = self.views.options().get(index).copied() else {
             return;
         };
+        let branches_from_blame =
+            view == crate::views::View::Branches && self.history == History::Blame;
         if view == self.views.active {
-            // A branch's Log and its followed Blame still occupy the
-            // Branches slot. Open the graph without discarding that review;
-            // Backspace returns to the same blamed line.
-            if view == crate::views::View::Branches && self.history == History::Blame {
+            // A followed Blame can itself occupy the Branches slot.
+            if branches_from_blame {
                 let loaded = view.load().map(|mut target| {
-                    if let Some(commit) = self
-                        .commits
-                        .get(self.selected)
-                        .filter(|commit| commit.kind == CommitKind::Revision)
-                    {
-                        target.focus_branch_commit(&commit.hash);
-                    }
+                    self.focus_blamed_commit(&mut target);
                     target.exit_on_esc = self.exit_on_esc;
                     target
                 });
@@ -3740,11 +3734,23 @@ impl App {
             }
             return;
         }
-        let target = self
-            .views
-            .saved
-            .remove(&view)
-            .map_or_else(|| view.load(), |app| Ok(*app));
+        use std::collections::hash_map::Entry;
+        let target = match self.views.saved.entry(view) {
+            Entry::Occupied(saved)
+                if branches_from_blame
+                    && (saved.get().history != History::Branches
+                        || saved.get().mode != Mode::Log) =>
+            {
+                // Load first so an error leaves the saved drill-down available.
+                view.load().map(|graph| {
+                    let mut review = *saved.remove();
+                    review.enter_followed(Ok(graph));
+                    review
+                })
+            }
+            Entry::Occupied(saved) => Ok(*saved.remove()),
+            Entry::Vacant(_) => view.load(),
+        };
         let mut target = match target {
             Ok(app) => app,
             Err(error) => {
@@ -3752,14 +3758,12 @@ impl App {
                 return;
             }
         };
-        // Blame can name a commit omitted by the compact Branches graph;
-        // select the existing fork or tip above it. Other transitions carry
-        // selection only when both views show the same commit.
-        if self.mode == Mode::Log
+        if branches_from_blame {
+            self.focus_blamed_commit(&mut target);
+        } else if self.mode == Mode::Log
             && matches!(
                 (self.history, target.history),
-                (History::Log | History::Blame, History::Branches)
-                    | (History::Branches, History::Log)
+                (History::Log, History::Branches) | (History::Branches, History::Log)
             )
             && matches!(target.mode, Mode::Log | Mode::Status)
         {
@@ -3769,18 +3773,10 @@ impl App {
                 .get(self.selected)
                 .filter(|commit| commit.kind == CommitKind::Revision)
                 .and_then(|selected| {
-                    if self.history == History::Blame {
-                        crate::branches::containing_node(
-                            &target.commits,
-                            &selected.hash,
-                            target.repository.as_ref(),
-                        )
-                    } else {
-                        target
-                            .commits
-                            .iter()
-                            .position(|commit| commit.hash == selected.hash)
-                    }
+                    target
+                        .commits
+                        .iter()
+                        .position(|commit| commit.hash == selected.hash)
                 })
             {
                 target.log_folds.reveal(index, &target.commits);
@@ -3805,13 +3801,22 @@ impl App {
         self.redraw = true;
     }
 
-    fn focus_branch_commit(&mut self, hash: &str) {
-        if let Some(index) =
-            crate::branches::containing_node(&self.commits, hash, self.repository.as_ref())
+    fn focus_blamed_commit(&self, graph: &mut App) {
+        if let Some(index) = self
+            .commits
+            .get(self.selected)
+            .filter(|commit| commit.kind == CommitKind::Revision)
+            .and_then(|commit| {
+                crate::branches::containing_node(
+                    &graph.commits,
+                    &commit.hash,
+                    graph.repository.as_ref(),
+                )
+            })
         {
-            self.selected = index;
-            self.center_selection = true;
-            self.search_match = None;
+            graph.selected = index;
+            graph.center_selection = true;
+            graph.search_match = None;
         }
     }
 

@@ -299,6 +299,21 @@ mod tests {
         switch(&mut app, View::Original);
         assert_eq!(app.selected, 2);
 
+        switch(&mut app, View::Branches);
+        press(&mut app, KeyCode::Enter);
+        assert_eq!(app.history, History::Log);
+        press(&mut app, KeyCode::Down);
+        let review_commit = app.commits[app.selected].hash.clone();
+        switch(&mut app, View::Original);
+        assert_eq!(app.history, History::Blame);
+        assert_eq!(app.selected, 2);
+        switch(&mut app, View::Branches);
+        assert_eq!(app.history, History::Branches);
+        assert_eq!(app.commits[app.selected].hash, tip);
+        press(&mut app, KeyCode::Backspace);
+        assert_eq!(app.history, History::Log);
+        assert_eq!(app.commits[app.selected].hash, review_commit);
+
         // The same action also works when Blame was reached from a branch
         // review, whose session slot is already named Branches.
         let mut review = View::Branches.load().unwrap();
