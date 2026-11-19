@@ -9,6 +9,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Press `z` on a commit inside a merged branch to fold its innermost enclosing
   merge. If the selected commit becomes hidden, the cursor moves to the merge.
+  On the log's first-parent trunk, `z` only acts on merge commits.
 
 - Switching from Blame to Branches selects the branching point or branch tip
   containing the blamed commit, even when that commit is hidden by the compact

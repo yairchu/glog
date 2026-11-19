@@ -364,7 +364,13 @@ impl LogFolds {
             return self.toggle(index, commits).map(|()| true);
         }
         self.prepare_request(commits);
+        if self.view.graph.on_trunk(index, commits) {
+            return Ok(false);
+        }
         if self.view.graph.unknown_below.is_some() {
+            if merges(commits).next().is_none() {
+                return Ok(false);
+            }
             self.keep_shown = None;
             self.pending_fold = Some(commit.hash.clone());
             self.relayout(commits);
@@ -1067,6 +1073,25 @@ impl Graph {
             branch_points,
             unknown_below,
             open_from,
+        }
+    }
+
+    /// The trunk follows first parents from the first revision in the log.
+    fn on_trunk(&self, index: usize, commits: &[Commit]) -> bool {
+        let Some(mut node) = commits
+            .iter()
+            .position(|commit| commit.kind == CommitKind::Revision)
+        else {
+            return false;
+        };
+        loop {
+            if node == index {
+                return true;
+            }
+            let Some(&(parent, _)) = self.parents[node].iter().find(|&&(_, side)| !side) else {
+                return false;
+            };
+            node = parent;
         }
     }
 
@@ -3035,6 +3060,23 @@ mod tests {
     }
 
     #[test]
+    fn interior_folding_skips_ancestry_on_the_trunk_or_without_merge_rows() {
+        let trunk = [
+            commit("merge", &["main", "omitted-side"]),
+            commit("main", &["omitted-main"]),
+            commit("base", &[]),
+        ];
+        for (commits, index) in [(&trunk[..], 1), (&trunk[1..], 1)] {
+            let mut folds = folds_with(None);
+            folds.ascii_graph = true;
+            folds.refresh(commits).unwrap();
+            assert!(folds.view.graph.unknown_below.is_some());
+            assert!(!folds.toggle_at(index, commits).unwrap());
+            assert!(!folds.loading());
+        }
+    }
+
+    #[test]
     fn interior_folding_waits_for_omitted_ancestry_and_reports_read_failures() {
         let commits = vec![
             commit("outer", &["main", "omitted"]),
@@ -3079,6 +3121,7 @@ mod tests {
         ];
         let mut folds = LogFolds::default();
         folds.refresh(&commits).unwrap();
+        assert!(!folds.toggle_at(5, &commits).unwrap());
         folds.toggle_all(0, &commits).unwrap();
         assert_eq!(shown(&folds, &commits), ["outer", "m2", "m1", "base"]);
         assert_eq!(folds.label(0), " · 3 merged commits");
