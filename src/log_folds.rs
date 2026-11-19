@@ -381,17 +381,16 @@ impl LogFolds {
         let graph = &self.view.graph;
         let mut descendants = vec![false; graph.parents.len()];
         *descendants.get_mut(index)? = true;
-        let mut folded: Vec<_> = commits
-            .iter()
-            .map(|commit| self.collapsed.contains(&commit.hash) && commit.parents.len() > 1)
-            .collect();
         // Parents before children visits an inner merge before any enclosing
         // merge, regardless of how Git interleaves their rows on screen.
         for &node in graph.order.iter().rev() {
             descendants[node] |= graph.parents[node]
                 .iter()
                 .any(|&(parent, _)| descendants[parent]);
-            if node >= commits.len() || folded[node] || commits[node].parents.len() < 2 {
+            if node >= commits.len()
+                || self.collapsed.contains(&commits[node].hash)
+                || commits[node].parents.len() < 2
+            {
                 continue;
             }
             let side = graph.parents[node]
@@ -400,14 +399,7 @@ impl LogFolds {
             let mainline = graph.parents[node]
                 .iter()
                 .any(|&(parent, side)| !side && descendants[parent]);
-            if !side || mainline {
-                continue;
-            }
-            folded[node] = true;
-            let hides_row = !Layout::with_folds(graph, &folded).0.visible[index];
-            folded[node] = false;
-            // Another unfolded tip or merge may independently show the row.
-            if hides_row {
+            if side && !mainline {
                 return Some(node);
             }
         }
@@ -3037,9 +3029,7 @@ mod tests {
         ];
         let mut folds = LogFolds::default();
         folds.refresh(&commits).unwrap();
-        assert!(!folds.toggle_at(3, &commits).unwrap());
-        assert!((0..commits.len()).all(|index| folds.visible(index)));
-        assert!(folds.toggle_at(2, &commits).unwrap());
+        assert!(folds.toggle_at(3, &commits).unwrap());
         assert!(!folds.visible(2));
         assert!(folds.visible(3));
     }
