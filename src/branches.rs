@@ -169,6 +169,45 @@ pub fn load_graph(args: &[String]) -> Result<Vec<Commit>, String> {
     graph_rows(local_tips()?)
 }
 
+/// Locate a blamed commit in the compact graph without adding a node. Hidden
+/// commits map to the oldest shown descendant: a fork, or a branch tip when
+/// no shown branches split after the commit.
+pub(crate) fn containing_node(
+    rows: &[Commit],
+    hash: &str,
+    repository: Option<&git::Repository>,
+) -> Option<usize> {
+    let shown: HashMap<_, _> = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| (row.hash.as_str(), index))
+        .collect();
+    if let Some(&index) = shown.get(hash) {
+        return Some(index);
+    }
+    if rows.is_empty() {
+        return None;
+    }
+    // Pin the displayed graph's revisions, including a saved/frozen view.
+    // Excluding the blamed commit bounds the walk; --ancestry-path discards
+    // commits on other histories that do not descend from it.
+    let input = rows
+        .iter()
+        .map(|row| format!("{}\n", row.hash))
+        .chain(std::iter::once(format!("^{hash}\n")))
+        .collect::<String>();
+    let descendants = git::pipe_through(
+        git::read_command_at(repository)
+            .args(["rev-list", "--topo-order", "--ancestry-path", "--stdin"])
+            .env("GIT_NO_LAZY_FETCH", "1"),
+        input.as_bytes(),
+    )?;
+    descendants
+        .lines()
+        .rev()
+        .find_map(|hash| shown.get(hash).copied())
+}
+
 /// Whether to watch, and the date style.
 fn parse_args(args: &[String]) -> Result<(bool, Option<String>), String> {
     let mut watch = false;

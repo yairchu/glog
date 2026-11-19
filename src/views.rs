@@ -250,6 +250,115 @@ mod tests {
     }
 
     #[test]
+    fn switching_from_blame_finds_the_existing_fork_or_tip_and_restores_blame() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        repository();
+        git(&["branch", "-m", "main"]);
+        fs::write("file.txt", "base\nshared test\n").unwrap();
+        git(&["commit", "-qam", "introduce shared test"]);
+        let shared = git(&["rev-parse", "HEAD"]);
+        git(&["commit", "--allow-empty", "-qm", "fork"]);
+        let fork = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-qb", "sibling"]);
+        git(&["commit", "--allow-empty", "-qm", "sibling tip"]);
+        git(&["checkout", "-qb", "feature", "main"]);
+        fs::write("file.txt", "base\nshared test\nbranch test\n").unwrap();
+        git(&["commit", "-qam", "introduce branch test"]);
+        let unique = git(&["rev-parse", "HEAD"]);
+        fs::write("file.txt", "base\nshared test\n").unwrap();
+        git(&["commit", "-qam", "remove branch test"]);
+        let tip = git(&["rev-parse", "HEAD"]);
+
+        let mut app = crate::blame::load_app(&["feature^".into(), "file.txt".into()]).unwrap();
+        crate::initialize_views(&mut app, crate::Command::Blame, &[]);
+        app.selected = 1;
+        assert_eq!(app.commits[app.selected].hash, shared);
+        switch(&mut app, View::Branches);
+        assert_eq!(app.commits[app.selected].hash, fork);
+        assert!(!app.commits.iter().any(|row| row.hash == shared));
+        assert!(app.center_selection);
+        let hashes: Vec<_> = app.commits.iter().map(|row| row.hash.clone()).collect();
+        // Re-enter the saved Branches view from a different blamed line.
+        app.watch = false;
+        switch(&mut app, View::Original);
+        assert_eq!(app.history, History::Blame);
+        assert_eq!(app.selected, 1);
+        app.selected = 2;
+        assert_eq!(app.commits[app.selected].hash, unique);
+        switch(&mut app, View::Branches);
+        assert_eq!(app.commits[app.selected].hash, tip);
+        assert!(!app.watch);
+        assert_eq!(
+            app.commits
+                .iter()
+                .map(|row| row.hash.clone())
+                .collect::<Vec<_>>(),
+            hashes
+        );
+        switch(&mut app, View::Original);
+        assert_eq!(app.selected, 2);
+
+        // The same action also works when Blame was reached from a branch
+        // review, whose session slot is already named Branches.
+        let mut review = View::Branches.load().unwrap();
+        review.views.active = View::Branches;
+        review.selected = review
+            .commits
+            .iter()
+            .position(|row| row.hash == tip)
+            .unwrap();
+        press(&mut review, KeyCode::Enter);
+        press(&mut review, KeyCode::Enter);
+        review.show_cursor = review
+            .show_rows
+            .iter()
+            .position(|row| row.text.contains("-branch test"))
+            .unwrap();
+        press(&mut review, KeyCode::Char('B'));
+        assert_eq!(review.history, History::Blame);
+        assert_eq!(review.commits[review.selected].hash, unique);
+        let blamed_line = review.selected;
+        switch(&mut review, View::Branches);
+        assert_eq!(review.history, History::Branches);
+        assert_eq!(review.commits[review.selected].hash, tip);
+        press(&mut review, KeyCode::Backspace);
+        assert_eq!(review.history, History::Blame);
+        assert_eq!(review.selected, blamed_line);
+
+        // A commit already displayed should remain an exact match.
+        git(&["branch", "landmark", &unique]);
+        let mut exact = crate::blame::load_app(&["feature^".into(), "file.txt".into()]).unwrap();
+        crate::initialize_views(&mut exact, crate::Command::Blame, &[]);
+        exact.selected = 2;
+        switch(&mut exact, View::Branches);
+        assert_eq!(exact.commits[exact.selected].hash, unique);
+    }
+
+    #[test]
+    fn switching_from_blame_without_a_containing_branch_keeps_the_saved_selection() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        repository();
+        let base = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-qb", "abandoned"]);
+        fs::write("file.txt", "abandoned test\n").unwrap();
+        git(&["commit", "-qam", "abandoned test"]);
+        let abandoned = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "-"]);
+        git(&["branch", "-D", "abandoned"]);
+        let mut app = crate::blame::load_app(&[abandoned, "file.txt".into()]).unwrap();
+        crate::initialize_views(&mut app, crate::Command::Blame, &[]);
+        let mut branches = View::Branches.load().unwrap();
+        branches.watch = false;
+        let selected = branches.selected;
+        app.views.saved.insert(View::Branches, Box::new(branches));
+        switch(&mut app, View::Branches);
+        assert_eq!(app.selected, selected);
+        assert_eq!(app.commits[app.selected].hash, base);
+    }
+
+    #[test]
     fn switching_from_branches_to_a_new_dirty_log_keeps_the_commit() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());

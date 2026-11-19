@@ -3723,6 +3723,23 @@ impl App {
             return;
         };
         if view == self.views.active {
+            // A branch's Log and its followed Blame still occupy the
+            // Branches slot. Open the graph without discarding that review;
+            // Backspace returns to the same blamed line.
+            if view == crate::views::View::Branches && self.history == History::Blame {
+                let loaded = view.load().map(|mut target| {
+                    if let Some(commit) = self
+                        .commits
+                        .get(self.selected)
+                        .filter(|commit| commit.kind == CommitKind::Revision)
+                    {
+                        target.focus_branch_commit(&commit.hash);
+                    }
+                    target.exit_on_esc = self.exit_on_esc;
+                    target
+                });
+                self.enter_followed(loaded);
+            }
             return;
         }
         let target = self
@@ -3737,12 +3754,14 @@ impl App {
                 return;
             }
         };
-        // Branches and Log share commit identities, even though their rows
-        // and ordering differ. Other views retain independent navigation.
+        // Blame can name a commit omitted by the compact Branches graph;
+        // select the existing fork or tip above it. Other transitions carry
+        // selection only when both views show the same commit.
         if self.mode == Mode::Log
             && matches!(
                 (self.history, target.history),
-                (History::Log, History::Branches) | (History::Branches, History::Log)
+                (History::Log | History::Blame, History::Branches)
+                    | (History::Branches, History::Log)
             )
             && matches!(target.mode, Mode::Log | Mode::Status)
         {
@@ -3752,10 +3771,18 @@ impl App {
                 .get(self.selected)
                 .filter(|commit| commit.kind == CommitKind::Revision)
                 .and_then(|selected| {
-                    target
-                        .commits
-                        .iter()
-                        .position(|commit| commit.hash == selected.hash)
+                    if self.history == History::Blame {
+                        crate::branches::containing_node(
+                            &target.commits,
+                            &selected.hash,
+                            target.repository.as_ref(),
+                        )
+                    } else {
+                        target
+                            .commits
+                            .iter()
+                            .position(|commit| commit.hash == selected.hash)
+                    }
                 })
             {
                 target.log_folds.reveal(index, &target.commits);
@@ -3778,6 +3805,16 @@ impl App {
         }
         self.rebuild_show_rows_preserving_cursor();
         self.redraw = true;
+    }
+
+    fn focus_branch_commit(&mut self, hash: &str) {
+        if let Some(index) =
+            crate::branches::containing_node(&self.commits, hash, self.repository.as_ref())
+        {
+            self.selected = index;
+            self.center_selection = true;
+            self.search_match = None;
+        }
     }
 
     pub fn click_show_row(&mut self, visible_row: usize) {

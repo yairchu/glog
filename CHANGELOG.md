@@ -7,6 +7,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Switching from Blame to Branches selects the branching point or branch tip
+  containing the blamed commit, even when that commit is hidden by the compact
+  graph.
+
 - Flash the screen and briefly suggest checking the keyboard layout when a
   non-ASCII letter is pressed outside search input.
 
