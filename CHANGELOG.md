@@ -5,6 +5,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+## 0.11.3 - 2026-11-22
+
 ### Changed
 
 - Open Reflog immediately from the command line or view menu and show recent
@@ -717,7 +719,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Initial release of the interactive `git log` and `git show` browser.
 
-[Unreleased]: https://github.com/yairchu/glog/compare/v0.11.2...HEAD
+[Unreleased]: https://github.com/yairchu/glog/compare/v0.11.3...HEAD
+[0.11.3]: https://github.com/yairchu/glog/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/yairchu/glog/compare/v0.11.1...v0.11.2
 [0.11.1]: https://github.com/yairchu/glog/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/yairchu/glog/compare/v0.10.0...v0.11.0
