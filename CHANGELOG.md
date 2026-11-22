@@ -8,8 +8,7 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 ### Changed
 
 - Open Reflog immediately from the command line or view menu and show recent
-  entries while the full history and its folds load in the background. Batch
-  ancestry checks for rebase chains.
+  entries while the full history and its folds load in the background.
 
 ## 0.11.2 - 2026-11-19
 
