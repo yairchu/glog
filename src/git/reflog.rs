@@ -67,7 +67,7 @@ pub(crate) fn start_reflog_app(args: &[String]) -> App {
     app
 }
 
-/// Menu switches validate the destination before replacing the current view.
+/// Wait for the first update when launching without a terminal.
 pub(crate) fn load_reflog_app(args: &[String]) -> Result<App, String> {
     let mut app = start_reflog_app(args);
     let (snapshot, update) = app

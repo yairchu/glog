@@ -54,7 +54,7 @@ impl View {
             }
             Self::Branches => crate::branches::load_picker()?,
             Self::Stashes => crate::stash::load_app(&["--watch".into()])?,
-            Self::Reflog => crate::git::load_reflog_app(&["--watch".into()])?,
+            Self::Reflog => crate::git::start_reflog_app(&["--watch".into()]),
             Self::Original => return Err("Original view is no longer available".into()),
         };
         app.context = match self {
@@ -429,6 +429,19 @@ mod tests {
 
         switch(&mut app, View::Reflog);
         assert_eq!(app.history, History::Reflog);
+        assert!(app.opening_reflog());
+        switch(&mut app, View::Stashes);
+        assert_eq!(app.history, History::Stash);
+        switch(&mut app, View::Reflog);
+        assert!(app.opening_reflog());
+        let (snapshot, update) = app
+            .pending_reflog
+            .as_ref()
+            .unwrap()
+            .result
+            .recv_timeout(std::time::Duration::from_secs(10))
+            .unwrap();
+        app.apply_reflog(snapshot, update).unwrap();
         app.bottom();
         let reflog_selected = app.selected;
         app.log_offset = 2;

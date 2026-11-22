@@ -374,13 +374,13 @@ fn run<B: ratatui::backend::Backend>(
             changed |= app.branch_similarity.poll(&mut app.commits);
         }
         changed |= app.poll_browser();
-        let opening_reflog = app.opening_reflog();
+        let opening_standalone_reflog = app.opening_reflog() && app.views.saved.is_empty();
         match app.poll_reflog() {
-            Ok(true) if opening_reflog && app.commits.is_empty() && !app.watch => {
+            Ok(true) if opening_standalone_reflog && app.commits.is_empty() && !app.watch => {
                 return Ok(Some(Command::Reflog.empty_message(app.history)))
             }
             Ok(loaded) => changed |= loaded,
-            Err(error) if opening_reflog => return Err(io::Error::other(error)),
+            Err(error) if opening_standalone_reflog => return Err(io::Error::other(error)),
             Err(error) => {
                 app.status = Some(error);
                 changed = true;
