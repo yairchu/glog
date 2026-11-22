@@ -11,6 +11,8 @@ const RECORD: char = '\x1e';
 const FIELD: char = '\x1f';
 const COAUTHOR: char = '\x1d';
 
+mod ancestry;
+pub(crate) use ancestry::ancestor_pairs;
 mod empty_commits;
 pub(crate) mod interchanges;
 mod repository;

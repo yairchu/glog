@@ -149,13 +149,7 @@ impl Folds {
             insert_group(&mut groups, Kind::Amend, rows);
         }
         let chains = rebase_chains(commits, &groups, |pairs| {
-            git::read_concurrently(pairs, |(old, new)| {
-                git::read_command_at(repository)
-                    .args(["merge-base", "--is-ancestor", old, new])
-                    .env("GIT_NO_LAZY_FETCH", "1")
-                    .output()
-                    .is_ok_and(|output| output.status.success())
-            })
+            git::ancestor_pairs(pairs, repository)
         });
         let repeated = next_on_ref(commits)
             .into_iter()
@@ -488,8 +482,7 @@ pub(super) fn next_on_ref(commits: &[Commit]) -> Vec<Option<usize>> {
 /// Other refs may interleave in --all without becoming part of the fold.
 ///
 /// `are_ancestors` answers, for each pair of targets, whether the first is
-/// an ancestor of the second. Asking for every pair at once lets the checks
-/// run concurrently.
+/// an ancestor of the second, for targets not already linked by a parent edge.
 fn rebase_chains(
     commits: &[Commit],
     groups: &BTreeMap<usize, Group>,
@@ -505,6 +498,7 @@ fn rebase_chains(
     };
     // Each rebase may continue the previous one on its ref: the same branch,
     // rebased onto a target that advanced.
+    let mut older_by_header = HashMap::new();
     let mut links = Vec::new();
     let mut targets = Vec::new();
     for (&header, newer) in groups {
@@ -526,18 +520,21 @@ fn rebase_chains(
         // Start entries pin the targets, even when Git recorded a mutable
         // branch name in the action. Equality is not forward progress.
         let old = commits[*older.rows.last().unwrap()].hash.as_str();
-        let new = commits[*newer.rows.last().unwrap()].hash.as_str();
-        if old != new {
+        let new = &commits[*newer.rows.last().unwrap()];
+        if new.parents.iter().any(|parent| parent == old) {
+            older_by_header.insert(header, older_header);
+        } else if old != new.hash {
             links.push((header, older_header));
-            targets.push((old, new));
+            targets.push((old, new.hash.as_str()));
         }
     }
     let advanced = are_ancestors(&targets);
-    let older: HashMap<_, _> = links
-        .into_iter()
-        .zip(advanced)
-        .filter_map(|(link, advanced)| advanced.then_some(link))
-        .collect();
+    older_by_header.extend(
+        links
+            .into_iter()
+            .zip(advanced)
+            .filter_map(|(link, advanced)| advanced.then_some(link)),
+    );
     let mut chains = Vec::new();
     let mut included = std::collections::HashSet::new();
     for &header in groups.keys() {
@@ -545,7 +542,7 @@ fn rebase_chains(
             continue;
         }
         let mut headers = vec![header];
-        while let Some(&older_header) = older.get(headers.last().unwrap()) {
+        while let Some(&older_header) = older_by_header.get(headers.last().unwrap()) {
             headers.push(older_header);
             included.insert(older_header);
         }

@@ -5,6 +5,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Changed
+
+- Speed up Reflog startup in repositories with long chains of rebases.
+
 ## 0.11.2 - 2026-11-19
 
 ### Added
