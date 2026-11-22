@@ -60,6 +60,13 @@ struct Group {
 
 impl Folds {
     pub(super) fn new(commits: &[Commit], repository: Option<&git::Repository>) -> Self {
+        Self::with_ancestry(commits, |pairs| git::ancestor_pairs(pairs, repository))
+    }
+
+    pub(super) fn with_ancestry(
+        commits: &[Commit],
+        are_ancestors: impl FnOnce(&[(&str, &str)]) -> Vec<bool>,
+    ) -> Self {
         let mut pending: HashMap<&str, Vec<usize>> = HashMap::new();
         let mut groups = BTreeMap::new();
         for (index, commit) in commits.iter().enumerate() {
@@ -148,9 +155,7 @@ impl Folds {
         for rows in pending.into_values() {
             insert_group(&mut groups, Kind::Amend, rows);
         }
-        let chains = rebase_chains(commits, &groups, |pairs| {
-            git::ancestor_pairs(pairs, repository)
-        });
+        let chains = rebase_chains(commits, &groups, are_ancestors);
         let repeated = next_on_ref(commits)
             .into_iter()
             .enumerate()
@@ -238,6 +243,35 @@ impl Folds {
         }
     }
 
+    // Both lists start with the very same streamed events. A group cut
+    // short by the preview may acquire older members in the full history.
+    pub(super) fn inherit_expanded(&mut self, previous: &Self, visible: &[bool]) -> bool {
+        let mut changed = false;
+        for (&row, _) in previous.groups.iter().filter(|(_, g)| g.expanded) {
+            if let Some(group) = self.groups.get_mut(&row) {
+                group.expanded = true;
+                if visible[row] {
+                    self.reveal(row);
+                }
+                changed = true;
+            }
+        }
+        for (&row, _) in previous.chains.iter().filter(|(_, c)| c.expanded) {
+            // Previously separate chains may now share a newer header.
+            if let Some(chain) = self.chains.values_mut().find(|c| c.headers.contains(&row)) {
+                chain.expanded = true;
+                changed = true;
+            }
+        }
+        for visits in previous.visits.values().filter(|v| v.expanded) {
+            if let Some(header) = self.visit(visits.entries[0]) {
+                self.visits.get_mut(&header).unwrap().expanded = true;
+                changed = true;
+            }
+        }
+        changed
+    }
+
     pub(super) fn layout(&self, commits: &[Commit]) -> Layout {
         let rows = commits.len();
         let mut layout = Layout {
@@ -307,9 +341,9 @@ impl Folds {
                 repeated[header] = repeated[*visits.entries.last().unwrap()];
             }
         }
-        layout.graphs = super::Drawing::Reflog(std::rc::Rc::new(super::reflog_graph::Graph::new(
-            commits, &layout, &repeated,
-        )));
+        layout.graphs = super::Drawing::Reflog(std::sync::Arc::new(
+            super::reflog_graph::Graph::new(commits, &layout, &repeated),
+        ));
         layout
     }
 

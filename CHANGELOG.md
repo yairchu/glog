@@ -7,7 +7,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Changed
 
-- Speed up Reflog startup in repositories with long chains of rebases.
+- Open Reflog immediately and show recent entries while the full history and
+  its folds load in the background. Batch ancestry checks for rebase chains.
 
 ## 0.11.2 - 2026-11-19
 

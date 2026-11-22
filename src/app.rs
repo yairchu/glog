@@ -299,6 +299,7 @@ pub struct App {
     pending_branch_diff: Option<crate::branches::remote_diff::Pending>,
     pub branch_diff_button: Option<ratatui::layout::Rect>,
     pub commits: Vec<Commit>,
+    pub(crate) pending_reflog: Option<git::PendingReflog>,
     pending_interchanges: Option<git::interchanges::Pending>,
     /// The last completed marker read, kept so refreshes need not flicker.
     interchanges: Option<std::sync::Arc<git::interchanges::Bases>>,
@@ -425,6 +426,7 @@ impl App {
             branch_similarity: Default::default(),
             pending_branch_diff: None,
             branch_diff_button: None,
+            pending_reflog: None,
             pending_interchanges: interchanges,
             interchanges: None,
             history: match commits
@@ -836,7 +838,9 @@ impl App {
         if !self.has_log_view() {
             return;
         }
-        if self.mode == Mode::Log && !self.log_folds.visible(self.selected) {
+        if self.mode == Mode::Log
+            && (self.opening_reflog() || !self.log_folds.visible(self.selected))
+        {
             return;
         }
         if self.mode == Mode::Log
@@ -1346,6 +1350,9 @@ impl App {
             tasks.push(Task::CodeStats);
         }
         if matches!(self.mode, Mode::Log | Mode::Show) {
+            if self.pending_reflog.is_some() {
+                tasks.push(Task::Reflog);
+            }
             if self.log_folds.loading() {
                 tasks.push(Task::History);
             }
@@ -1364,6 +1371,51 @@ impl App {
             tasks.push(Task::Browser);
         }
         self.activity.poll(&tasks, now)
+    }
+
+    pub(crate) fn apply_reflog(
+        &mut self,
+        snapshot: Option<WatchSnapshot>,
+        update: git::ReflogUpdate,
+    ) -> Result<(), String> {
+        if let Some(snapshot) = snapshot {
+            self.apply_watch_snapshot(Some(snapshot));
+        }
+        let page = match update {
+            git::ReflogUpdate::Recent(page) => page,
+            git::ReflogUpdate::Complete(result) => {
+                self.pending_reflog = None;
+                result.inspect_err(|_| self.watch_snapshot = None)?
+            }
+        };
+        let selected = (!self.commits.is_empty()).then_some(self.selected);
+        self.commits = page.commits;
+        self.log_folds
+            .install_reflog(page.folds, &self.commits, selected);
+        self.ensure_log_selection();
+        self.log_date_column = None;
+        Ok(())
+    }
+
+    pub fn opening_reflog(&self) -> bool {
+        self.pending_reflog.is_some() && self.commits.is_empty()
+    }
+
+    pub fn poll_reflog(&mut self) -> Result<bool, String> {
+        use std::sync::mpsc::TryRecvError;
+        let Some(pending) = &self.pending_reflog else {
+            return Ok(false);
+        };
+        let (snapshot, update) = match pending.result.try_recv() {
+            Ok(message) => message,
+            Err(TryRecvError::Empty) => return Ok(false),
+            Err(TryRecvError::Disconnected) => (
+                None,
+                git::ReflogUpdate::Complete(Err("reflog reader stopped".into())),
+            ),
+        };
+        self.apply_reflog(snapshot, update)?;
+        Ok(true)
     }
 
     /// Apply completed marker and omitted-history reads without moving selection.
@@ -1431,6 +1483,9 @@ impl App {
     }
 
     pub(crate) fn poll_watch_at(&mut self, now: Instant) -> bool {
+        if self.pending_reflog.is_some() {
+            return false;
+        }
         let Some(source) = self.watch_source.as_ref().filter(|_| self.watch) else {
             return false;
         };
@@ -1484,6 +1539,10 @@ impl App {
     /// when it starts watched.
     pub fn set_watch_source(&mut self, source: WatchSource, snapshot: Option<WatchSnapshot>) {
         self.watch_source = Some(source);
+        self.apply_watch_snapshot(snapshot);
+    }
+
+    fn apply_watch_snapshot(&mut self, snapshot: Option<WatchSnapshot>) {
         self.watch_retry = None;
         self.watch_snapshot = match snapshot {
             Some(Err(error)) => {
@@ -1541,6 +1600,7 @@ impl App {
     }
 
     pub fn replace_commits(&mut self, loaded: impl Into<git::LoadedLog>) {
+        self.pending_reflog = None;
         let git::LoadedLog {
             mut commits,
             mut interchanges,

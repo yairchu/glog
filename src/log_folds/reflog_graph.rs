@@ -308,7 +308,7 @@ pub(super) struct Graph {
     directions: Vec<u8>,
     events: Vec<Option<Node>>,
     checkpoints: Vec<Lanes>,
-    blocks: Vec<std::cell::OnceCell<Vec<Option<GraphRows>>>>,
+    blocks: Vec<std::sync::OnceLock<Vec<Option<GraphRows>>>>,
 }
 
 impl Graph {
@@ -343,7 +343,7 @@ impl Graph {
         for row in 0..commits.len() {
             if row % BLOCK == 0 {
                 graph.checkpoints.push(lanes.clone());
-                graph.blocks.push(std::cell::OnceCell::new());
+                graph.blocks.push(std::sync::OnceLock::new());
             }
             graph.advance(&mut lanes, row);
         }

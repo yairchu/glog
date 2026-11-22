@@ -94,6 +94,25 @@ enum Read {
 /// apply once `poll` reports the read.
 pub const READING: &str = "Reading omitted history…";
 
+pub(crate) struct PreparedReflog {
+    folds: reflog::Folds,
+    layout: Layout,
+}
+
+impl PreparedReflog {
+    pub(crate) fn new(commits: &[Commit], recent: bool) -> Self {
+        let folds = reflog::Folds::with_ancestry(commits, |pairs| {
+            if recent {
+                vec![false; pairs.len()]
+            } else {
+                git::ancestor_pairs(pairs, None)
+            }
+        });
+        let layout = folds.layout(commits);
+        Self { folds, layout }
+    }
+}
+
 pub struct LogFolds {
     reflog: Option<reflog::Folds>,
     repository: Option<git::Repository>,
@@ -287,6 +306,31 @@ impl LogFolds {
             ),
             _ => String::new(),
         }
+    }
+
+    pub(crate) fn install_reflog(
+        &mut self,
+        mut prepared: PreparedReflog,
+        commits: &[Commit],
+        selected: Option<usize>,
+    ) {
+        if let Some(previous) = &self.reflog {
+            let mut changed = prepared
+                .folds
+                .inherit_expanded(previous, &self.view.layout.visible);
+            if let Some(row) = selected.filter(|&row| !prepared.layout.visible[row]) {
+                prepared.folds.reveal(row);
+                changed = true;
+            }
+            if changed {
+                prepared.layout = prepared.folds.layout(commits);
+            }
+        }
+        self.view = View {
+            layout: prepared.layout,
+            ..View::default()
+        };
+        self.reflog = Some(prepared.folds);
     }
 
     /// Lay out new commits. Under --fold-merges, their new merges start
@@ -1467,7 +1511,7 @@ impl Layout {
                 (index, rows)
             })
             .collect();
-        Drawing::Plan(std::rc::Rc::new(Plan {
+        Drawing::Plan(std::sync::Arc::new(Plan {
             visible: self.visible.clone(),
             trimmed: trimmed.to_vec(),
             nodes: commits.iter().map(|c| c.graph_node).collect(),
@@ -1476,8 +1520,8 @@ impl Layout {
             git_colours,
             unicode_colours,
             fixed,
-            ascii: std::cell::OnceCell::new(),
-            unicode: std::cell::OnceCell::new(),
+            ascii: std::sync::OnceLock::new(),
+            unicode: std::sync::OnceLock::new(),
         }))
     }
 }
@@ -1491,8 +1535,8 @@ const BLOCK: usize = 64;
 /// text is built when one of its rows is first displayed.
 #[derive(Clone)]
 enum Drawing {
-    Plan(std::rc::Rc<Plan>),
-    Reflog(std::rc::Rc<reflog_graph::Graph>),
+    Plan(std::sync::Arc<Plan>),
+    Reflog(std::sync::Arc<reflog_graph::Graph>),
 }
 
 impl Default for Drawing {
@@ -1546,8 +1590,8 @@ struct Plan {
     // Rows Git drew without commits, such as the working tree.
     fixed: HashMap<usize, GraphRows>,
     // Each style's lanes, assigned when the style is first shown.
-    ascii: std::cell::OnceCell<Lanes>,
-    unicode: std::cell::OnceCell<Lanes>,
+    ascii: std::sync::OnceLock<Lanes>,
+    unicode: std::sync::OnceLock<Lanes>,
 }
 
 /// The lane assignment of one graph style.
@@ -1556,7 +1600,7 @@ struct Lanes {
     unicode: bool,
     heights: Vec<usize>,
     checkpoints: Vec<State>,
-    blocks: Vec<std::cell::OnceCell<Vec<Option<Vec<String>>>>>,
+    blocks: Vec<std::sync::OnceLock<Vec<Option<Vec<String>>>>>,
 }
 
 /// The row each lane leads to, and its colour, or `None` for a gap.
@@ -1602,7 +1646,7 @@ impl Plan {
         for index in 0..self.visible.len() {
             if index % BLOCK == 0 {
                 lanes.checkpoints.push(state.clone());
-                lanes.blocks.push(std::cell::OnceCell::new());
+                lanes.blocks.push(std::sync::OnceLock::new());
             }
             let height = if let Some(rows) = self.fixed.get(&index) {
                 rows.get(unicode).len()

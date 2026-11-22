@@ -1123,7 +1123,9 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     app.visible_bisect_gaps.clear();
     if app.commits.is_empty() {
         frame.render_widget(
-            Paragraph::new(if app.history == History::Bisect {
+            Paragraph::new(if app.pending_reflog.is_some() {
+                "Reading recent reflog entries…"
+            } else if app.history == History::Bisect {
                 "No bisect session in progress."
             } else {
                 "No commits matched the supplied arguments."

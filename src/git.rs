@@ -15,7 +15,10 @@ mod ancestry;
 pub(crate) use ancestry::ancestor_pairs;
 mod empty_commits;
 pub(crate) mod interchanges;
+mod reflog;
 mod repository;
+
+pub(crate) use reflog::{load_reflog_app, start_reflog_app, PendingReflog, Update as ReflogUpdate};
 
 pub(crate) use repository::Repository;
 
@@ -258,19 +261,16 @@ pub struct ReflogEntry {
     pub action: String,
 }
 
-pub fn load_reflog_app(args: &[String]) -> Result<crate::app::App, String> {
-    let (watch, args) = crate::app::watch_args(args);
-    let source = crate::app::WatchSource::Reflog(args.clone());
-    let snapshot = watch.then(|| source.snapshot(None));
-    let mut app = crate::app::App::new(load_reflog(&args)?);
-    app.history = crate::app::History::Reflog;
-    app.watch = watch;
-    app.set_watch_source(source, snapshot);
-    Ok(app)
-}
-
 /// Read ref-update events, preserving repeated visits to the same commit.
 pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
+    read_reflog(args, &Cancel::default(), None::<fn(Vec<Commit>)>)
+}
+
+fn read_reflog(
+    args: &[String],
+    cancel: &Cancel,
+    mut recent: Option<impl FnOnce(Vec<Commit>)>,
+) -> Result<Vec<Commit>, String> {
     let mut options = Vec::new();
     let mut reference = None;
     let mut args = args.iter();
@@ -316,10 +316,18 @@ pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
     };
     let mut raw_command = command();
     raw_command.args(["--date=raw", "--max-count=-1"]);
-    let output = command()
-        .arg("--")
-        .output()
-        .map_err(|error| format!("could not run git reflog: {error}"))?;
+    let rebasing = crate::operation::rebase_logged();
+    let output = read_output_cancellable(command().arg("--"), cancel, |mut stdout, output| {
+        if recent.is_none() {
+            return stdout.read_to_end(output);
+        }
+        reflog::read_with_prefix(stdout, output, |bytes| {
+            if let Ok(commits) = parse_reflog(&String::from_utf8_lossy(bytes), rebasing) {
+                recent.take().unwrap()(commits);
+            }
+        })
+    })
+    .map_err(|error| format!("could not run git reflog: {error}"))?;
     if !output.status.success() {
         let error = String::from_utf8_lossy(&output.stderr);
         if error.contains("does not have any commits yet") {
@@ -327,15 +335,22 @@ pub fn load_reflog(args: &[String]) -> Result<Vec<Commit>, String> {
         }
         return Err(stderr_message("git reflog failed", &output.stderr));
     }
-    let rebasing = crate::operation::rebase_logged();
     let mut commits = parse_reflog(&String::from_utf8_lossy(&output.stdout), rebasing)?;
     if commits.is_empty() {
         return Ok(commits);
     }
-    let raw_output = raw_command
-        .arg("--")
-        .output()
-        .map_err(|error| format!("could not read reflog timestamps: {error}"))?;
+    // A count limit can leave only a few displayed rows while the raw read
+    // still spans years. Publish those rows when the raw stream crosses the
+    // same threshold, then finish assigning their stable visit identities.
+    let raw_output = read_output_cancellable(
+        raw_command.arg("--"),
+        cancel,
+        |mut stdout, output| match recent {
+            Some(recent) => reflog::read_with_prefix(stdout, output, |_| recent(commits.clone())),
+            None => stdout.read_to_end(output),
+        },
+    )
+    .map_err(|error| format!("could not read reflog timestamps: {error}"))?;
     if !raw_output.status.success() {
         return Err(stderr_message("git reflog failed", &raw_output.stderr));
     }
@@ -396,7 +411,7 @@ fn parse_reflog(output: &str, rebasing: bool) -> Result<Vec<Commit>, String> {
         .unwrap_or(output)
         .split('\0')
         .collect();
-    let (records, remainder) = fields.as_chunks::<9>();
+    let (records, remainder) = fields.as_chunks::<{ reflog::FIELDS }>();
     if !remainder.is_empty() {
         return Err("invalid Git reflog output".into());
     }
@@ -2355,6 +2370,16 @@ pub(crate) fn output_cancellable(
     command: &mut Command,
     cancel: &Cancel,
 ) -> std::io::Result<std::process::Output> {
+    read_output_cancellable(command, cancel, |mut stdout, output| {
+        stdout.read_to_end(output)
+    })
+}
+
+fn read_output_cancellable(
+    command: &mut Command,
+    cancel: &Cancel,
+    read_stdout: impl FnOnce(std::process::ChildStdout, &mut Vec<u8>) -> std::io::Result<usize>,
+) -> std::io::Result<std::process::Output> {
     let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -2362,14 +2387,14 @@ pub(crate) fn output_cancellable(
         .spawn()?;
     let pipes = child.stdout.take().zip(child.stderr.take());
     cancel.register(child);
-    let (mut stdout, mut stderr) = pipes.ok_or_else(|| std::io::Error::other("missing pipes"))?;
+    let (stdout, mut stderr) = pipes.ok_or_else(|| std::io::Error::other("missing pipes"))?;
     std::thread::scope(|scope| {
         let errors = scope.spawn(move || {
             let mut errors = Vec::new();
             stderr.read_to_end(&mut errors).map(|_| errors)
         });
         let mut output = Vec::new();
-        let read = stdout.read_to_end(&mut output);
+        let read = read_stdout(stdout, &mut output);
         let errors = errors
             .join()
             .map_err(|_| std::io::Error::other("stderr reader panicked"))?;

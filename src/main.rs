@@ -36,6 +36,7 @@ mod views;
 
 use std::{
     env, io,
+    io::IsTerminal,
     process::ExitCode,
     time::{Duration, Instant},
 };
@@ -95,6 +96,7 @@ fn main() -> ExitCode {
         Command::RangeDiff => range_diff::load_app(command_args),
         Command::Grep => grep::load_app(command_args),
         Command::GithubSearch => github_search::load_app(command_args),
+        Command::Reflog if io::stdout().is_terminal() => Ok(git::start_reflog_app(command_args)),
         Command::Reflog => git::load_reflog_app(command_args),
         Command::Stash => stash::load_app(command_args),
         Command::Bisect => bisect::load_app(command_args),
@@ -123,7 +125,7 @@ fn main() -> ExitCode {
     let watch = watch || app.watch;
     initialize_views(&mut app, command, &git_args);
     // Watching waits for content, as Status always does.
-    if !watch && app.is_empty() {
+    if !watch && app.pending_reflog.is_none() && app.is_empty() {
         eprintln!("glog: {}", command.empty_message(app.history));
         return ExitCode::SUCCESS;
     }
@@ -156,20 +158,25 @@ fn main() -> ExitCode {
     let result = run(&mut terminal, &mut app, &mut title);
     let title_result = title.restore();
     let _ = app.images.clear(&mut io::stdout());
-    let result = result
-        .and(title_result)
-        .and(guard.restore())
-        .and_then(|()| {
-            if let Some(picker) = app.branch_picker() {
-                ansi::write_lines(io::stdout().lock(), branches::summary(picker))?;
+    let restored = title_result.and(guard.restore());
+    let result = result.and_then(|message| {
+        restored?;
+        if let Some(picker) = app.branch_picker() {
+            ansi::write_lines(io::stdout().lock(), branches::summary(picker))?;
+        }
+        Ok(message)
+    });
+    match result {
+        Ok(message) => {
+            if let Some(message) = message {
+                eprintln!("glog: {message}");
             }
-            Ok(())
-        });
-    if let Err(error) = result {
-        eprintln!("glog: {error}");
-        ExitCode::FAILURE
-    } else {
-        ExitCode::SUCCESS
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("glog: {error}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -317,7 +324,7 @@ fn run<B: ratatui::backend::Backend>(
     terminal: &mut Terminal<B>,
     app: &mut App,
     title: &mut terminal_title::Title,
-) -> io::Result<()> {
+) -> io::Result<Option<&'static str>> {
     let mut last_watch = Instant::now();
     let mut last_status = Instant::now();
     let mut deferred = None;
@@ -367,6 +374,18 @@ fn run<B: ratatui::backend::Backend>(
             changed |= app.branch_similarity.poll(&mut app.commits);
         }
         changed |= app.poll_browser();
+        let opening_reflog = app.opening_reflog();
+        match app.poll_reflog() {
+            Ok(true) if opening_reflog && app.commits.is_empty() && !app.watch => {
+                return Ok(Some(Command::Reflog.empty_message(app.history)))
+            }
+            Ok(loaded) => changed |= loaded,
+            Err(error) if opening_reflog => return Err(io::Error::other(error)),
+            Err(error) => {
+                app.status = Some(error);
+                changed = true;
+            }
+        }
         changed |= app.poll_log();
         changed |= app.poll_code_counts();
         changed |= app.poll_keyboard_layout_hint(Instant::now());
@@ -378,12 +397,13 @@ fn run<B: ratatui::backend::Backend>(
             changed = false;
         }
         app.start_interchanges();
-        // Restore a visual bell promptly even when no more input arrives.
-        let timeout = if app.keyboard_layout_hint.is_some_and(|hint| hint.flashing) {
-            Duration::from_millis(25)
-        } else {
-            Duration::from_millis(250)
-        };
+        // Show the first reflog rows and restore a visual bell promptly.
+        let timeout =
+            if app.opening_reflog() || app.keyboard_layout_hint.is_some_and(|hint| hint.flashing) {
+                Duration::from_millis(25)
+            } else {
+                Duration::from_millis(250)
+            };
         let first = match deferred.take() {
             Some(click) => Some(click),
             None if event::poll(timeout)? => Some(event::read()?),
@@ -407,7 +427,7 @@ fn run<B: ratatui::backend::Backend>(
             last_watch = Instant::now();
         }
     }
-    Ok(())
+    Ok(None)
 }
 
 /// Terminals report a fast trackpad/wheel gesture as a burst of discrete
