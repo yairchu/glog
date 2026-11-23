@@ -79,7 +79,9 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
                 .add_modifier(Modifier::BOLD),
         );
     frame.render_widget(Block::default().style(header_style), chunks[0]);
-    let command = if app.context.is_empty() {
+    let command = if app.mode == Mode::GithubFile {
+        format!(" {} ", app.context)
+    } else if app.context.is_empty() {
         " glog ".to_owned()
     } else {
         format!(" glog {} ", app.context)

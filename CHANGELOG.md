@@ -5,6 +5,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Changed
+
+- Show the repository and path in GitHub code search file previews and use
+  delta for syntax highlighting when available.
+
 ## 0.11.3 - 2026-11-22
 
 ### Changed

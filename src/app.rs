@@ -3427,9 +3427,9 @@ impl App {
         };
         match loaded {
             Err(error) => self.status = Some(error),
-            Ok(crate::github_search::Outcome::Open(loaded)) => {
+            Ok(crate::github_search::Outcome::Open(preview)) => {
                 self.status = None;
-                self.enter_followed(Ok(loaded.into_app()))
+                self.enter_followed(Ok(preview.into_app()))
             }
             Ok(crate::github_search::Outcome::Browse(url)) => {
                 self.follow_link(&crate::commit_links::Target::Url(url));

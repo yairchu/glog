@@ -1,5 +1,6 @@
 //! GitHub code results and immutable remote files, using gh's authentication.
 use std::{
+    fmt::Write,
     process::{Command, Stdio},
     sync::{mpsc, Arc, OnceLock},
 };
@@ -8,8 +9,11 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 
 use crate::{
+    ansi,
     app::{App, History, Mode},
     git, grep,
+    pager::PagerView,
+    range_diff::View,
 };
 
 const FIELDS: &str = "path,repository,sha,textMatches,url";
@@ -377,7 +381,7 @@ pub struct Target {
     pub location: Location,
 }
 
-pub struct Loaded {
+struct Loaded {
     file: File,
     contents: Arc<str>,
     line: Option<usize>,
@@ -396,44 +400,81 @@ impl Target {
 }
 
 impl Loaded {
-    pub fn url(&self) -> String {
+    fn url(&self) -> String {
         self.file.url(self.line)
     }
 
-    pub fn into_app(self) -> App {
-        let mut app = App::new(Vec::new());
-        app.history = History::GithubSearch;
-        app.mode = Mode::GithubFile;
-        app.context = format!("gh file {}:{}", self.file.label(), self.file.path);
-        let width = self.contents.lines().count().max(1).to_string().len();
-        let numbered: String = self
-            .contents
-            .lines()
-            .enumerate()
-            .map(|(index, line)| format!("{:>width$}  {}\n", index + 1, clean(line)))
-            .collect();
-        let mut pager = crate::range_diff::View::new(&numbered);
+    fn into_preview(self) -> FileView {
+        let lines: Vec<_> = self.contents.lines().map(clean).collect();
+        let width = lines.len().max(1).to_string().len();
+        let colored = highlight_file(&self.file.path, &lines);
+        let mut numbered = String::new();
+        for (index, line) in lines.iter().enumerate() {
+            let number = index + 1;
+            if let Some(colored) = &colored {
+                // Delta retains the leading context space, which is part of the gutter.
+                let _ = writeln!(numbered, "{number:>width$} {}", colored[index]);
+            } else {
+                let _ = writeln!(numbered, "{number:>width$}  {line}");
+            }
+        }
+        let mut pager = View::new(&numbered);
         // Request a reveal after the first frame has measured wrapping.
-        pager.cursor = self
-            .line
-            .unwrap_or(1)
-            .saturating_sub(1)
-            .min(self.contents.lines().count().saturating_sub(1));
-        crate::pager::PagerView::move_by(&mut pager, 0);
-        app.github_file_view = Some(FileView {
+        pager.cursor = self.line.unwrap_or(1).saturating_sub(1);
+        pager.move_by(0);
+        FileView {
             file: self.file,
             pager,
-        });
-        app
+        }
     }
+}
+
+/// Feed delta a single context hunk so it can highlight the whole file by path.
+fn highlight_file(path: &str, lines: &[String]) -> Option<Vec<String>> {
+    if !git::delta_enabled() || lines.is_empty() || path.chars().any(char::is_control) {
+        return None;
+    }
+    let mut diff = format!(
+        "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,{0} +1,{0} @@\n",
+        lines.len()
+    );
+    for line in lines {
+        diff.push(' ');
+        diff.push_str(line);
+        diff.push('\n');
+    }
+    let output = git::pipe_through(
+        Command::new("delta").args(["--paging=never", "--color-only", "--tabs=0"]),
+        diff.as_bytes(),
+    )?;
+    let mut formatted = output.lines().skip(4);
+    let mut colored = Vec::with_capacity(lines.len());
+    for source in lines {
+        let line = formatted.next()?;
+        if ansi::plain(line).strip_prefix(' ') != Some(source.as_str()) {
+            return None;
+        }
+        colored.push(line.to_owned());
+    }
+    formatted.next().is_none().then_some(colored)
 }
 
 pub struct FileView {
     file: File,
-    pub pager: crate::range_diff::View,
+    pub pager: View,
 }
 
 impl FileView {
+    pub fn into_app(self) -> App {
+        let mut app = App::new(Vec::new());
+        app.history = History::GithubSearch;
+        app.mode = Mode::GithubFile;
+        app.context =
+            clean(&format!("{}:{}", self.file.label(), self.file.path)).replace(['\n', '\t'], " ");
+        app.github_file_view = Some(self);
+        app
+    }
+
     pub fn url(&self) -> String {
         self.file.url(Some(self.pager.cursor + 1))
     }
@@ -446,7 +487,7 @@ pub enum Action {
 }
 
 pub enum Outcome {
-    Open(Loaded),
+    Open(Box<FileView>),
     Browse(String),
 }
 
@@ -459,7 +500,9 @@ impl Pending {
         let (sender, receiver) = mpsc::channel();
         std::thread::spawn(move || {
             let result = match action {
-                Action::Open => target.load().map(Outcome::Open),
+                Action::Open => target
+                    .load()
+                    .map(|loaded| Outcome::Open(Box::new(loaded.into_preview()))),
                 Action::Browse => {
                     let file_url = target.file.url(None);
                     let url = if matches!(target.location, Location::File) {
@@ -687,11 +730,31 @@ mod tests {
         let _cwd = CurrentDirGuard::enter(directory.path());
         let root = directory.path();
         let mut environment = Environment(Vec::new());
+        let original_path = std::env::var_os("PATH").unwrap_or_default();
         let mut paths = vec![root.to_owned()];
-        paths.extend(std::env::split_paths(
-            &std::env::var_os("PATH").unwrap_or_default(),
-        ));
+        paths.extend(std::env::split_paths(&original_path));
         environment.set("PATH", std::env::join_paths(paths).unwrap());
+        environment.set("GLOG_TEST_DELTA_PATH", original_path);
+        environment.set("GLOG_TEST_DELTA_FAIL", root.join("delta-fail"));
+        environment.set("GLOG_DELTA", "1");
+        executable(
+            &root.join("delta"),
+            r#"#!/bin/sh
+if test "$3" != --tabs=0; then
+    PATH="$GLOG_TEST_DELTA_PATH"
+    if command -v delta >/dev/null; then exec delta "$@"; fi
+    exec cat
+fi
+if test -f "$GLOG_TEST_DELTA_FAIL"; then
+    cat >/dev/null
+    echo invalid output
+    exit 0
+fi
+awk 'NR == 3 && $0 != "+++ b/src/file space.rs" { exit 1 }
+     NR > 4 { sub(/header/, "\033[35mheader\033[0m") }
+     { print }'
+"#,
+        );
         for (name, file) in [
             ("GLOG_TEST_SEARCH_RESULTS", "results.json"),
             ("GLOG_TEST_SEARCH_BLOB", "blob.json"),
@@ -770,6 +833,14 @@ mod tests {
         });
         terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
         assert_eq!(app.github_file_view.as_ref().unwrap().pager.cursor, 2);
+        let buffer = terminal.backend().buffer();
+        let header: String = (0..100).map(|x| buffer[(x, 0)].symbol()).collect();
+        assert!(header.contains("owner/one:src/file space.rs"));
+        assert!(!header.contains("glog gh file"));
+        assert!(buffer
+            .content()
+            .iter()
+            .any(|cell| { cell.symbol() == "h" && cell.fg == ratatui::style::Color::Magenta }));
         press(&mut app, KeyCode::Down);
         press(&mut app, KeyCode::Char('e'));
         until(|| {
@@ -785,6 +856,19 @@ mod tests {
             "returning from a loaded file must not restore its loading message: {:?}",
             app.status
         );
+        fs::write("delta-fail", "").unwrap();
+        press(&mut app, KeyCode::Enter);
+        until(|| {
+            app.poll_github_file();
+            app.mode == Mode::GithubFile
+        });
+        terminal.draw(|frame| ui::draw(frame, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let screen: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(screen.contains("1  header"));
+        assert!(screen.contains("3  let café = needle;"));
+        press(&mut app, KeyCode::Esc);
+
         press(&mut app, KeyCode::Enter);
         press(&mut app, KeyCode::Esc);
         assert!(
