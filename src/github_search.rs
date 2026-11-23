@@ -971,6 +971,10 @@ awk 'NR == 3 && $0 == "+++ b/file space.rs" { fragment = 1 }
         let buffer = terminal.backend().buffer();
         let header: String = (0..100).map(|x| buffer[(x, 0)].symbol()).collect();
         assert!(header.contains("glog gh repo read-file 'src/file space.rs' --repo=owner/one"));
+        let footer: String = (0..100)
+            .map(|x| buffer[(x, buffer.area.bottom() - 1)].symbol())
+            .collect();
+        assert!(footer.contains("Esc/Backspace back"));
         let preview_command =
             format!("gh repo read-file 'src/file space.rs' --repo=owner/one --ref={COMMIT}");
         assert_eq!(app.context, preview_command);
@@ -1081,6 +1085,7 @@ awk 'NR == 3 && $0 == "+++ b/file space.rs" { fragment = 1 }
             .map(|cell| cell.symbol())
             .collect();
         assert!(screen.contains("3  let café = needle;"));
+        assert!(!screen.contains("Esc/Backspace back"));
         assert!(fs::read_to_string("calls").unwrap().ends_with(&format!(
             "repo\nread-file\n--json\npath,htmlUrl,size,content\nsrc/file space.rs\n--repo=owner/one\n--ref={COMMIT}\n"
         )));

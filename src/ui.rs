@@ -225,7 +225,12 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else if let Some(message) = app.message() {
         message.to_owned()
     } else if app.mode == Mode::GithubFile {
-        "h help  q quit  ↑/k ↓/j  e GitHub  Esc/Backspace back  / ? search".to_owned()
+        let back = if app.has_reference_back() {
+            "  Esc/Backspace back"
+        } else {
+            ""
+        };
+        format!("h help  q quit  ↑/k ↓/j  e GitHub{back}  / ? search")
     } else if app.mode == Mode::Grep && app.history == History::GithubSearch {
         "h help  q quit  ←/→ path/pan  Enter file/fold  e GitHub  z fold  Z fold all  t hide extension  T reset  / ? search".to_owned()
     } else if app.mode == Mode::Grep {
@@ -271,7 +276,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         "h help  q quit  ↑/k ↓/j  Shift-←/→ commit  [/ ] file  B blame  e edit  Enter/z fold  t hide type  T reset  s summary  / ? search"
             .to_owned()
     };
-    if app.has_reference_back() && app.search_input.is_none() && app.message().is_none() {
+    if app.mode != Mode::GithubFile
+        && app.has_reference_back()
+        && app.search_input.is_none()
+        && app.message().is_none()
+    {
         help = format!("Backspace back  {help}");
     }
     if app.view_menu.is_some() {
@@ -710,7 +719,7 @@ const HELP_ROWS: &[HelpRow] = &[
             blame: Some("return to the previous blame or review"),
             detail: Some("return after opening blame"),
             file: Some("return to the previous blame, if any"),
-            github_file: Some("return to GitHub search results (also Esc)"),
+            github_file: Some("return to GitHub search results, if opened from search (also Esc)"),
             range_diff: Some("return to the previous view, if any (also Esc)"),
             branches: Some("return here from a branch Log"),
             ..NO_HELP
