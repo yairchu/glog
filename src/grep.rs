@@ -16,6 +16,7 @@ use ratatui::{
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     process::Stdio,
+    sync::mpsc,
 };
 
 #[derive(Clone, Debug)]
@@ -133,6 +134,7 @@ pub struct View {
     origin: u16,
     buttons: Vec<(Rect, Action)>,
     fold_buttons: Vec<(Rect, usize)>,
+    highlighting: Option<Highlighting>,
 }
 
 /// The spans of a row's line that show its path.
@@ -315,7 +317,7 @@ pub fn load_app(args: &[String]) -> Result<App, String> {
     }
     let mut view = View::parse(repository.clone(), sources, &output.stdout)?;
     if color {
-        highlight_hits(&mut view.files);
+        view.highlighting = Highlighting::start(&view.files);
     }
     let mut app = App::new(Vec::new());
     app.mode = Mode::Grep;
@@ -381,68 +383,95 @@ fn extension_label(extension: &[u8]) -> String {
     }
 }
 
-fn highlight_hits(files: &mut [File]) {
-    if !git::delta_enabled() {
-        return;
-    }
-    let mut snippets = Vec::new();
-    for file in files {
-        // The synthetic diff only needs a filename for language detection.
-        let path =
-            crate::diff::display_path(file.path.rsplit(|&byte| byte == b'/').next().unwrap());
-        for hits in file
-            .hits
-            .chunk_by_mut(|left, right| match (&left.location, &right.location) {
-                (Location::Line(left), Location::Line(right)) => {
-                    left.checked_add(1) == Some(*right)
-                }
-                (Location::Fragment { text: left, .. }, Location::Fragment { text: right, .. }) => {
-                    std::sync::Arc::ptr_eq(left, right)
-                }
-                _ => false,
-            })
-        {
-            let lines: Vec<_> = match &hits[0].location {
-                Location::File => continue,
-                Location::Fragment { text, .. } => {
-                    text.lines().map(crate::github_search::clean).collect()
-                }
-                Location::Line(_) => hits
-                    .iter()
-                    .map(|hit| {
-                        let mut text = hit.text.to_string();
-                        if text.ends_with('\r') {
-                            text.pop();
-                        }
-                        text
-                    })
-                    .collect(),
-            };
-            if lines.is_empty()
-                || lines
-                    .iter()
-                    .any(|line| line.chars().any(|ch| ch.is_control() && ch != '\t'))
-            {
-                continue;
-            }
-            snippets.push((path.clone(), lines, hits));
+/// Syntax colors that delta computes in the background, so results show
+/// immediately and gain colors once it finishes.
+struct Highlighting {
+    /// The file and consecutive hits each snippet colors.
+    targets: Vec<(usize, std::ops::Range<usize>)>,
+    receiver: mpsc::Receiver<Option<Vec<Vec<Option<String>>>>>,
+}
+
+impl Highlighting {
+    fn start(files: &[File]) -> Option<Self> {
+        if !git::delta_enabled() {
+            return None;
         }
+        let mut targets = Vec::new();
+        let mut sources = Vec::new();
+        for (index, file) in files.iter().enumerate() {
+            // The synthetic diff only needs a filename for language detection.
+            let path =
+                crate::diff::display_path(file.path.rsplit(|&byte| byte == b'/').next().unwrap());
+            let mut start = 0;
+            for hits in file
+                .hits
+                .chunk_by(|left, right| match (&left.location, &right.location) {
+                    (Location::Line(left), Location::Line(right)) => {
+                        left.checked_add(1) == Some(*right)
+                    }
+                    (
+                        Location::Fragment { text: left, .. },
+                        Location::Fragment { text: right, .. },
+                    ) => std::sync::Arc::ptr_eq(left, right),
+                    _ => false,
+                })
+            {
+                let range = start..start + hits.len();
+                start = range.end;
+                let lines: Vec<_> = match &hits[0].location {
+                    Location::File => continue,
+                    Location::Fragment { text, .. } => {
+                        text.lines().map(crate::github_search::clean).collect()
+                    }
+                    Location::Line(_) => hits
+                        .iter()
+                        .map(|hit| {
+                            let mut text = hit.text.to_string();
+                            if text.ends_with('\r') {
+                                text.pop();
+                            }
+                            text
+                        })
+                        .collect(),
+                };
+                if lines.is_empty()
+                    || lines
+                        .iter()
+                        .any(|line| line.chars().any(|ch| ch.is_control() && ch != '\t'))
+                {
+                    continue;
+                }
+                targets.push((index, range));
+                sources.push((path.clone(), lines));
+            }
+        }
+        if sources.is_empty() {
+            return None;
+        }
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(git::highlight_sources(
+                sources
+                    .iter()
+                    .map(|(path, lines)| (path.as_str(), lines.as_slice())),
+            ));
+        });
+        Some(Self { targets, receiver })
     }
-    let Some(colored) = git::highlight_sources(
-        snippets
-            .iter()
-            .map(|(path, lines, _)| (path.as_str(), lines.as_slice())),
-    ) else {
-        return;
-    };
-    for ((_, _, hits), colored) in snippets.into_iter().zip(colored) {
-        for (index, hit) in hits.iter_mut().enumerate() {
-            let index = match hit.location {
-                Location::Fragment { line, .. } => line,
-                _ => index,
-            };
-            if let Some(Some(line)) = colored.get(index) {
-                hit.highlight(line);
+
+    fn apply(self, colored: Option<Vec<Vec<Option<String>>>>, files: &mut [File]) {
+        let Some(colored) = colored else {
+            return;
+        };
+        for ((file, range), colored) in self.targets.into_iter().zip(colored) {
+            for (index, hit) in files[file].hits[range].iter_mut().enumerate() {
+                let index = match hit.location {
+                    Location::Fragment { line, .. } => line,
+                    _ => index,
+                };
+                if let Some(Some(line)) = colored.get(index) {
+                    hit.highlight(line);
+                }
             }
         }
     }
@@ -541,8 +570,9 @@ impl View {
                 hits,
             });
         }
-        highlight_hits(&mut files);
-        Self::from_files(None, sources, files)
+        let mut view = Self::from_files(None, sources, files);
+        view.highlighting = Highlighting::start(&view.files);
+        view
     }
 
     fn from_files(
@@ -575,10 +605,33 @@ impl View {
             origin: 0,
             buttons: Vec::new(),
             fold_buttons: Vec::new(),
+            highlighting: None,
         };
         view.build();
         view.rebuild();
         view
+    }
+    /// Apply syntax colors once delta has finished computing them.
+    pub fn poll_highlighting(&mut self) -> bool {
+        let Some(highlighting) = &self.highlighting else {
+            return false;
+        };
+        let colored = match highlighting.receiver.try_recv() {
+            Ok(colored) => colored,
+            Err(mpsc::TryRecvError::Empty) => return false,
+            Err(mpsc::TryRecvError::Disconnected) => None,
+        };
+        let highlighting = self.highlighting.take().unwrap();
+        highlighting.apply(colored, &mut self.files);
+        true
+    }
+    /// Wait for syntax colors, as if `poll_highlighting` ran once they completed.
+    #[cfg(test)]
+    pub fn settle_highlighting(&mut self) {
+        if let Some(highlighting) = self.highlighting.take() {
+            let colored = highlighting.receiver.recv().ok().flatten();
+            highlighting.apply(colored, &mut self.files);
+        }
     }
     pub fn match_count(&self) -> usize {
         self.files.iter().map(|file| file.hits.len()).sum()

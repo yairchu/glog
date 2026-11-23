@@ -382,6 +382,10 @@ fn run<B: ratatui::backend::Backend>(
         }
         changed |= app.images.poll();
         changed |= app.poll_github_file();
+        changed |= app
+            .grep_view
+            .as_mut()
+            .is_some_and(grep::View::poll_highlighting);
         changed |= app.poll_branch_diff();
         if app.history == app::History::Branches {
             changed |= app.branch_pull_requests.poll(&mut app.commits, app.watch);

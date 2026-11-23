@@ -930,6 +930,7 @@ awk 'NR == 3 && $0 == "+++ b/file space.rs" { fragment = 1 }
             "#!/bin/sh\nprintf '%s' \"$1\" > \"$GLOG_TEST_SEARCH_BROWSER\"\n",
         );
         let mut app = load_app(&["needle".into(), "--repo".into(), "owner/one".into()]).unwrap();
+        app.grep_view.as_mut().unwrap().settle_highlighting();
         let press = |app: &mut App, key| {
             input::handle(Event::Key(KeyEvent::new(key, KeyModifiers::NONE)), app);
         };
