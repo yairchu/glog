@@ -2269,9 +2269,10 @@ pub(crate) fn run_delta(input: &[u8]) -> Option<String> {
 }
 
 /// Highlight independent snippets as context hunks in a single delta process.
+/// Lines that delta changes (for example, by truncating them) have no styles.
 pub(crate) fn highlight_sources<'a>(
     sources: impl IntoIterator<Item = (&'a str, &'a [String])>,
-) -> Option<Vec<Vec<String>>> {
+) -> Option<Vec<Vec<Option<String>>>> {
     use std::fmt::Write;
     if !delta_enabled() {
         return None;
@@ -2306,10 +2307,8 @@ pub(crate) fn highlight_sources<'a>(
         formatted.nth(3)?;
         for source in lines {
             let line = formatted.next()?;
-            if crate::ansi::plain(line).strip_prefix(' ') != Some(source.as_str()) {
-                return None;
-            }
-            snippet.push(line.to_owned());
+            let unchanged = crate::ansi::plain(line).strip_prefix(' ') == Some(source.as_str());
+            snippet.push(unchanged.then(|| line.to_owned()));
         }
         colored.push(snippet);
     }

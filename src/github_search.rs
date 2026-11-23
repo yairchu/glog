@@ -553,9 +553,9 @@ impl FileView {
         let mut numbered = String::new();
         for (index, line) in lines.iter().enumerate() {
             let number = index + 1;
-            if let Some(colored) = &colored {
+            if let Some(colored) = colored.as_ref().and_then(|lines| lines[index].as_ref()) {
                 // Delta retains the leading context space, which is part of the gutter.
-                let _ = writeln!(numbered, "{number:>width$} {}", colored[index]);
+                let _ = writeln!(numbered, "{number:>width$} {colored}");
             } else {
                 let _ = writeln!(numbered, "{number:>width$}  {line}");
             }
@@ -869,12 +869,23 @@ fi
 awk 'NR == 3 && $0 == "+++ b/file space.rs" { fragment = 1 }
      NR == 5 && fragment && $0 != " context" { exit 1 }
      NR > 4 {
+         if (length($0) > 3000) $0 = substr($0, 1, 3000)
          sub(/header/, "\033[35mheader\033[0m")
          sub(/let/, "\033[34mlet\033[0m")
          sub(/needle/, "\033[35mneedle\033[0m")
      }
      { print }'
 "#,
+        );
+        let long_line = ["x".repeat(3500)];
+        let short_line = ["let x = 1;".to_owned()];
+        let highlighted =
+            git::highlight_sources([("long.rs", &long_line[..]), ("short.rs", &short_line[..])])
+                .unwrap();
+        assert_eq!(highlighted[0], [None]);
+        assert_eq!(
+            highlighted[1][0].as_deref(),
+            Some(" \x1b[34mlet\x1b[0m x = 1;")
         );
         for (name, file) in [
             ("GLOG_TEST_SEARCH_RESULTS", "results.json"),

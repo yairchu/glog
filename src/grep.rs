@@ -441,7 +441,7 @@ fn highlight_hits(files: &mut [File]) {
                 Location::Fragment { line, .. } => line,
                 _ => index,
             };
-            if let Some(line) = colored.get(index) {
+            if let Some(Some(line)) = colored.get(index) {
                 hit.highlight(line);
             }
         }
