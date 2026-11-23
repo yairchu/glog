@@ -9,7 +9,6 @@ use base64::{engine::general_purpose::STANDARD, Engine};
 use serde::Deserialize;
 
 use crate::{
-    ansi,
     app::{App, History, Mode},
     git, grep,
     pager::PagerView,
@@ -329,22 +328,19 @@ fn app_from_json(output: &[u8]) -> Result<App, String> {
                     })
                     .collect();
                 if !ranges.is_empty() {
-                    hits.push(grep::Hit {
-                        location: Location::Fragment {
+                    hits.push(grep::Hit::new(
+                        Location::Fragment {
                             text: text.clone(),
                             line,
                         },
-                        text: highlight(source.trim_end_matches('\n'), &ranges),
-                    });
+                        &highlight(source.trim_end_matches('\n'), &ranges),
+                    ));
                 }
                 offset = end;
             }
         }
         if hits.is_empty() {
-            hits.push(grep::Hit {
-                location: Location::File,
-                text: "(file match)".into(),
-            });
+            hits.push(grep::Hit::new(Location::File, "(file match)"));
         }
         files.push((result.file, hits));
     }
@@ -358,7 +354,7 @@ fn app_from_json(output: &[u8]) -> Result<App, String> {
     Ok(app)
 }
 
-fn clean(text: &str) -> String {
+pub(crate) fn clean(text: &str) -> String {
     text.chars()
         .filter(|&ch| !ch.is_control() || ch == '\t' || ch == '\n')
         .collect()
@@ -552,7 +548,8 @@ impl FileView {
     fn new(path: &str, contents: &str, line: Option<usize>, url: String) -> Self {
         let lines: Vec<_> = contents.lines().map(clean).collect();
         let width = lines.len().max(1).to_string().len();
-        let colored = highlight_file(path, &lines);
+        let colored = git::highlight_sources([(path, lines.as_slice())])
+            .and_then(|mut snippets| snippets.pop());
         let mut numbered = String::new();
         for (index, line) in lines.iter().enumerate() {
             let number = index + 1;
@@ -569,36 +566,6 @@ impl FileView {
         pager.move_by(0);
         Self { url, pager }
     }
-}
-
-/// Feed delta a single context hunk so it can highlight the whole file by path.
-fn highlight_file(path: &str, lines: &[String]) -> Option<Vec<String>> {
-    if !git::delta_enabled() || lines.is_empty() || path.chars().any(char::is_control) {
-        return None;
-    }
-    let mut diff = format!(
-        "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,{0} +1,{0} @@\n",
-        lines.len()
-    );
-    for line in lines {
-        diff.push(' ');
-        diff.push_str(line);
-        diff.push('\n');
-    }
-    let output = git::pipe_through(
-        Command::new("delta").args(["--paging=never", "--color-only", "--tabs=0"]),
-        diff.as_bytes(),
-    )?;
-    let mut formatted = output.lines().skip(4);
-    let mut colored = Vec::with_capacity(lines.len());
-    for source in lines {
-        let line = formatted.next()?;
-        if ansi::plain(line).strip_prefix(' ') != Some(source.as_str()) {
-            return None;
-        }
-        colored.push(line.to_owned());
-    }
-    formatted.next().is_none().then_some(colored)
 }
 
 pub struct Preview {
@@ -899,8 +866,13 @@ if test -f "$GLOG_TEST_DELTA_FAIL"; then
     echo invalid output
     exit 0
 fi
-awk 'NR == 3 && $0 != "+++ b/src/file space.rs" { exit 1 }
-     NR > 4 { sub(/header/, "\033[35mheader\033[0m") }
+awk 'NR == 3 && $0 == "+++ b/file space.rs" { fragment = 1 }
+     NR == 5 && fragment && $0 != " context" { exit 1 }
+     NR > 4 {
+         sub(/header/, "\033[35mheader\033[0m")
+         sub(/let/, "\033[34mlet\033[0m")
+         sub(/needle/, "\033[35mneedle\033[0m")
+     }
      { print }'
 "#,
         );
@@ -940,6 +912,19 @@ awk 'NR == 3 && $0 != "+++ b/src/file space.rs" { exit 1 }
             .collect::<String>();
         assert!(screen.contains("owner/one"));
         assert!(screen.contains("owner/two"));
+        let cells = terminal.backend().buffer().content();
+        assert!(cells
+            .iter()
+            .any(|cell| { cell.symbol() == "l" && cell.fg == ratatui::style::Color::Blue }));
+        assert!(cells.windows("needle".len()).any(|cells| {
+            cells
+                .iter()
+                .map(|cell| cell.symbol())
+                .eq("needle".split("").filter(|ch| !ch.is_empty()))
+                && cells
+                    .iter()
+                    .all(|cell| cell.fg == ratatui::style::Color::Yellow)
+        }));
         app.search = Some("café".into());
         app.next_match(false);
         let selected = app.grep_view.as_ref().unwrap().cursor;

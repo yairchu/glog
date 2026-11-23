@@ -12,7 +12,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Changed
 
-- Use delta for syntax highlighting in GitHub file previews when available.
+- Use delta for syntax highlighting in Grep, GitHub code search results, and
+  GitHub file previews when available.
 
 ## 0.11.3 - 2026-11-22
 

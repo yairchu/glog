@@ -2268,6 +2268,54 @@ pub(crate) fn run_delta(input: &[u8]) -> Option<String> {
     )
 }
 
+/// Highlight independent snippets as context hunks in a single delta process.
+pub(crate) fn highlight_sources<'a>(
+    sources: impl IntoIterator<Item = (&'a str, &'a [String])>,
+) -> Option<Vec<Vec<String>>> {
+    use std::fmt::Write;
+    if !delta_enabled() {
+        return None;
+    }
+    let mut diff = String::new();
+    let mut snippets = Vec::new();
+    for (path, lines) in sources {
+        if lines.is_empty() || path.chars().any(char::is_control) {
+            return None;
+        }
+        let count = lines.len();
+        let _ = writeln!(
+            diff,
+            "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -1,{count} +1,{count} @@"
+        );
+        for line in lines {
+            let _ = writeln!(diff, " {line}");
+        }
+        snippets.push(lines);
+    }
+    if snippets.is_empty() {
+        return None;
+    }
+    let output = pipe_through(
+        Command::new("delta").args(["--paging=never", "--color-only", "--tabs=0"]),
+        diff.as_bytes(),
+    )?;
+    let mut formatted = output.lines();
+    let mut colored = Vec::with_capacity(snippets.len());
+    for lines in snippets {
+        let mut snippet = Vec::with_capacity(lines.len());
+        formatted.nth(3)?;
+        for source in lines {
+            let line = formatted.next()?;
+            if crate::ansi::plain(line).strip_prefix(' ') != Some(source.as_str()) {
+                return None;
+            }
+            snippet.push(line.to_owned());
+        }
+        colored.push(snippet);
+    }
+    formatted.next().is_none().then_some(colored)
+}
+
 pub(crate) fn pipe_through(command: &mut Command, input: &[u8]) -> Option<String> {
     pipe_through_bytes(command, input).map(|output| String::from_utf8_lossy(&output).into_owned())
 }

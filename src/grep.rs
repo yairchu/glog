@@ -3,6 +3,7 @@ use crate::{
     ansi,
     app::{App, History, Mode},
     git,
+    github_search::Location,
     pager::PagerView,
 };
 use ratatui::{
@@ -36,8 +37,37 @@ impl Source {
 }
 #[derive(Debug)]
 pub(crate) struct Hit {
-    pub location: crate::github_search::Location,
-    pub text: String,
+    location: Location,
+    text: Line<'static>,
+}
+
+impl Hit {
+    pub(crate) fn new(location: Location, text: &str) -> Self {
+        Self {
+            location,
+            text: ansi::normalized_line(text),
+        }
+    }
+
+    fn highlight(&mut self, colored: &str) {
+        let mut line = ansi::parse_line(colored);
+        // Drop the diff's leading context space.
+        if let Some(first) = line.spans.first_mut() {
+            if let Some(source) = first.content.strip_prefix(' ') {
+                first.content = source.to_owned().into();
+            }
+        }
+        if line.to_string() != self.text.to_string().trim_end_matches('\r') {
+            return;
+        }
+        let mut start = 0;
+        let emphasis = self.text.spans.iter().filter_map(|span| {
+            let range = start..start + span.content.len();
+            start = range.end;
+            (span.style != Style::default()).then_some((range, span.style))
+        });
+        self.text = ansi::style_ranges(line, emphasis);
+    }
 }
 
 #[derive(Debug)]
@@ -126,10 +156,11 @@ fn span_offsets(line: &Line) -> Vec<(usize, usize)> {
 /// Keep matching options and patterns intact, but reserve the output layout
 /// for the tree. Pin commit revisions before grep so later ref moves cannot
 /// make a result open a different version of its file.
-fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>), String> {
+fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>, bool), String> {
     let mut output = Vec::new();
     let mut sources = vec![Source::Worktree];
     let mut pattern = false;
+    let mut color = true;
     let mut index = 0;
     // Like Git, stop reading options at the first non-option argument.
     while let Some(arg) = args.get(index) {
@@ -145,7 +176,9 @@ fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>), String> {
                 "--recursive" | "--no-recursive" | "--ignore-case" | "--word-regexp" |
                 "--invert-match" | "--extended-regexp" | "--basic-regexp" | "--perl-regexp" |
                 "--fixed-strings" | "--all-match" | "--and" | "--or" | "--not" |
-                "--line-number" | "--null" | "--full-name" | "--color" | "--no-color" => {}
+                "--line-number" | "--null" | "--full-name" => {}
+                "--color" => color = !arg.eq_ignore_ascii_case("--color=never"),
+                "--no-color" => color = false,
                 _ => return Err(format!("unsupported grep option {arg:?}; use matching options such as -i, -w, -F, -e, --cached, or --untracked; glog supplies the results layout")),
             }
         } else if arg.starts_with('-') && arg != "-" && arg != "--" {
@@ -226,7 +259,7 @@ fn arguments(args: &[String]) -> Result<(Vec<String>, Vec<Source>), String> {
             });
         }
     }
-    Ok((output, sources))
+    Ok((output, sources, color))
 }
 
 /// Whether `arg` names an existing path as Git checks it before calling a
@@ -250,7 +283,7 @@ fn names_path(arg: &str) -> bool {
 
 pub fn load_app(args: &[String]) -> Result<App, String> {
     let repository = git::Repository::main()?;
-    let (args, sources) = arguments(args)?;
+    let (args, sources, color) = arguments(args)?;
     let output = git::read_command()
         .args([
             "-c",
@@ -280,7 +313,10 @@ pub fn load_app(args: &[String]) -> Result<App, String> {
     if !matches!(output.status.code(), Some(0 | 1)) {
         return Err(git::stderr_message("git grep failed", &output.stderr));
     }
-    let view = View::parse(repository.clone(), sources, &output.stdout)?;
+    let mut view = View::parse(repository.clone(), sources, &output.stdout)?;
+    if color {
+        highlight_hits(&mut view.files);
+    }
     let mut app = App::new(Vec::new());
     app.mode = Mode::Grep;
     app.history = History::Grep;
@@ -342,6 +378,73 @@ fn extension_label(extension: &[u8]) -> String {
         "(no ext)".into()
     } else {
         format!(".{}", crate::diff::display_path(extension))
+    }
+}
+
+fn highlight_hits(files: &mut [File]) {
+    if !git::delta_enabled() {
+        return;
+    }
+    let mut snippets = Vec::new();
+    for file in files {
+        // The synthetic diff only needs a filename for language detection.
+        let path =
+            crate::diff::display_path(file.path.rsplit(|&byte| byte == b'/').next().unwrap());
+        for hits in file
+            .hits
+            .chunk_by_mut(|left, right| match (&left.location, &right.location) {
+                (Location::Line(left), Location::Line(right)) => {
+                    left.checked_add(1) == Some(*right)
+                }
+                (Location::Fragment { text: left, .. }, Location::Fragment { text: right, .. }) => {
+                    std::sync::Arc::ptr_eq(left, right)
+                }
+                _ => false,
+            })
+        {
+            let lines: Vec<_> = match &hits[0].location {
+                Location::File => continue,
+                Location::Fragment { text, .. } => {
+                    text.lines().map(crate::github_search::clean).collect()
+                }
+                Location::Line(_) => hits
+                    .iter()
+                    .map(|hit| {
+                        let mut text = hit.text.to_string();
+                        if text.ends_with('\r') {
+                            text.pop();
+                        }
+                        text
+                    })
+                    .collect(),
+            };
+            if lines.is_empty()
+                || lines
+                    .iter()
+                    .any(|line| line.chars().any(|ch| ch.is_control() && ch != '\t'))
+            {
+                continue;
+            }
+            snippets.push((path.clone(), lines, hits));
+        }
+    }
+    let Some(colored) = git::highlight_sources(
+        snippets
+            .iter()
+            .map(|(path, lines, _)| (path.as_str(), lines.as_slice())),
+    ) else {
+        return;
+    };
+    for ((_, _, hits), colored) in snippets.into_iter().zip(colored) {
+        for (index, hit) in hits.iter_mut().enumerate() {
+            let index = match hit.location {
+                Location::Fragment { line, .. } => line,
+                _ => index,
+            };
+            if let Some(line) = colored.get(index) {
+                hit.highlight(line);
+            }
+        }
     }
 }
 
@@ -411,10 +514,10 @@ impl View {
             });
             let file = &mut files[index];
             file.number_width = file.number_width.max(line.to_string().len());
-            file.hits.push(Hit {
-                location: crate::github_search::Location::Line(line),
-                text: String::from_utf8_lossy(text).into_owned(),
-            });
+            file.hits.push(Hit::new(
+                Location::Line(line),
+                &String::from_utf8_lossy(text),
+            ));
         }
         Ok(Self::from_files(Some(repository), sources, files))
     }
@@ -438,6 +541,7 @@ impl View {
                 hits,
             });
         }
+        highlight_hits(&mut files);
         Self::from_files(None, sources, files)
     }
 
@@ -859,7 +963,7 @@ impl View {
                 } else {
                     spans.push(Span::raw(" "));
                 }
-                spans.extend(ansi::normalized_line(&hit.text).spans);
+                spans.extend(hit.text.spans.iter().cloned());
             }
         }
         (Line::from(spans), layout, stand_ins)
@@ -1529,7 +1633,7 @@ mod tests {
                 .iter()
                 .position(|row| match view.nodes[row.node].kind {
                     Kind::Match { file, hit } => {
-                        ansi::plain(&view.files[file].hits[hit].text) == expected
+                        view.files[file].hits[hit].text.to_string() == expected
                     }
                     _ => false,
                 })
@@ -1689,6 +1793,23 @@ mod tests {
     }
 
     #[test]
+    fn snippet_syntax_preserves_git_match_emphasis() {
+        let mut hit = Hit::new(Location::Line(2), "let café = \x1b[1;31mneedle\x1b[m;\r");
+        hit.highlight(" \x1b[34mlet\x1b[0m café = \x1b[35mneedle\x1b[0m;");
+        assert_eq!(hit.text.to_string(), "let café = needle;");
+        assert!(hit
+            .text
+            .spans
+            .iter()
+            .any(|span| { span.content == "let" && span.style.fg == Some(Color::Blue) }));
+        assert!(hit.text.spans.iter().any(|span| {
+            span.content == "needle"
+                && span.style.fg == Some(Color::Red)
+                && span.style.add_modifier.contains(Modifier::BOLD)
+        }));
+    }
+
+    #[test]
     fn matching_options_literal_flags_binary_files_and_git_errors_are_kept_distinct() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
@@ -1710,7 +1831,7 @@ mod tests {
         ));
         let plain = load(&["--no-color", "-F", "Needle"]).unwrap();
         assert_eq!(plain.files[0].path, b"file.rs");
-        assert_eq!(plain.files[0].hits[0].text, "Needle");
+        assert_eq!(plain.files[0].hits[0].text, Line::raw("Needle"));
         assert_eq!(load(&["absent"]).unwrap().match_count(), 0);
         assert!(load(&["-E", "("]).is_err());
         assert!(load(&["--count", "Needle"]).is_err());
