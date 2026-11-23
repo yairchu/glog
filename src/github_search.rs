@@ -197,17 +197,23 @@ impl<'a> ReadFile<'a> {
                 continue;
             }
             if options && arg.starts_with('-') {
-                let (flag, value) = arg.split_once('=').unwrap_or((arg, ""));
+                // Accept the forms `gh` does: `--repo=X`, `--repo X`, `-R X`,
+                // `-R=X`, and `-RX`.
+                let (flag, attached) = match arg.strip_prefix("-R") {
+                    Some(rest) if !rest.is_empty() => {
+                        ("-R", Some(rest.strip_prefix('=').unwrap_or(rest)))
+                    }
+                    _ => match arg.split_once('=') {
+                        Some((flag, value)) => (flag, Some(value)),
+                        None => (arg, None),
+                    },
+                };
                 let target = match flag {
                     "--repo" | "-R" => &mut repo,
                     "--ref" => &mut reference,
                     _ => return Err(format!("Unsupported read-file option: {flag}")),
                 };
-                let value = if arg.contains('=') {
-                    Some(value)
-                } else {
-                    args.next()
-                };
+                let value = attached.or_else(|| args.next().filter(|value| *value != "--"));
                 *target = Some(
                     value
                         .filter(|value| !value.is_empty())
@@ -645,6 +651,21 @@ mod tests {
     const BLOB: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const COMMIT: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const CONTENTS: &str = "header\ncontext\nlet café = needle;\nneedle tail\ncontext\nafter\n";
+
+    #[test]
+    fn read_file_accepts_gh_flag_forms() {
+        let args: Vec<_> = ["-Rcli/cli", "--ref", "--", "README.md"]
+            .map(String::from)
+            .into();
+        assert!(ReadFile::parse(&args).is_err());
+        let args: Vec<_> = ["-Rcli/cli", "--ref=main", "README.md"]
+            .map(String::from)
+            .into();
+        let request = ReadFile::parse(&args).unwrap();
+        assert_eq!(request.repo, Some("cli/cli"));
+        assert_eq!(request.reference, Some("main"));
+        assert_eq!(request.path, "README.md");
+    }
 
     fn results() -> Vec<u8> {
         let fragment = "context\nlet café = needle;\nneedle tail\ncontext";
