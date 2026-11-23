@@ -1120,9 +1120,11 @@ impl StatusView {
             }) else {
                 continue;
             };
+            // Errors stay cached too, so refreshes don't rerun a failing Git
+            // command; activating the error row retries.
             let cached = previous
                 .remove(&entry.key)
-                .filter(|child| child.commits == commits && child.view.is_ok());
+                .filter(|child| child.commits == commits);
             let child = cached.unwrap_or_else(|| {
                 let (old, new) = &commits;
                 let view = crate::git::show_submodule(Some(&parent), &entry.raw_path, old, new)
@@ -1376,6 +1378,9 @@ impl StatusView {
             }
             RowKey::Recorded(key, index) => {
                 let Ok(view) = &mut self.recorded_submodules.get_mut(&key).unwrap().view else {
+                    self.recorded_submodules.remove(&key);
+                    self.sync_recorded_submodules();
+                    self.rebuild();
                     return;
                 };
                 view.show_cursor = index;
@@ -1507,6 +1512,11 @@ impl StatusView {
             self.images_enabled = enabled;
             for child in self.submodules.values_mut() {
                 child.enable_images(enabled);
+            }
+            for child in self.recorded_submodules.values_mut() {
+                if let Ok(view) = &mut child.view {
+                    view.set_images_enabled(enabled);
+                }
             }
             self.rebuild();
         }

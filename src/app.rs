@@ -2216,6 +2216,14 @@ impl App {
         }
     }
 
+    /// Show or hide images in a view whose image support follows its parent's.
+    pub(crate) fn set_images_enabled(&mut self, enabled: bool) {
+        if self.images.enabled != enabled {
+            self.images.enabled = enabled;
+            self.rebuild_show_rows();
+        }
+    }
+
     pub fn ensure_show_rows(&mut self) {
         if self.show_rows.is_empty() && !self.show_text.is_empty() {
             self.reset_show_folds();
