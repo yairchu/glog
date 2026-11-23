@@ -626,7 +626,7 @@ impl View {
         true
     }
     /// Wait for syntax colors, as if `poll_highlighting` ran once they completed.
-    #[cfg(test)]
+    #[cfg(all(test, unix))]
     pub fn settle_highlighting(&mut self) {
         if let Some(highlighting) = self.highlighting.take() {
             let colored = highlighting.receiver.recv().ok().flatten();
