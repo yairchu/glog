@@ -7,6 +7,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Added
 
+- Expand a submodule commit change in Status to browse the diff between its
+  recorded commits.
+
 - Open GitHub files with `glog gh repo read-file`. GitHub code search previews
   show the command for reopening the file at the same revision.
 

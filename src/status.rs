@@ -51,12 +51,18 @@ struct Entry {
     stats_blobs: Vec<String>,
 }
 impl Entry {
+    fn submodule_state(&self) -> Option<&str> {
+        self.record
+            .split(' ')
+            .nth(2)
+            .filter(|state| state.starts_with('S'))
+    }
+
     fn dirty_submodule(&self) -> bool {
         self.key.group == Group::Unstaged
-            && self.record.split(' ').nth(2).is_some_and(|state| {
-                state.starts_with('S')
-                    && (state.ends_with('U') || state.as_bytes().get(2) == Some(&b'M'))
-            })
+            && self
+                .submodule_state()
+                .is_some_and(|state| state.ends_with('U') || state.as_bytes().get(2) == Some(&b'M'))
     }
 }
 #[derive(Default)]
@@ -376,18 +382,23 @@ enum RowKey {
     File(Key),
     Patch(Key, usize),
     Nested(Key, Box<RowKey>),
+    Recorded(Key, usize),
 }
 impl RowKey {
     fn outer_file(&self) -> Option<&Key> {
         match self {
-            Self::File(key) | Self::Patch(key, _) | Self::Nested(key, _) => Some(key),
+            Self::File(key)
+            | Self::Patch(key, _)
+            | Self::Nested(key, _)
+            | Self::Recorded(key, _) => Some(key),
             Self::Commits | Self::Commit(_) | Self::Group(_) => None,
         }
     }
 
     fn same_patch(&self, other: &Self) -> bool {
         match (self, other) {
-            (Self::Patch(left, _), Self::Patch(right, _)) => left == right,
+            (Self::Patch(left, _), Self::Patch(right, _))
+            | (Self::Recorded(left, _), Self::Recorded(right, _)) => left == right,
             (Self::Nested(left, a), Self::Nested(right, b)) => left == right && a.same_patch(b),
             _ => false,
         }
@@ -425,7 +436,7 @@ impl Row {
             (RowKey::Commit(commit), _) => {
                 Line::from([vec![Span::raw("  ")], commit.label.spans()].concat())
             }
-            (key, Some(color)) => if key.is_file() {
+            (key, Some(color)) => if key.is_file() || matches!(key, RowKey::Recorded(..)) {
                 crate::ui::summary_line(&self.text)
             } else {
                 Line::raw(self.text.clone())
@@ -487,8 +498,14 @@ impl From<Vec<Row>> for Rows {
     }
 }
 
+struct RecordedSubmodule {
+    commits: (String, String),
+    view: Result<Box<crate::app::App>, String>,
+}
+
 #[derive(Default)]
 pub struct StatusView {
+    recorded_submodules: HashMap<Key, RecordedSubmodule>,
     submodules: HashMap<Key, StatusView>,
     images_enabled: bool,
     root: PathBuf,
@@ -537,6 +554,13 @@ impl StatusView {
     fn editor_target_for(&self, row: &RowKey) -> Result<crate::editor::Target, String> {
         if let RowKey::Nested(key, row) = row {
             return self.submodules[key].editor_target_for(row);
+        }
+        if let RowKey::Recorded(key, row) = row {
+            return self.recorded_submodules[key]
+                .view
+                .as_ref()
+                .map_err(Clone::clone)?
+                .show_editor_target(*row);
         }
         let (key, source) = match row {
             RowKey::File(key) => (key, 0),
@@ -886,7 +910,7 @@ impl StatusView {
     }
     fn fold_by_default(entry: &Entry) -> bool {
         // Status has no file filters, so fold lockfiles instead of hiding them.
-        entry.dirty_submodule()
+        entry.submodule_state().is_some()
             || entry.key.group == Group::Untracked
             || entry.label == "added"
             || crate::diff::is_lockfile(&entry.key.path.to_string_lossy())
@@ -1077,10 +1101,46 @@ impl StatusView {
         self.snapshot = snapshot;
         self.patches = patches;
         self.unloaded = false;
+        self.sync_recorded_submodules();
         self.request_code_counts();
         self.rebuild();
         Ok(())
     }
+    fn sync_recorded_submodules(&mut self) {
+        let parent = crate::git::Repository::checked_out(self.root.clone());
+        let mut previous = std::mem::take(&mut self.recorded_submodules);
+        for entry in &self.snapshot.entries {
+            if entry.submodule_state().is_none() {
+                continue;
+            }
+            let Some(commits) = self.patches.get(&entry.key).and_then(|patch| {
+                crate::diff::file_sections(patch)
+                    .into_iter()
+                    .find_map(|file| file.submodule)
+            }) else {
+                continue;
+            };
+            let cached = previous
+                .remove(&entry.key)
+                .filter(|child| child.commits == commits && child.view.is_ok());
+            let child = cached.unwrap_or_else(|| {
+                let (old, new) = &commits;
+                let view = crate::git::show_submodule(Some(&parent), &entry.raw_path, old, new)
+                    .map(|(repository, text)| {
+                        Box::new(crate::app::App::submodule_diff(
+                            repository,
+                            old,
+                            new,
+                            text,
+                            self.images_enabled,
+                        ))
+                    });
+                RecordedSubmodule { commits, view }
+            });
+            self.recorded_submodules.insert(entry.key.clone(), child);
+        }
+    }
+
     fn rebuild(&mut self) {
         let old = self.rows.get(self.cursor).cloned();
         let screen = self.cursor.saturating_sub(self.offset);
@@ -1213,6 +1273,26 @@ impl StatusView {
                             }
                         }
                     }
+                    if let Some(child) = self.recorded_submodules.get(&entry.key) {
+                        match &child.view {
+                            Ok(view) => {
+                                for (index, row) in view.show_rows.iter().enumerate() {
+                                    self.rows.push(Row {
+                                        key: RowKey::Recorded(entry.key.clone(), index),
+                                        text: format!("    {}", row.text),
+                                        color: row.summary.then_some(Color::Reset),
+                                        preview: row.preview.clone(),
+                                    });
+                                }
+                            }
+                            Err(error) => self.rows.push(Row {
+                                key: RowKey::Recorded(entry.key.clone(), 0),
+                                text: format!("    {error}"),
+                                color: None,
+                                preview: None,
+                            }),
+                        }
+                    }
                     if let Some(child) = self.submodules.get(&entry.key) {
                         for row in &child.rows {
                             self.rows.push(Row {
@@ -1241,7 +1321,7 @@ impl StatusView {
             {
                 return Some(index);
             }
-            if let RowKey::Patch(key, _) = &old.key {
+            if let RowKey::Patch(key, _) | RowKey::Recorded(key, _) = &old.key {
                 self.rows
                     .iter()
                     .position(|row| row.key == old.key)
@@ -1291,6 +1371,22 @@ impl StatusView {
                     {
                         self.cursor = index;
                     }
+                }
+                return;
+            }
+            RowKey::Recorded(key, index) => {
+                let Ok(view) = &mut self.recorded_submodules.get_mut(&key).unwrap().view else {
+                    return;
+                };
+                view.show_cursor = index;
+                view.status = None;
+                view.toggle_show_file();
+                self.error = view.status.clone();
+                self.refresh_failed = false;
+                let target = RowKey::Recorded(key, view.show_cursor);
+                self.rebuild();
+                if let Some(index) = self.rows.iter().position(|row| row.key == target) {
+                    self.cursor = index;
                 }
                 return;
             }
@@ -1345,6 +1441,7 @@ impl StatusView {
                         match self.patch(entry) {
                             Ok(patch) => {
                                 self.patches.insert(key.clone(), patch);
+                                self.sync_recorded_submodules();
                             }
                             Err(error) => {
                                 self.expanded_folds.remove(&key);
@@ -1395,6 +1492,10 @@ impl StatusView {
                 |row| matches!(&row.key, RowKey::Patch(k, _) | RowKey::Nested(k, _) if k == file),
             ),
             RowKey::Commit(_) | RowKey::Patch(_, _) => false,
+            RowKey::Recorded(file, index) => self.recorded_submodules[file]
+                .view
+                .as_ref()
+                .is_ok_and(|view| view.show_rows[*index].folded),
             RowKey::Nested(file, nested) => self
                 .submodules
                 .get(file)
@@ -2369,6 +2470,19 @@ mod tests {
         view.refresh().unwrap();
         assert!(view.submodules.is_empty());
         assert_ne!(view.summary().to_string(), "Clean");
+        view.cursor = view
+            .rows
+            .iter()
+            .position(|row| {
+                matches!(&row.key, RowKey::Recorded(file, _) if file == &key)
+                    && row.text.contains("file.txt")
+            })
+            .unwrap();
+        view.toggle();
+        assert!(view.rows.iter().any(|row| {
+            matches!(&row.key, RowKey::Recorded(file, _) if file == &key)
+                && crate::ansi::plain(&row.text).contains("+committed")
+        }));
         std::fs::write(module.join("new.txt"), "dirty again\n").unwrap();
         view.refresh().unwrap();
         assert!(view.submodules.contains_key(&key));
@@ -2392,6 +2506,20 @@ mod tests {
             .unwrap();
         summary.toggle();
         assert!(!summary.submodules.contains_key(&staged));
+        summary.cursor = summary
+            .rows
+            .iter()
+            .position(|row| {
+                matches!(&row.key, RowKey::Recorded(file, _) if file == &staged)
+                    && row.text.contains("file.txt")
+            })
+            .unwrap();
+        summary.toggle();
+        summary.refresh().unwrap();
+        assert!(summary.rows.iter().any(|row| {
+            matches!(&row.key, RowKey::Recorded(file, _) if file == &staged)
+                && crate::ansi::plain(&row.text).contains("+committed")
+        }));
         summary.cursor = summary
             .rows
             .iter()

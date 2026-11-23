@@ -2175,7 +2175,10 @@ impl App {
         }
     }
 
-    fn show_editor_target(&self, cursor: usize) -> Result<crate::editor::Target, String> {
+    pub(crate) fn show_editor_target(
+        &self,
+        cursor: usize,
+    ) -> Result<crate::editor::Target, String> {
         let selected = self.show_file(cursor)?;
         let app = selected.app;
         let file = selected.file;
@@ -3086,6 +3089,30 @@ impl App {
         })
     }
 
+    pub(crate) fn submodule_diff(
+        repository: git::Repository,
+        old: &str,
+        new: &str,
+        text: String,
+        images_enabled: bool,
+    ) -> Self {
+        let mut child = Self::new(Vec::new());
+        child.images.enabled = images_enabled;
+        child.submodule_patch = Some(SubmodulePatch {
+            repository,
+            old: old.to_owned(),
+            new: new.to_owned(),
+        });
+        child.show_stat = true;
+        child.show_text = if text.is_empty() {
+            "No file changes between these commits.\n".to_owned()
+        } else {
+            text
+        };
+        child.ensure_show_rows();
+        child
+    }
+
     pub fn toggle_show_file(&mut self) {
         if let Some(crate::summary_paths::Target::Directory(path)) = self
             .show_rows
@@ -3142,20 +3169,8 @@ impl App {
                     new,
                 ) {
                     Ok((repository, text)) => {
-                        let mut child = App::new(Vec::new());
-                        child.images.enabled = self.images.enabled;
-                        child.submodule_patch = Some(SubmodulePatch {
-                            repository,
-                            old: old.clone(),
-                            new: new.clone(),
-                        });
-                        child.show_stat = true;
-                        child.show_text = if text.is_empty() {
-                            "No file changes between these commits.\n".to_owned()
-                        } else {
-                            text
-                        };
-                        child.ensure_show_rows();
+                        let child =
+                            Self::submodule_diff(repository, old, new, text, self.images.enabled);
                         self.submodules.insert(path.clone(), Box::new(child));
                         self.status = None;
                     }
