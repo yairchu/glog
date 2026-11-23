@@ -38,18 +38,19 @@ Usage: glog [git log arguments] [--] [pathspec...]
        glog <command> [arguments]
 
 Commands:
-  log             Browse commit history (the default)
-  show            View a commit or a file at a revision
-  diff            View working-tree, staged, or commit differences
-  branch          Browse local branches and shared ancestors
-  status          Watch working-tree changes
-  reflog          Browse local ref updates
-  blame           Browse line attribution for a file
-  stash           Browse saved work
-  bisect log      Browse the current bisect session
-  range-diff      Compare two versions of a commit series
-  grep            Search repository text
-  gh search code  Search code on GitHub
+  log                Browse commit history (the default)
+  show               View a commit or a file at a revision
+  diff               View working-tree, staged, or commit differences
+  branch             Browse local branches and shared ancestors
+  status             Watch working-tree changes
+  reflog             Browse local ref updates
+  blame              Browse line attribution for a file
+  stash              Browse saved work
+  bisect log         Browse the current bisect session
+  range-diff         Compare two versions of a commit series
+  grep               Search repository text
+  gh search code     Search code on GitHub
+  gh repo read-file  View a file from GitHub
 
 Common options:
   --watch         Refresh automatically (W toggles)
@@ -164,6 +165,11 @@ fn page(command: Command, topic: Option<&str>) -> Page {
             usage: "glog gh search code [query] [gh search code options]",
             options: &["--repo REPO, --owner OWNER, --language LANGUAGE, --limit COUNT\n              Search options passed to gh search code"],
             sections: &[("GitHub code search", GITHUB)],
+        },
+        (GithubReadFile, _) => Page {
+            usage: "glog gh repo read-file PATH [--repo [HOST/]OWNER/REPO] [--ref REF]",
+            options: &["-R, --repo    Select a GitHub repository (defaults to the current repository)", "--ref REF     Read a branch, tag, or commit (defaults to the default branch)"],
+            sections: &[("GitHub files", "Uses GitHub CLI's gh repo read-file command (gh 2.95.0 or later). Press e to open the selected line in your browser.")],
         },
         (Status, _) => Page {
             usage: "glog status",
@@ -378,6 +384,11 @@ mod tests {
                 vec!["gh", "search", "code"],
                 "glog gh search code",
                 "--repo",
+            ),
+            (
+                vec!["gh", "repo", "read-file"],
+                "glog gh repo read-file",
+                "--ref",
             ),
             (vec!["status"], "glog status", "Working tree"),
         ] {

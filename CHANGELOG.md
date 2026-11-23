@@ -5,10 +5,14 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Open GitHub files with `glog gh repo read-file`. GitHub code search previews
+  show the command for reopening the file at the same revision.
+
 ### Changed
 
-- Show the repository and path in GitHub code search file previews and use
-  delta for syntax highlighting when available.
+- Use delta for syntax highlighting in GitHub file previews when available.
 
 ## 0.11.3 - 2026-11-22
 

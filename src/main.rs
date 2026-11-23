@@ -96,6 +96,7 @@ fn main() -> ExitCode {
         Command::RangeDiff => range_diff::load_app(command_args),
         Command::Grep => grep::load_app(command_args),
         Command::GithubSearch => github_search::load_app(command_args),
+        Command::GithubReadFile => github_search::load_file_app(command_args),
         Command::Reflog if io::stdout().is_terminal() => Ok(git::start_reflog_app(command_args)),
         Command::Reflog => git::load_reflog_app(command_args),
         Command::Stash => stash::load_app(command_args),
@@ -153,7 +154,9 @@ fn main() -> ExitCode {
     if let Some(source) = watch_source {
         app.set_watch_source(source, watch_snapshot);
     }
-    app.context = args.join(" ");
+    if command != Command::GithubReadFile {
+        app.context = args.join(" ");
+    }
     let mut title = terminal_title::Title::new();
     let result = run(&mut terminal, &mut app, &mut title);
     let title_result = title.restore();
@@ -200,6 +203,7 @@ fn initialize_views(app: &mut App, command: Command, git_args: &[String]) {
                 Command::RangeDiff => "Range diff",
                 Command::Grep => "Grep",
                 Command::GithubSearch => "GitHub search",
+                Command::GithubReadFile => "GitHub file",
                 Command::Bisect => "Bisect",
                 _ => unreachable!(),
             });
@@ -237,6 +241,7 @@ enum Command {
     RangeDiff,
     Grep,
     GithubSearch,
+    GithubReadFile,
     Status,
 }
 
@@ -244,7 +249,10 @@ impl Command {
     /// Whether the arguments are search patterns, which go to Git whole,
     /// even those spelled like display options.
     fn takes_patterns(self) -> bool {
-        matches!(self, Command::Grep | Command::GithubSearch)
+        matches!(
+            self,
+            Command::Grep | Command::GithubSearch | Command::GithubReadFile
+        )
     }
 
     /// Why the command has nothing to browse.
@@ -254,7 +262,7 @@ impl Command {
             Diff | RangeDiff => "no changes",
             Reflog => "no reflog entries matched",
             Grep | GithubSearch => "no matches",
-            Blame => "the file is empty",
+            Blame | GithubReadFile => "the file is empty",
             Log | Show | Branch | Stash | Status if history == app::History::Blame => {
                 "the file is empty"
             }
@@ -285,6 +293,12 @@ fn parse_command(args: &[String]) -> (Command, &[String]) {
         .is_some_and(|prefix| prefix == ["gh", "search", "code"])
     {
         return (Command::GithubSearch, &args[3..]);
+    }
+    if args
+        .get(..3)
+        .is_some_and(|prefix| prefix == ["gh", "repo", "read-file"])
+    {
+        return (Command::GithubReadFile, &args[3..]);
     }
     match args.first().map(String::as_str) {
         Some("reflog") => (Command::Reflog, &args[1..]),
@@ -581,6 +595,11 @@ mod tests {
                 vec!["gh", "search", "code", "--repo", "owner/repo", "needle"],
                 Command::GithubSearch,
                 vec!["--repo", "owner/repo", "needle"],
+            ),
+            (
+                vec!["gh", "repo", "read-file", "src/lib.rs"],
+                Command::GithubReadFile,
+                vec!["src/lib.rs"],
             ),
             (vec!["log", "gh"], Command::Log, vec!["gh"]),
         ] {

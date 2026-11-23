@@ -179,6 +179,122 @@ pub fn load_app(args: &[String]) -> Result<App, String> {
     app_from_json(&output)
 }
 
+struct ReadFile<'a> {
+    path: &'a str,
+    repo: Option<&'a str>,
+    reference: Option<&'a str>,
+}
+
+impl<'a> ReadFile<'a> {
+    fn parse(args: &'a [String]) -> Result<Self, String> {
+        let mut path = None;
+        let mut repo = None;
+        let mut reference = None;
+        let mut options = true;
+        let mut args = args.iter().map(String::as_str);
+        while let Some(arg) = args.next() {
+            if options && arg == "--" {
+                options = false;
+                continue;
+            }
+            if options && arg.starts_with('-') {
+                let (flag, value) = arg.split_once('=').unwrap_or((arg, ""));
+                let target = match flag {
+                    "--repo" | "-R" => &mut repo,
+                    "--ref" => &mut reference,
+                    _ => return Err(format!("Unsupported read-file option: {flag}")),
+                };
+                let value = if arg.contains('=') {
+                    Some(value)
+                } else {
+                    args.next()
+                };
+                *target = Some(
+                    value
+                        .filter(|value| !value.is_empty())
+                        .ok_or_else(|| format!("{flag} requires a value"))?,
+                );
+            } else if path.replace(arg).is_some() {
+                return Err("Expected a single GitHub file path".into());
+            }
+        }
+        let path = path
+            .filter(|path| !path.is_empty())
+            .ok_or("Expected a GitHub file path (see glog gh repo read-file --help)")?;
+        Ok(Self {
+            path,
+            repo,
+            reference,
+        })
+    }
+
+    fn arguments(&self) -> Vec<String> {
+        let mut args = Vec::new();
+        if !self.path.starts_with('-') {
+            args.push(self.path.to_owned());
+        }
+        args.extend(self.repo.map(|repo| format!("--repo={repo}")));
+        args.extend(self.reference.map(|reference| format!("--ref={reference}")));
+        if self.path.starts_with('-') {
+            args.extend(["--".into(), self.path.into()]);
+        }
+        args
+    }
+
+    fn context(&self) -> String {
+        let mut context = String::from("gh repo read-file");
+        for argument in self.arguments() {
+            let _ = write!(context, " {}", shell_word(&argument));
+        }
+        context
+    }
+}
+
+fn shell_word(word: &str) -> String {
+    if word
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || b"-_./:=".contains(&byte))
+    {
+        return word.to_owned();
+    }
+    if word.chars().any(char::is_control) {
+        let mut quoted = String::from("$'");
+        for byte in word.bytes() {
+            let _ = write!(quoted, "\\{byte:03o}");
+        }
+        quoted.push('\'');
+        return quoted;
+    }
+    format!("'{}'", word.replace('\'', "'\\''"))
+}
+
+pub fn load_file_app(args: &[String]) -> Result<App, String> {
+    #[derive(Deserialize)]
+    struct Response {
+        path: String,
+        #[serde(rename = "htmlUrl")]
+        url: String,
+        size: usize,
+        content: String,
+    }
+    let request = ReadFile::parse(args)?;
+    let mut command = Command::new("gh");
+    command
+        .args(["repo", "read-file", "--json", "path,htmlUrl,size,content"])
+        .args(request.arguments());
+    let response: Response = serde_json::from_slice(&run(&mut command)?)
+        .map_err(|error| format!("Could not read GitHub file: {error}"))?;
+    if !response.url.starts_with("https://") || response.url.chars().any(char::is_control) {
+        return Err("GitHub returned an invalid file URL".into());
+    }
+    let contents = decode_contents(response.size, &response.content)?;
+    Ok(Preview {
+        view: FileView::new(&response.path, &contents, None, response.url),
+        context: request.context(),
+    }
+    .into_app())
+}
+
 fn app_from_json(output: &[u8]) -> Result<App, String> {
     let results: Vec<SearchResult> = serde_json::from_slice(output)
         .map_err(|error| format!("Could not read gh search code results: {error}"))?;
@@ -356,11 +472,14 @@ fn decode_blob(output: &[u8], expected_sha: &str) -> Result<Arc<str>, String> {
     if blob.sha != expected_sha || blob.encoding != "base64" {
         return Err("GitHub did not return the requested file snapshot".into());
     }
-    if blob.size > MAX_FILE_BYTES || blob.content.len() > MAX_FILE_BYTES * 2 {
+    decode_contents(blob.size, &blob.content)
+}
+
+fn decode_contents(size: usize, content: &str) -> Result<Arc<str>, String> {
+    if size > MAX_FILE_BYTES || content.len() > MAX_FILE_BYTES * 2 {
         return Err("GitHub file is too large to display (limit: 8 MiB)".into());
     }
-    let encoded: String = blob
-        .content
+    let encoded: String = content
         .chars()
         .filter(|ch| !ch.is_ascii_whitespace())
         .collect();
@@ -404,10 +523,36 @@ impl Loaded {
         self.file.url(self.line)
     }
 
-    fn into_preview(self) -> FileView {
-        let lines: Vec<_> = self.contents.lines().map(clean).collect();
+    fn into_preview(self) -> Preview {
+        let repo = self.file.label();
+        let url = self.file.url(None);
+        let host = self.file.host().unwrap_or("github.com");
+        let prefix = format!("https://{host}/{}/blob/", self.file.repository.name);
+        let reference = url
+            .strip_prefix(&prefix)
+            .and_then(|tail| {
+                let segments = self.file.path.split('/').count();
+                tail.rsplitn(segments + 1, '/').nth(segments)
+            })
+            .filter(|reference| !reference.is_empty());
+        let context = ReadFile {
+            path: &self.file.path,
+            repo: Some(&repo),
+            reference,
+        }
+        .context();
+        Preview {
+            view: FileView::new(&self.file.path, &self.contents, self.line, url),
+            context,
+        }
+    }
+}
+
+impl FileView {
+    fn new(path: &str, contents: &str, line: Option<usize>, url: String) -> Self {
+        let lines: Vec<_> = contents.lines().map(clean).collect();
         let width = lines.len().max(1).to_string().len();
-        let colored = highlight_file(&self.file.path, &lines);
+        let colored = highlight_file(path, &lines);
         let mut numbered = String::new();
         for (index, line) in lines.iter().enumerate() {
             let number = index + 1;
@@ -420,12 +565,9 @@ impl Loaded {
         }
         let mut pager = View::new(&numbered);
         // Request a reveal after the first frame has measured wrapping.
-        pager.cursor = self.line.unwrap_or(1).saturating_sub(1);
+        pager.cursor = line.unwrap_or(1).saturating_sub(1);
         pager.move_by(0);
-        FileView {
-            file: self.file,
-            pager,
-        }
+        Self { url, pager }
     }
 }
 
@@ -459,24 +601,31 @@ fn highlight_file(path: &str, lines: &[String]) -> Option<Vec<String>> {
     formatted.next().is_none().then_some(colored)
 }
 
-pub struct FileView {
-    file: File,
-    pub pager: View,
+pub struct Preview {
+    view: FileView,
+    context: String,
 }
 
-impl FileView {
+impl Preview {
     pub fn into_app(self) -> App {
         let mut app = App::new(Vec::new());
         app.history = History::GithubSearch;
         app.mode = Mode::GithubFile;
-        app.context =
-            clean(&format!("{}:{}", self.file.label(), self.file.path)).replace(['\n', '\t'], " ");
-        app.github_file_view = Some(self);
+        app.context = self.context;
+        app.github_file_view = Some(self.view);
         app
     }
+}
 
+pub struct FileView {
+    url: String,
+    pub pager: View,
+}
+
+impl FileView {
     pub fn url(&self) -> String {
-        self.file.url(Some(self.pager.cursor + 1))
+        let base = self.url.split('#').next().unwrap_or(&self.url);
+        format!("{base}#L{}", self.pager.cursor + 1)
     }
 }
 
@@ -487,7 +636,7 @@ pub enum Action {
 }
 
 pub enum Outcome {
-    Open(Box<FileView>),
+    Open(Box<Preview>),
     Browse(String),
 }
 
@@ -758,6 +907,7 @@ awk 'NR == 3 && $0 != "+++ b/src/file space.rs" { exit 1 }
         for (name, file) in [
             ("GLOG_TEST_SEARCH_RESULTS", "results.json"),
             ("GLOG_TEST_SEARCH_BLOB", "blob.json"),
+            ("GLOG_TEST_READ_FILE", "read-file.json"),
             ("GLOG_TEST_SEARCH_CALLS", "calls"),
             ("GLOG_TEST_SEARCH_BROWSER", "browser"),
             ("GLOG_TEST_SEARCH_FAIL", "fail"),
@@ -766,7 +916,7 @@ awk 'NR == 3 && $0 != "+++ b/src/file space.rs" { exit 1 }
         }
         fs::write("results.json", results()).unwrap();
         fs::write("blob.json", serde_json::to_vec(&json!({"sha": BLOB, "size": CONTENTS.len(), "encoding": "base64", "content": STANDARD.encode(CONTENTS)})).unwrap()).unwrap();
-        executable(&root.join("gh"), "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$GLOG_TEST_SEARCH_CALLS\"\ncase \"$1\" in\nsearch) cat \"$GLOG_TEST_SEARCH_RESULTS\";;\napi) if test -f \"$GLOG_TEST_SEARCH_FAIL\"; then echo 'fixture request denied' >&2; exit 1; fi; cat \"$GLOG_TEST_SEARCH_BLOB\";;\n*) exit 2;;\nesac\n");
+        executable(&root.join("gh"), "#!/bin/sh\nprintf '%s\\n' \"$@\" >> \"$GLOG_TEST_SEARCH_CALLS\"\ncase \"$1\" in\nsearch) cat \"$GLOG_TEST_SEARCH_RESULTS\";;\nrepo) cat \"$GLOG_TEST_READ_FILE\";;\napi) if test -f \"$GLOG_TEST_SEARCH_FAIL\"; then echo 'fixture request denied' >&2; exit 1; fi; cat \"$GLOG_TEST_SEARCH_BLOB\";;\n*) exit 2;;\nesac\n");
         executable(
             &root.join(if cfg!(target_os = "macos") {
                 "open"
@@ -835,8 +985,10 @@ awk 'NR == 3 && $0 != "+++ b/src/file space.rs" { exit 1 }
         assert_eq!(app.github_file_view.as_ref().unwrap().pager.cursor, 2);
         let buffer = terminal.backend().buffer();
         let header: String = (0..100).map(|x| buffer[(x, 0)].symbol()).collect();
-        assert!(header.contains("owner/one:src/file space.rs"));
-        assert!(!header.contains("glog gh file"));
+        assert!(header.contains("glog gh repo read-file 'src/file space.rs' --repo=owner/one"));
+        let preview_command =
+            format!("gh repo read-file 'src/file space.rs' --repo=owner/one --ref={COMMIT}");
+        assert_eq!(app.context, preview_command);
         assert!(buffer
             .content()
             .iter()
@@ -917,6 +1069,36 @@ awk 'NR == 3 && $0 != "+++ b/src/file space.rs" { exit 1 }
             !calls.contains(COMMIT),
             "commit IDs must not be used as blob IDs"
         );
+        let url = format!("https://github.com/owner/one/blob/{COMMIT}/src/file%20space.rs");
+        fs::write(
+            "read-file.json",
+            serde_json::to_vec(&json!({
+                "path": "src/file space.rs", "htmlUrl": url, "size": CONTENTS.len(),
+                "content": STANDARD.encode(CONTENTS),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let args = ["src/file space.rs", "-R", "owner/one", "--ref", COMMIT].map(str::to_owned);
+        let mut direct = load_file_app(&args).unwrap();
+        assert_eq!(direct.context, preview_command);
+        assert_eq!(direct.mode, Mode::GithubFile);
+        assert_eq!(
+            direct.github_file_view.as_ref().unwrap().url(),
+            format!("{url}#L1")
+        );
+        terminal.draw(|frame| ui::draw(frame, &mut direct)).unwrap();
+        let screen: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(screen.contains("3  let café = needle;"));
+        assert!(fs::read_to_string("calls").unwrap().ends_with(&format!(
+            "repo\nread-file\n--json\npath,htmlUrl,size,content\nsrc/file space.rs\n--repo=owner/one\n--ref={COMMIT}\n"
+        )));
         assert!(!root.join(".git").exists());
     }
 }
