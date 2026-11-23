@@ -2669,10 +2669,13 @@ mod tests {
         let y = app.log_row_origin;
         let buffer = terminal.backend().buffer();
         assert_eq!(buffer[(0, y)].symbol(), "▼");
-        assert_eq!(buffer[(0, y + 1)].symbol(), "├");
-        assert_eq!(buffer[(1, y + 1)].symbol(), "─");
-        assert_eq!(buffer[(2, y + 1)].symbol(), "╮");
-        assert_eq!(buffer[(2, y + 2)].symbol(), "●");
+        assert_eq!(buffer[(1, y)].symbol(), "─");
+        assert_eq!(buffer[(2, y)].symbol(), "╮");
+        assert_eq!(buffer[(2, y + 1)].symbol(), "●");
+        assert_eq!(buffer[(0, y + 3)].symbol(), "├");
+        assert_eq!(buffer[(2, y + 3)].symbol(), "╯");
+        assert_eq!(buffer[(4, y)].symbol(), "m");
+        assert_eq!(buffer[(4, y + 1)].symbol(), "s");
         assert_eq!(app.visible_log_rows[1], Some(1));
         handle(
             Event::Mouse(crossterm::event::MouseEvent {
@@ -2692,7 +2695,7 @@ mod tests {
         assert!(!app.log_folds.visible(1));
         app.apply_log_action(LogAction::Fold);
         terminal.draw(|f| draw(f, &mut app)).unwrap();
-        assert_eq!(terminal.backend().buffer()[(2, y + 2)].symbol(), "●");
+        assert_eq!(terminal.backend().buffer()[(2, y + 1)].symbol(), "●");
         terminal.resize(Rect::new(0, 0, 20, 4)).unwrap();
         app.bottom();
         terminal.draw(|f| draw(f, &mut app)).unwrap();

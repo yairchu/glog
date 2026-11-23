@@ -1515,6 +1515,7 @@ impl Layout {
             visible: self.visible.clone(),
             trimmed: trimmed.to_vec(),
             nodes: commits.iter().map(|c| c.graph_node).collect(),
+            merges: commits.iter().map(|c| c.parents.len() > 1).collect(),
             projected,
             colours,
             git_colours,
@@ -1581,6 +1582,7 @@ struct Plan {
     visible: Vec<bool>,
     trimmed: Vec<bool>,
     nodes: Vec<char>,
+    merges: Vec<bool>,
     // Each row's parent rows, past the commits it does not show.
     projected: Vec<Vec<usize>>,
     // Lanes refer to colours by their index.
@@ -1622,6 +1624,8 @@ struct Row {
     lanes: Vec<Lane>,
     above: Vec<(usize, usize, usize)>,
     above_width: usize,
+    // Destination column and colour of the fork drawn beside the node.
+    opening: Option<(usize, usize)>,
 }
 
 fn lane_to(lanes: &[Lane], row: usize) -> Option<usize> {
@@ -1771,6 +1775,11 @@ impl Plan {
                 edges.push((2 * from, 2 * to, colour));
             }
         }
+        let opening = if unicode && self.merges[index] && self.trimmed.get(index) != Some(&true) {
+            inline_opening(&mut edges, 2 * column, &lanes)
+        } else {
+            None
+        };
         let width = lanes.len().max(next.len());
         state.lanes = next;
         let above = std::mem::replace(&mut state.edges, edges);
@@ -1780,6 +1789,7 @@ impl Plan {
             lanes,
             above,
             above_width,
+            opening,
         })
     }
 
@@ -1807,29 +1817,79 @@ impl Plan {
                     transitions(&edges, row.above_width)
                 };
                 if self.trimmed.get(index) != Some(&true) {
-                    let (node, line) = if unicode {
-                        (unicode_node(self.nodes[index]), '│')
-                    } else {
-                        (self.nodes[index], '|')
-                    };
-                    let row = row
-                        .lanes
-                        .iter()
-                        .enumerate()
-                        .map(|(i, lane)| match lane {
-                            _ if i == row.column => format!("{node} "),
-                            Some((_, colour)) => {
-                                format!("{} ", paint(line, &self.colours[*colour]))
-                            }
-                            None => "  ".to_owned(),
-                        })
-                        .collect();
-                    rows.push(row);
+                    rows.push(self.draw_node(&row, index, unicode));
                 }
                 Some(rows)
             })
             .collect()
     }
+
+    fn draw_node(&self, row: &Row, index: usize, unicode: bool) -> String {
+        let (node, line) = if unicode {
+            (unicode_node(self.nodes[index]), '│')
+        } else {
+            (self.nodes[index], '|')
+        };
+        let mut cells = vec![(' ', ""); 2 * row.lanes.len()];
+        for (column, lane) in row.lanes.iter().enumerate() {
+            if let Some((_, colour)) = *lane {
+                cells[2 * column] = (line, &self.colours[colour]);
+            }
+        }
+        let column = 2 * row.column;
+        cells[column] = (node, "");
+        if let Some((to, colour)) = row.opening {
+            let colour = &self.colours[colour];
+            cells.resize(cells.len().max(to + 2), (' ', ""));
+            for cell in &mut cells[column + 1..to] {
+                *cell = if cell.0 == '│' {
+                    ('┼', cell.1)
+                } else {
+                    ('─', colour)
+                };
+            }
+            cells[to] = ('╮', colour);
+        }
+        render_cells(&cells)
+    }
+}
+
+/// Move a simple rightward Unicode fork onto its merge node. The next row
+/// receives the new lane vertically, so its route count and text agree.
+fn inline_opening(
+    edges: &mut [(usize, usize, usize)],
+    column: usize,
+    lanes: &[Lane],
+) -> Option<(usize, usize)> {
+    let mut moving = edges
+        .iter()
+        .enumerate()
+        .filter(|(_, (from, to, _))| from != to);
+    let (edge, &(from, to, colour)) = moving.next()?;
+    if from != column
+        || to < from
+        || moving.next().is_some()
+        || lanes.get(to / 2).is_some_and(Option::is_some)
+        || !edges
+            .iter()
+            .any(|&(from, to, _)| from == column && to == column)
+    {
+        return None;
+    }
+    edges[edge].0 = to;
+    Some((to, colour))
+}
+
+fn render_cells(cells: &[(char, &str)]) -> String {
+    let mut row = String::with_capacity(cells.len());
+    for &(symbol, colour) in cells {
+        if colour.is_empty() {
+            row.push(symbol);
+        } else {
+            row.push_str(&paint(symbol, colour));
+        }
+    }
+    row
 }
 
 // Git's default graph colours, cycled per lane.
@@ -2018,17 +2078,7 @@ fn connected_transitions(edges: &[(usize, usize, &str)], width: usize) -> Vec<St
             .iter()
             .rposition(|&(symbol, _)| symbol != ' ')
             .map_or(0, |i| i + 1);
-        let row: String = cells[..used]
-            .iter()
-            .map(|&(symbol, colour)| {
-                if symbol == ' ' {
-                    " ".to_owned()
-                } else {
-                    paint(symbol, colour)
-                }
-            })
-            .collect();
-        rows.push(format!("{row} "));
+        rows.push(format!("{} ", render_cells(&cells[..used])));
     });
     rows
 }
@@ -3434,7 +3484,7 @@ mod tests {
     }
 
     #[test]
-    fn new_lane_beyond_an_existing_track_uses_a_rounded_split() {
+    fn expanded_merge_opens_its_branch_across_an_existing_track() {
         let commits = vec![
             commit("top", &["left", "middle", "split", "through"]),
             commit("split", &["main", "side"]),
@@ -3448,12 +3498,10 @@ mod tests {
         folds.refresh(&commits).unwrap();
         assert_eq!(
             plain(folds.display_graph(1, &commits[1])).last().unwrap(),
-            "│ │ ● │ "
+            "│ │ ●─┼─╮ "
         );
-        assert_eq!(
-            plain(folds.display_graph(2, &commits[2])),
-            ["│ │ ├─┼─╮ ", "│ │ │ ● │ "]
-        );
+        assert_eq!(plain(folds.display_graph(2, &commits[2])), ["│ │ │ ● │ "]);
+        assert_eq!(folds.display_height(2, &commits[2]), 1);
     }
 
     #[test]
@@ -3626,19 +3674,15 @@ mod tests {
             .collect();
         assert_eq!(
             original,
-            [
-                vec!["● "],
-                vec!["├─╮ ", "│ ● "],
-                vec!["● │ "],
-                vec!["├─╯ ", "● "]
-            ]
+            [vec!["●─╮ "], vec!["│ ● "], vec!["● │ "], vec!["├─╯ ", "● "]]
         );
         folds.toggle(0, &commits).unwrap();
         assert!(!folds.visible(1));
         assert_eq!(plain(folds.display_graph(2, &commits[2])), ["● "]);
         folds.toggle(0, &commits).unwrap();
         folds.toggle_merges(&commits).unwrap();
-        assert_eq!(plain(folds.display_graph(1, &commits[1])), original[1]);
+        // With the merge node filtered out, the branch still needs its routing row.
+        assert_eq!(plain(folds.display_graph(1, &commits[1])), ["├─╮ ", "│ ● "]);
         folds.toggle_merges(&commits).unwrap();
         for (i, commit) in commits.iter().enumerate() {
             assert_eq!(plain(folds.display_graph(i, commit)), original[i]);
@@ -3698,12 +3742,14 @@ mod tests {
         // No fold is offered before the read it needs.
         assert_eq!(folds.marker(0), None);
         folds.settle(&commits);
-        assert_eq!(plain(folds.display_graph(1, &commits[1])), ["├─╮ ", "│ ● "]);
+        assert_eq!(plain(folds.display_graph(0, &commits[0])), ["●─╮ "]);
+        assert_eq!(plain(folds.display_graph(1, &commits[1])), ["│ ● "]);
         assert_eq!(folds.marker(0), Some("▼"));
         folds.toggle(0, &commits).unwrap();
         assert!(!folds.visible(1));
         folds.toggle(0, &commits).unwrap();
-        assert_eq!(plain(folds.display_graph(1, &commits[1])), ["├─╮ ", "│ ● "]);
+        assert_eq!(plain(folds.display_graph(0, &commits[0])), ["●─╮ "]);
+        assert_eq!(plain(folds.display_graph(1, &commits[1])), ["│ ● "]);
     }
 
     #[test]
@@ -3725,7 +3771,7 @@ mod tests {
         let graphs: Vec<_> = (0..commits.len())
             .map(|i| plain(folds.display_graph(i, &commits[i])))
             .collect();
-        assert_eq!(graphs, [vec!["● "], vec!["├─╮ ", "│ ● "], vec!["│ ● "]]);
+        assert_eq!(graphs, [vec!["●─╮ "], vec!["│ ● "], vec!["│ ● "]]);
     }
 
     #[test]

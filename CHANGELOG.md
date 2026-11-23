@@ -12,6 +12,9 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ### Changed
 
+- Draw simple branch openings on the expanded merge row in the Unicode log
+  graph.
+
 - Use delta for syntax highlighting in Grep, GitHub code search results, and
   GitHub file previews when available.
 
