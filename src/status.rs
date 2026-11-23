@@ -580,6 +580,78 @@ impl StatusView {
         ))
     }
 
+    pub fn blame(&self) -> Result<crate::app::App, String> {
+        let row = self.rows.get(self.cursor).ok_or("No file selected")?;
+        self.blame_row(&row.key)
+    }
+
+    fn blame_row(&self, row: &RowKey) -> Result<crate::app::App, String> {
+        use crate::{
+            blame,
+            git::{self, Repository, Version},
+        };
+
+        let (key, source) = match row {
+            RowKey::Nested(key, row) => return self.submodules[key].blame_row(row),
+            RowKey::Recorded(key, row) => {
+                return self.recorded_submodules[key]
+                    .view
+                    .as_ref()
+                    .map_err(Clone::clone)?
+                    .show_blame(*row);
+            }
+            RowKey::File(key) => (key, None),
+            RowKey::Patch(key, source) => (key, Some(*source)),
+            _ => return Err("No file selected".into()),
+        };
+        let entry = self
+            .snapshot
+            .entries
+            .iter()
+            .find(|entry| entry.key == *key)
+            .ok_or("No file selected")?;
+        if entry.submodule_state().is_some() {
+            return Err("Select a file inside the submodule to blame".into());
+        }
+        let repository = Repository::checked_out(self.root.clone());
+        let (old, new) = match key.group {
+            Group::Staged => (
+                (!self.snapshot.initial).then(|| Version::Revision(self.snapshot.oid.clone())),
+                Version::Index,
+            ),
+            Group::Unstaged => (Some(Version::Index), Version::Worktree),
+            Group::Untracked => (None, Version::Untracked),
+            Group::Conflicts => (None, Version::Worktree),
+        };
+        let path = git::path_bytes(&entry.raw_path);
+        if let Some(source) = source {
+            let patch = self.patches.get(key).ok_or("No patch selected")?;
+            return blame::load_patch(
+                blame::PatchSides::Pair { old, new },
+                false,
+                patch,
+                source,
+                &path,
+                repository,
+            );
+        }
+        let deleted = entry
+            .record
+            .split(' ')
+            .nth(1)
+            .is_some_and(|xy| match key.group {
+                Group::Staged => xy.starts_with('D'),
+                Group::Unstaged => xy.ends_with('D'),
+                _ => false,
+            });
+        let version = if deleted {
+            old.ok_or("No earlier version of the file")?
+        } else {
+            new
+        };
+        blame::load_version_at_line(version, false, 1, &path, repository)
+    }
+
     fn load_submodule(&self, key: &Key) -> Result<Self, String> {
         let root = self.root.join(&key.path);
         if !root.join(".git").exists() {
@@ -2084,6 +2156,107 @@ mod tests {
         view.settle_code_counts();
         assert!(!view.counting_code());
         assert_eq!(view.stat(&key).unwrap(), "+1 −1");
+    }
+
+    #[test]
+    fn status_blame_uses_the_selected_patch_side_and_restores_the_cursor() {
+        use crate::app::{History, Mode};
+        use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        std::fs::write("file name.txt", "first\noriginal\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        let head = git(&["rev-parse", "HEAD"]);
+        std::fs::write("file name.txt", "first\nstaged\n").unwrap();
+        git(&["add", "."]);
+        std::fs::write("file name.txt", "first\nworktree\n").unwrap();
+        std::fs::write("untracked.txt", "new\n").unwrap();
+
+        let mut app = load_app(&[]).unwrap();
+        let press = |app: &mut _, code| {
+            crate::input::handle(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)), app);
+        };
+        for (group, patch_line, code, context, number, back) in [
+            (
+                Group::Staged,
+                Some("-original"),
+                "original",
+                None,
+                2,
+                KeyCode::Esc,
+            ),
+            (
+                Group::Staged,
+                Some("+staged"),
+                "staged",
+                Some("index"),
+                2,
+                KeyCode::Backspace,
+            ),
+            (
+                Group::Unstaged,
+                Some("-staged"),
+                "staged",
+                Some("index"),
+                2,
+                KeyCode::Esc,
+            ),
+            (
+                Group::Unstaged,
+                Some("+worktree"),
+                "worktree",
+                Some("working tree"),
+                2,
+                KeyCode::Esc,
+            ),
+            (
+                Group::Untracked,
+                None,
+                "new",
+                Some("working tree"),
+                1,
+                KeyCode::Esc,
+            ),
+        ] {
+            let view = app.status_view.as_mut().unwrap();
+            let cursor = view
+                .rows
+                .iter()
+                .position(|row| match &row.key {
+                    RowKey::File(key) => key.group == group && patch_line.is_none(),
+                    RowKey::Patch(key, _) => {
+                        key.group == group
+                            && patch_line.is_some_and(|line| crate::ansi::plain(&row.text) == line)
+                    }
+                    _ => false,
+                })
+                .unwrap();
+            view.cursor = cursor;
+            press(&mut app, KeyCode::Char('A'));
+            assert_eq!(app.status, None);
+            assert_eq!(app.history, History::Blame);
+            let commit = &app.commits[app.selected];
+            let line = commit.blame().unwrap();
+            assert_eq!(line.number, number);
+            assert_eq!(
+                line.code
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>(),
+                code
+            );
+            if let Some(context) = context {
+                assert!(app.context.starts_with(&format!("blame {context} -- ")));
+            } else {
+                assert_eq!(commit.hash, head);
+            }
+            press(&mut app, back);
+            assert_eq!(app.mode, Mode::Status);
+            assert_eq!(app.status_view.as_ref().unwrap().cursor, cursor);
+        }
     }
 
     #[test]

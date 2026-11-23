@@ -620,6 +620,7 @@ const HELP_ROWS: &[HelpRow] = &[
         "B",
         "blame selected line (Show); open bisect graph (Status, when bisecting)",
     ),
+    detail("A", "blame selected file or patch line (Status)"),
     (
         "Enter",
         HelpTexts {

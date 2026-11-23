@@ -157,8 +157,18 @@ pub fn load_patch(
             })
             .ok_or("Could not locate the parent file")?,
     };
+    load_version_at_line(version, textconv, number, &path, repository)
+}
+
+pub fn load_version_at_line(
+    version: Version,
+    textconv: bool,
+    number: usize,
+    path: &[u8],
+    repository: git::Repository,
+) -> Result<crate::app::App, String> {
     let date = date_at(Some(&repository))?;
-    let rows = blame_version(&version, &path, &repository, &date, textconv)?;
+    let rows = blame_version(&version, path, &repository, &date, textconv)?;
     if rows.is_empty() {
         return Err("The file is empty at this revision".into());
     }
@@ -169,7 +179,7 @@ pub fn load_patch(
     app.context = format!(
         "blame {} -- {}",
         version_label(&version),
-        crate::diff::display_path(&path)
+        crate::diff::display_path(path)
     );
     Ok(app)
 }

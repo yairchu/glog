@@ -174,7 +174,8 @@ fn page(command: Command, topic: Option<&str>) -> Page {
         (Status, _) => Page {
             usage: "glog status",
             options: &[PATCH_OPTIONS],
-            sections: &[("Working tree", "Status opens the Working tree detail view in a watch session."), ("Bisect graph", "When bisecting, click the bisect indicator or press B to open its graph.
+            sections: &[("Working tree", "Status opens the Working tree detail view in a watch session.
+Press A to blame the selected file or patch line. Return with Esc or Backspace."), ("Bisect graph", "When bisecting, click the bisect indicator or press B to open its graph.
 Return with Esc or Backspace. See glog bisect log --help for graph details."), ("Moved code", MOVED_CODE), ("Code statistics", STATS)],
         },
     }

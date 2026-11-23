@@ -176,6 +176,7 @@ fn apply(event: Event, app: &mut App) {
                 return;
             }
             match key.code {
+                KeyCode::Char('A') => app.blame_status_line(),
                 KeyCode::Tab | KeyCode::Esc => app.switch_mode(),
                 KeyCode::Char('q') => app.quit = true,
                 KeyCode::Char('h') => app.open_help(),

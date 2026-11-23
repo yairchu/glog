@@ -2063,7 +2063,20 @@ impl App {
     }
 
     pub fn blame_show_line(&mut self) {
-        let loaded = self.show_blame(self.show_cursor).map(|mut target| {
+        self.enter_blame(self.show_blame(self.show_cursor));
+    }
+
+    pub fn blame_status_line(&mut self) {
+        let loaded = self
+            .status_view
+            .as_ref()
+            .ok_or_else(|| "No file selected".to_owned())
+            .and_then(crate::status::StatusView::blame);
+        self.enter_blame(loaded);
+    }
+
+    fn enter_blame(&mut self, loaded: Result<App, String>) {
+        let loaded = loaded.map(|mut target| {
             target.exit_on_esc = self.exit_on_esc;
             target.file_filters = self.file_filters.clone();
             target
@@ -2071,7 +2084,7 @@ impl App {
         self.enter_followed(loaded);
     }
 
-    fn show_blame(&self, cursor: usize) -> Result<App, String> {
+    pub(crate) fn show_blame(&self, cursor: usize) -> Result<App, String> {
         let selected = self.show_file(cursor)?;
         let app = selected.app;
         let repository = match app.show_repository() {
