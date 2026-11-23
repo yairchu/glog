@@ -10,6 +10,10 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 - Press `A` in Status to blame the selected file or patch line. Return to
   Status with Esc or Backspace.
 
+### Fixed
+
+- Follow uncommitted Blame lines back to the file at HEAD with `p`.
+
 ## 0.12.0 - 2026-11-23
 
 ### Added

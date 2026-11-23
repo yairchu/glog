@@ -1072,10 +1072,6 @@ impl App {
         let Some(line) = commit.blame() else {
             return;
         };
-        if commit.kind != CommitKind::Revision {
-            self.status = Some("This line is not committed yet".into());
-            return;
-        }
         match crate::blame::load_parent(commit, line) {
             Ok(parent) if parent.commits.is_empty() => {
                 self.status = Some("The file was empty before this commit".into());

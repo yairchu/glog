@@ -513,6 +513,9 @@ pub struct BlameFile {
     pub textconv: bool,
     path: Vec<u8>,
     editor_source: crate::editor::Source,
+    /// Hunk headers captured with the uncommitted snapshot, before later edits
+    /// or staging can change the meaning of its line numbers.
+    uncommitted_diff: Option<Result<String, String>>,
     hash_width: usize,
     date_width: usize,
     author_width: usize,
@@ -664,6 +667,20 @@ pub struct ParentBlame {
 /// Blame before the commit that last changed `line`, following moved code to
 /// its origin or mapping edits and insertions through the same-file diff.
 pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<ParentBlame, String> {
+    if commit.kind == CommitKind::WorkingTree {
+        let (parent, path) = line
+            .previous
+            .as_ref()
+            .ok_or("No earlier version of this file at HEAD")?;
+        let diff = line
+            .file
+            .uncommitted_diff
+            .as_ref()
+            .ok_or("No earlier version of this file at HEAD")?
+            .as_ref()
+            .map_err(Clone::clone)?;
+        return load_parent_file(commit, line, parent, path, parent_line(diff, line.number));
+    }
     let no_history = || {
         format!(
             "{} added this file; nothing earlier to blame",
@@ -686,30 +703,65 @@ pub fn load_parent(commit: &Commit, line: &BlameLine) -> Result<ParentBlame, Str
     if line.previous.is_none() {
         return Err(no_history());
     }
-    let output = git::read_command_at(Some(&line.file.repository))
-        .env("LC_ALL", "C")
-        .args([
-            "diff",
-            "--no-color",
-            "--no-ext-diff",
-            // Map line numbers in the text that blame shows.
-            if line.file.textconv {
-                "--textconv"
-            } else {
-                "--no-textconv"
-            },
-            "-U0",
-            "--inter-hunk-context=0",
-        ])
+    let diff = parent_diff_command(&line.file.repository, line.file.textconv)
         .arg(blob_spec(parent, path))
         .arg(blob_spec(&commit.hash, &line.source_path))
+        .output()
+        .map_err(|error| format!("could not run git diff: {error}"))?;
+    if !diff.status.success() {
+        return Err(git::stderr_message("git diff failed", &diff.stderr));
+    }
+    let number = parent_line(&String::from_utf8_lossy(&diff.stdout), line.source_number);
+    load_parent_file(commit, line, parent, path, number)
+}
+
+fn parent_diff_command(repository: &git::Repository, textconv: bool) -> std::process::Command {
+    let mut command = git::read_command_at(Some(repository));
+    command.env("LC_ALL", "C").args([
+        "--literal-pathspecs",
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        "--no-relative",
+        "--no-renames",
+        "--no-exit-code",
+        "--no-quiet",
+        if textconv {
+            "--textconv"
+        } else {
+            "--no-textconv"
+        },
+        "-U0",
+        "--inter-hunk-context=0",
+    ]);
+    command
+}
+
+fn uncommitted_diff(
+    repository: &git::Repository,
+    version: &Version,
+    textconv: bool,
+    parent: &str,
+    path: &[u8],
+) -> Result<String, String> {
+    let mut command = parent_diff_command(repository, textconv);
+    if *version == Version::Index {
+        command.arg("--cached");
+    }
+    let output = command
+        .arg(parent)
+        .arg("--")
+        .arg(git::raw_path(path))
         .output()
         .map_err(|error| format!("could not run git diff: {error}"))?;
     if !output.status.success() {
         return Err(git::stderr_message("git diff failed", &output.stderr));
     }
-    let number = parent_line(&String::from_utf8_lossy(&output.stdout), line.source_number);
-    load_parent_file(commit, line, parent, path, number)
+    Ok(String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter(|line| crate::hunk::header(line).is_some())
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 fn load_parent_file(
@@ -882,6 +934,16 @@ fn render_lines(
     let width = |text: &str| Span::raw(text).width();
     let file = Arc::new(BlameFile {
         editor_source: crate::editor::Source::capture(&repository, path, &version),
+        uncommitted_diff: lines.iter().find_map(|line| {
+            let (parent, path) = line.previous.as_ref().filter(|_| line.is_uncommitted())?;
+            Some(uncommitted_diff(
+                &repository,
+                &version,
+                textconv,
+                parent,
+                path,
+            ))
+        }),
         repository,
         date: date.to_owned(),
         textconv,
@@ -1474,6 +1536,56 @@ mod tests {
         assert_eq!(app.show_text, text);
         assert!(!app.has_reference_back());
         assert_eq!(app.status.as_deref(), Some("No file selected"));
+    }
+
+    #[test]
+    fn uncommitted_blame_follows_the_head_and_line_of_the_displayed_snapshot() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write("file.txt", "first\noriginal\nlast\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        let head = trimmed(succeed(&mut git_command(&["rev-parse", "HEAD"])));
+
+        fs::write("file.txt", "inserted\nfirst\nstaged\nlast\n").unwrap();
+        git(&["add", "."]);
+        let mut staged = select_line(
+            crate::git::load_diff_app(&["--cached".into()]).unwrap(),
+            "+staged",
+        );
+        press(&mut staged, KeyCode::Char('B'));
+
+        fs::write("file.txt", "first\nworktree\nlast\nextra\n").unwrap();
+        let mut worktree = load_app(&["file.txt".into()]).unwrap();
+        worktree.selected = 1;
+
+        // Moving HEAD and replacing the index and working tree must leave both
+        // the parent revision and the displayed line mappings intact.
+        fs::write("file.txt", "different\n").unwrap();
+        git(&["commit", "-qam", "later"]);
+        for (mut app, changed) in [(staged, "staged"), (worktree, "worktree")] {
+            let selected = app.selected;
+            assert_eq!(code(app.commits[selected].blame().unwrap()), changed);
+            press(&mut app, KeyCode::Char('p'));
+            assert_eq!(app.status, None);
+            let commit = &app.commits[app.selected];
+            assert_eq!(commit.hash, head);
+            assert_eq!(code(commit.blame().unwrap()), "original");
+            press(&mut app, KeyCode::Backspace);
+            assert_eq!(app.selected, selected);
+            assert_eq!(code(app.commits[selected].blame().unwrap()), changed);
+        }
+
+        fs::write("new.txt", "new\n").unwrap();
+        git(&["add", "new.txt"]);
+        let mut new_file = load_app(&["new.txt".into()]).unwrap();
+        press(&mut new_file, KeyCode::Char('p'));
+        assert_eq!(
+            new_file.status.as_deref(),
+            Some("No earlier version of this file at HEAD")
+        );
+        assert!(!new_file.has_blame_back());
     }
 
     #[test]
@@ -3095,7 +3207,9 @@ mod tests {
         assert_eq!(app.mode, Mode::Log);
         app.selected = 4;
         key(KeyCode::Char('p'), &mut app);
-        assert!(app.status.as_ref().unwrap().contains("not committed"));
+        assert_eq!(app.status, None);
+        assert!(app.context.ends_with(" -- new.txt"));
+        assert_eq!(code(app.commits[app.selected].blame().unwrap()), "d");
     }
 
     #[test]

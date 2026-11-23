@@ -272,7 +272,7 @@ const STASH_SHOW: &str = "Stash show opens a stash by index or reference (the la
 including saved untracked files.";
 
 const BLAME: &str = "Blame shows which commit last changed each line; Enter opens it, p blames
-the file before it, and Backspace returns.";
+the file before that commit (at HEAD for uncommitted lines), and Backspace returns.";
 
 const GITHUB: &str =
     "GitHub code search uses gh authentication and accepts gh search code query options,
