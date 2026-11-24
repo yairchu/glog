@@ -227,13 +227,15 @@ impl LogFolds {
             })
     }
 
-    /// A row that merge folds show but filters hide. Its outgoing edges are
-    /// drawn in the routing rows of the next shown commit.
-    pub fn filtered_out(&self, index: usize) -> bool {
-        self.view.filtered.as_ref().is_some_and(|filtered| {
-            self.view.layout.visible.get(index) == Some(&true)
-                && filtered.visible.get(index) == Some(&false)
-        })
+    /// A filtered junction still generates outgoing edges, even if it
+    /// occupies no rows of its own.
+    pub fn hidden_junction(&self, index: usize) -> bool {
+        matches!(
+            self.view.filtered.as_ref().map(|layout| &layout.graphs),
+            Some(Drawing::Plan(plan))
+                if plan.visible.get(index) == Some(&true)
+                    && plan.trimmed.get(index) == Some(&true)
+        )
     }
 
     pub fn hidden_count(&self) -> usize {

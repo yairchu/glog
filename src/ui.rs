@@ -1229,16 +1229,20 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
     // graph/hash column. Routing lines and off-screen history reserve no space.
     let mut metadata_rows = Vec::new();
     let mut graph_row = 0;
-    // Routing rows below a filtered-out commit carry its edges, so clicking
-    // them selects nothing rather than the commit they lead to.
-    let mut after_filtered = false;
+    let mut preceding_commit = None;
     'commits: for (index, commit) in app.commits.iter().enumerate() {
         let graph_only = !app.log_folds.visible(index);
-        let routing_selectable = !graph_only && !after_filtered;
-        if app.log_folds.filtered_out(index) {
-            after_filtered = true;
+        // Routing rows are stored before their destination, but the
+        // preceding commit generates the outgoing edges they draw.
+        let routing_owner = if app.history == History::Log {
+            preceding_commit
+        } else {
+            (!graph_only).then_some(index)
+        };
+        if app.log_folds.hidden_junction(index) {
+            preceding_commit = None;
         } else if !graph_only {
-            after_filtered = false;
+            preceding_commit = Some(index);
         }
         if !app.log_folds.graph_visible(index) {
             continue;
@@ -1276,7 +1280,13 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
             let mut line = ansi::parse_line(graph);
             let mut deferred_metadata = false;
             let mut stand_ins = StandIns::default();
-            if !graph_only && part + 1 == graph_rows.len() {
+            let commit_row = !graph_only && part + 1 == graph_rows.len();
+            let owner = if commit_row {
+                Some(index)
+            } else {
+                routing_owner
+            };
+            if commit_row {
                 let deferred =
                     date_column.is_some() && commit.kind == crate::git::CommitKind::Revision;
                 let marker = app
@@ -1346,16 +1356,13 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
                 let current = app.search_match == Some((Mode::Log, index));
                 line = stand_ins.highlight(line, query, current);
             }
-            if !graph_only && index == app.selected {
+            if owner == Some(app.selected) {
                 line.style = Style::default()
                     .bg(Color::DarkGray)
                     .add_modifier(Modifier::BOLD);
             }
             lines.push(line);
-            app.visible_log_rows.push(
-                (routing_selectable || !graph_only && part + 1 == graph_rows.len())
-                    .then_some(index),
-            );
+            app.visible_log_rows.push(owner);
             graph_row += 1;
         }
     }
@@ -2351,7 +2358,7 @@ mod tests {
     }
 
     #[test]
-    fn routing_rows_select_the_commit_they_lead_to() {
+    fn ascii_routing_rows_belong_to_the_preceding_commit() {
         let mut merge = commit("merge", 1);
         let mut side = commit("side", 1);
         let mut main = commit("main", 1);
@@ -2361,9 +2368,14 @@ mod tests {
         side.parents = vec![base.hash.clone()];
         side.graph = vec!["|\\".into(), "| * ".into()];
         let mut app = App::new(vec![merge, side, main, base]);
+        app.log_folds.ascii_graph = true;
         let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
         terminal.draw(|f| draw(f, &mut app)).unwrap();
-        assert_eq!(app.visible_log_rows[..3], [Some(0), Some(1), Some(1)]);
+        assert_eq!(app.visible_log_rows[..3], [Some(0), Some(0), Some(1)]);
+        let y = app.log_row_origin;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, y + 1)].bg, Color::DarkGray);
+        assert_eq!(buffer[(0, y + 2)].bg, Color::Reset);
     }
 
     #[test]
@@ -2698,6 +2710,24 @@ mod tests {
         );
         assert_eq!(app.selected, 1);
         assert_eq!(app.mode, Mode::Log);
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        assert_eq!(app.visible_log_rows[3], Some(2));
+        assert_eq!(terminal.backend().buffer()[(0, y + 3)].bg, Color::Reset);
+        handle(
+            Event::Mouse(crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(crossterm::event::MouseButton::Left),
+                column: 2,
+                row: y + 3,
+                modifiers: KeyModifiers::NONE,
+            }),
+            &mut app,
+        );
+        assert_eq!(app.selected, 2);
+        terminal.draw(|f| draw(f, &mut app)).unwrap();
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, y + 2)].bg, Color::DarkGray);
+        assert_eq!(buffer[(0, y + 3)].bg, Color::DarkGray);
+        assert_eq!(buffer[(0, y + 4)].bg, Color::Reset);
         app.selected = 0;
         app.apply_log_action(LogAction::Fold);
         terminal.draw(|f| draw(f, &mut app)).unwrap();
