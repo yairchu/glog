@@ -22,6 +22,9 @@ impl Source {
         match version {
             git::Version::Revision(revision) => Self::Revision(revision.clone()),
             git::Version::Index => Self::Index(file_blob(repository, path, "")),
+            git::Version::ConflictStage(stage) => {
+                Self::Index(file_blob(repository, path, &format!(":{stage}")))
+            }
             git::Version::Worktree | git::Version::Untracked => Self::Worktree,
         }
     }

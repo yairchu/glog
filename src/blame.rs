@@ -90,7 +90,11 @@ pub enum PatchSides {
     /// A commit's patch. Its parent column N shows `{hash}^N`.
     Commit(String),
     /// A two-way patch. New files have no old side.
-    Pair { old: Option<Version>, new: Version },
+    Pair {
+        old: Option<Version>,
+        new: Version,
+    },
+    Conflict,
 }
 
 impl PatchSides {
@@ -121,6 +125,10 @@ impl PatchSides {
             (Self::Commit(hash), Some(parent)) => {
                 Ok(Version::Revision(format!("{hash}^{}", parent + 1)))
             }
+            (Self::Conflict, None) => Ok(Version::Worktree),
+            (Self::Conflict, Some(0)) => Ok(Version::ConflictStage(2)),
+            (Self::Conflict, Some(1)) => Ok(Version::ConflictStage(3)),
+            (Self::Conflict, Some(_)) => Err("Unexpected combined patch".into()),
             (Self::Pair { new, .. }, None) => Ok(new.clone()),
             (Self::Pair { old, .. }, Some(0)) => old
                 .clone()
@@ -144,6 +152,7 @@ pub fn load_patch(
     let version = sides.side(parent)?;
     let path = match (&sides, &version) {
         _ if parent.is_none() => path.to_vec(),
+        (PatchSides::Conflict, _) => path.to_vec(),
         (PatchSides::Commit(hash), Version::Revision(revision)) if !is_two_way(patch) => {
             // Combined diffs normally show only the result's name, even when
             // this parent used another name. Ask Git for the rename mapping.
@@ -167,6 +176,10 @@ pub fn load_version_at_line(
     path: &[u8],
     repository: git::Repository,
 ) -> Result<crate::app::App, String> {
+    let version = match version {
+        Version::ConflictStage(stage) => conflict_version(stage, path, &repository),
+        version => version,
+    };
     let date = date_at(Some(&repository))?;
     let rows = blame_version(&version, path, &repository, &date, textconv)?;
     if rows.is_empty() {
@@ -182,6 +195,41 @@ pub fn load_version_at_line(
         crate::diff::display_path(path)
     );
     Ok(app)
+}
+
+/// Use commit history when the operation's revision contains the exact stage.
+fn conflict_version(stage: u8, path: &[u8], repository: &git::Repository) -> Version {
+    let resolve = |spec: &std::ffi::OsStr| {
+        let output = git::read_command_at(Some(repository))
+            .args(["rev-parse", "--verify"])
+            .arg(spec)
+            .output()
+            .ok()?;
+        output
+            .status
+            .success()
+            .then(|| String::from_utf8_lossy(output.stdout.trim_ascii()).into_owned())
+    };
+    if let Some(blob) = resolve(&blob_spec(&format!(":{stage}"), path)) {
+        let candidates: &[_] = if stage == 2 {
+            &["HEAD"]
+        } else {
+            &[
+                "MERGE_HEAD",
+                "CHERRY_PICK_HEAD",
+                "REBASE_HEAD",
+                "REVERT_HEAD^",
+            ]
+        };
+        for revision in candidates {
+            if let Some(hash) = resolve(revision.as_ref()) {
+                if resolve(&blob_spec(&hash, path)).as_ref() == Some(&blob) {
+                    return Version::Revision(hash);
+                }
+            }
+        }
+    }
+    Version::ConflictStage(stage)
 }
 
 fn is_two_way(patch: &str) -> bool {
@@ -200,6 +248,7 @@ fn version_label(version: &Version) -> String {
             format!("{}{}", &revision[..hex.min(7)], &revision[hex..])
         }
         Version::Index => "index".into(),
+        Version::ConflictStage(stage) => format!("index stage {stage}"),
         Version::Worktree | Version::Untracked => "working tree".into(),
     }
 }
@@ -240,13 +289,17 @@ fn blame_version(
         Version::Worktree if !unborn => {
             blame_with_textconv(None, path, Some(&repository), date, textconv, None)
         }
-        Version::Index => {
+        Version::Index | Version::ConflictStage(_) => {
+            let prefix = match version {
+                Version::ConflictStage(stage) => format!(":{stage}"),
+                _ => String::new(),
+            };
             // Blame reads --contents as is, so convert them as the patch did.
             let mut command = git::read_command_at(Some(&repository));
             command.arg("cat-file");
             command.arg(if textconv { "--textconv" } else { "blob" });
             let output = command
-                .arg(blob_spec("", path))
+                .arg(blob_spec(&prefix, path))
                 .output()
                 .map_err(|error| format!("could not read the staged file: {error}"))?;
             if !output.status.success() {
@@ -255,7 +308,7 @@ fn blame_version(
                     &output.stderr,
                 ));
             }
-            if unborn {
+            if unborn || matches!(version, Version::ConflictStage(_)) {
                 return Ok(uncommitted(&output.stdout));
             }
             blame_with_textconv(
@@ -489,13 +542,13 @@ pub fn load_file(revision: String, path: &str) -> Result<crate::app::App, String
 
 /// Rows for file contents without blame, taking every line from `hash`.
 fn unattributed_lines(contents: &[u8], hash: &str, path: &[u8]) -> Vec<PorcelainLine> {
-    String::from_utf8_lossy(contents)
-        .split_terminator('\n')
+    contents
+        .split_inclusive(|&byte| byte == b'\n')
         .enumerate()
         .map(|(index, code)| PorcelainLine {
             hash: hash.to_owned(),
             number: index + 1,
-            code: code.to_owned(),
+            code: code.strip_suffix(b"\n").unwrap_or(code).to_vec(),
             source_path: path.to_vec(),
             source_number: index + 1,
             previous: None,
@@ -739,27 +792,55 @@ fn parent_diff_command(repository: &git::Repository, textconv: bool) -> std::pro
 
 fn uncommitted_diff(
     repository: &git::Repository,
-    version: &Version,
     textconv: bool,
     parent: &str,
     path: &[u8],
+    snapshot: &[PorcelainLine],
 ) -> Result<String, String> {
-    let mut command = parent_diff_command(repository, textconv);
-    if *version == Version::Index {
-        command.arg("--cached");
-    }
-    let output = command
-        .arg(parent)
-        .arg("--")
-        .arg(git::raw_path(path))
+    let original = git::read_command_at(Some(repository))
+        .arg("cat-file")
+        .arg(if textconv { "--textconv" } else { "blob" })
+        .arg(blob_spec(parent, path))
         .output()
-        .map_err(|error| format!("could not run git diff: {error}"))?;
-    if !output.status.success() {
+        .map_err(|error| format!("could not read the HEAD file: {error}"))?;
+    if !original.status.success() {
+        return Err(git::stderr_message(
+            "could not read the HEAD file",
+            &original.stderr,
+        ));
+    }
+
+    // Compare the contents Git blamed. A worktree diff can skip entries
+    // marked assume-unchanged and can see edits made after blame ran.
+    let diff = || -> std::io::Result<_> {
+        let directory = tempfile::tempdir()?;
+        let old = directory.path().join("before");
+        let new = directory.path().join("after");
+        let mut original = original.stdout;
+        // Porcelain ends every source line with a newline, even at EOF.
+        if !original.is_empty() && !original.ends_with(b"\n") {
+            original.push(b'\n');
+        }
+        std::fs::write(&old, original)?;
+        let mut displayed = Vec::new();
+        for line in snapshot {
+            displayed.extend_from_slice(&line.code);
+            displayed.push(b'\n');
+        }
+        std::fs::write(&new, displayed)?;
+        parent_diff_command(repository, false)
+            .args(["--no-index", "--text", "--"])
+            .arg(old)
+            .arg(new)
+            .output()
+    };
+    let output = diff().map_err(|error| format!("could not diff the blame snapshot: {error}"))?;
+    if !output.status.success() && output.status.code() != Some(1) {
         return Err(git::stderr_message("git diff failed", &output.stderr));
     }
     Ok(String::from_utf8_lossy(&output.stdout)
         .lines()
-        .filter(|line| crate::hunk::header(line).is_some())
+        .filter(|line| line.starts_with("@@ ") && crate::hunk::header(line).is_some())
         .collect::<Vec<_>>()
         .join("\n"))
 }
@@ -904,7 +985,7 @@ fn blame_with_textconv(
     if !output.status.success() {
         return Err(git::stderr_message("git blame failed", &output.stderr));
     }
-    let lines = parse_porcelain(&String::from_utf8_lossy(&output.stdout))?;
+    let lines = parse_porcelain(&output.stdout)?;
     let repository = match repository {
         Some(repository) => repository.clone(),
         None => git::Repository::main()?,
@@ -938,10 +1019,10 @@ fn render_lines(
             let (parent, path) = line.previous.as_ref().filter(|_| line.is_uncommitted())?;
             Some(uncommitted_diff(
                 &repository,
-                &version,
                 textconv,
                 parent,
                 path,
+                &lines,
             ))
         }),
         repository,
@@ -1016,7 +1097,7 @@ fn render_lines(
                 code: crate::ansi::display_spans(
                     match highlighted.as_mut().and_then(Iterator::next) {
                         Some(spans) => spans,
-                        None => vec![Span::raw(line.code)],
+                        None => vec![Span::raw(String::from_utf8_lossy(&line.code).into_owned())],
                     },
                 ),
                 starts_chunk,
@@ -1033,7 +1114,7 @@ fn render_lines(
 struct PorcelainLine {
     hash: String,
     number: usize,
-    code: String,
+    code: Vec<u8>,
     source_path: Vec<u8>,
     source_number: usize,
     previous: Option<(String, Vec<u8>)>,
@@ -1047,7 +1128,7 @@ impl PorcelainLine {
 
 /// Git describes each commit once, and again only where its lines came
 /// from another path, so origins carry over between line groups.
-fn parse_porcelain(output: &str) -> Result<Vec<PorcelainLine>, String> {
+fn parse_porcelain(output: &[u8]) -> Result<Vec<PorcelainLine>, String> {
     let invalid = || "invalid Git blame output".to_owned();
     let unquote = |path: &str| {
         crate::diff::unquote_path(path)
@@ -1063,8 +1144,8 @@ fn parse_porcelain(output: &str) -> Result<Vec<PorcelainLine>, String> {
     let mut header: Option<(String, usize, usize)> = None;
     let mut previous = None;
     let mut lines = Vec::new();
-    for line in output.split('\n') {
-        if let Some(code) = line.strip_prefix('\t') {
+    for line in output.split(|&byte| byte == b'\n') {
+        if let Some(code) = line.strip_prefix(b"\t") {
             let (hash, source_number, number) = header.take().ok_or_else(invalid)?;
             let Origin {
                 source_path,
@@ -1073,12 +1154,13 @@ fn parse_porcelain(output: &str) -> Result<Vec<PorcelainLine>, String> {
             lines.push(PorcelainLine {
                 hash,
                 number,
-                code: code.to_owned(),
+                code: code.to_vec(),
                 source_path,
                 source_number,
                 previous,
             });
         } else if let Some((hash, _, _)) = &header {
+            let line = String::from_utf8_lossy(line);
             if let Some(rest) = line.strip_prefix("previous ") {
                 let (parent, path) = rest.split_once(' ').ok_or_else(invalid)?;
                 previous = Some((parent.to_owned(), unquote(path)?));
@@ -1093,6 +1175,7 @@ fn parse_porcelain(output: &str) -> Result<Vec<PorcelainLine>, String> {
             }
             // Authors and dates come from Git's log formatting instead.
         } else if !line.is_empty() {
+            let line = std::str::from_utf8(line).map_err(|_| invalid())?;
             let mut fields = line.split(' ');
             let hash = fields
                 .next()
@@ -1180,7 +1263,7 @@ fn commit_details(
 /// file, so they share Show's theme.
 fn highlight(path: &str, lines: &[PorcelainLine]) -> Option<Vec<Vec<Span<'static>>>> {
     // Escape sequences in the file would be indistinguishable from delta's.
-    if !git::delta_enabled() || lines.iter().any(|line| line.code.contains('\x1b')) {
+    if !git::delta_enabled() || lines.iter().any(|line| line.code.contains(&0x1b)) {
         return None;
     }
     let mut diff = format!(
@@ -1189,7 +1272,7 @@ fn highlight(path: &str, lines: &[PorcelainLine]) -> Option<Vec<Vec<Span<'static
     );
     for line in lines {
         diff.push(' ');
-        diff.push_str(&line.code);
+        diff.push_str(&String::from_utf8_lossy(&line.code));
         diff.push('\n');
     }
     let output = git::run_delta(diff.as_bytes())?;

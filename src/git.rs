@@ -1434,6 +1434,7 @@ fn resolve_revisions(
 pub enum Version {
     Revision(String),
     Index,
+    ConflictStage(u8),
     Worktree,
     /// A working tree file that Git does not track.
     Untracked,

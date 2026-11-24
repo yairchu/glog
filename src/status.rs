@@ -627,7 +627,11 @@ impl StatusView {
         if let Some(source) = source {
             let patch = self.patches.get(key).ok_or("No patch selected")?;
             return blame::load_patch(
-                blame::PatchSides::Pair { old, new },
+                if key.group == Group::Conflicts {
+                    blame::PatchSides::Conflict
+                } else {
+                    blame::PatchSides::Pair { old, new }
+                },
                 false,
                 patch,
                 source,
