@@ -2260,6 +2260,42 @@ mod tests {
     }
 
     #[test]
+    fn status_blames_both_deleted_sides_of_a_conflict_patch() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        std::fs::write("file.txt", "before\nbase\nafter\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        git(&["checkout", "-qb", "side"]);
+        std::fs::write("file.txt", "before\ntheirs\nafter\n").unwrap();
+        git(&["commit", "-qam", "theirs"]);
+        let theirs = git(&["rev-parse", "HEAD"]);
+        git(&["checkout", "-q", "main"]);
+        std::fs::write("file.txt", "before\nours\nafter\n").unwrap();
+        git(&["commit", "-qam", "ours"]);
+        let ours = git(&["rev-parse", "HEAD"]);
+        fail(&mut git_command(&["merge", "side"]));
+        std::fs::write("file.txt", "before\nresolved\nafter\n").unwrap();
+
+        let mut app = load_app(&[]).unwrap();
+        let view = app.status_view.as_mut().unwrap();
+        for (marker, expected) in [("- ours", ours), (" -theirs", theirs)] {
+            view.cursor = view
+                .rows
+                .iter()
+                .position(|row| crate::ansi::plain(&row.text) == marker)
+                .unwrap();
+            let blame = view
+                .blame()
+                .unwrap_or_else(|error| panic!("{marker}: {error}"));
+            let commit = &blame.commits[blame.selected];
+            assert_eq!(commit.hash, expected);
+            assert_eq!(commit.blame().unwrap().number, 2);
+        }
+    }
+
+    #[test]
     fn status_starts_in_log_when_clean_and_keeps_details_when_cleaned() {
         use crate::app::Mode;
 

@@ -1589,6 +1589,32 @@ mod tests {
     }
 
     #[test]
+    fn uncommitted_blame_maps_lines_when_diff_omits_the_patch() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-q"]);
+        fs::write(".gitattributes", "binary.txt -diff\n").unwrap();
+        for path in ["binary.txt", "assumed.txt"] {
+            fs::write(path, "first\noriginal\nlast\n").unwrap();
+        }
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+        git(&["update-index", "--assume-unchanged", "assumed.txt"]);
+
+        let mut mapped = Vec::new();
+        for path in ["binary.txt", "assumed.txt"] {
+            fs::write(path, "inserted\nfirst\nchanged\nlast\n").unwrap();
+            let mut app = load_app(&[path.into()]).unwrap();
+            app.selected = 2;
+            assert_eq!(code(app.commits[app.selected].blame().unwrap()), "changed");
+            press(&mut app, KeyCode::Char('p'));
+            assert_eq!(app.status, None);
+            mapped.push(code(app.commits[app.selected].blame().unwrap()));
+        }
+        assert_eq!(mapped, ["original", "original"]);
+    }
+
+    #[test]
     fn review_blame_opens_both_sides_of_uncommitted_and_stashed_patches() {
         let directory = TestDirectory::new();
         let _cwd = CurrentDirGuard::enter(directory.path());
