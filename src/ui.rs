@@ -1234,7 +1234,7 @@ fn draw_log(frame: &mut Frame, app: &mut App, area: Rect) {
         let graph_only = !app.log_folds.visible(index);
         // Routing rows are stored before their destination, but the
         // preceding commit generates the outgoing edges they draw.
-        let routing_owner = if app.history == History::Log {
+        let routing_owner = if matches!(app.history, History::Log | History::Branches) {
             preceding_commit
         } else {
             (!graph_only).then_some(index)

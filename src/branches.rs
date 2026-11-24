@@ -1177,6 +1177,25 @@ mod tests {
     }
 
     #[test]
+    fn branch_routing_rows_belong_to_the_preceding_node() {
+        let mut app = App::new(graph(
+            "a f\nb f\nf\n",
+            &[("a", &["main"]), ("b", &["feature"])],
+        ));
+        app.selected = 1;
+        let mut terminal = Terminal::new(TestBackend::new(60, 10)).unwrap();
+        terminal
+            .draw(|frame| crate::ui::draw(frame, &mut app))
+            .unwrap();
+        assert_eq!(app.visible_log_rows, [Some(0), Some(1), Some(1), Some(2)]);
+        let y = app.log_row_origin;
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, y + 1)].bg, Color::DarkGray);
+        assert_eq!(buffer[(0, y + 2)].bg, Color::DarkGray);
+        assert_eq!(buffer[(0, y + 3)].bg, Color::Reset);
+    }
+
+    #[test]
     fn branch_markers_distinguish_current_local_remote_and_shared_nodes() {
         let mut rows = graph(
             "a f\nb f\nc f\nf r\nr\n",
@@ -1231,7 +1250,7 @@ mod tests {
                 let y = app
                     .visible_log_rows
                     .iter()
-                    .rposition(|row| *row == Some(index))
+                    .position(|row| *row == Some(index))
                     .unwrap();
                 let buffer = terminal.backend().buffer();
                 let cell = (0..90)

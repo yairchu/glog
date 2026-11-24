@@ -5,6 +5,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Fixed
+
+- Highlight branch graph routing rows with the node whose outgoing edges they
+  draw. Clicking a routing row opens that node's log.
+
 ## 0.12.1 - 2026-11-24
 
 ### Added
