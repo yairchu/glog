@@ -639,6 +639,20 @@ impl StatusView {
                 repository,
             );
         }
+        if key.group == Group::Conflicts {
+            // An unmerged porcelain record lists the base, ours, theirs,
+            // and working-tree modes. A zero mode means that side is absent.
+            let mut modes = entry.record.split(' ').skip(4);
+            let version = match std::array::from_fn(|_| modes.next()) {
+                [Some("000000"), Some("000000"), Some("000000")] => {
+                    return Err("No version of this file to blame".into());
+                }
+                [Some("000000"), Some(_), Some("000000")] => Version::ConflictStage(3),
+                [Some(_), _, Some("000000")] => Version::ConflictStage(2),
+                _ => Version::Worktree,
+            };
+            return blame::load_version_at_line(version, false, 1, &path, repository);
+        }
         let deleted = entry
             .record
             .split(' ')
