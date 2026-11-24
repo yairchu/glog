@@ -2300,6 +2300,50 @@ mod tests {
     }
 
     #[test]
+    fn status_blames_the_surviving_side_of_deleted_conflict_files() {
+        let directory = TestDirectory::new();
+        let _cwd = CurrentDirGuard::enter(directory.path());
+        git(&["init", "-qb", "main"]);
+        std::fs::write("ours.txt", "base\n").unwrap();
+        std::fs::write("theirs.txt", "base\n").unwrap();
+        git(&["add", "."]);
+        git(&["commit", "-qm", "base"]);
+
+        git(&["checkout", "-qb", "side"]);
+        git(&["rm", "ours.txt"]);
+        std::fs::write("theirs.txt", "theirs\n").unwrap();
+        git(&["commit", "-qam", "side"]);
+        let theirs = git(&["rev-parse", "HEAD"]);
+
+        git(&["checkout", "-q", "main"]);
+        git(&["rm", "theirs.txt"]);
+        std::fs::write("ours.txt", "ours\n").unwrap();
+        git(&["commit", "-qam", "main"]);
+        let ours = git(&["rev-parse", "HEAD"]);
+
+        fail(&mut git_command(&["merge", "side"]));
+        std::fs::remove_file("ours.txt").unwrap();
+        std::fs::remove_file("theirs.txt").unwrap();
+
+        let mut app = load_app(&[]).unwrap();
+        let view = app.status_view.as_mut().unwrap();
+        for (path, expected) in [("ours.txt", ours), ("theirs.txt", theirs)] {
+            view.cursor = view
+                .rows
+                .iter()
+                .position(|row| {
+                    matches!(&row.key, RowKey::File(key)
+                        if key.group == Group::Conflicts && key.path == Path::new(path))
+                })
+                .unwrap();
+            let blame = view
+                .blame()
+                .unwrap_or_else(|error| panic!("{path}: {error}"));
+            assert_eq!(blame.commits[blame.selected].hash, expected);
+        }
+    }
+
+    #[test]
     fn status_starts_in_log_when_clean_and_keeps_details_when_cleaned() {
         use crate::app::Mode;
 
