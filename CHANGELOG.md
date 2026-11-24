@@ -5,6 +5,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+## 0.12.1 - 2026-11-24
+
 ### Added
 
 - Press `A` in Status to blame the selected file or patch line. Return to
@@ -751,7 +753,8 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 - Initial release of the interactive `git log` and `git show` browser.
 
-[Unreleased]: https://github.com/yairchu/glog/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/yairchu/glog/compare/v0.12.1...HEAD
+[0.12.1]: https://github.com/yairchu/glog/compare/v0.12.0...v0.12.1
 [0.12.0]: https://github.com/yairchu/glog/compare/v0.11.3...v0.12.0
 [0.11.3]: https://github.com/yairchu/glog/compare/v0.11.2...v0.11.3
 [0.11.2]: https://github.com/yairchu/glog/compare/v0.11.1...v0.11.2
