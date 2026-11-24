@@ -72,6 +72,10 @@ verify_release_ci() {
   printf 'CI passed for %s.\n' "$RELEASE_SHA"
 }
 
+published_release_version() {
+  cargo search glog-tui --limit 1 | sed -n 's/^glog-tui = "\([^"]*\)".*/\1/p'
+}
+
 confirm_exactly() {
   local expected=$1
   local reply

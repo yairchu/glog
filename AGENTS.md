@@ -73,10 +73,11 @@ convert existing commit messages.
 4. Commit the version, lockfile, and changelog together as the release commit.
 5. The maintainer merges and pushes the release commit, then runs
    `tools/publish-release.sh`. The script verifies CI passed for the exact
-   `origin/main` commit before publishing.
-6. After crates.io serves the new version, the maintainer runs
-   `tools/tag-release.sh`. The script verifies publication before creating and
-   pushing the annotated `vX.Y.Z` tag.
+   `origin/main` commit, publishes the crate, and waits for crates.io to report
+   the new version. It then runs `tools/tag-release.sh`, which verifies
+   publication and asks for confirmation before pushing the annotated tag.
+6. If publication succeeded and tagging is still pending, run
+   `tools/tag-release.sh` once crates.io reports the new version.
 
 Publishing and pushing tags are maintainer actions. Do not perform them unless
 the maintainer explicitly requests them.

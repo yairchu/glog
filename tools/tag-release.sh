@@ -30,7 +30,7 @@ if git rev-parse -q --verify "refs/tags/$RELEASE_TAG" >/dev/null; then
   local_tag=true
 fi
 
-published=$(cargo search glog-tui --limit 1 | sed -n 's/^glog-tui = "\([^"]*\)".*/\1/p')
+published=$(published_release_version)
 test "$published" = "$RELEASE_VERSION" ||
   die "crates.io reports glog-tui $published, expected $RELEASE_VERSION"
 

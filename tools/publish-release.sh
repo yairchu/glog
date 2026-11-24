@@ -33,5 +33,18 @@ fi
 
 confirm_exactly "publish glog-tui $RELEASE_VERSION"
 cargo publish --locked
-printf 'Published glog-tui %s. Run tools/tag-release.sh after crates.io serves it.\n' \
-  "$RELEASE_VERSION"
+printf 'Published glog-tui %s. Waiting for crates.io to report it.\n' "$RELEASE_VERSION"
+
+for ((attempt = 1; attempt <= 13; attempt++)); do
+  if published=$(published_release_version) && test "$published" = "$RELEASE_VERSION"; then
+    if "$script_dir/tag-release.sh"; then
+      exit 0
+    fi
+    die "glog-tui $RELEASE_VERSION was published. Run tools/tag-release.sh to finish tagging."
+  fi
+  if test "$attempt" -lt 13; then
+    sleep 5
+  fi
+done
+
+die "glog-tui $RELEASE_VERSION was published, but the crates.io wait timed out. Run tools/tag-release.sh once crates.io reports it."
