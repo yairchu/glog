@@ -109,7 +109,8 @@ fn apply(event: Event, app: &mut App) {
         if app.mode == Mode::GithubFile {
             match key.code {
                 KeyCode::Char('e') => app.request_editor(),
-                KeyCode::Esc | KeyCode::Backspace => app.reference_back(),
+                KeyCode::Backspace => app.reference_back(),
+                KeyCode::Esc if app.has_reference_back() => app.reference_back(),
                 _ => pager_key(key.code, app),
             }
             return;
@@ -177,6 +178,7 @@ fn apply(event: Event, app: &mut App) {
             }
             match key.code {
                 KeyCode::Char('A') => app.blame_status_line(),
+                KeyCode::Esc if app.exit_on_esc && app.has_reference_back() => app.reference_back(),
                 KeyCode::Tab | KeyCode::Esc => app.switch_mode(),
                 KeyCode::Char('q') => app.quit = true,
                 KeyCode::Char('h') => app.open_help(),
@@ -289,14 +291,13 @@ fn apply(event: Event, app: &mut App) {
             KeyCode::Char('B') if app.mode == Mode::Show => app.blame_show_line(),
             KeyCode::Char('[') if app.mode == Mode::Show => app.jump_show_file(-1),
             KeyCode::Char(']') if app.mode == Mode::Show => app.jump_show_file(1),
-            KeyCode::Esc if app.mode == Mode::Show => app.switch_mode(),
+            KeyCode::Esc if app.mode == Mode::Show && app.has_log_view() => app.switch_mode(),
             KeyCode::Esc if app.history == History::Blame && app.has_blame_back() => {
                 app.blame_back()
             }
             KeyCode::Esc if app.has_branch_back() || app.has_bisect_back() => app.reference_back(),
             // Leave a followed reference before exiting to the calling tool.
             KeyCode::Esc if app.exit_on_esc && app.has_reference_back() => app.reference_back(),
-            KeyCode::Esc if app.exit_on_esc => app.quit = true,
             // Plain arrows act within the view, as horizontal keys do in
             // pagers; Shift-arrows step through history.
             KeyCode::Left | KeyCode::Right if key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -518,6 +519,7 @@ fn apply(event: Event, app: &mut App) {
 /// Navigation shared by history, patches, and the range-diff text pager.
 fn pager_key(code: KeyCode, app: &mut App) {
     match code {
+        KeyCode::Esc if app.exit_on_esc => app.quit = true,
         KeyCode::Char('q') => app.quit = true,
         KeyCode::Up | KeyCode::Char('k') => app.move_by(-1, 1),
         KeyCode::Down | KeyCode::Char('j') => app.move_by(1, 1),
@@ -691,6 +693,22 @@ mod tests {
         assert!(!app.quit);
         handle(key(KeyCode::Esc), &mut app);
         assert!(app.quit);
+    }
+
+    #[test]
+    fn escape_can_quit_standalone_pagers_and_patches() {
+        for mode in [Mode::Grep, Mode::RangeDiff, Mode::GithubFile, Mode::Show] {
+            let mut commit = crate::log_format::tests::commit();
+            commit.kind = crate::git::CommitKind::Staged;
+            let mut app = App::new(vec![commit]);
+            app.mode = mode;
+            handle(key(KeyCode::Esc), &mut app);
+            assert!(!app.quit, "{mode:?} without the option");
+
+            app.exit_on_esc = true;
+            handle(key(KeyCode::Esc), &mut app);
+            assert!(app.quit, "{mode:?} with the option");
+        }
     }
 
     #[test]

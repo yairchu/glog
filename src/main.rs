@@ -56,7 +56,8 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
     let (command, command_args) = parse_command(&args);
-    let command_args = match initialize_session(command, command_args) {
+    let (exit_on_esc, command_args) = exit_on_esc_option(command, command_args);
+    let command_args = match initialize_session(command, &command_args) {
         Ok(args) => args,
         Err(error) => {
             eprintln!("glog: {error}");
@@ -135,7 +136,7 @@ fn main() -> ExitCode {
         app.title_revision = git::log_title_revision(&git_args);
     }
     app.load_search_history();
-    app.exit_on_esc = log_options.exit_on_esc;
+    app.exit_on_esc = exit_on_esc || log_options.exit_on_esc;
     initialize_log_filters(&mut app, log_options);
 
     let mut terminal = match start_terminal() {
@@ -285,6 +286,24 @@ fn initialize_session(command: Command, args: &[String]) -> Result<Vec<String>, 
     patch_options::initialize(settings);
     blame::initialize_date(&args);
     Ok(args)
+}
+
+/// Non-Log commands accept the session flag before their arguments, where
+/// it cannot consume a pattern, path, or another option's value.
+fn exit_on_esc_option(command: Command, args: &[String]) -> (bool, Vec<String>) {
+    let mut args = args.to_vec();
+    if command == Command::Log {
+        return (false, args);
+    }
+    let index = usize::from(matches!(
+        (command, args.first().map(String::as_str)),
+        (Command::Stash, Some("list" | "show")) | (Command::Bisect, Some("log"))
+    ));
+    let enabled = args.get(index).is_some_and(|arg| arg == "--exit-on-esc");
+    if enabled {
+        args.remove(index);
+    }
+    (enabled, args)
 }
 
 fn parse_command(args: &[String]) -> (Command, &[String]) {
@@ -546,6 +565,36 @@ mod tests {
             handle_burst(&mut app, click, || Ok(queue.next())).unwrap(),
             (true, None)
         );
+    }
+
+    #[test]
+    fn exit_on_esc_leaves_subcommand_patterns_paths_and_values_intact() {
+        for (args, enabled, forwarded) in [
+            (
+                vec!["grep", "--exit-on-esc", "-e", "--exit-on-esc"],
+                true,
+                vec!["-e", "--exit-on-esc"],
+            ),
+            (
+                vec!["diff", "--", "--exit-on-esc"],
+                false,
+                vec!["--", "--exit-on-esc"],
+            ),
+            (vec!["stash", "show", "--exit-on-esc"], true, vec!["show"]),
+            (vec!["bisect", "log", "--exit-on-esc"], true, vec!["log"]),
+            (
+                vec!["gh", "repo", "read-file", "--exit-on-esc", "README.md"],
+                true,
+                vec!["README.md"],
+            ),
+        ] {
+            let args = args.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            let (command, args) = parse_command(&args);
+            assert_eq!(
+                exit_on_esc_option(command, args),
+                (enabled, forwarded.into_iter().map(str::to_owned).collect())
+            );
+        }
     }
 
     #[test]

@@ -5,6 +5,11 @@ Notable user-visible changes to `glog` are recorded here. This project follows
 
 ## Unreleased
 
+### Added
+
+- Use `--exit-on-esc` with any interactive command. Escape dismisses prompts
+  and returns from nested views before quitting.
+
 ### Fixed
 
 - Highlight branch graph routing rows with the node whose outgoing edges they

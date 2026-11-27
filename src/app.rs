@@ -784,7 +784,6 @@ impl App {
                 return Err("No bisect session in progress".into());
             }
             target.context = "bisect log".into();
-            target.exit_on_esc = self.exit_on_esc;
             target.github_repository = self.github_repository.clone();
             target.file_filters = self.file_filters.clone();
             Ok(target)
@@ -2073,7 +2072,6 @@ impl App {
 
     fn enter_blame(&mut self, loaded: Result<App, String>) {
         let loaded = loaded.map(|mut target| {
-            target.exit_on_esc = self.exit_on_esc;
             target.file_filters = self.file_filters.clone();
             target
         });
@@ -3669,7 +3667,6 @@ impl App {
         // Followed references stay in the same repository.
         target.set_repository(self.repository.clone());
         target.github_repository = self.github_repository.clone();
-        target.exit_on_esc = self.exit_on_esc;
         target.file_filters = self.file_filters.clone();
         // Followed views start unwatched; branch Logs may opt in with W.
         // Leave watch on the saved origin so returning resumes its refreshes.
@@ -3774,6 +3771,7 @@ impl App {
     /// Move state that belongs to the session, rather than to a view, into the
     /// view replacing this one. Only the active view is drawn and polled.
     fn hand_over(&mut self, view: &mut App) {
+        view.exit_on_esc = self.exit_on_esc;
         if view.code_stats != self.code_stats {
             view.code_stats = self.code_stats;
             if let Some(status) = &mut view.status_view {
@@ -3819,7 +3817,6 @@ impl App {
             if branches_from_blame {
                 let loaded = view.load().map(|mut target| {
                     self.focus_blamed_commit(&mut target);
-                    target.exit_on_esc = self.exit_on_esc;
                     target
                 });
                 self.enter_followed(loaded);
@@ -3880,7 +3877,6 @@ impl App {
                 }
             }
         }
-        target.exit_on_esc = self.exit_on_esc;
         self.hand_over(&mut target);
         let previous = std::mem::replace(&mut target.views.active, view);
         let mut origin = std::mem::replace(self, target);

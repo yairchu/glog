@@ -53,6 +53,8 @@ Commands:
   gh repo read-file  View a file from GitHub
 
 Common options:
+  --exit-on-esc   Quit when Escape has nowhere to go back
+                  Place immediately after the command or topic
   --watch         Refresh automatically (W toggles)
   --date=STYLE    Format dates using Git (e.g. short, relative, iso)
   -h, --help      Print help
@@ -70,12 +72,11 @@ struct Page {
 impl Page {
     fn render(&self) -> String {
         let mut text = format!("Usage: {}\n", self.usage);
-        if !self.options.is_empty() {
-            text.push_str("\nOptions:\n");
-            for option in self.options {
-                indent(&mut text, option);
-            }
+        text.push_str("\nOptions:\n");
+        for option in self.options {
+            indent(&mut text, option);
         }
+        indent(&mut text, EXIT_ON_ESC);
         for (title, body) in self
             .sections
             .iter()
@@ -181,6 +182,7 @@ Return with Esc or Backspace. See glog bisect log --help for graph details."), (
     }
 }
 
+const EXIT_ON_ESC: &str = "--exit-on-esc Quit when Escape has nowhere to go back\n              Place immediately after the command or topic";
 const WATCH: &str = "--watch       Refresh automatically; W toggles watching";
 const DATE: &str = "--date=STYLE  Format dates using Git (e.g. short, relative, iso)";
 const LOG_OPTIONS: &str = "--pretty=format:FORMAT / --format=FORMAT
@@ -191,8 +193,7 @@ const LOG_OPTIONS: &str = "--pretty=format:FORMAT / --format=FORMAT
 --hide-merges Hide merge commits; M toggles this filter
 --hide-types=TYPES
               Hide comma-separated commit types (e.g. test,refactor,docs);
-              T clears filters
---exit-on-esc Exit from the Log list with Escape";
+              T clears filters";
 const PATCH_OPTIONS: &str = "--color-moved[=MODE]
               Highlight moved code for this session (bare flag: zebra).
               Modes: no, default, plain, blocks, zebra, dimmed-zebra
